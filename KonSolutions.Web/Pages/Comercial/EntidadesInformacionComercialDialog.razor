@@ -1,0 +1,182 @@
+@* Alta/edición de una línea de COMERCIAL.ENTIDADES_INFORMACION_COMERCIAL: las condiciones
+   comerciales (moneda, condición y forma de pago) que se pactaron con una entidad para un
+   tipo de operación puntual. Ver EntidadesDialog.razor → ficha "Información Comercial".
+
+   La clave es (entidad, clase de operación, tipo de operación). Entidad y clase vienen fijas
+   desde la ficha, así que aquí lo único que identifica la línea es el Tipo de Operación: en
+   alta se elige, en edición queda bloqueado (cambiarlo sería otra línea, no la misma). *@
+@using ComercialRoute = KONSolutions.Web.Services.ApiRoutes.Comercial
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(560px,95vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="@Modo" Descripcion="Información Comercial" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            @if (_cargando)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mb-3" />
+            }
+            else
+            {
+                @if (_esNuevo && _tiposOperacionLibres.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                        Ya están configurados todos los tipos de operación de esta clase.
+                    </MudAlert>
+                }
+
+                <MudGrid Spacing="2">
+                    <MudItem xs="12">
+                        <AriaCombo TItem="ComboboxItem" Items="@(_esNuevo ? _tiposOperacionLibres : _tiposOperacion)"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_model.COD_TIPO_OPERACION"
+                                   ValueChanged="@(v => _model.COD_TIPO_OPERACION = v ?? "")"
+                                   Label="Tipo de operación" Obligatorio="true"
+                                   Disabled="@(_readonly || !_esNuevo)" Class="mb-3" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_model.COD_MONEDA"
+                                   ValueChanged="@(v => _model.COD_MONEDA = v)"
+                                   Label="Moneda" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_condicionesPago"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_model.COD_CONDICION_PAGO?.ToString())"
+                                   ValueChanged="@(v => _model.COD_CONDICION_PAGO = int.TryParse(v, out var n) ? n : null)"
+                                   Label="Condición de pago" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_formasPago"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_model.COD_FORMA_PAGO?.ToString())"
+                                   ValueChanged="@(v => _model.COD_FORMA_PAGO = int.TryParse(v, out var n) ? n : null)"
+                                   Label="Forma de pago" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                </MudGrid>
+            }
+
+            <CrudDialogActions Modo="Modo" Saving="_saving"
+                               OnCancel="@(() => MudDialog.Cancel())">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public decimal CodEntidad { get; set; }
+    [Parameter] public string CodClaseOperacion { get; set; } = "";
+    [Parameter] public EntidadesInformacionComercial? Item { get; set; }
+    /// <summary>Tipos de operación que ya tienen línea cargada: en alta se sacan del combo
+    /// para no chocar con la PK (el SP de INSERT rechaza el duplicado, pero es mejor no
+    /// ofrecer una opción que va a fallar).</summary>
+    [Parameter] public List<string> YaConfigurados { get; set; } = new();
+
+    private readonly EntidadesInformacionComercialSaveDto _model = new();
+    private bool _cargando = true, _saving;
+    private bool _esNuevo => Modo == CrudModo.Create;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _tiposOperacion = new(), _monedas = new(),
+                               _condicionesPago = new(), _formasPago = new();
+    private List<ComboboxItem> _tiposOperacionLibres => _tiposOperacion
+        .Where(t => !YaConfigurados.Contains(t.Id)).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _model.COD_ENTIDAD = CodEntidad;
+        _model.COD_CLASE_OPERACION = CodClaseOperacion;
+        if (Item is not null)
+        {
+            _model.COD_TIPO_OPERACION = Item.COD_TIPO_OPERACION;
+            _model.COD_MONEDA         = Item.COD_MONEDA;
+            _model.COD_CONDICION_PAGO = Item.COD_CONDICION_PAGO;
+            _model.COD_FORMA_PAGO     = Item.COD_FORMA_PAGO;
+        }
+
+        await Task.WhenAll(
+            CargarTiposOperacionAsync(),
+            CargarComboAsync(EstandarRoute.MonedasCombobox,        l => _monedas = l),
+            CargarComboAsync(ComercialRoute.CondicionesPagoCombobox, l => _condicionesPago = l),
+            CargarComboAsync(ComercialRoute.FormasPagoCombobox,     l => _formasPago = l));
+
+        _cargando = false;
+    }
+
+    private async Task CargarTiposOperacionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodClaseOperacion)) return;
+        try
+        {
+            var url = $"{EstandarRoute.TiposOperacion}?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<TipoOperacionLite>>>(url);
+            _tiposOperacion = (r?.Data ?? new())
+                .Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION })
+                .ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadesInformacionComercialDialog), nameof(CargarTiposOperacionAsync)); }
+    }
+
+    private class TipoOperacionLite
+    {
+        public string COD_TIPO_OPERACION { get; set; } = "";
+        public string DES_TIPO_OPERACION { get; set; } = "";
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadesInformacionComercialDialog), nameof(CargarComboAsync)); }
+    }
+
+    private async Task Submit()
+    {
+        if (_saving) return;
+        _saving = true;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync(
+                $"{ComercialRoute.EntidadesInformacionComercial}/{CodEntidad}/{Uri.EscapeDataString(CodClaseOperacion)}/{Uri.EscapeDataString(_model.COD_TIPO_OPERACION)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(EntidadesInformacionComercialDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_model.COD_TIPO_OPERACION))
+        {
+            _saving = false;
+            Snackbar.Add("Elige un tipo de operación.", Severity.Warning);
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ComercialRoute.EntidadesInformacionComercial, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesInformacionComercialDialog), nameof(Submit));
+    }
+}

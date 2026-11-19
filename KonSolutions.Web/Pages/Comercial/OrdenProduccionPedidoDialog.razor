@@ -1,0 +1,351 @@
+@* Proceso y orden de producción de una línea del PEDIDO COMERCIAL.
+
+   Es hermano de Logistica/OrdenProduccionDialog.razor, pero NO es el mismo, y la diferencia
+   es de fondo, no de estilo:
+
+   El de Requerimientos arma los cuatro combos con el STOCK del producto, porque lo que se
+   pide de una orden sin existencia no se puede reservar. Acá eso no aplica: el pedido no
+   reserva nada, y pedir de compra PARA una orden es justamente el caso en que no hay
+   existencia. Filtrar por stock dejaría los cuatro combos vacíos —que es exactamente lo que
+   se veía— y haría imposible elegir la orden que motiva la compra.
+
+   Así que este va contra los MAESTROS de PLANEAMIENTO, en cascada por las claves reales:
+     PROC_PRODUCCION_PROCESOS_SHOWCOMBOX
+     PROC_PLANEAMIENTO_ORDEN_PRODUCCION_SHOWCOMBOX            (por proceso)
+     PROC_PLANEAMIENTO_ORDEN_PRODUCCION_ITEMS_SHOWCOMBOX      (por proceso + orden)
+     PROC_PLANEAMIENTO_ORDEN_PRODUCCION_UNIDAD_SHOWCOMBOX     (por proceso + orden + ítem)
+
+   Los cuatro endpoints ya existían con el filtro por padre: no hizo falta tocar la API.
+
+   Trabaja sobre COPIAS: mientras no se toque Grabar, la fila no se entera. Cancelar la deja
+   exactamente como estaba. *@
+
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject ErrorLogService ErrorLog
+
+<MudDialog Style="width:min(560px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Lote y orden de producción</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-4" Style="opacity:.75;">
+            Ítem @NumSecuencia@(string.IsNullOrWhiteSpace(DesProducto) ? "" : $" · {DesProducto}")
+        </MudText>
+
+        @* El LOTE entra al mismo diálogo que la orden, y no por una columna aparte.
+
+           Los cinco datos describen lo mismo —de qué existencia concreta estamos hablando— y
+           separados obligaban a dos o tres columnas en una grilla que ya está cargada. Además,
+           un combo dentro de una celda angosta muestra el texto cortado justo donde empieza lo
+           que sirve. *@
+        <AriaCombo TItem="ComboboxItem" Items="Lotes"
+                   TextFunc="@(t => EtiquetaLote(t))" ValueFunc="@(t => t.Id)"
+                   Value="@_numLote" ValueChanged="@(v => _numLote = string.IsNullOrWhiteSpace(v) ? null : v)"
+                   Label="Lote de control" Disabled="SoloLectura" Class="mb-3" />
+
+        @if (!string.IsNullOrWhiteSpace(NumLoteControlEntidad))
+        {
+            @* El número con que el tercero identifica el mismo lote. No se edita acá: lo trae
+               la ficha del lote. Se muestra porque es lo que figura en la documentación del
+               proveedor y es por donde se lo busca. *@
+            <MudTextField T="string" Label="Lote de la entidad" Variant="Variant.Outlined"
+                          Value="@NumLoteControlEntidad" Disabled="true" Class="mb-3" />
+        }
+
+        @* Cada uno se habilita sólo cuando el de arriba tiene valor: sin proceso no hay de
+           dónde sacar las órdenes, sin orden no hay ítems, sin ítem no hay unidades. *@
+        <AriaCombo TItem="ComboboxItem" Items="@_procesos"
+                   TextFunc="@(t => Etiqueta(t))" ValueFunc="@(t => t.Id)"
+                   Value="@_codProceso" ValueChanged="OnProcesoChanged"
+                   Label="Proceso" Disabled="@(SoloLectura || _cargando)" Class="mb-3" />
+
+        <AriaCombo TItem="ComboboxItem" Items="@_ordenes"
+                   TextFunc="@(t => Etiqueta(t))" ValueFunc="@(t => t.Id)"
+                   Value="@(_numOrden?.ToString())" ValueChanged="OnOrdenChanged"
+                   Label="Orden de producción"
+                   Disabled="@(SoloLectura || _cargando || string.IsNullOrWhiteSpace(_codProceso))" Class="mb-3" />
+
+        <AriaCombo TItem="ComboboxItem" Items="@_items"
+                   TextFunc="@(t => Etiqueta(t))" ValueFunc="@(t => t.Id)"
+                   Value="@(_numItem?.ToString())" ValueChanged="OnItemChanged"
+                   Label="Ítem de orden de producción"
+                   Disabled="@(SoloLectura || _cargando || _numOrden is null)" Class="mb-3" />
+
+        <AriaCombo TItem="ComboboxItem" Items="@_unidades"
+                   TextFunc="@(t => Etiqueta(t))" ValueFunc="@(t => t.Id)"
+                   Value="@(_numUnidad?.ToString())" ValueChanged="OnUnidadChanged"
+                   Label="Unidad mínima de orden de producción"
+                   Disabled="@(SoloLectura || _cargando || _numItem is null)" Class="mb-3" />
+
+        @* Un combo vacío no dice si no hay datos o si la llamada falló. Se distingue. *@
+        @if (!string.IsNullOrWhiteSpace(_aviso))
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">@_aviso</MudAlert>
+        }
+
+        <MudText Typo="Typo.caption" Style="opacity:.6;">
+            El bloque es opcional: una línea que no es de consumo de producción se graba sin
+            nada. "Quitar" deja los cuatro en blanco de una vez.
+        </MudText>
+    </DialogContent>
+
+    <DialogActions>
+        @if (!SoloLectura)
+        {
+            @* Poner los cuatro en NULL tiene que ser UNA acción. Sin este botón hay que
+               vaciar el combo de arriba y confiar en que la cascada limpie el resto —y si
+               el usuario vacía otro primero, la línea queda a medio llenar. *@
+            <MudButton OnClick="Quitar" Variant="Variant.Text"
+                       Disabled="@(string.IsNullOrWhiteSpace(_codProceso) && _numOrden is null)">Quitar</MudButton>
+        }
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        @if (!SoloLectura)
+        {
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar"
+                       OnClick="Grabar">Grabar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>Lotes que se pueden elegir. Los arma la pantalla —de su stock o de su
+    /// catálogo, según el caso— y se pasan por parámetro: son los mismos para todas las
+    /// líneas, así que pedirlos acá sería una llamada por cada apertura del diálogo.</summary>
+    [Parameter] public List<ComboboxItem> Lotes { get; set; } = new();
+
+    [Parameter] public string? NumLoteControl { get; set; }
+
+    /// <summary>El número que la entidad le da al mismo lote. Sólo para mostrar; si viene
+    /// vacío el campo ni siquiera se dibuja, para no dejar un input muerto.</summary>
+    [Parameter] public string? NumLoteControlEntidad { get; set; }
+
+    [Parameter] public string? CodProceso { get; set; }
+    [Parameter] public int?    NumOrden   { get; set; }
+    [Parameter] public short?  NumItem    { get; set; }
+    [Parameter] public byte?   NumUnidad  { get; set; }
+
+    /// <summary>Sólo para el encabezado, para saber sobre qué ítem se trabaja.</summary>
+    [Parameter] public int?    NumSecuencia { get; set; }
+    [Parameter] public string? DesProducto  { get; set; }
+
+    [Parameter] public bool SoloLectura { get; set; }
+
+    /// <summary>True cuando la línea ya está grabada y por lo tanto PUEDE tener vínculos con
+    /// requerimientos. No es "los tiene": es "podría tenerlos", que alcanza para advertir.
+    /// La línea recién agregada a mano todavía no puede tener ninguno.</summary>
+    [Parameter] public bool PuedeTenerOrigenes { get; set; }
+
+    /// <summary>Si la línea viene sin proceso ni orden, ¿se le proponen los valores por
+    /// defecto de Configuración General?
+    ///
+    /// En ALTA sí: es lo que se iba a grabar igual, y mostrarlo lo hace visible y editable.
+    /// En una vista de SÓLO LECTURA no, y es importante: ahí el diálogo no propone nada,
+    /// INFORMA lo que la línea tiene. Mostrar un valor por defecto sobre una línea que no lo
+    /// tiene sería decir que la línea tiene algo que en la base no está.</summary>
+    [Parameter] public bool AplicarValoresPorDefecto { get; set; } = true;
+
+    // Copias de trabajo: la fila original no se toca hasta Grabar.
+    private string? _numLote;
+
+    /// <summary>Descripción del lote, o su número cuando no tiene descripción. Un lote sin
+    /// descripción salía como una opción EN BLANCO: una franja de color sin texto, que no se
+    /// puede identificar ni buscar.</summary>
+    private static string EtiquetaLote(ComboboxItem t)
+        => string.IsNullOrWhiteSpace(t.Texto) ? (t.Id ?? "") : t.Texto;
+
+    private string? _codProceso;
+    private int?    _numOrden;
+    private short?  _numItem;
+    private byte?   _numUnidad;
+
+    private List<ComboboxItem> _procesos = new(), _ordenes = new(), _items = new(), _unidades = new();
+    private bool _cargando;
+    private string? _aviso;
+
+    /// <summary>"código — descripción", o el código solo cuando no hay descripción.
+    /// No es cosmético: una orden sin DES_ORDEN_PRODUCCION salía como "0 — " y la opción se
+    /// veía EN BLANCO, con lo cual el combo parecía vacío aunque tuviera elementos.</summary>
+    private static string Etiqueta(ComboboxItem t)
+        => string.IsNullOrWhiteSpace(t.Texto) ? (t.Id ?? "") : $"{t.Id} — {t.Texto}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _numLote    = NumLoteControl;
+        _codProceso = CodProceso;
+        _numOrden   = NumOrden;
+        _numItem    = NumItem;
+        _numUnidad  = NumUnidad;
+
+        // El ítem que no trae NADA arranca con los valores por defecto de Configuración
+        // General, igual que en Requerimientos. Sólo cuando la cadena entera está vacía: si
+        // la línea ya tiene proceso u orden, ese es el dato y no se pisa.
+        if (AplicarValoresPorDefecto && string.IsNullOrWhiteSpace(_codProceso) && _numOrden is null or 0)
+        {
+            var cfg = ConfigSvc.Current;
+            if (!string.IsNullOrWhiteSpace(cfg.ProcesoDefault))
+            {
+                _codProceso = cfg.ProcesoDefault;
+                _numOrden   = cfg.OrdenProduccionDefault;
+                _numItem    = cfg.OrdenProduccionItemDefault;
+                _numUnidad  = cfg.OrdenProduccionUnidadDefault;
+            }
+        }
+
+        _cargando = true;
+        _procesos = await PedirAsync(ApiRoutes.Produccion.ProcesosCombobox);
+        // Se cargan los tres niveles de abajo con lo que la línea YA tiene, para que el
+        // diálogo abra mostrando la selección actual y no cuatro combos en blanco que el
+        // usuario tenga que volver a recorrer.
+        await RecargarOrdenesAsync();
+        await RecargarItemsAsync();
+        await RecargarUnidadesAsync();
+        _cargando = false;
+        Revisar();
+    }
+
+    private async Task<List<ComboboxItem>> PedirAsync(string url)
+    {
+        // SafeGetAsync devuelve null ante CUALQUIER falla —403, 500, JSON que no calza—, así
+        // que una lista vacía acá no distingue "no hay datos" de "la llamada se cayó". Se
+        // devuelve la lista y quien llama decide qué decir.
+        try   { return await Http.SafeGetAsync<List<ComboboxItem>>(url) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(OrdenProduccionPedidoDialog), nameof(PedirAsync));
+            return new();
+        }
+    }
+
+    private async Task RecargarOrdenesAsync()
+    {
+        _ordenes = string.IsNullOrWhiteSpace(_codProceso)
+            ? new()
+            : await PedirAsync(ApiRoutes.Planeamiento.OrdenProduccionComboboxPorProceso(_codProceso));
+        AsegurarOpcion(_ordenes, _numOrden?.ToString());
+    }
+
+    private async Task RecargarItemsAsync()
+    {
+        _items = (string.IsNullOrWhiteSpace(_codProceso) || _numOrden is null)
+            ? new()
+            : await PedirAsync(ApiRoutes.Planeamiento.OrdenProduccionItemsComboboxPorOrden(_codProceso, _numOrden.Value));
+        AsegurarOpcion(_items, _numItem?.ToString());
+    }
+
+    private async Task RecargarUnidadesAsync()
+    {
+        _unidades = (string.IsNullOrWhiteSpace(_codProceso) || _numOrden is null || _numItem is null)
+            ? new()
+            : await PedirAsync(ApiRoutes.Planeamiento.OrdenProduccionUnidadComboboxPorItem(_codProceso, _numOrden.Value, _numItem.Value));
+        AsegurarOpcion(_unidades, _numUnidad?.ToString());
+    }
+
+    /// <summary>Lo elegido SIEMPRE tiene que estar en su lista, aunque el maestro no lo
+    /// devuelva —una orden cerrada, el valor por defecto de la configuración—. Sin esto el
+    /// combo se dibuja con un valor que no está entre sus opciones y se ve VACÍO, mientras el
+    /// dato sigue ahí y se graba igual. Se agrega marcado, para que se note.</summary>
+    private static void AsegurarOpcion(List<ComboboxItem> lista, string? valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor)) return;
+        if (lista.Any(x => x.Id == valor)) return;
+        lista.Insert(0, new ComboboxItem { Id = valor, Texto = "(no figura en el maestro)" });
+    }
+
+    private async Task OnProcesoChanged(string? cod)
+    {
+        // Cambiar de proceso invalida orden, ítem y unidad: son de otro proceso.
+        _codProceso = string.IsNullOrWhiteSpace(cod) ? null : cod;
+        _numOrden = null; _numItem = null; _numUnidad = null;
+        await RecargarOrdenesAsync();
+        _items = new(); _unidades = new();
+        Revisar();
+    }
+
+    private async Task OnOrdenChanged(string? valor)
+    {
+        _numOrden = int.TryParse(valor, out var n) ? n : null;
+        _numItem = null; _numUnidad = null;
+        await RecargarItemsAsync();
+        _unidades = new();
+        Revisar();
+    }
+
+    private async Task OnItemChanged(string? valor)
+    {
+        _numItem = short.TryParse(valor, out var n) ? n : null;
+        _numUnidad = null;
+        await RecargarUnidadesAsync();
+        Revisar();
+    }
+
+    private void OnUnidadChanged(string? valor)
+    {
+        _numUnidad = byte.TryParse(valor, out var u) ? u : null;
+        Revisar();
+    }
+
+    /// <summary>El aviso que se muestra. Dice el motivo concreto en vez de dejar combos
+    /// vacíos que parecen rotos.</summary>
+    private void Revisar()
+    {
+        if (_procesos.Count == 0)
+        {
+            _aviso = "No se pudo traer la lista de procesos. Revisa los permisos de la opción o vuelve a intentar.";
+        }
+        else if (!string.IsNullOrWhiteSpace(_codProceso) && _ordenes.Count == 0)
+        {
+            _aviso = "Ese proceso no tiene órdenes de producción cargadas.";
+        }
+        else if (PuedeTenerOrigenes && !SoloLectura)
+        {
+            // La advertencia que importa. Si la línea vino de un requerimiento, hay filas de
+            // trazabilidad que lo sostienen; cambiar la orden acá NO las mueve, así que el
+            // requerimiento quedaría apuntando a una orden que el pedido ya no tiene. No se
+            // bloquea —a veces hay que corregir— pero se dice antes, no después.
+            _aviso = "Si esta línea vino de un requerimiento, cambiar el proceso o la orden NO " +
+                     "actualiza los vínculos de trazabilidad: el requerimiento seguirá apuntando " +
+                     "a la orden anterior.";
+        }
+        else
+        {
+            _aviso = null;
+        }
+        StateHasChanged();
+    }
+
+    private void Quitar()
+    {
+        _codProceso = null; _numOrden = null; _numItem = null; _numUnidad = null;
+        _ordenes = new(); _items = new(); _unidades = new();
+        Revisar();
+    }
+
+    private void Grabar() => MudDialog.Close(DialogResult.Ok(new Seleccion
+    {
+        NUM_LOTE_CONTROL            = _numLote,
+        COD_PROCESO                 = _codProceso,
+        DES_PROCESO                 = _procesos.FirstOrDefault(p => p.Id == _codProceso)?.Texto,
+        NUM_ORDEN_PRODUCCION        = _numOrden,
+        NUM_ORDEN_PRODUCCION_ITEM   = _numItem,
+        NUM_ORDEN_PRODUCCION_UNIDAD = _numUnidad
+    }));
+
+    /// <summary>Lo que el diálogo devuelve. Es su propia clase y no la línea del detalle: así
+    /// no puede tocar nada más de la línea que lo que muestra.</summary>
+    public class Seleccion
+    {
+        public string? NUM_LOTE_CONTROL { get; set; }
+        public string? COD_PROCESO { get; set; }
+        public string? DES_PROCESO { get; set; }
+        public int?    NUM_ORDEN_PRODUCCION { get; set; }
+        public short?  NUM_ORDEN_PRODUCCION_ITEM { get; set; }
+        public byte?   NUM_ORDEN_PRODUCCION_UNIDAD { get; set; }
+    }
+}

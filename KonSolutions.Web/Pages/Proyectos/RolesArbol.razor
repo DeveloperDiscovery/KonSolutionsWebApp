@@ -1,0 +1,46 @@
+@using KONSolutions.Shared.Models.Proyectos
+
+@* Diagrama jerárquico de TODOS los roles (Roles de tarea): cada rol cuelga de su rol padre; los que no tienen padre quedan arriba. El color es el de la categoría.
+   Los estilos (org-*) están en app.css, los mismos del organigrama del proyecto. *@
+@if (Roles.Count == 0)
+{
+    <MudText Class="pa-6 mono" Style="opacity:.6;">Sin roles.</MudText>
+}
+else
+{
+    <div class="d-flex align-center gap-3 mb-2 flex-wrap">
+        @foreach (var c in Roles.Where(n => n.COD_CATEGORIA_ROL != null).GroupBy(n => n.COD_CATEGORIA_ROL).Select(g => g.First()))
+        {
+            <span class="mono" style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px;"><i style="width:10px;height:10px;border-radius:2px;background:@Color(c.COD_CATEGORIA_ROL);display:inline-block;"></i>@c.DES_CATEGORIA_ROL</span>
+        }
+    </div>
+    <ZoomPanel><div class="org-tree"><ul>@foreach (var r in Hijos(null)) { @Nodo(r) }</ul></div></ZoomPanel>
+}
+
+@code {
+    [Parameter] public List<ProyectosRol> Roles { get; set; } = new();
+    [Parameter] public EventCallback<ProyectosRol> OnNodo { get; set; }
+
+    // raíz: sin padre, o con un padre que no está en la lista (p. ej. filtrada)
+    private IEnumerable<ProyectosRol> Hijos(string? padre)
+        => padre is null
+            ? Roles.Where(r => string.IsNullOrEmpty(r.COD_ROL_PADRE) || Roles.All(x => x.COD_ROL_TAREA != r.COD_ROL_PADRE))
+            : Roles.Where(r => r.COD_ROL_PADRE == padre && r.COD_ROL_TAREA != padre);
+
+    private static readonly string[] Cats = { "EST", "DIR", "GES", "ESP", "TEC", "OPE", "USU", "EXT", "CON", "SOP" };
+    private static readonly string[] Paleta = { "#7c3aed", "#1d4ed8", "#0e7490", "#15803d", "#b45309", "#c2410c", "#be185d", "#475569", "#0f766e", "#6d28d9" };
+    private static string Color(string? cat)
+    {
+        var i = string.IsNullOrEmpty(cat) ? -1 : Array.IndexOf(Cats, cat);
+        return i < 0 ? "#64748b" : Paleta[i];
+    }
+
+    private RenderFragment Nodo(ProyectosRol n) => @<li>
+        <div class="org-card" style="--cat:@Color(n.COD_CATEGORIA_ROL);cursor:pointer;" @onclick="@(() => OnNodo.InvokeAsync(n))">
+            <div class="rol">@n.DES_ROL_TAREA</div>
+            <div class="cat">@n.COD_ROL_TAREA@(n.DES_CATEGORIA_ROL is null ? "" : $" · {n.DES_CATEGORIA_ROL}")</div>
+        </div>
+        @{ var hs = Hijos(n.COD_ROL_TAREA).ToList(); }
+        @if (hs.Count > 0) { <ul>@foreach (var h in hs) { @Nodo(h) }</ul> }
+    </li>;
+}

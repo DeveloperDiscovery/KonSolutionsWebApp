@@ -1,0 +1,189 @@
+@* Armado de lineas de produccion (script SQL 125, API ingenieria/lineas-armados): reparte las operaciones de un proceso de una ruta (con sus minutos estandar) entre los puestos
+   de una linea, segun su disposicion (lineal, modular, circular, estacion fija), y calcula el balance: takt, ciclo, capacidad del turno y eficiencia de balanceo. *@
+@page "/ingenieria/armado-lineas"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject MenuService MenuSvc
+@inject AccessLogService AccessLog
+
+<PageTitle>Armado de líneas · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Armado de líneas</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">Puestos, reparto de operaciones y balance · @_visibles.Count de @_items.Count</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_buscar" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar por código, nombre, ruta, línea..." DebounceInterval="300" MaxWidth="520px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+        <GridRefreshButton OnRefresh="Cargar" />
+        @if (_app == "")
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => Abrir(null, CrudModo.Create))" data-accion="nuevo">Nuevo armado</MudButton>
+        }
+        else
+        {
+            <AccionesBotones CodAplicacion="@_app" CodOpcionAplicacion="@_opcion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="armado-lineas" style="position:relative;">
+    <MudDataGrid T="Armado" Items="_visibles" Dense="true" Hover="true" Striped="true" FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre" data-grilla="armados">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false" Width="95px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Código" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.COD_ARMADO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Armado" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="1" Texto="Armado" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>
+                    <span>@context.Item.DES_ARMADO</span>
+                    <div class="mono" style="opacity:.55;font-size:.78rem;">@context.Item.COD_RUTA_PRODUCCION · @context.Item.DES_PROCESO</div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Disposición" Sortable="false" Width="150px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Disposición" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate><MudChip T="string" Size="Size.Small" title="@(context.Item.COD_REGLA_CICLO == "MAX_PUESTO" ? "El ciclo lo marca el puesto más lento" : "Los operarios se reparten el trabajo")">@context.Item.DES_TIPO_DISTRIBUCION</MudChip></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Línea" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="Línea" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES_LINEA_PRODUCCION</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Puestos" Sortable="false" Width="80px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Puestos" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.CAN_PUESTOS</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Operarios" Sortable="false" Width="90px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="5" Texto="Operarios" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.CAN_OPERARIOS</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Takt" Sortable="false" Width="80px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="6" Texto="Takt" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate><span class="mono">@OperacionesApi.Min(context.Item.VAL_TAKT)</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Ciclo" Sortable="false" Width="80px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="7" Texto="Ciclo" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate><span class="mono">@OperacionesApi.Min(context.Item.VAL_CICLO)</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Capacidad / meta" Sortable="false" Width="140px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="8" Texto="Capacidad / meta" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>
+                    @if (context.Item.VAL_CAPACIDAD_TURNO is { } cap)
+                    {
+                        <span class="mono">@cap.ToString("0", System.Globalization.CultureInfo.InvariantCulture)</span>
+                        @if (context.Item.VAL_META_UNIDADES is { } meta)
+                        {
+                            <span class="mono" style="opacity:.6;"> / @meta.ToString("0", System.Globalization.CultureInfo.InvariantCulture)</span>
+                            <MudIcon Icon="@(cap >= meta ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Warning)" Color="@(cap >= meta ? Color.Success : Color.Warning)" Size="Size.Small" />
+                        }
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Balanceo" Sortable="false" Width="95px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="9" Texto="Balanceo" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@if (context.Item.TAS_EFICIENCIA_BALANCEO is { } b) { <span class="mono">@b.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) %</span> }</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Sin asignar" Sortable="false" Width="105px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="10" Texto="Sin asignar" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>@if ((context.Item.CAN_HOJAS_SIN_ASIGNAR ?? 0) > 0) { <MudChip T="string" Size="Size.Small" Color="Color.Warning">@context.Item.CAN_HOJAS_SIN_ASIGNAR de @context.Item.CAN_HOJAS_RUTA</MudChip> }</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Estado" Sortable="false" Width="110px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="11" Texto="Estado" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>@if (!string.IsNullOrEmpty(context.Item.DES_ESTADO)) { <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /> }</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="230px">
+                <CellTemplate>
+                    @{ var it = context.Item; }
+                    <MudTooltip Text="Puestos, reparto y balance">
+                        <MudIconButton Icon="@Icons.Material.Filled.ViewWeek" Size="Size.Small" Color="Color.Primary" OnClick="@(() => Ficha(it))" data-accion="ficha" />
+                    </MudTooltip>
+                    @if (_app == "")
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Update))" data-accion="editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Delete))" data-accion="eliminar" />
+                    }
+                    else
+                    {
+                        <AccionesBotones CodAplicacion="@_app" CodOpcionAplicacion="@_opcion" Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(it, b))" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin armados.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Armado" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private readonly GridOF<Armado> _g = new();
+    private void Refrescar() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public ArmadoLineas()
+    {
+        _g.Add(x => x.COD_ARMADO);
+        _g.Add(x => x.DES_ARMADO);
+        _g.Add(x => x.DES_TIPO_DISTRIBUCION);
+        _g.Add(x => x.DES_LINEA_PRODUCCION);
+        _g.Add(x => x.CAN_PUESTOS?.ToString(), x => x.CAN_PUESTOS);
+        _g.Add(x => x.CAN_OPERARIOS?.ToString(), x => x.CAN_OPERARIOS);
+        _g.Add(x => OperacionesApi.Min(x.VAL_TAKT), x => x.VAL_TAKT);
+        _g.Add(x => OperacionesApi.Min(x.VAL_CICLO), x => x.VAL_CICLO);
+        _g.Add(x => x.VAL_CAPACIDAD_TURNO?.ToString("0"), x => x.VAL_CAPACIDAD_TURNO);
+        _g.Add(x => x.TAS_EFICIENCIA_BALANCEO?.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), x => x.TAS_EFICIENCIA_BALANCEO);
+        _g.Add(x => x.CAN_HOJAS_SIN_ASIGNAR?.ToString(), x => x.CAN_HOJAS_SIN_ASIGNAR);
+        _g.Add(x => x.DES_ESTADO);
+    }
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private string _app = "", _opcion = "";
+    private List<Armado> _items = new();
+    private string _buscar = "", _error = "";
+
+    private List<Armado> _visibles => _g.Visibles(_fuente);
+    private List<Armado> _fuente => _items.Where(a => string.IsNullOrWhiteSpace(_buscar) || Coincide(a, _buscar)).ToList();
+
+    private static bool Coincide(Armado a, string t) =>
+        new[] { a.COD_ARMADO, a.DES_ARMADO, a.COD_RUTA_PRODUCCION, a.DES_RUTA_PRODUCCION, a.DES_PROCESO, a.DES_TIPO_DISTRIBUCION, a.DES_LINEA_PRODUCCION }
+            .Any(x => x?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var r = MenuSvc.BuscarCodigosPorFormulario("Ingenieria/ArmadoLineas.razor");
+        if (r is not null) (_app, _opcion) = (r.Value.CodAplicacion, r.Value.CodOpcionAplicacion);
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Armado de líneas");
+        await Cargar();
+    }
+
+    private async Task Cargar()
+    {
+        var r = await OperacionesApi.LeerAsync<List<Armado>>(Http, IngRoute.LineasArmados);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudieron leer los armados.";
+        _items = r.Data ?? new();
+        StateHasChanged();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b) => b.FLG_ACCION_POST == true ? Abrir(null, CrudModo.Create) : Task.CompletedTask;
+
+    private Task OnAccionGrilla(Armado it, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT == true) return Abrir(it, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(it, CrudModo.Delete);
+        if (b.FLG_ACCION_GET == true) return Abrir(it, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Armado? it, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo armado de línea",
+            CrudModo.Delete => $"Eliminar · {it?.DES_ARMADO}",
+            CrudModo.Read => $"Consultar · {it?.DES_ARMADO}",
+            _ => $"Editar · {it?.DES_ARMADO}"
+        };
+        var dlg = await DialogService.ShowAsync<ArmadoDialog>(titulo, new DialogParameters { ["Item"] = it, ["Modo"] = modo },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false })
+        {
+            await Cargar();
+            // un armado nuevo se abre de una vez para repartir sus operaciones
+            if (modo == CrudModo.Create && res.Data is string cod && _items.FirstOrDefault(x => x.COD_ARMADO == cod) is { } nuevo) await Ficha(nuevo);
+        }
+    }
+
+    private async Task Ficha(Armado it)
+    {
+        var dlg = await DialogService.ShowAsync<ArmadoFichaDialog>($"{it.COD_ARMADO} · {it.DES_ARMADO}", new DialogParameters { ["Armado"] = it },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, BackdropClick = false });
+        await dlg.Result;
+        await Cargar();
+    }
+}

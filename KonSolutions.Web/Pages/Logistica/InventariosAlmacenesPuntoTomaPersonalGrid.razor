@@ -1,0 +1,302 @@
+@* InventariosAlmacenesPuntoTomaPersonalGrid.razor
+   -----------------------------------------------------------------------
+   Panel angosto "Personal Asignado" de UN punto de conteo
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA_PERSONAL). Vive en el bloque
+   inferior-izquierdo del layout de 4 paneles de InventariosAlmacenesPuntoTomaPanel.razor,
+   junto a InventariosAlmacenesPuntoTomaEquiposAsignadosGrid.razor.
+
+   SIN diálogo de alta/edición: la tabla es de asignación pura (el SP _INSERT es un upsert,
+   no hay _UPDATE — ver comentario en el modelo del backend), así que solo hay combo de
+   Entidad + botón "Asignar" arriba de la lista, y un ícono de quitar por fila — mismo
+   criterio Asignar/Desasignar que el patrón RolesAlmacenes en otras partes del proyecto.
+
+   RESOLUCIÓN DEL NOMBRE DE LA ENTIDAD: el SP _SEARCH/_SHOWALL de esta tabla NO trae el
+   nombre de la entidad asignada (solo el código COD_ENTIDAD_ASIGNADA) — a diferencia del
+   punto de conteo padre, que sí lo resuelve vía JOIN. Se decidió resolverlo del lado
+   cliente (opción A del enunciado): se pide una sola vez el combobox general de Entidades
+   (EstandarRoute.EntidadesCombobox, que ya trae el Texto formateado con el mismo fallback
+   DES_NOMBRE_COMPLETO/DES_COMERCIAL/DES_NOMBRE/DES_ENTIDAD que usa EntidadesRepository) y se
+   cruza en memoria por código — evita join extra en el backend y reutiliza un combobox que
+   de todos modos hace falta para el propio selector de "a quién asignar". Si el código no
+   aparece en el combo (entidad dada de baja, etc.) se muestra el código crudo como fallback. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaPersonal
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject MenuService MenuSvc
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);height:100%;">
+    <div class="pa-2">
+        <MudText Typo="Typo.subtitle2">Personal Asignado</MudText>
+    </div>
+
+    @* Selector múltiple propio (NO MudSelect): reusa literalmente las clases de AriaCombo
+       (.aria-combo/.aria-combo-box/.aria-combo-listbox/.aria-combo-option) para que el font,
+       tamaño y estilo sean IDÉNTICOS a los demás combos de la app (ej. el de Producto en
+       Conteo) sin pelear con la tipografía interna de MudSelect/MudBlazor, que no se dejaba
+       forzar por CSS de forma confiable. Reusa también ariaCombo.js (init/dispose) para el
+       cierre al clickear afuera — mismo mecanismo que AriaCombo.razor.
+       A diferencia de AriaCombo (un solo valor), aquí el input NO fija el Value — solo filtra
+       la lista mientras se escribe (_filtro); la selección real vive aparte en _seleccionMultiple
+       (los checkboxes), así se puede tipear el nombre para buscar Y tener varios marcados a la
+       vez. Al enfocar se limpia el filtro (para partir de la lista completa); al cerrar, el
+       cuadro vuelve a mostrar el resumen "N seleccionada(s)" en vez del texto tipeado. *@
+    <div class="d-flex align-center gap-1 px-2 pb-2">
+        <div class="aria-combo flex-grow-1" @ref="_root" style="margin-top:0;">
+            <div class="aria-combo-box">
+                <input type="text" class="mono"
+                       placeholder="Escribe para buscar…"
+                       value="@(_hasFocus ? _filtro : "")"
+                       @oninput="OnFiltroInput"
+                       @onfocus="OnFocus" />
+                @if (!_hasFocus && _seleccionMultiple.Any())
+                {
+                    <span class="mono" style="position:absolute;left:12px;pointer-events:none;font-size:var(--control-size,14px);color:var(--control-color,var(--ink));">
+                        @($"{_seleccionMultiple.Count} seleccionada(s)")
+                    </span>
+                }
+                <label class="aria-combo-label">Entidades a asignar</label>
+                <svg class="aria-combo-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="@($"transform:rotate({(_abierto ? 180 : 0)}deg);")">
+                    <path d="M6 9l6 6 6-6" />
+                </svg>
+            </div>
+            @if (_abierto)
+            {
+                <ul class="aria-combo-listbox">
+                    @if (!_entidadesFiltradas.Any())
+                    {
+                        <li class="aria-combo-vacio">Sin resultados.</li>
+                    }
+                    else
+                    {
+                        @foreach (var e in _entidadesFiltradas)
+                        {
+                            var id = e.Id;
+                            <li class="aria-combo-option @(_seleccionMultiple.Contains(id) ? "seleccionado" : "")"
+                                @onmousedown="@(() => ToggleSeleccion(id))" @onmousedown:preventDefault="true">
+                                <input type="checkbox" checked="@_seleccionMultiple.Contains(id)" style="margin-right:8px;vertical-align:middle;" readonly />@e.Texto
+                            </li>
+                        }
+                    }
+                </ul>
+            }
+        </div>
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.PersonAdd"
+                   Disabled="@(!_seleccionMultiple.Any() || _asignando)" OnClick="Asignar" Style="@EstilosBoton.Confirmar">
+            Seleccionar Personal
+        </MudButton>
+    </div>
+
+    <div data-resizable-grid="inventarios-puntotoma-personal" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="10">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Entidad">
+                <CellTemplate>@NombreEntidad(context.Item.COD_ENTIDAD_ASIGNADA)</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="70">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin personal asignado.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter, EditorRequired] public byte NumPuntoTomaInventario { get; set; }
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private string _codAplicacion = "";
+    private string _codOpcionAplicacion = "";
+
+
+    private List<Modelo> _items = new();
+    private List<ComboboxItem> _entidades = new();
+    private List<ComboboxItem> _entidadesDisponibles =>
+        _entidades.Where(e => !_items.Any(i => i.COD_ENTIDAD_ASIGNADA?.ToString() == e.Id)).ToList();
+    private List<ComboboxItem> _entidadesFiltradas =>
+        string.IsNullOrWhiteSpace(_filtro)
+            ? _entidadesDisponibles
+            : _entidadesDisponibles.Where(e => e.Texto.Contains(_filtro.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private HashSet<string> _seleccionMultiple = new();
+    private bool _asignando;
+    private bool _abierto;
+    private bool _hasFocus;
+    private string _filtro = "";
+    private ElementReference _root;
+    private DotNetObjectReference<InventariosAlmacenesPuntoTomaPersonalGrid>? _selfRef;
+
+    private void ToggleSeleccion(string id)
+    {
+        if (!_seleccionMultiple.Add(id)) _seleccionMultiple.Remove(id);
+    }
+
+    private void OnFocus()
+    {
+        _hasFocus = true;
+        _abierto = true;
+        _filtro = "";
+    }
+
+    private void OnFiltroInput(ChangeEventArgs e)
+    {
+        _filtro = e.Value?.ToString() ?? "";
+        _abierto = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Mismo mecanismo que AriaCombo.razor: cierra el desplegable al clickear afuera,
+            // sin depender del focus-trap de MudBlazor.
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("ariaCombo.init", _root, _selfRef);
+        }
+    }
+
+    [JSInvokable]
+    public void CerrarDesdeJs()
+    {
+        if (!_abierto) return;
+        _abierto = false;
+        _hasFocus = false;
+        _filtro = "";
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("ariaCombo.dispose", _root); } catch { }
+        _selfRef?.Dispose();
+    }
+
+    private byte _puntoCargado;
+    private string? _almacenCargado;
+    private int? _inventarioCargado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cod = await MenuSvc.BuscarCodigosPorFormularioAsync(CodAplicacion, "Logistica/InventariosAlmacenesPuntoTomaPersonal.razor");
+        (_codAplicacion, _codOpcionAplicacion) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+
+        _entidades = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.EntidadesCombobox)) ?? new();
+        await Load();
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_DELETE == true) return Quitar(item);
+        Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_inventarioCargado != NumInventario || _almacenCargado != CodAlmacen || _puntoCargado != NumPuntoTomaInventario)
+            await Load();
+    }
+
+    private string NombreEntidad(decimal? codEntidad)
+    {
+        if (codEntidad is null) return "—";
+        var texto = _entidades.FirstOrDefault(e => e.Id == codEntidad.Value.ToString())?.Texto;
+        return string.IsNullOrWhiteSpace(texto) ? codEntidad.Value.ToString() : texto;
+    }
+
+    public async Task Load()
+    {
+        _inventarioCargado = NumInventario; _almacenCargado = CodAlmacen; _puntoCargado = NumPuntoTomaInventario;
+        try
+        {
+            var ruta = $"{LogisticaRoute.InventariosAlmacenesPuntoTomaPersonal}?numInventario={NumInventario}&codAlmacen={Uri.EscapeDataString(CodAlmacen)}&numPuntoTomaInventario={NumPuntoTomaInventario}";
+            var resp = await Http.GetAsync(ruta);
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<Modelo>>>();
+                _items = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaPersonalGrid), nameof(Load));
+                _items = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaPersonalGrid), nameof(Load));
+            _items = new();
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Asignar (selección múltiple): un POST por entidad elegida, sin diálogo — el SP
+    /// hace upsert internamente (ver comentario de cabecera). Si alguno falla se avisa y se
+    /// recarga igual, para reflejar los que sí se asignaron.</summary>
+    private async Task Asignar()
+    {
+        var seleccion = _seleccionMultiple.ToList();
+        if (!seleccion.Any()) return;
+        _asignando = true;
+        var huboError = false;
+        foreach (var cod in seleccion)
+        {
+            if (!decimal.TryParse(cod, out var codEntidad)) continue;
+            var dto = new
+            {
+                NUM_INVENTARIO = NumInventario,
+                COD_ALMACEN = CodAlmacen,
+                NUM_PUNTO_TOMA_INVENTARIO = NumPuntoTomaInventario,
+                COD_ENTIDAD_ASIGNADA = codEntidad,
+            };
+            var resp = await Http.PostAsJsonAsync(LogisticaRoute.InventariosAlmacenesPuntoTomaPersonal, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                huboError = true;
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaPersonalGrid), nameof(Asignar));
+            }
+        }
+        _asignando = false;
+        if (!huboError) Snackbar.Add(seleccion.Count == 1 ? "Persona asignada." : $"{seleccion.Count} personas asignadas.", Severity.Success);
+        _seleccionMultiple = new();
+        await Load();
+    }
+
+    private async Task Quitar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar persona",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar persona asignada",
+                ["IconoTitulo"] = Icons.Material.Filled.PersonRemove,
+                ["Mensaje"] = $"¿Quitar a \"{NombreEntidad(item.COD_ENTIDAD_ASIGNADA)}\" de este punto de conteo?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.PersonRemove
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesPuntoTomaPersonal}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.NUM_PUNTO_TOMA_INVENTARIO}/{item.COD_ENTIDAD_ASIGNADA}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Persona quitada.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaPersonalGrid), nameof(Quitar));
+    }
+}

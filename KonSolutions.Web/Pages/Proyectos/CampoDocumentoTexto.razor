@@ -1,0 +1,26 @@
+@* El texto de un documento con la lista de campos del proyecto que se pueden agregar ({DES_PROYECTO}, {FEC_FINAL_PROGRAMADO}...). Los campos se agregan al final del texto. *@
+<MudTextField T="string" Value="@Value" ValueChanged="ValorCambiado" Label="@Label" Variant="Variant.Outlined" Lines="@Lineas" AutoGrow="false" Disabled="Disabled" Immediate="true" />
+@if (!Disabled)
+{
+    <div class="d-flex align-center gap-2 mt-1 flex-wrap">
+        <MudMenu Label="Agregar un campo" Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.DataObject" MaxHeight="320" Dense="true">
+            @foreach (var c in CamposDocumento.Todos)
+            {
+                var campo = c.Campo;
+                <MudMenuItem OnClick="@(() => Agregar(campo))">@c.Texto <span class="mono" style="opacity:.55;font-size:.72rem;">{@campo}</span></MudMenuItem>
+            }
+        </MudMenu>
+        <MudText Typo="Typo.caption" Style="opacity:.65;">Los campos entre llaves se llenan con los datos del proyecto al imprimir.</MudText>
+    </div>
+}
+
+@code {
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public EventCallback<string?> ValueChanged { get; set; }
+    [Parameter] public string Label { get; set; } = "Texto";
+    [Parameter] public int Lineas { get; set; } = 14;
+    [Parameter] public bool Disabled { get; set; }
+
+    private Task ValorCambiado(string? v) { Value = v; return ValueChanged.InvokeAsync(v); }
+    private Task Agregar(string campo) => ValorCambiado((Value ?? "") + "{" + campo + "}");
+}

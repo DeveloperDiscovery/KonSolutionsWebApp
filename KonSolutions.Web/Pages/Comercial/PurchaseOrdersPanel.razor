@@ -1,0 +1,889 @@
+@* Purchase orders del cliente — PANEL REUTILIZABLE.
+   COMERCIAL.ENTIDADES_PURCHARSE_ORDERS
+
+   Es un COMPONENTE, no una pantalla: recibe el cliente ya elegido y lo hospedan dos lugares
+   distintos —la pantalla propia de Purchase Orders y la pestaña dentro de Temporadas por
+   Entidad—. Se extrajo así en vez de mudar el código para que la opción de menú de PURCHASE
+   ORDER siga funcionando: no hay que darla de baja ni repuntarla.
+
+   Tres niveles:
+
+     1. La PURCHASE ORDER que manda el cliente (grilla de arriba).
+     2. Sus ESPECIFICACIONES DE DESPACHO — cómo sale embalado cada envío.
+     3. Las ESPECIFICACIONES TÉCNICAS de cada despacho, en una subgrilla que se despliega.
+
+   TODO CUELGA DEL CLIENTE. Ningún SP de este módulo lista sin @COD_ENTIDAD, ni siquiera el
+   SHOWALL de la cabecera. Por eso el cliente es un PARÁMETRO y no estado propio: quien
+   hospeda al panel decide cómo se elige.
+
+   Los niveles 2 y 3 van abajo y no encajados dentro de la fila de la grilla: MudDataGrid no
+   anida dos niveles sin pelearse con el paginador, y partirlo en dos zonas deja además el
+   maestro siempre visible mientras se edita el detalle. Es el mismo criterio de Flujos de
+   Aprobación. *@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Globalization
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using ComercialRoute = KONSolutions.Web.Services.ApiRoutes.Comercial
+@* ALIAS OBLIGATORIO, no es cosmético. Este archivo vive en el namespace
+   KONSolutions.Web.Pages.Comercial, donde la PÁGINA EntidadesTemporadas.razor genera una
+   clase que se llama igual que el modelo. Un tipo del propio namespace le gana a cualquier
+   @using, así que "List<EntidadesTemporadas>" sería una lista de PÁGINAS: compila y revienta
+   recién en tiempo de ejecución al asignar el parámetro del diálogo. *@
+@using TemporadaModel = KONSolutions.Shared.Models.Comercial.EntidadesTemporadas
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject LimitesService Limites
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<style>
+    /* Alineación de los inputs dentro de las grillas de despacho y de técnicas.
+
+       El problema: .aria-combo trae margin-top:16px (reserva el espacio de su label
+       flotante) y MudNumericField/MudSwitch no, así que en la misma fila el número
+       arrancaba 16px más arriba que los combos y la fila se veía escalonada.
+
+       La solución no es sacarle el margen al combo —ahí el label se le montaría
+       encima de la cabecera de la columna— sino darle el MISMO a los demás. Los tres
+       valores van juntos y con el mismo número a propósito: si algún día cambia el de
+       .aria-combo, estos tienen que acompañarlo. */
+    .grilla-inputs td { vertical-align: middle; }
+    .grilla-inputs .aria-combo,
+    .grilla-inputs .mud-input-control,
+    .grilla-inputs .mud-switch {
+        margin-top: 16px;
+        margin-bottom: 0;
+    }
+    /* El switch no tiene label flotante, así que con el margen de arriba queda unos
+       píxeles bajo del centro de la fila. Se compensa acá y no tocando el margen
+       común, para no desalinear de nuevo a los otros dos. */
+    .grilla-inputs .mud-switch { margin-top: 8px; }
+
+    /* El ANCHO del combo de cliente. El ALTO ya no vive acá: ahora es la regla global
+       de app.css (--kon-alto-control) que iguala los campos de TODAS las barras de
+       cabecera de la aplicación. Acá solo queda lo propio de esta pantalla.
+
+       Ancho FIJO: si creciera con el contenido, la barra entera se movería cada vez que
+       se elige un cliente de nombre más largo, y el buscador y los botones bailarían de
+       lugar. 320px entra un nombre comercial completo. */
+    .po-selector-cliente { flex: 0 0 320px; max-width: 320px; min-width: 220px; }
+
+    /* En pantalla angosta el combo pasa a ocupar el ancho y la barra se apila, en vez de
+       aplastar el buscador hasta dejarlo inservible. */
+    @@media (max-width: 900px) {
+        .po-selector-cliente { flex: 1 1 100%; max-width: 100%; }
+    }
+</style>
+
+@* Barra propia del panel: búsqueda y acciones. El TÍTULO no va acá — lo pone la pantalla
+   anfitriona, que es la que sabe si esto es "Purchase Orders" o una pestaña más.
+
+   SelectorCliente entra AL PRINCIPIO de esta misma barra. Antes la pantalla de Purchase
+   Orders dibujaba su combo de cliente en un recuadro aparte, arriba: una fila entera
+   ocupada por un solo control, con su borde y su relleno. Ahora ese combo viaja hasta acá
+   y comparte fila con la búsqueda y los botones.
+
+   Va como RenderFragment y no como un parámetro de datos porque el panel NO tiene que
+   saber cómo se elige el cliente. La pantalla propia lo elige con un combo; la pestaña de
+   Temporadas por Entidad ya viene con el cliente puesto y no manda nada — ahí el hueco
+   simplemente no existe y la barra queda igual que siempre. *@
+@* flex-wrap: para que la regla de pantalla angosta pueda apilar de verdad. Sin esto la
+   barra nunca parte y el buscador se aplasta hasta quedar inservible. *@
+<div class="d-flex align-center gap-3 mb-3" style="flex-wrap:wrap;">
+    @if (SelectorCliente is not null)
+    {
+        <div class="po-selector-cliente barra-combo">@SelectorCliente</div>
+    }
+    <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);white-space:nowrap;">
+        @(CodEntidad is null ? "Sin cliente" : $"{_ordenes.Count} orden(es)")
+    </MudText>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar PO / diseño..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex align-center gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@if (_codEntidad is null)
+{
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        <MudText Class="pa-6 mono" Style="opacity:.4;">Elige un cliente para ver sus purchase orders.</MudText>
+    </MudPaper>
+}
+else
+{
+    @* ── NIVEL 1 · Purchase orders ── *@
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mb-4">
+        <div data-resizable-grid="purchase-orders" data-default-height="240" style="position:relative;">
+        <MudDataGrid T="EntidadPurchaseOrder" Items="_ordenes" Dense="true" Hover="true" Striped="true"
+                     Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre"
+                     RowClick="OnOrdenRowClick" RowClassFunc="@FilaOrdenSeleccionada">
+            <Columns>
+                <TemplateColumn Sortable="false" Title="N° PO" Width="150">
+                    <CellTemplate><span class="mono">@context.Item.NUM_PURCHASE_ORDER</span></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Diseño" Width="130">
+                    <CellTemplate><span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_DISENO) ? "—" : context.Item.COD_DISENO)</span></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Diseño del cliente">
+                    <CellTemplate>@(string.IsNullOrWhiteSpace(context.Item.DES_DISENO_ENTIDAD) ? "—" : context.Item.DES_DISENO_ENTIDAD)</CellTemplate>
+                </TemplateColumn>
+                @* Temporada y colección. Se muestra la descripción y, si el SHOWALL todavía no
+                   la devuelve, el número solo — que sigue siendo más útil que una celda vacía. *@
+                <TemplateColumn Sortable="false" Title="Temporada">
+                    <CellTemplate>@Etiqueta(context.Item.NUM_TEMPORADA, context.Item.DES_TEMPORADA)</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Colección">
+                    <CellTemplate>@Etiqueta(context.Item.NUM_COLECCION, context.Item.DES_COLECCION)</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Fecha" Width="110">
+                    <CellTemplate><span class="mono">@(context.Item.FEC_DISENO_ENTIDAD?.ToString("dd/MM/yyyy") ?? "—")</span></CellTemplate>
+                </TemplateColumn>
+
+                @* Los dos flags van en la grilla y no dentro del diálogo: son de los que se
+                   prenden y apagan seguido, y meterlos en un diálogo hace tres clics de lo
+                   que debería ser uno. Al cambiarlos se graba la fila entera con PUT. *@
+                <TemplateColumn Sortable="false" Title="Itera" Width="90" Editable="false"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_ITERAR_EMBALAJE ?? false)"
+                                   ValueChanged="@(async v => { it.FLG_ITERAR_EMBALAJE = v; await GuardarOrdenAsync(it); })"
+                                   Color="Color.Success" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Genérica" Width="100" Editable="false"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_PURCHASE_ORDER_GENERICA ?? false)"
+                                   ValueChanged="@(async v => { it.FLG_PURCHASE_ORDER_GENERICA = v; await GuardarOrdenAsync(it); })"
+                                   Color="Color.Success" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Sortable="false" Title="Estado" Width="140"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @if (!string.IsNullOrWhiteSpace(context.Item.DES_ESTADO))
+                        {
+                            <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                        BackColor="@context.Item.DES_BACKCOLOR"
+                                        ForeColor="@context.Item.DES_FORECOLOR" />
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Acciones" Sortable="false" Width="160">
+                    <CellTemplate>
+                        @{ var item = context.Item; }
+                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                         CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Este cliente no tiene purchase orders.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="EntidadPurchaseOrder" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+        </div>
+    </MudPaper>
+
+    @* ── NIVEL 2 y 3 · Despachos con sus especificaciones técnicas ── *@
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        <div class="d-flex align-center justify-space-between pa-3 flex-wrap gap-2" style="border-bottom:1px solid var(--line);">
+            <div>
+                <MudText Typo="Typo.h6">Especificaciones de despacho</MudText>
+                <MudText Class="mono" Style="opacity:.5;font-size:.78rem;color:var(--subtitulo-color,#6b6358);">
+                    @if (_ordenSel is null) { <text>Sin purchase order seleccionada</text> }
+                    else { <text>@_ordenSel.NUM_PURCHASE_ORDER · @_despachos.Count despacho(s)</text> }
+                </MudText>
+            </div>
+            <div class="d-flex align-center gap-2">
+                <GridRefreshButton OnRefresh="LoadDespachos" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                           Disabled="@(_ordenSel is null)" Size="Size.Small"
+                           OnClick="AgregarDespacho">Agregar despacho</MudButton>
+            </div>
+        </div>
+
+        @if (_ordenSel is null)
+        {
+            <MudText Class="pa-6 mono" Style="opacity:.4;">Selecciona una purchase order para ver sus despachos.</MudText>
+        }
+        else if (_cargandoDespachos)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else if (_despachos.Count == 0)
+        {
+            <MudText Class="pa-6 mono" Style="opacity:.4;">Esta purchase order todavía no tiene despachos.</MudText>
+        }
+        else
+        {
+            <div class="pa-3" style="overflow-x:auto;">
+                <table class="tabla-simple-editable grilla-inputs" style="width:100%;min-width:900px;">
+                    <thead>
+                        <tr>
+                            <th style="width:34px;"></th>
+                            <th style="width:60px;">Sec</th>
+                            <th style="width:150px;text-align:right;">Cant. embalaje</th>
+                            <th>Innerpack</th>
+                            <th>Masterpack</th>
+                            <th style="width:110px;">Técnicas</th>
+                            <th style="width:96px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var d in _despachos)
+                        {
+                            var dd = d;
+                            var sec = dd.NUM_SECUENCIA ?? 0;
+                            var abierto = !dd.EsNueva && _despachoAbierto == sec;
+                            <tr class="@(abierto ? "fila-padre-abierta" : "")">
+                                <td style="text-align:center;opacity:.6;cursor:pointer;"
+                                    @onclick="@(() => AlternarDespacho(dd))">
+                                    @(dd.EsNueva ? "" : abierto ? "▾" : "▸")
+                                </td>
+                                <td class="mono">
+                                    @if (dd.EsNueva)
+                                    {
+                                        <span style="color:var(--warn,#B87503);font-weight:600;">nvo</span>
+                                    }
+                                    else { @sec }
+                                </td>
+                                <td style="text-align:right;">
+                                    <MudNumericField T="decimal?" Value="@dd.CAN_EMBALAJE"
+                                                     ValueChanged="@(async v => { dd.CAN_EMBALAJE = v; await GuardarSiNoEsNuevo(dd); })"
+                                                     Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                     Class="campo-numerico-derecha mb-0"
+                                                     Format="@_formatoCantidad" Culture="@CultureInfo.CurrentCulture"
+                                                     Min="0" HideSpinButtons="true" Clearable="true" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_productos"
+                                               TextFunc="@(p => p.Texto)" ValueFunc="@(p => p.Id)"
+                                               Value="@dd.COD_PRODUCTO_EMBALAJE_INNERPACK"
+                                               ValueChanged="@(async v => { dd.COD_PRODUCTO_EMBALAJE_INNERPACK = v; await GuardarSiNoEsNuevo(dd); })"
+                                               Label="Innerpack" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_productos"
+                                               TextFunc="@(p => p.Texto)" ValueFunc="@(p => p.Id)"
+                                               Value="@dd.COD_PRODUCTO_EMBALAJE_MASTERPACK"
+                                               ValueChanged="@(async v => { dd.COD_PRODUCTO_EMBALAJE_MASTERPACK = v; await GuardarSiNoEsNuevo(dd); })"
+                                               Label="Masterpack" />
+                                </td>
+                                <td>
+                                    @if (dd.EsNueva)
+                                    {
+                                        <span style="opacity:.4;">—</span>
+                                    }
+                                    else
+                                    {
+                                        var ct = ChipTecnicas(sec);
+                                        <EstadoChip Estado="@ct.T" BackColor="@ct.B" ForeColor="@ct.F" />
+                                    }
+                                </td>
+                                <td style="text-align:center;">
+                                    @if (dd.EsNueva)
+                                    {
+                                        <MudTooltip Text="Grabar">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Success"
+                                                           OnClick="@(() => GuardarDespacho(dd))" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Descartar">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                           OnClick="@(() => _despachos.Remove(dd))" />
+                                        </MudTooltip>
+                                    }
+                                    else
+                                    {
+                                        <MudTooltip Text="Eliminar despacho">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                           OnClick="@(() => EliminarDespacho(dd))" />
+                                        </MudTooltip>
+                                    }
+                                </td>
+                            </tr>
+
+                            @if (abierto)
+                            {
+                                <tr>
+                                    <td colspan="7" style="padding:0;">
+                                        <div style="padding:10px 12px 12px 30px;border-left:3px solid var(--input-line,#1473be);background:var(--grilla-fila-par,rgba(0,0,0,.02));">
+                                            <div class="d-flex align-center justify-space-between mb-2 flex-wrap gap-2">
+                                                <MudText Typo="Typo.caption" Style="opacity:.6;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">
+                                                    Especificaciones técnicas · secuencia @sec
+                                                </MudText>
+                                                <MudButton Variant="Variant.Text" Size="Size.Small"
+                                                           StartIcon="@Icons.Material.Filled.Add"
+                                                           OnClick="@(() => AgregarTecnica(sec))">Agregar especificación</MudButton>
+                                            </div>
+
+                                            @if (_tecnicas.Count == 0)
+                                            {
+                                                <MudText Typo="Typo.caption" Style="opacity:.55;">Este despacho todavía no tiene especificaciones técnicas.</MudText>
+                                            }
+                                            else
+                                            {
+                                                <div style="overflow-x:auto;">
+                                                <table class="tabla-simple-editable grilla-inputs" style="width:100%;min-width:760px;">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Especificación técnica</th>
+                                                            <th style="width:240px;">Ítem técnico</th>
+                                                            <th style="width:110px;">Cabecera</th>
+                                                            <th style="width:96px;"></th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var t in _tecnicas)
+                                                        {
+                                                            var tt = t;
+                                                            <tr>
+                                                                <td>
+                                                                    @* La especificación es parte de la clave: se elige sólo
+                                                                       mientras la fila es nueva. *@
+                                                                    @if (tt.EsNueva)
+                                                                    {
+                                                                        <AriaCombo TItem="ComboboxItem" Items="_especificaciones"
+                                                                                   TextFunc="@(e => e.Texto)" ValueFunc="@(e => e.Id)"
+                                                                                   Value="@tt.COD_ESPECIFICACION_TECNICA"
+                                                                                   ValueChanged="@(v => AsignarEspecificacionAsync(tt, v))"
+                                                                                   Label="Especificación" />
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <span class="mono" style="opacity:.65;">@tt.COD_ESPECIFICACION_TECNICA</span>
+                                                                        <span class="ml-1">@TextoEspecificacion(tt.COD_ESPECIFICACION_TECNICA)</span>
+                                                                    }
+                                                                </td>
+                                                                <td>
+                                                                    <AriaCombo TItem="ComboboxItem" Items="@ItemsDe(tt.COD_ESPECIFICACION_TECNICA)"
+                                                                               TextFunc="@(i => i.Texto)" ValueFunc="@(i => i.Id)"
+                                                                               Value="@(tt.COD_ITEM_TECNICO?.ToString())"
+                                                                               ValueChanged="@(async v => { tt.COD_ITEM_TECNICO = int.TryParse(v, out var n) ? n : null; await GuardarSiNoEsNueva(tt); })"
+                                                                               Label="Ítem"
+                                                                               Disabled="@(string.IsNullOrWhiteSpace(tt.COD_ESPECIFICACION_TECNICA))" />
+                                                                </td>
+                                                                <td style="text-align:center;">
+                                                                    <MudSwitch T="bool" Value="@(tt.FLG_HEADER ?? false)"
+                                                                               ValueChanged="@(async v => { tt.FLG_HEADER = v; await GuardarSiNoEsNueva(tt); })"
+                                                                               Color="Color.Success" Size="Size.Small" />
+                                                                </td>
+                                                                <td style="text-align:center;">
+                                                                    @if (tt.EsNueva)
+                                                                    {
+                                                                        <MudTooltip Text="Grabar">
+                                                                            <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Success"
+                                                                                           OnClick="@(() => GuardarTecnica(tt))" />
+                                                                        </MudTooltip>
+                                                                        <MudTooltip Text="Descartar">
+                                                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                                                           OnClick="@(() => _tecnicas.Remove(tt))" />
+                                                                        </MudTooltip>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <MudTooltip Text="Quitar especificación">
+                                                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                                                           OnClick="@(() => EliminarTecnica(tt))" />
+                                                                        </MudTooltip>
+                                                                    }
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                                </div>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>El cliente ya elegido. Lo resuelve quien hospeda el panel.</summary>
+    [Parameter, EditorRequired] public decimal? CodEntidad { get; set; }
+    /// <summary>Su descripción, sólo para mostrar en los diálogos.</summary>
+    [Parameter] public string DesEntidad { get; set; } = "";
+
+    /// <summary>Control con el que la pantalla anfitriona elige el cliente, dibujado al
+    /// principio de la barra del panel.
+    ///
+    /// Es opcional a propósito: la pestaña dentro de Temporadas por Entidad ya recibe el
+    /// cliente resuelto y no manda nada, así que ahí la barra queda exactamente como
+    /// estaba. El panel no sabe —ni tiene por qué— cómo se elige el cliente.</summary>
+    [Parameter] public RenderFragment? SelectorCliente { get; set; }
+
+    // Los dos nombres privados se conservan para no tocar las decenas de referencias que hay
+    // en el resto del archivo: ahora leen del parámetro en vez de estado propio.
+    private decimal? _codEntidad => CodEntidad;
+    private string DesEntidadSeleccionada => DesEntidad;
+
+    /// <summary>El último cliente para el que se cargó. Sirve para no recargar en cada
+    /// render: OnParametersSetAsync corre muchas veces, y traer tres niveles cada vez sería
+    /// tráfico puro.</summary>
+    private decimal? _clienteCargado;
+
+    // Nivel 1
+    private List<EntidadPurchaseOrder> _ordenes = new();
+    private EntidadPurchaseOrder? _ordenSel;
+    private string _search = "";
+
+    // Nivel 2
+    private List<EntidadPurchaseOrderDespacho> _despachos = new();
+    private bool _cargandoDespachos;
+    private int? _despachoAbierto;
+
+    // Nivel 3 — sólo las del despacho abierto: cargarlas todas de una obligaría a un SP que
+    // no existe (el SHOWALL exige la secuencia).
+    private List<EntidadPurchaseOrderEspecificacionTecnica> _tecnicas = new();
+
+    // Combos
+    private List<ComboboxItem> _productos = new();
+    private List<ComboboxItem> _disenos = new();
+
+    /// <summary>Las temporadas del cliente. Se cargan acá y no en el diálogo porque son las
+    /// mismas para todas las PO del cliente: pedirlas una vez por diálogo sería repetir la
+    /// misma consulta en cada alta.</summary>
+    private List<TemporadaModel> _temporadas = new();
+    private List<ComboboxItem> _especificaciones = new();
+    /// <summary>Ítems por especificación, cacheados: el combo de cada fila depende de la
+    /// especificación de esa fila, y varias filas suelen compartirla.</summary>
+    private readonly Dictionary<string, List<ComboboxItem>> _itemsPorEspecificacion = new();
+
+    /// <summary>Formato de la cantidad de embalaje, tomado de la definición real de la columna
+    /// en la base. Se resuelve una vez: no cambia mientras la pantalla está abierta.</summary>
+    private string _formatoCantidad = "N4";
+
+    private const string TablaDespacho = "ENTIDADES_PURCHARSE_ORDERS_ESPECIFICACIONES_DESPACHO";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _productos        = await CargarCombo(EstandarRoute.ProductosCombobox);
+        _disenos          = await CargarCombo(IngenieriaRoute.DisenosCombobox);
+        _especificaciones = await CargarCombo(IngenieriaRoute.EspecificacionesTecnicasCombobox);
+
+        _formatoCantidad = $"N{Limites.Decimales(TablaDespacho, "CAN_EMBALAJE") ?? 4}";
+    }
+
+    private async Task<List<ComboboxItem>> CargarCombo(string ruta)
+    {
+        try { return (await Http.SafeGetAsync<List<ComboboxItem>>(ruta)) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PurchaseOrdersPanel), nameof(CargarCombo));
+            return new();
+        }
+    }
+
+    /// <summary>"3 - VERANO 2026", o "3" si el SHOWALL todavía no trae la descripción, o "—"
+    /// si no hay nada. Evita repetir el mismo triple condicional en las dos columnas.</summary>
+    private static string Etiqueta(int? numero, string? descripcion)
+        => numero is null ? "—"
+         : string.IsNullOrWhiteSpace(descripcion) ? numero.Value.ToString()
+         : $"{numero} - {descripcion}";
+
+    private string Entidad() => (_codEntidad ?? 0).ToString(CultureInfo.InvariantCulture);
+
+    // ── Cliente ──────────────────────────────────────────────────────────────
+    /// <summary>Recarga cuando el anfitrión cambia de cliente.
+    ///
+    /// Cambiar de cliente invalida TODO lo de abajo: la PO seleccionada es de otro cliente, y
+    /// sus despachos y especificaciones también. Por eso se limpian antes de recargar y no
+    /// después: si la carga falla, es peor quedarse mostrando datos ajenos.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CodEntidad == _clienteCargado) return;
+        _clienteCargado = CodEntidad;
+
+        _ordenSel = null;
+        _despachos = new();
+        _tecnicas = new();
+        _despachoAbierto = null;
+
+        await Load();
+    }
+
+    // ── Nivel 1 ──────────────────────────────────────────────────────────────
+    private async Task Load()
+    {
+        if (_codEntidad is null) { _ordenes = new(); _temporadas = new(); return; }
+
+        // Las temporadas son del cliente, no de la PO: se traen junto con las órdenes.
+        try
+        {
+            _temporadas = await Http.SafeGetAsync<List<TemporadaModel>>(
+                $"{ComercialRoute.EntidadesTemporadas}?codEntidad={Entidad()}") ?? new();
+        }
+        catch (Exception ex)
+        {
+            // Que falle no puede ser silencioso: sin temporadas el combo del diálogo queda
+            // vacío, y un combo vacío se lee como "no hay datos" cuando en realidad la
+            // consulta nunca volvió. Es exactamente el agujero que nos costó dos vueltas en
+            // la matriz de especificaciones.
+            _temporadas = new();
+            await ErrorLog.LogAsync(ex, nameof(PurchaseOrdersPanel), nameof(Load));
+            Snackbar.Add("No se pudieron cargar las temporadas del cliente. El combo de "
+                       + "temporada va a salir vacío.", Severity.Warning);
+        }
+        try
+        {
+            var url = string.IsNullOrWhiteSpace(_search)
+                ? $"{ApiRoutes.Comercial.EntidadesPurchaseOrders}?codEntidad={Entidad()}"
+                : $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersSearch}?codEntidad={Entidad()}&search={Uri.EscapeDataString(_search)}";
+            _ordenes = (await Http.SafeGetAsync<List<EntidadPurchaseOrder>>(url)) ?? new();
+
+            if (_ordenSel is not null && !_ordenes.Any(o => o.NUM_PURCHASE_ORDER == _ordenSel.NUM_PURCHASE_ORDER))
+            {
+                _ordenSel = null;
+                _despachos = new();
+                _tecnicas = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PurchaseOrdersPanel), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync(
+                "No se pudo cargar la información. Ver detalle en el log de errores.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            _ordenes = new();
+        }
+    }
+
+    private Task Buscar() => Load();
+
+    private string FilaOrdenSeleccionada(EntidadPurchaseOrder item, int _)
+        => _ordenSel is not null && item.NUM_PURCHASE_ORDER == _ordenSel.NUM_PURCHASE_ORDER ? "fila-seleccionada" : "";
+
+    private async Task OnOrdenRowClick(DataGridRowClickEventArgs<EntidadPurchaseOrder> args)
+    {
+        _ordenSel = args.Item;
+        _despachoAbierto = null;
+        _tecnicas = new();
+        await LoadDespachos();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Del más específico al más genérico: un botón de Modificar suele traer marcados
+    /// GET y PUT a la vez, y uno de Eliminar GET y DELETE. Preguntando por GET primero, los dos
+    /// abrirían en sólo lectura.</summary>
+    private Task OnAccionGrilla(EntidadPurchaseOrder item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(EntidadPurchaseOrder? item, CrudModo modo)
+    {
+        if (_codEntidad is null)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Elige primero un cliente.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            return;
+        }
+
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nueva purchase order",
+            CrudModo.Read   => $"Consultar · {item?.NUM_PURCHASE_ORDER}",
+            CrudModo.Delete => $"Eliminar · {item?.NUM_PURCHASE_ORDER}",
+            _               => $"Editar · {item?.NUM_PURCHASE_ORDER}"
+        };
+
+        var dlg = await DialogService.ShowAsync<EntidadesPurchaseOrdersDialog>(titulo,
+            new DialogParameters
+            {
+                ["Item"] = item, ["Modo"] = modo,
+                ["CodEntidad"] = _codEntidad.Value,
+                ["DesEntidad"] = DesEntidadSeleccionada,
+                ["Disenos"] = _disenos,
+                ["Temporadas"] = _temporadas,
+                ["CodAplicacion"] = CodAplicacion,
+                ["CodOpcionAplicacion"] = CodOpcionAplicacion
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    /// <summary>Graba la cabecera entera con PUT. La usan los dos interruptores de la grilla:
+    /// el SP de UPDATE recibe todos los campos, así que no hay forma de tocar sólo uno.</summary>
+    private async Task GuardarOrdenAsync(EntidadPurchaseOrder it)
+    {
+        it.COD_ENTIDAD = _codEntidad;
+        var resp = await Http.PutAsJsonAsync(ApiRoutes.Comercial.EntidadesPurchaseOrders, it);
+        if (resp.IsSuccessStatusCode) Snackbar.Add("Purchase order actualizada.", Severity.Success);
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(PurchaseOrdersPanel), nameof(GuardarOrdenAsync));
+            // Se recarga para que la pantalla muestre el estado real y no el que quedó en el
+            // interruptor después de un error.
+            await Load();
+        }
+    }
+
+    // ── Nivel 2 ──────────────────────────────────────────────────────────────
+    private async Task LoadDespachos()
+    {
+        if (_ordenSel is null || _codEntidad is null) { _despachos = new(); return; }
+        _cargandoDespachos = true;
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersDespacho}"
+                    + $"?codEntidad={Entidad()}"
+                    + $"&numPurchaseOrder={Uri.EscapeDataString(_ordenSel.NUM_PURCHASE_ORDER)}";
+            _despachos = (await Http.SafeGetAsync<List<EntidadPurchaseOrderDespacho>>(url)) ?? new();
+            _despachos = _despachos.OrderBy(x => x.NUM_SECUENCIA).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PurchaseOrdersPanel), nameof(LoadDespachos));
+            _despachos = new();
+        }
+        finally { _cargandoDespachos = false; }
+    }
+
+    private void AgregarDespacho()
+    {
+        if (_ordenSel is null || _codEntidad is null) return;
+        _despachos.Add(new EntidadPurchaseOrderDespacho
+        {
+            COD_ENTIDAD        = _codEntidad,
+            NUM_PURCHASE_ORDER = _ordenSel.NUM_PURCHASE_ORDER,
+            // Sugerida acá y confirmada por el servicio, que la recalcula contra lo grabado:
+            // el SP no numera y dos altas simultáneas se pisarían.
+            NUM_SECUENCIA      = ProximaSecuencia(),
+            EsNueva            = true
+        });
+    }
+
+    private int ProximaSecuencia()
+    {
+        var usadas = _despachos.Where(x => !x.EsNueva).Select(x => x.NUM_SECUENCIA ?? 0).ToList();
+        return usadas.Count == 0 ? 1 : usadas.Max() + 1;
+    }
+
+    private async Task AlternarDespacho(EntidadPurchaseOrderDespacho d)
+    {
+        if (d.EsNueva) return;
+        var sec = d.NUM_SECUENCIA ?? 0;
+        if (_despachoAbierto == sec) { _despachoAbierto = null; _tecnicas = new(); return; }
+        _despachoAbierto = sec;
+        await LoadTecnicas(sec);
+    }
+
+    private Task GuardarSiNoEsNuevo(EntidadPurchaseOrderDespacho d)
+        => d.EsNueva ? Task.CompletedTask : GuardarDespacho(d);
+
+    private async Task GuardarDespacho(EntidadPurchaseOrderDespacho d)
+    {
+        if (d.CAN_EMBALAJE is not null && d.CAN_EMBALAJE <= 0)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("La cantidad de embalaje tiene que ser mayor que cero.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            return;
+        }
+
+        d.COD_ENTIDAD ??= _codEntidad;
+        var resp = await Http.GuardarAsync(ApiRoutes.Comercial.EntidadesPurchaseOrdersDespacho, d, d.EsNueva);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(d.EsNueva ? "Despacho agregado." : "Despacho actualizado.", Severity.Success);
+            await LoadDespachos();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(PurchaseOrdersPanel), nameof(GuardarDespacho));
+    }
+
+    private async Task EliminarDespacho(EntidadPurchaseOrderDespacho d)
+    {
+        var ok = await DialogService.ShowMessageBox("Eliminar",
+            $"Se va a eliminar el despacho {d.NUM_SECUENCIA} y todo lo que cuelgue de él. ¿Continuar?",
+            yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var url = $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersDespacho}"
+                + $"?codEntidad={Entidad()}"
+                + $"&numPurchaseOrder={Uri.EscapeDataString(d.NUM_PURCHASE_ORDER)}"
+                + $"&numSecuencia={d.NUM_SECUENCIA}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Despacho eliminado.", Severity.Success);
+            if (_despachoAbierto == d.NUM_SECUENCIA) { _despachoAbierto = null; _tecnicas = new(); }
+            await LoadDespachos();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(PurchaseOrdersPanel), nameof(EliminarDespacho));
+    }
+
+    /// <summary>Estado de las técnicas del despacho. Sólo se sabe del que está abierto: el
+    /// SHOWALL del nivel 3 exige la secuencia, así que no hay forma de contar las de todos los
+    /// despachos sin una consulta por cada uno.</summary>
+    private (string T, string B, string F) ChipTecnicas(int sec)
+    {
+        if (_despachoAbierto != sec) return ("Ver", "rgba(0,0,0,.06)", "#6B819A");
+        if (_tecnicas.Count == 0)    return ("Sin técnicas", "#FBF0DC", "#B87503");
+        return _tecnicas.Any(t => t.FLG_HEADER == true)
+            ? ($"{_tecnicas.Count} · con cabecera", "#E2F1EA", "#2E7D5B")
+            : ($"{_tecnicas.Count} · sin cabecera", "#E3EFF9", "#1473BE");
+    }
+
+    // ── Nivel 3 ──────────────────────────────────────────────────────────────
+    private async Task LoadTecnicas(int sec)
+    {
+        if (_ordenSel is null || _codEntidad is null) { _tecnicas = new(); return; }
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersEspecificacionesTecnicas}"
+                    + $"?codEntidad={Entidad()}"
+                    + $"&numPurchaseOrder={Uri.EscapeDataString(_ordenSel.NUM_PURCHASE_ORDER)}"
+                    + $"&numSecuencia={sec}";
+            _tecnicas = (await Http.SafeGetAsync<List<EntidadPurchaseOrderEspecificacionTecnica>>(url)) ?? new();
+
+            // Los ítems de las especificaciones ya usadas: sin esto el combo de Ítem de una fila
+            // grabada aparecería vacío hasta volver a elegir la especificación.
+            foreach (var cod in _tecnicas.Select(x => x.COD_ESPECIFICACION_TECNICA)
+                                         .Where(c => !string.IsNullOrWhiteSpace(c)).Distinct())
+                await AsegurarItemsAsync(cod);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PurchaseOrdersPanel), nameof(LoadTecnicas));
+            _tecnicas = new();
+        }
+    }
+
+    private void AgregarTecnica(int sec)
+    {
+        if (_ordenSel is null || _codEntidad is null) return;
+        _tecnicas.Add(new EntidadPurchaseOrderEspecificacionTecnica
+        {
+            COD_ENTIDAD        = _codEntidad,
+            NUM_PURCHASE_ORDER = _ordenSel.NUM_PURCHASE_ORDER,
+            NUM_SECUENCIA      = sec,
+            FLG_HEADER         = false,
+            EsNueva            = true
+        });
+    }
+
+    private List<ComboboxItem> ItemsDe(string? codEspecificacion)
+        => string.IsNullOrWhiteSpace(codEspecificacion)
+            ? new()
+            : _itemsPorEspecificacion.GetValueOrDefault(codEspecificacion, new());
+
+    private async Task AsegurarItemsAsync(string codEspecificacion)
+    {
+        if (_itemsPorEspecificacion.ContainsKey(codEspecificacion)) return;
+        var url = $"{IngenieriaRoute.EspecificacionesItemsTecnicosComboDependientes}"
+                + $"?codEspecificacionTecnica={Uri.EscapeDataString(codEspecificacion)}";
+        _itemsPorEspecificacion[codEspecificacion] = await CargarCombo(url);
+    }
+
+    /// <summary>Al elegir la especificación se limpia el ítem —el anterior era de otra— y se
+    /// cargan los suyos. No se graba todavía: la fila es nueva y se graba con su botón.</summary>
+    private async Task AsignarEspecificacionAsync(EntidadPurchaseOrderEspecificacionTecnica t, string? valor)
+    {
+        t.COD_ESPECIFICACION_TECNICA = valor ?? "";
+        t.COD_ITEM_TECNICO = null;
+        if (!string.IsNullOrWhiteSpace(t.COD_ESPECIFICACION_TECNICA))
+            await AsegurarItemsAsync(t.COD_ESPECIFICACION_TECNICA);
+        StateHasChanged();
+    }
+
+    private string TextoEspecificacion(string? cod)
+        => string.IsNullOrWhiteSpace(cod)
+            ? ""
+            : _especificaciones.FirstOrDefault(e => e.Id == cod)?.Texto ?? "";
+
+    private Task GuardarSiNoEsNueva(EntidadPurchaseOrderEspecificacionTecnica t)
+        => t.EsNueva ? Task.CompletedTask : GuardarTecnica(t);
+
+    private async Task GuardarTecnica(EntidadPurchaseOrderEspecificacionTecnica t)
+    {
+        if (string.IsNullOrWhiteSpace(t.COD_ESPECIFICACION_TECNICA))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Elige la especificación técnica antes de grabar.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            return;
+        }
+
+        // Misma regla que valida el servicio: una sola cabecera por despacho.
+        if (t.FLG_HEADER == true
+            && _tecnicas.Any(x => !ReferenceEquals(x, t) && x.FLG_HEADER == true))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                "Este despacho ya tiene una especificación marcada como cabecera. Quítasela a esa antes de marcar otra.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            return;
+        }
+
+        if (t.EsNueva && _tecnicas.Any(x => !ReferenceEquals(x, t)
+                                         && x.COD_ESPECIFICACION_TECNICA == t.COD_ESPECIFICACION_TECNICA))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Esa especificación ya está en este despacho.",
+                DialogService, nameof(PurchaseOrdersPanel));
+            return;
+        }
+
+        t.COD_ENTIDAD ??= _codEntidad;
+        var resp = await Http.GuardarAsync(ApiRoutes.Comercial.EntidadesPurchaseOrdersEspecificacionesTecnicas, t, t.EsNueva);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(t.EsNueva ? "Especificación agregada." : "Especificación actualizada.", Severity.Success);
+            await LoadTecnicas(t.NUM_SECUENCIA ?? 0);
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(PurchaseOrdersPanel), nameof(GuardarTecnica));
+    }
+
+    private async Task EliminarTecnica(EntidadPurchaseOrderEspecificacionTecnica t)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar",
+            $"¿Quitar la especificación \"{t.COD_ESPECIFICACION_TECNICA}\" de este despacho?",
+            yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var url = $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersEspecificacionesTecnicas}"
+                + $"?codEntidad={Entidad()}"
+                + $"&numPurchaseOrder={Uri.EscapeDataString(t.NUM_PURCHASE_ORDER)}"
+                + $"&numSecuencia={t.NUM_SECUENCIA}"
+                + $"&codEspecificacionTecnica={Uri.EscapeDataString(t.COD_ESPECIFICACION_TECNICA)}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Especificación quitada.", Severity.Success);
+            await LoadTecnicas(t.NUM_SECUENCIA ?? 0);
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(PurchaseOrdersPanel), nameof(EliminarTecnica));
+    }
+}

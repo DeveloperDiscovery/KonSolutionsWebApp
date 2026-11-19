@@ -1,0 +1,265 @@
+@page "/logistica/tipos-requerimiento"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.TiposRequerimiento
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Tipos de Requerimiento · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Tipos de Requerimiento" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f=>f.Value is not null))" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="tiposrequerimiento" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Código"
+                            Width="@Limites.ColWidth("LOGISTICA.TIPOS_REQUERIMIENTO","COD_TIPO_REQUERIMIENTO",80,120)" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="COD_TIPO_REQUERIMIENTO" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="Modelo" ItemsBase="@Base(0)" ValorDe="@(x=>x.COD_TIPO_REQUERIMIENTO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>Filtro(0,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate><span class="mono">@context.Item.COD_TIPO_REQUERIMIENTO</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción"
+                            Width="@Limites.ColWidth("LOGISTICA.TIPOS_REQUERIMIENTO","DES_TIPO_REQUERIMIENTO",180,340)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_TIPO_REQUERIMIENTO" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="Modelo" ItemsBase="@Base(1)" ValorDe="@(x=>x.DES_TIPO_REQUERIMIENTO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_REQUERIMIENTO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Tipo de Reserva" Width="160">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Tipo de Reserva" /></HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_RESERVA</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Tipo de Estado" Width="160">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Tipo de Estado" /></HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_ESTADO</CellTemplate>
+            </TemplateColumn>
+            @* Las marcas van juntas en una sola columna: son seis banderas de sí/no y
+               abrirlas en una columna cada una gasta todo el ancho de la grilla sin decir
+               más. El ícono prendido es la marca activa; el tooltip la nombra. *@
+            <TemplateColumn Sortable="false" Title="Aplica a" Width="200px">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Aplica a" /></HeaderTemplate>
+                <CellTemplate>
+                    <div class="d-flex align-center gap-2">
+                        @if (context.Item.FLG_TRANSFERENCIA == true)
+                        {
+                            <span title="Transferencia" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (context.Item.FLG_PRODUCCION == true)
+                        {
+                            <span title="Producción" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.Factory" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (context.Item.FLG_COMPRA == true)
+                        {
+                            <span title="Compra" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.ShoppingCart" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (context.Item.FLG_CONSUMO_INTERNO == true)
+                        {
+                            <span title="Consumo interno" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.Inventory" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (context.Item.FLG_REPOSICION == true)
+                        {
+                            <span title="Reposición" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.Replay" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (context.Item.FLG_VENTA == true)
+                        {
+                            <span title="Venta" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.PointOfSale" Size="Size.Small" Color="Color.Primary" /></span>
+                        }
+                        @if (!(context.Item.FLG_TRANSFERENCIA == true || context.Item.FLG_PRODUCCION == true || context.Item.FLG_COMPRA == true || context.Item.FLG_CONSUMO_INTERNO == true || context.Item.FLG_REPOSICION == true || context.Item.FLG_VENTA == true))
+                        {
+                            <span style="opacity:.35;">—</span>
+                        }
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+
+            @* Columna propia y no un séptimo ícono en "Aplica a": esa celda muestra marcas
+               excluyentes, y sumarle ésta la haría leer como una naturaleza más. Es de otro
+               eje —convive con cualquiera de las seis—, así que se muestra aparte. *@
+            <TemplateColumn Sortable="false" Title="Consumo Prod." Width="130px">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Consumo Prod." /></HeaderTemplate>
+                <CellTemplate>
+                    @if (context.Item.FLG_CONSUMO_PRODUCCION == true)
+                    {
+                        <span title="Consumo de producción" style="display:inline-flex;align-items:center;"><MudIcon Icon="@Icons.Material.Filled.PrecisionManufacturing" Size="Size.Small" Color="Color.Primary" /></span>
+                    }
+                    else
+                    {
+                        <span style="opacity:.35;">—</span>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private List<Modelo> Ordenar(List<Modelo> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_TIPO_REQUERIMIENTO).ToList() : items.OrderByDescending(x => x.COD_TIPO_REQUERIMIENTO).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_TIPO_REQUERIMIENTO).ToList() : items.OrderByDescending(x => x.DES_TIPO_REQUERIMIENTO).ToList(),
+        _ => items
+    };
+
+    private List<Modelo> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<Modelo> Base(int col) => Aplicar(_items, col);
+
+    private List<Modelo> Aplicar(List<Modelo> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<Modelo> q = src;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.COD_TIPO_REQUERIMIENTO)),
+                1 => q.Where(x => v.Contains(x.DES_TIPO_REQUERIMIENTO)),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros() { foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null; StateHasChanged(); }
+
+    // El SP _SEARCH de esta tabla arranca con "WHERE 1 = 1 OR (...)", así que ignora el texto
+    // y devuelve todo igual: se filtra en memoria y no se lo llama.
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "TiposRequerimiento");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.TIPOS_REQUERIMIENTO", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(
+                ApiRoutes.Logistica.TiposRequerimiento);
+            var todos = r?.Data ?? new();
+            _items = string.IsNullOrWhiteSpace(_search)
+                ? todos
+                : todos.Where(x => x.COD_TIPO_REQUERIMIENTO.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                                || x.DES_TIPO_REQUERIMIENTO.Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TiposRequerimiento), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(TiposRequerimiento));
+            _items = new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo registro",
+            CrudModo.Delete => $"Eliminar · {item?.DES_TIPO_REQUERIMIENTO}",
+            CrudModo.Read   => $"Consultar · {item?.DES_TIPO_REQUERIMIENTO}",
+            _               => $"Editar · {item?.DES_TIPO_REQUERIMIENTO}"
+        };
+        var dlg = await DialogService.ShowAsync<TiposRequerimientoDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.TIPOS_REQUERIMIENTO", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

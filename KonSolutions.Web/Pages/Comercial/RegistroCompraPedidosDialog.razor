@@ -1,0 +1,86 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Las órdenes que se pueden asociar al comprobante: del mismo proveedor, aprobadas, con recepción parcial o recepcionadas totalmente (la factura suele llegar con la mercadería ya recibida),
+   y de bienes si el comprobante es de bienes o de servicios si es de servicios. Se pueden asociar varias: cada «Asociar» la quita de la lista y el diálogo sigue abierto. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Asociar órdenes @(EsBien ? "de compra (bienes)" : "de servicio")</MudText></TitleContent>
+    <DialogContent>
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3" data-aviso="pedidos">
+            Se ofrecen las órdenes del proveedor del comprobante @(EsBien ? "que son de bienes" : "que son de servicios"), aprobadas, con recepción parcial o recepcionadas totalmente.
+        </MudAlert>
+        <MudDataGrid T="RegistroCompraPedido" Items="_items" Dense="true" Hover="true" Striped="true" Height="360px" FixedHeader="true">
+            <Columns>
+                <TemplateColumn Title="Orden" Sortable="false"><CellTemplate><span class="mono">@context.Item.NUM_PEDIDO_COMERCIAL.ToString("0")</span></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Tipo" Sortable="false"><CellTemplate>@context.Item.DES_TIPO_OPERACION</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate>@context.Item.DES_PEDIDO_COMERCIAL</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Fecha" Sortable="false"><CellTemplate>@context.Item.FEC_PEDIDO?.ToString("dd/MM/yyyy")</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Moneda" Sortable="false"><CellTemplate>@context.Item.COD_MONEDA</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Total" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.VAL_TOTAL?.ToString("N2")</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Estado" Sortable="false"><CellTemplate>@context.Item.DES_ESTADO</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="" Sortable="false">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving" OnClick="@(() => Asociar(it))" data-accion="asociar" data-orden="@it.NUM_PEDIDO_COMERCIAL.ToString("0")">Asociar</MudButton>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="pedidos">@(_cargado ? "No hay órdenes para asociar." : "Cargando…")</MudText></NoRecordsContent>
+        </MudDataGrid>
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Cerrar" data-accion="cerrar">Cerrar</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public decimal NumRegistro { get; set; }
+    [Parameter] public bool EsBien { get; set; } = true;
+
+    private List<RegistroCompraPedido> _items = new();
+    private bool _cargado, _saving, _cambio;
+
+    protected override async Task OnInitializedAsync() => await Cargar();
+
+    private async Task Cargar()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraPedido>>>($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/pedidos/disponibles");
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraPedidosDialog), nameof(Cargar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudieron cargar las órdenes. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraPedidosDialog));
+            _items = new();
+        }
+        _cargado = true;
+    }
+
+    private async Task Asociar(RegistroCompraPedido p)
+    {
+        _saving = true;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/pedidos",
+                new RegistroCompraPedidoAsociarDto { COD_CLASE_OPERACION = p.COD_CLASE_OPERACION, COD_TIPO_OPERACION = p.COD_TIPO_OPERACION, NUM_PEDIDO_COMERCIAL = p.NUM_PEDIDO_COMERCIAL });
+            if (resp.IsSuccessStatusCode)
+            {
+                _cambio = true;
+                _items = _items.Where(x => !(x.COD_CLASE_OPERACION == p.COD_CLASE_OPERACION && x.COD_TIPO_OPERACION == p.COD_TIPO_OPERACION && x.NUM_PEDIDO_COMERCIAL == p.NUM_PEDIDO_COMERCIAL)).ToList();
+                Snackbar.Add($"Orden {p.NUM_PEDIDO_COMERCIAL:0} asociada.", Severity.Success);
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraPedidosDialog), nameof(Asociar), "No se pudo asociar la orden");
+        }
+        finally { _saving = false; }
+    }
+
+    private void Cerrar() => MudDialog.Close(DialogResult.Ok(_cambio));
+}

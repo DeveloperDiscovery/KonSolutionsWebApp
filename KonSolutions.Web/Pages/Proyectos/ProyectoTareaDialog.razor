@@ -1,0 +1,262 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject MenuService MenuSvc
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudText Typo="Typo.h6">@(_esNueva ? "Nueva tarea" : $"Tarea {_cod} · {_des}")</MudText>
+            @if (!_esNueva && !string.IsNullOrWhiteSpace(_estadoDes)) { <EstadoChip Estado="@_estadoDes" BackColor="@_estadoBack" ForeColor="@_estadoFore" /> }
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="8">
+                <MudTextField T="string" @bind-Value="_des" Label="Descripción" Variant="Variant.Outlined" MaxLength="100" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="_fasesCombo" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_fase" ValueChanged="FaseCambia" Label="Fase" />
+            </MudItem>
+            @if (RangoFase() is { } rf)
+            {
+                <MudItem xs="12">
+                    <MudAlert Severity="Severity.Info" Dense="true" Variant="Variant.Outlined">Fase: @ProyectoApi.Fecha(rf.Ini) → @ProyectoApi.Fecha(rf.Fin) (@ProyectoApi.Dias(rf.Ini, rf.Fin) días). Las fechas de la tarea deben quedar dentro.</MudAlert>
+                </MudItem>
+            }
+            <MudItem xs="12" sm="4">
+                <MudDatePicker Date="_ini" DateChanged="IniCambia" Label="Inicio programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudDatePicker Date="_fin" DateChanged="FinCambia" Label="Fin programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudNumericField T="int?" Value="_dias" ValueChanged="DiasCambia" Label="Días" Variant="Variant.Outlined" Min="1" HelperText="Calcula el fin desde el inicio" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_resp" ValueChanged="@(v => _resp = v)" Label="Responsable" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="_unidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_unidad" ValueChanged="@(v => _unidad = v)" Label="Unidad de medida" />
+            </MudItem>
+            <MudItem xs="6" sm="4">
+                <MudNumericField T="decimal?" @bind-Value="_prog" Label="Cantidad programada" Variant="Variant.Outlined" Min="0m" />
+            </MudItem>
+            <MudItem xs="6" sm="4">
+                <MudNumericField T="decimal?" @bind-Value="_presup" Label="Presupuesto" Variant="Variant.Outlined" Min="0m" Format="N2" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudCheckBox T="bool" @bind-Value="_manual" Color="Color.Primary" Label="Control manual del avance (si no, por subtareas o por cantidades)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudCheckBox T="bool" @bind-Value="_requiere" Color="Color.Primary" Label="Requiere confirmación al llegar al 100 %" />
+            </MudItem>
+            @if (_requiere)
+            {
+                <MudItem xs="12">
+                    <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                               Value="@_confirma" ValueChanged="@(v => _confirma = v)" Label="Quién confirma" />
+                </MudItem>
+            }
+        </MudGrid>
+
+        @if (!_esNueva)
+        {
+            <MudDivider Class="my-3" />
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Subtareas</MudText>
+            @foreach (var s in _subs)
+            {
+                var sub = s;
+                <div class="d-flex align-center gap-2" style="min-height:34px;">
+                    <MudCheckBox T="bool" Value="@(sub.FLG_TERMINADA == true)" ValueChanged="@(v => CambiarSubAsync(sub, v))" Color="Color.Success" Size="Size.Small" />
+                    <span style="flex:1;@(sub.FLG_TERMINADA == true ? "text-decoration:line-through;opacity:.6;" : "")">@sub.DES_SUB_TAREA</span>
+                    <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => QuitarSubAsync(sub))" title="Quitar la subtarea" />
+                </div>
+            }
+            <div class="d-flex align-center gap-2 mt-1">
+                <MudTextField T="string" @bind-Value="_nuevaSub" Label="Nueva subtarea" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" OnKeyDown="@(e => { if (e.Key == "Enter") return AgregarSubAsync(); return Task.CompletedTask; })" />
+                <MudButton OnClick="AgregarSubAsync" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add">Agregar</MudButton>
+            </div>
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.7;">Las subtareas se agregan después de grabar la tarea.</MudText>
+        }
+        @* Botones de dialogo de la opcion hija "Tarea" (Seguridad > Opciones): cada uno lleva la tarea a su estado destino segun el flujo configurado *@
+        <CrudDialogActions Modo="@(_esNueva ? CrudModo.Create : CrudModo.Update)" Saving="_guardando" SubmitButton="false"
+                           OnConfirm="Guardar" OnCancel="Cerrar"
+                           CodAplicacion="@_app" CodOpcionAplicacion="@_opc"
+                           CodTipoEstado="@_tipoEstado" CodEstadoActual="@_codEstado" OnAccionDialog="AccionDialogo">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteTarea? Item { get; set; }
+    [Parameter] public int? CodFaseInicial { get; set; }
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ExpedienteSubTarea> SubTareas { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+
+    private bool _esNueva = true, _guardando, _huboCambios;
+    private int _cod;
+    private string _des = "", _nuevaSub = "";
+    private DateTime? _ini, _fin;
+    private int? _dias;
+    private string? _fase, _resp, _unidad, _confirma;
+    private decimal? _prog, _presup;
+    private bool _manual, _requiere;
+    private string? _app, _opc, _estadoDes, _estadoBack, _estadoFore;
+    private int? _tipoEstado, _codEstado;
+
+    private async Task AccionDialogo(BotonTreeviewItem b)
+    {
+        if (_esNueva || string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION) || _app is null || _opc is null) return;
+        var (ok, msg, est) = await ProyectoApi.CambiarEstadoAsync(Http, NumProyecto, "tareas", _cod, _app, _opc, b.COD_BOTON_OPCION);
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo cambiar el estado.", Severity.Warning); return; }
+        if (est is not null) { _tipoEstado = est.COD_TIPO_ESTADO; _codEstado = est.COD_ESTADO; _estadoDes = est.DES_ESTADO; _estadoBack = est.DES_BACKCOLOR; _estadoFore = est.DES_FORECOLOR; }
+        _huboCambios = true;
+        Snackbar.Add($"Estado de la tarea: {_estadoDes}", Severity.Success);
+    }
+    private List<ComboboxItem> _fasesCombo = new(), _unidades = new();
+    private List<ExpedienteSubTarea> _subs = new();
+    // lo que la pantalla no edita y hay que devolver tal cual al modificar
+    private ExpedienteTarea? _orig;
+
+    // lo que el titulo muestra (tarea y estado) se carga en el arranque sincrono: el titulo del dialogo no se vuelve a pintar despues de un await
+    protected override void OnInitialized()
+    {
+        if (Item is null) return;
+        Cargar(Item);
+        _tipoEstado = Item.COD_TIPO_ESTADO; _codEstado = Item.COD_ESTADO; _estadoDes = Item.DES_ESTADO; _estadoBack = Item.DES_BACKCOLOR; _estadoFore = Item.DES_FORECOLOR;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fasesCombo = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        _unidades = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.UnidadesMedida + "/combobox") ?? new();
+        if (Item is null) { _fase = CodFaseInicial?.ToString(); return; }
+        if (await ProyectoApi.OpcionDialogoAsync(MenuSvc, "Proyectos/ProyectoTareaDialog.razor") is { } o) { _app = o.App; _opc = o.Opcion; }
+        _subs = SubTareas.Where(s => s.COD_TAREA == Item.COD_TAREA).OrderBy(s => s.COD_SUB_TAREA).ToList();
+    }
+
+    private void Cargar(ExpedienteTarea t)
+    {
+        _orig = t; _esNueva = false; _cod = t.COD_TAREA; _des = t.DES_TAREA ?? ""; _fase = t.COD_FASE?.ToString(); _ini = t.FEC_INICIO_PROGRAMADO; _fin = t.FEC_FINAL_PROGRAMADO; _dias = ProyectoApi.Dias(_ini, _fin);
+        _resp = t.COD_ENTIDAD_RESPONSABLE?.ToString("0"); _unidad = t.COD_UNIDAD_MEDIDA_TAREAS; _prog = t.CAN_PROGRAMADAS; _presup = t.VAL_PRESUPUESTO;
+        _manual = t.FLG_CONTROL_EJECUCION_MANUAL == true; _requiere = t.FLG_REQUIERE_CONFIRMACION == true; _confirma = t.COD_ENTIDAD_CONFIRMADORA?.ToString("0");
+    }
+
+    // fechas de la fase elegida (si las tiene): la tarea debe quedar dentro
+    private (DateTime Ini, DateTime Fin)? RangoFase()
+    {
+        if (!int.TryParse(_fase, out var cf)) return null;
+        var f = Fases.FirstOrDefault(x => x.COD_FASE == cf);
+        return f?.FEC_INICIO_PROGRAMADO is { } i && f.FEC_FINAL_PROGRAMADO is { } fn ? (i.Date, fn.Date) : null;
+    }
+
+    private void FaseCambia(string? v)
+    {
+        _fase = v;
+        // tarea sin fechas: propone el inicio de la fase
+        if (_ini is null && RangoFase() is { } rf) IniCambia(rf.Ini);
+    }
+
+    // inicio, fin y días se calculan entre sí: cambiar el inicio mantiene los días; cambiar el fin o los días recalcula el otro
+    private void IniCambia(DateTime? v)
+    {
+        _ini = v;
+        if (v is null) return;
+        if (_dias is > 0) _fin = ProyectoApi.FinPor(v.Value, _dias.Value);
+        else _dias = ProyectoApi.Dias(_ini, _fin);
+    }
+    private void FinCambia(DateTime? v) { _fin = v; _dias = ProyectoApi.Dias(_ini, _fin); }
+    private void DiasCambia(int? v)
+    {
+        _dias = v;
+        if (_ini is not null && v is > 0) _fin = ProyectoApi.FinPor(_ini.Value, v.Value);
+    }
+
+    private void Cerrar() => MudDialog.Close(_huboCambios ? DialogResult.Ok(true) : DialogResult.Cancel());
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción de la tarea.", Severity.Warning); return; }
+        if (_ini is not null && _fin is not null && _fin < _ini) { Snackbar.Add("El fin no puede ser anterior al inicio.", Severity.Warning); return; }
+        if (RangoFase() is { } rg && ((_ini is not null && _ini.Value.Date < rg.Ini) || (_fin is not null && _fin.Value.Date > rg.Fin)))
+        { Snackbar.Add($"Las fechas de la tarea deben estar dentro de las de su fase ({ProyectoApi.Fecha(rg.Ini)} a {ProyectoApi.Fecha(rg.Fin)}).", Severity.Warning); return; }
+        if (_requiere && string.IsNullOrWhiteSpace(_confirma)) { Snackbar.Add("Elige quién confirma la tarea.", Severity.Warning); return; }
+        var cod = _esNueva ? (Tareas.Count == 0 ? 1 : Tareas.Max(t => t.COD_TAREA) + 1) : _cod;
+        if (cod > 255) { Snackbar.Add("Un proyecto admite hasta 255 tareas.", Severity.Warning); return; }
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, COD_TAREA = cod, DES_TAREA = _des.Trim(),
+            FEC_INICIO_PROGRAMADO = _ini, FEC_FINAL_PROGRAMADO = _fin,
+            FEC_INICIO_EJECUTADO = _orig?.FEC_INICIO_EJECUTADO, FEC_FINAL_EJECUTADO = _orig?.FEC_FINAL_EJECUTADO,
+            FLG_CONTROL_EJECUCION_MANUAL = _manual, FLG_REQUIERE_CONFIRMACION = _requiere,
+            COD_ENTIDAD_CONFIRMADORA = _requiere && decimal.TryParse(_confirma, out var c) ? (decimal?)c : null,
+            COD_UNIDAD_MEDIDA_TAREAS = string.IsNullOrWhiteSpace(_unidad) ? null : _unidad,
+            CAN_PROGRAMADAS = _prog, CAN_EJECUTADAS = _orig?.CAN_EJECUTADAS, TAS_EJECUCION = _orig?.TAS_EJECUCION,
+            COD_FASE = int.TryParse(_fase, out var f) ? (int?)f : null,
+            COD_ENTIDAD_RESPONSABLE = decimal.TryParse(_resp, out var r) ? (decimal?)r : null,
+            VAL_PRESUPUESTO = _presup, COD_TIPO_ESTADO = _orig?.COD_TIPO_ESTADO, COD_ESTADO = _orig?.COD_ESTADO
+        };
+        var esNueva = _esNueva;
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Tareas, cuerpo, esNueva);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar la tarea.", Severity.Warning); return; }
+        _huboCambios = true;
+        if (!esNueva) { MudDialog.Close(DialogResult.Ok(true)); return; }
+        // recién creada: se queda abierta para poder agregar sus subtareas
+        _cod = cod; _esNueva = false;
+        _orig = new ExpedienteTarea { NUM_PROYECTO = NumProyecto, COD_TAREA = cod };
+        Snackbar.Add("Tarea creada. Ahora puedes agregar sus subtareas.", Severity.Success);
+    }
+
+    private object SubCuerpo(ExpedienteSubTarea s, bool terminada, string? des = null) => new
+    { NUM_PROYECTO = NumProyecto, COD_TAREA = _cod, COD_SUB_TAREA = s.COD_SUB_TAREA, DES_SUB_TAREA = des ?? s.DES_SUB_TAREA, FLG_TERMINADA = terminada };
+
+    private async Task AgregarSubAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_nuevaSub)) return;
+        var cod = _subs.Count == 0 ? 1 : _subs.Max(s => s.COD_SUB_TAREA) + 1;
+        if (cod > 255) { Snackbar.Add("Una tarea admite hasta 255 subtareas.", Severity.Warning); return; }
+        var s = new ExpedienteSubTarea { NUM_PROYECTO = NumProyecto, COD_TAREA = _cod, COD_SUB_TAREA = cod, DES_SUB_TAREA = _nuevaSub.Trim(), FLG_TERMINADA = false };
+        var (ok, msg) = await ProyectoApi.PostAsync(Http, ApiRoutes.Proyectos.SubTareas, SubCuerpo(s, false));
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo agregar la subtarea.", Severity.Warning); return; }
+        _subs.Add(s); _nuevaSub = ""; _huboCambios = true;
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+    }
+
+    private async Task CambiarSubAsync(ExpedienteSubTarea s, bool terminada)
+    {
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.SubTareas, SubCuerpo(s, terminada));
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo cambiar la subtarea.", Severity.Warning); return; }
+        s.FLG_TERMINADA = terminada; _huboCambios = true;
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+    }
+
+    private async Task QuitarSubAsync(ExpedienteSubTarea s)
+    {
+        var (ok, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.SubTareas}/{NumProyecto}/{_cod}/{s.COD_SUB_TAREA}");
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo quitar la subtarea.", Severity.Warning); return; }
+        _subs.Remove(s); _huboCambios = true;
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+    }
+}

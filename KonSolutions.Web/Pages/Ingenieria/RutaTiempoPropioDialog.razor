@@ -1,0 +1,49 @@
+@* Excepcion de tiempo de una fila de la ruta (script SQL 122): el SAM propio de esta ruta en lugar del que dice el catalogo. "Volver al catalogo" quita la excepcion. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudText Typo="Typo.caption" Class="mb-2">@(Nodo?.FLG_TIEMPO_PROPIO == true ? "Esta fila usa un SAM propio." : "Esta fila usa el tiempo del catálogo.") SAM actual: <b>@OperacionesApi.Min(Nodo?.VAL_SAM_PROPIO)</b> min</MudText>
+        <MudNumericField T="decimal?" @bind-Value="_sam" Label="SAM propio (min por unidad)" Min="0m" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="sam" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Outlined" Disabled="_guardando" OnClick="Quitar" data-accion="volver-catalogo">Volver al catálogo</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Fijar SAM propio</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RutaTiempoResumen? Ruta { get; set; }
+    [Parameter] public RutaNodo? Nodo { get; set; }
+    private decimal? _sam;
+    private bool _guardando;
+    private string _error = "";
+
+    protected override void OnInitialized() => _sam = Nodo?.VAL_SAM_PROPIO;
+
+    private Task Guardar()
+    {
+        if (_sam is null or <= 0) { _error = "El SAM debe ser mayor que cero."; return Task.CompletedTask; }
+        return Enviar(_sam);
+    }
+
+    private Task Quitar() => Enviar(null);
+
+    private async Task Enviar(decimal? sam)
+    {
+        _error = "";
+        if (Ruta is null || Nodo is null) return;
+        _guardando = true;
+        var r = await ProyectoApi.PostAsync(Http, IngRoute.RutasTiempos + "/tiempo-propio", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_ESTRUCTURA_RUTA_PROCESO = Nodo.NUM_ESTRUCTURA_RUTA_PROCESO, VAL_SAM = sam });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add(sam is null ? "Vuelve al tiempo del catálogo." : "SAM propio fijado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

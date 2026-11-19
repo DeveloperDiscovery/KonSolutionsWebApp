@@ -1,0 +1,2803 @@
+@using System.Globalization
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using Microsoft.AspNetCore.Components.Forms
+@using KONSolutions.Shared.Models.Reportes
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@implements IAsyncDisposable
+
+@* REPORTEADOR · LIENZO DEL DISEÑO LIBRE (COD_TIPO_DISENO BAN), AL ESTILO DE CRYSTAL REPORTS.
+
+   Secciones (bandas), de arriba abajo: encabezado del informe, encabezado de página, encabezado de cada grupo,
+   detalle (una vez por fila del resultado 1), pie de cada grupo, pie del informe y pie de página. Cada sección puede
+   tener varias (a, b, c...). En ellas van los objetos: campo, texto, resumen, especial, línea, cuadro, imagen, tabla
+   de un resultado y fórmula. Todo se mide en milímetros, dentro de los márgenes de la hoja (12 mm por lado).
+
+   Fórmulas (fase 2): se crean y editan en FormulaEditorDialog desde el explorador o la barra, y se ven en un «campo de
+   fórmula» (FOR) o dentro de un texto ({F.Nombre}). El botón ƒ junto a una propiedad le pone una condición (no imprimir,
+   negrita, color, fondo, página nueva). Renombrar una fórmula cambia también donde se usa; una que se usa en otra
+   fórmula, en una condición o en un texto no se deja eliminar.
+
+   Líneas y cuadros que cruzan secciones (fase 2): una línea o un cuadro puede seguir hasta otra sección
+   (NUM_BANDA_FIN, NUM_Y_FIN): del encabezado de un grupo a su pie, del encabezado al pie del informe o de la página,
+   o a otra parte más abajo de la misma sección (Detalle a → Detalle b). Se hace estirándolo desde el asa de abajo
+   hasta esa sección, o en sus propiedades («Termina en»). Va en una capa encima del lienzo, de donde empieza a donde
+   termina; se elige con un clic en su borde y el asa naranja cambia dónde termina. Una línea que cruza es vertical.
+
+   Fase 3: filas cebra en el detalle (DES_COLOR_CEBRA: el fondo de una fila sí y otra no, contando de nuevo en cada
+   grupo), líneas y cuadros que llegan al pie de su sección cuando esta crece (FLG_HASTA_ABAJO), texto girado 90, 180 o
+   270 grados (NUM_GIRO) y el objeto «Código» (BAR): un código de barras Code 128 o EAN-13, o un QR (COD_CODIGO), con lo
+   que codifica escrito como un texto con marcas ({COLUMNA}, {F.Nombre}...) y su texto debajo (FLG_TEXTO_CODIGO).
+
+   Fase 3b: «Tabla cruzada» (CRU): las filas de un resultado resumidas en filas por columnas (DES_CRUCE_FILAS ×
+   DES_CRUCE_COLUMNAS), con la función de una columna (COD_FUNCION de DES_ORIGEN) y totales. «Subinforme» (SUB): otro
+   diseño libre (NUM_DISENO_SUB), con su propia fuente, que sale dentro de una sección: en el detalle, una vez por fila;
+   en un encabezado o pie de grupo, una vez por grupo. Sus parámetros se enlazan con la fila que se imprime (DES_ENLACES,
+   una línea por parámetro: @PARAMETRO={COLUMNA}); los que no se enlazan toman la columna o el parámetro de su mismo
+   nombre. Una tabla (y una tabla cruzada) también se enlaza: solo las filas de la fila que se imprime, como el detalle
+   de cada orden (COLUMNA={COLUMNA_DEL_RESULTADO_1}). Ninguno de los dos va en el encabezado ni en el pie de página. La
+   lista de diseños y la fuente de cada subinforme las da la pantalla de diseños (Disenos y LeerFuente).
+
+   Fase 3c: «Gráfico» (GRA): las filas de un resultado resumidas como en la tabla cruzada (categorías DES_CRUCE_FILAS,
+   series DES_CRUCE_COLUMNAS opcionales, COD_FUNCION de DES_ORIGEN), dibujadas en columnas, barras, líneas, torta o anillo
+   (COD_GRAFICO), apiladas o no (FLG_APILADO), con sus valores escritos (FLG_VALORES), de mayor a menor (FLG_ORDEN_VALOR) y
+   un máximo de categorías (NUM_MAXIMO_CATEGORIAS; las demás van en «Otros»). En el lienzo se ve un dibujo del tipo, no
+   los datos. No va en el encabezado ni en el pie de página.
+
+   Se arrastran desde el explorador o la barra; se mueven, se estiran desde las asas y se eligen con un recuadro
+   (Mayús o Ctrl suman a la selección). El borde de abajo de cada sección cambia su alto. Teclas: Supr borra, flechas
+   mueven (con Mayús, de a 5), Ctrl+Z / Ctrl+Y deshacen y rehacen, Ctrl+D duplica, Ctrl+C / Ctrl+V copian y pegan,
+   Ctrl+A elige todo lo de la sección. Los gestos los atiende wwwroot/js/lienzoEditor.js; aquí está el modelo. *@
+<div class="lz">
+    @* ══════════ BARRA ══════════ *@
+    <div class="lz-barra">
+        <span class="lz-barra-grupo">
+            @foreach (var (tipo, icono, texto) in Nuevos)
+            {
+                var t = tipo;
+                <button type="button" class="lz-boton" draggable="true" data-arrastre="@($"NUE|{t}")"
+                        title="@($"{texto}: clic para ponerlo en la sección elegida, o arrástralo al lienzo")" @onclick="@(() => Insertar(t))">
+                    <MudIcon Icon="@icono" Size="Size.Small" /><span>@texto</span>
+                </button>
+            }
+        </span>
+        <span class="lz-sep"></span>
+        <span class="lz-barra-grupo">
+            <button type="button" class="lz-boton" title="Agrupar las filas por una columna" @onclick="AbrirGrupo">
+                <MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" /><span>Grupo</span>
+            </button>
+            <select class="lz-in lz-in-corto" title="Agregar otra sección" value="" @onchange="@(e => AgregarSeccion(e.Value?.ToString()))">
+                <option value="">+ Sección...</option>
+                <option value="RH">Encabezado del informe</option>
+                <option value="PH">Encabezado de página</option>
+                <option value="DE">Detalle</option>
+                <option value="RF">Pie del informe</option>
+                <option value="PF">Pie de página</option>
+            </select>
+        </span>
+        <span class="lz-sep"></span>
+        <span class="lz-barra-grupo">
+            <button type="button" class="lz-boton lz-solo" title="Deshacer (Ctrl+Z)" disabled="@(_deshacer.Count == 0)" @onclick="Deshacer"><MudIcon Icon="@Icons.Material.Filled.Undo" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Rehacer (Ctrl+Y)" disabled="@(_rehacer.Count == 0)" @onclick="Rehacer"><MudIcon Icon="@Icons.Material.Filled.Redo" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Duplicar (Ctrl+D)" disabled="@(_sel.Count == 0)" @onclick="Duplicar"><MudIcon Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Eliminar (Supr)" disabled="@(_sel.Count == 0)" @onclick="Eliminar"><MudIcon Icon="@Icons.Material.Filled.Delete" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Traer al frente" disabled="@(_sel.Count == 0)" @onclick="@(() => Capa(true))"><MudIcon Icon="@Icons.Material.Filled.FlipToFront" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Enviar atrás" disabled="@(_sel.Count == 0)" @onclick="@(() => Capa(false))"><MudIcon Icon="@Icons.Material.Filled.FlipToBack" Size="Size.Small" /></button>
+        </span>
+        <span class="lz-sep"></span>
+        <span class="lz-barra-grupo">
+            <button type="button" class="lz-boton lz-solo" title="Alinear a la izquierda" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("I"))"><MudIcon Icon="@Icons.Material.Filled.AlignHorizontalLeft" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Alinear a la derecha" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("D"))"><MudIcon Icon="@Icons.Material.Filled.AlignHorizontalRight" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Alinear arriba" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("A"))"><MudIcon Icon="@Icons.Material.Filled.AlignVerticalTop" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Alinear abajo" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("B"))"><MudIcon Icon="@Icons.Material.Filled.AlignVerticalBottom" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Mismo ancho que el primero elegido" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("W"))"><MudIcon Icon="@Icons.Material.Filled.SettingsEthernet" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Mismo alto que el primero elegido" disabled="@(_sel.Count < 2)" @onclick="@(() => Alinear("H"))"><MudIcon Icon="@Icons.Material.Filled.Height" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Repartir a lo ancho: el mismo espacio entre ellos (3 o más)" disabled="@(_sel.Count < 3)" @onclick="@(() => Repartir(true))"><MudIcon Icon="@Icons.Material.Filled.HorizontalDistribute" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo" title="Repartir a lo alto: el mismo espacio entre ellos (3 o más, de una sección)" disabled="@(_sel.Count < 3)" @onclick="@(() => Repartir(false))"><MudIcon Icon="@Icons.Material.Filled.VerticalDistribute" Size="Size.Small" /></button>
+        </span>
+        <span class="lz-sep"></span>
+        <span class="lz-barra-grupo">
+            <button type="button" class="lz-boton lz-solo" title="Alejar" disabled="@(_zoom <= 0.5)" @onclick="@(() => Zoom(-0.25))"><MudIcon Icon="@Icons.Material.Filled.ZoomOut" Size="Size.Small" /></button>
+            <span class="lz-zoom">@($"{_zoom * 100:0}%")</span>
+            <button type="button" class="lz-boton lz-solo" title="Acercar" disabled="@(_zoom >= 2.5)" @onclick="@(() => Zoom(0.25))"><MudIcon Icon="@Icons.Material.Filled.ZoomIn" Size="Size.Small" /></button>
+            <button type="button" class="lz-boton lz-solo @(_cuadricula ? "lz-activo" : "")" title="Cuadrícula" @onclick="@(() => _cuadricula = !_cuadricula)"><MudIcon Icon="@Icons.Material.Filled.Grid4x4" Size="Size.Small" /></button>
+            <label class="lz-chk" title="Al mover o estirar, las medidas caen en la cuadrícula">
+                <input type="checkbox" checked="@_ajustar" @onchange="@(e => _ajustar = e.Value is true)" /> Ajustar a
+            </label>
+            <select class="lz-in lz-in-mini" value="@F(_rejilla)" @onchange="@(e => _rejilla = Dec(e.Value) is { } r && r > 0 ? (double)r : 1)">
+                <option value="0.5">0.5 mm</option><option value="1">1 mm</option><option value="2">2 mm</option><option value="5">5 mm</option>
+            </select>
+        </span>
+    </div>
+
+    <div class="lz-cuerpo">
+        @* ══════════ EXPLORADOR ══════════ *@
+        <div class="lz-explorador">
+            <div class="lz-panel-cab">Explorador</div>
+            <div class="lz-ex-ayuda">Arrastra al lienzo, o doble clic para ponerlo en la sección elegida.</div>
+            @if (Fuente is null)
+            {
+                <div class="lz-ex-ayuda">Elige la fuente en «General».</div>
+            }
+            else
+            {
+                <details open class="lz-ex-grupo">
+                    <summary>Campos de la base</summary>
+                    <label class="lz-chk lz-ex-opcion" title="Al soltar un campo en el detalle, pone su título en el encabezado de página">
+                        <input type="checkbox" checked="@_conTitulo" @onchange="@(e => _conTitulo = e.Value is true)" /> con su título arriba
+                    </label>
+                    @foreach (var r in Fuente.Resultados.OrderBy(x => x.NUM_RESULTADO))
+                    {
+                        var rr = r;
+                        <details open="@(rr.NUM_RESULTADO == 1)" class="lz-ex-sub">
+                            <summary>@($"R{rr.NUM_RESULTADO} · {rr.DES_RESULTADO}")</summary>
+                            <div class="lz-ex-item lz-ex-tabla" draggable="true" data-arrastre="@($"TAB|{rr.NUM_RESULTADO}|")"
+                                 title="Tabla con las filas de este resultado (columnas en la pestaña Columnas)" @ondblclick="@(() => SoltarAqui($"TAB|{rr.NUM_RESULTADO}|"))">
+                                <MudIcon Icon="@Icons.Material.Filled.TableChart" Size="Size.Small" /> Tabla de este resultado
+                            </div>
+                            <div class="lz-ex-item lz-ex-tabla" draggable="true" data-arrastre="@($"CRU|{rr.NUM_RESULTADO}|")"
+                                 title="Las filas de este resultado resumidas en filas por columnas, con totales" @ondblclick="@(() => SoltarAqui($"CRU|{rr.NUM_RESULTADO}|"))">
+                                <MudIcon Icon="@Icons.Material.Filled.GridOn" Size="Size.Small" /> Tabla cruzada de este resultado
+                            </div>
+                            <div class="lz-ex-item lz-ex-tabla" draggable="true" data-arrastre="@($"GRA|{rr.NUM_RESULTADO}|")"
+                                 title="Las filas de este resultado resumidas en un gráfico de columnas, barras, líneas o torta" @ondblclick="@(() => SoltarAqui($"GRA|{rr.NUM_RESULTADO}|"))">
+                                <MudIcon Icon="@Icons.Material.Filled.BarChart" Size="Size.Small" /> Gráfico de este resultado
+                            </div>
+                            @foreach (var c in Columnas(rr.NUM_RESULTADO))
+                            {
+                                var cc = c;
+                                <div class="lz-ex-item" draggable="true" data-arrastre="@($"CAM|{rr.NUM_RESULTADO}|{cc.DES_COLUMNA}")"
+                                     title="@($"{cc.DES_ETIQUETA ?? cc.DES_COLUMNA} ({cc.DES_TIPO_DATO})")" @ondblclick="@(() => SoltarAqui($"CAM|{rr.NUM_RESULTADO}|{cc.DES_COLUMNA}"))">
+                                    <span class="lz-ex-tipo">@TipoCorto(cc.DES_TIPO_DATO)</span>@cc.DES_COLUMNA
+                                </div>
+                            }
+                        </details>
+                    }
+                </details>
+                <details open class="lz-ex-grupo">
+                    <summary>Fórmulas</summary>
+                    <div class="lz-ex-item lz-ex-nueva" title="Una fórmula nueva: un valor calculado con los datos" @onclick="NuevaFormula">
+                        <MudIcon Icon="@Icons.Material.Filled.Add" Size="Size.Small" /> Nueva fórmula
+                    </div>
+                    @foreach (var f in L.Formulas.OrderBy(f => f.DES_NOMBRE, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var ff = f;
+                        <div class="lz-ex-item lz-ex-formula" draggable="true" data-arrastre="@($"FOR||{ff.DES_NOMBRE}")"
+                             title="@($"{ff.DES_DESCRIPCION}{(ff.DES_DESCRIPCION is null ? "" : "\n")}{ff.DES_FORMULA}")" @ondblclick="@(() => SoltarAqui($"FOR||{ff.DES_NOMBRE}"))">
+                            <span class="lz-ex-tipo lz-ex-f">ƒ</span><span class="lz-ex-nombre">@ff.DES_NOMBRE</span>
+                            <button type="button" class="lz-mini" title="Editar la fórmula" @onclick="@(() => EditarFormula(ff))" @onclick:stopPropagation @ondblclick:stopPropagation>✎</button>
+                            <button type="button" class="lz-mini" title="Eliminar la fórmula" @onclick="@(() => EliminarFormula(ff))" @onclick:stopPropagation @ondblclick:stopPropagation>✕</button>
+                        </div>
+                    }
+                    @if (L.Formulas.Count == 0) { <div class="lz-ex-ayuda">Un valor calculado (Situación = SI(...), % del grupo...): «Nueva fórmula» y luego arrástrala al lienzo.</div> }
+                </details>
+                <details class="lz-ex-grupo">
+                    <summary>Subinformes</summary>
+                    <div class="lz-ex-ayuda">Otro diseño libre que sale dentro de una sección: en el detalle, uno por fila.</div>
+                    @foreach (var d in Subinformables)
+                    {
+                        var dd = d;
+                        <div class="lz-ex-item" draggable="true" data-arrastre="@($"SUB||{dd.NUM_DISENO}")" title="@($"{dd.DES_DISENO} · fuente: {dd.DES_FUENTE}")"
+                             @ondblclick="@(() => SoltarAqui($"SUB||{dd.NUM_DISENO}"))">
+                            <span class="lz-ex-tipo">▤</span>@dd.DES_DISENO
+                        </div>
+                    }
+                    @if (!Subinformables.Any()) { <div class="lz-ex-ayuda">No hay otros diseños libres grabados: graba primero el que va adentro.</div> }
+                </details>
+                <details class="lz-ex-grupo">
+                    <summary>Resúmenes (del resultado 1)</summary>
+                    <div class="lz-ex-ayuda">En el pie de un grupo suman el grupo; en el pie del informe, todo.</div>
+                    @foreach (var c in Columnas(1).Where(c => EsNumero(c.DES_TIPO_DATO)))
+                    {
+                        var cc = c;
+                        <div class="lz-ex-item" draggable="true" data-arrastre="@($"RES|1|{cc.DES_COLUMNA}")" @ondblclick="@(() => SoltarAqui($"RES|1|{cc.DES_COLUMNA}"))">
+                            <span class="lz-ex-tipo">Σ</span>@cc.DES_COLUMNA
+                        </div>
+                    }
+                </details>
+                <details class="lz-ex-grupo">
+                    <summary>Parámetros</summary>
+                    @foreach (var p in Fuente.Parametros.OrderBy(p => p.NUM_ORDEN))
+                    {
+                        var pp = p;
+                        <div class="lz-ex-item" draggable="true" data-arrastre="@($"ESP||{pp.DES_PARAMETRO}")" title="El valor con que se pidió el reporte"
+                             @ondblclick="@(() => SoltarAqui($"ESP||{pp.DES_PARAMETRO}"))">
+                            <span class="lz-ex-tipo">?</span>@pp.DES_PARAMETRO
+                        </div>
+                    }
+                    @if (Fuente.Parametros.Count == 0) { <div class="lz-ex-ayuda">La fuente no tiene parámetros.</div> }
+                </details>
+                <details open class="lz-ex-grupo">
+                    <summary>Campos especiales</summary>
+                    @foreach (var (codigo, texto) in Especiales)
+                    {
+                        var cod = codigo;
+                        <div class="lz-ex-item" draggable="true" data-arrastre="@($"ESP||{cod}")" @ondblclick="@(() => SoltarAqui($"ESP||{cod}"))">
+                            <span class="lz-ex-tipo">✦</span>@texto
+                        </div>
+                    }
+                    @* Los logos de Configuración General son imágenes, no textos: van como un objeto Imagen con ese origen. *@
+                    @foreach (var (origen, texto) in Logos)
+                    {
+                        var org = origen;
+                        <div class="lz-ex-item" draggable="true" data-arrastre="@($"IMG||{org}")" @ondblclick="@(() => SoltarAqui($"IMG||{org}"))"
+                             title="Una imagen con el logo de Configuración General">
+                            <span class="lz-ex-tipo">▣</span>@texto
+                        </div>
+                    }
+                </details>
+                <details open class="lz-ex-grupo">
+                    <summary>Grupos</summary>
+                    @foreach (var g in L.Grupos.OrderBy(g => g.NUM_NIVEL))
+                    {
+                        var gg = g;
+                        <div class="lz-ex-item" @onclick="@(() => ElegirBanda(L.Bandas.FirstOrDefault(b => b.COD_TIPO_BANDA == "GH" && b.NUM_NIVEL == gg.NUM_NIVEL)))">
+                            <span class="lz-ex-tipo">@gg.NUM_NIVEL</span>@gg.DES_COLUMNA <span style="opacity:.6;">@Orden(gg.COD_ORDEN)</span>
+                        </div>
+                    }
+                    @if (L.Grupos.Count == 0) { <div class="lz-ex-ayuda">Sin grupos. «Grupo» en la barra agrupa las filas por una columna.</div> }
+                </details>
+            }
+        </div>
+
+        @* ══════════ LIENZO ══════════ *@
+        <div class="lz-scroll">
+            <div class="lz-raiz @(_cuadricula ? "lz-con-rejilla" : "")" tabindex="0" @ref="_raiz" style="--lz-mm:@(F(Escala))px;">
+                <div class="lz-fila">
+                    <div class="lz-rotulo lz-esquina">mm</div>
+                    <div class="lz-regla" style="width:@Px(Ancho);">
+                        @for (var m = 0; m <= Ancho; m += 10)
+                        {
+                            <span class="lz-regla-n" style="left:@Px(m);">@m</span>
+                        }
+                    </div>
+                </div>
+                @foreach (var b in Ordenadas)
+                {
+                    var alto = (double)b.NUM_ALTO;
+                    <div @key="b.NUM_BANDA" class="lz-fila lz-banda @(b.FLG_SUPRIMIR ? "lz-suprimida" : "") @(_bandaSel == b.NUM_BANDA && _sel.Count == 0 ? "lz-banda-sel" : "")">
+                        <div class="lz-rotulo" data-rotulo="@b.NUM_BANDA" title="@NombreBanda(b)">
+                            <span class="lz-rotulo-t">@NombreBanda(b)</span>
+                            <small>@($"{F(alto)} mm{(b.FLG_SUPRIMIR ? " · suprimida" : "")}")@if (TieneCondiciones(Seccion, b.NUM_BANDA)) {<span class="lz-rotulo-f" title="Tiene condiciones (ƒ)"> ƒ</span>}@if (b.COD_TIPO_BANDA == "DE" && b.DES_COLOR_CEBRA is { Length: > 0 } cebra) {<span class="lz-rotulo-cebra" title="@($"Filas cebra: {cebra}")" style="background-color:@cebra;"></span>}</small>
+                        </div>
+                        <div class="lz-columna">
+                            <div class="lz-area" data-area="@b.NUM_BANDA" data-alto="@F(alto)"
+                                 style="width:@Px(Ancho);height:@Px(alto);@(b.DES_COLOR_FONDO is { Length: > 0 } cf ? $"background-color:{cf};" : "")">
+                                @foreach (var o in ObjetosDe(b))
+                                {
+                                    var sel = _sel.Contains(o.NUM_OBJETO);
+                                    <div @key="Clave(o)" class="lz-obj lz-t-@o.COD_TIPO_OBJETO.ToLowerInvariant() @(sel ? "lz-sel" : "") @(Fuera(o) || SinFormula(o) ? "lz-fuera" : "") @(TieneCondiciones(Objeto, o.NUM_OBJETO) ? "lz-cond" : "")"
+                                         data-obj="@o.NUM_OBJETO" data-banda="@o.NUM_BANDA" data-tipo="@o.COD_TIPO_OBJETO"
+                                         data-x="@F(o.NUM_X)" data-y="@F(o.NUM_Y)" data-an="@F(o.NUM_ANCHO)" data-al="@F(o.NUM_ALTO)"
+                                         style="@EstiloObjeto(o)" title="@Ayuda(o)">
+                                        @switch (o.COD_TIPO_OBJETO)
+                                        {
+                                            case "LIN":
+                                                <svg class="lz-svg" width="100%" height="100%"><line x1="0" y1="0" x2="100%" y2="100%" stroke="@(o.DES_COLOR_BORDE ?? o.DES_COLOR ?? "#000000")" stroke-width="@F(Math.Max(1, Pt((double)(o.NUM_GROSOR_BORDE ?? 0.5m))))" /></svg>
+                                                @if (o.FLG_HASTA_ABAJO) { <span class="lz-hasta"></span> }
+                                                break;
+                                            case "CUA":
+                                                @if (o.FLG_HASTA_ABAJO) { <span class="lz-hasta lz-hasta-d"></span> }
+                                                break;
+                                            case "BAR":
+                                                <div class="lz-cod">
+                                                    @if (o.COD_CODIGO == "QR")
+                                                    {
+                                                        <svg class="lz-cod-qr" viewBox="0 0 24 24" preserveAspectRatio="@($"{(o.COD_ALINEACION switch { "I" => "xMin", "D" => "xMax", _ => "xMid" })}YMid meet")"
+                                                             fill="@(o.DES_COLOR ?? "#000000")">@((MarkupString)Icons.Material.Filled.QrCode2)</svg>
+                                                    }
+                                                    else
+                                                    {
+                                                        <div class="lz-cod-barras"></div>
+                                                        @if (o.FLG_TEXTO_CODIGO) { <div class="lz-cod-texto">@o.DES_ORIGEN</div> }
+                                                    }
+                                                </div>
+                                                break;
+                                            case "IMG":
+                                                @if (o.IMG_IMAGEN is { Length: > 0 } img && !EsLogo(o))
+                                                {
+                                                    <img src="@DataUrl(img)" alt="" style="width:100%;height:100%;object-fit:contain;object-position:@Lado(o.COD_ALINEACION) center;pointer-events:none;" />
+                                                }
+                                                else
+                                                {
+                                                    <div class="lz-logo"><MudIcon Icon="@Icons.Material.Filled.Business" Size="Size.Small" /> @(Igual(o.DES_ORIGEN, "LOGO_APLICACION") ? "Logo aplicación" : "Logo empresa")</div>
+                                                }
+                                                break;
+                                            case "TAB":
+                                                var cols = TitulosTabla(o.NUM_RESULTADO ?? 1);
+                                                <div class="lz-tab">
+                                                    <div class="lz-tab-cab @(Opcion(o, "SIN_TITULOS") ? "lz-tab-sin" : "")">
+                                                        @foreach (var c in cols) { <span>@c</span> }
+                                                    </div>
+                                                    <div class="lz-tab-pie">@($"Tabla R{o.NUM_RESULTADO} · {(EnlacesDe(o).Count > 0 ? "solo las filas de la fila que se imprime" : "una fila por registro")}{(Opcion(o, "SIN_TOTAL") ? " · sin total" : "")}")</div>
+                                                </div>
+                                                break;
+                                            case "CRU":
+                                                <div class="lz-tab">
+                                                    <div class="lz-tab-cab">
+                                                        <span>@Etiqueta(o.NUM_RESULTADO ?? 1, o.DES_CRUCE_FILAS)</span>
+                                                        <span>@($"{Etiqueta(o.NUM_RESULTADO ?? 1, o.DES_CRUCE_COLUMNAS)} →")</span>
+                                                        <span class="lz-cru-total">@NombreTotal(o.COD_FUNCION)</span>
+                                                    </div>
+                                                    <div class="lz-tab-pie">@($"Tabla cruzada R{o.NUM_RESULTADO ?? 1} · {Funcion(o.COD_FUNCION)} {o.DES_ORIGEN}{(EnlacesDe(o).Count > 0 ? " · enlazada" : "")}")</div>
+                                                </div>
+                                                break;
+                                            case "GRA":
+                                                <div class="lz-gra">
+                                                    @MiniGrafico(o)
+                                                    <div class="lz-tab-pie">@PieGrafico(o)</div>
+                                                </div>
+                                                break;
+                                            case "SUB":
+                                                <div class="lz-sub">
+                                                    <div class="lz-sub-cab"><MudIcon Icon="@Icons.Material.Filled.Article" Size="Size.Small" /><span>@NombreSub(o)</span></div>
+                                                    <div class="lz-tab-pie">@($"Subinforme · {VecesSub(o)}{(EnlacesDe(o) is { Count: > 0 } en ? " · " + string.Join(", ", en.Select(x => $"{x.Nombre} = {x.Expresion}")) : "")}")</div>
+                                                </div>
+                                                break;
+                                            default:
+                                                <div class="lz-texto" style="@Girado(o)">@TextoVisible(o)</div>
+                                                break;
+                                        }
+                                        @if (sel && _sel.Count == 1)
+                                        {
+                                            @foreach (var d in Asas)
+                                            {
+                                                <span class="lz-asa lz-asa-@d" data-asa="@d"></span>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            <div class="lz-borde" data-borde="@b.NUM_BANDA" style="width:@Px(Ancho);" title="Arrastra para cambiar el alto de la sección"></div>
+                        </div>
+                    </div>
+                }
+                @* Las líneas y los cuadros que cruzan secciones, encima: lienzoEditor.js los pone de la sección donde empiezan
+                   a la sección donde terminan, según dónde quedan en pantalla. Se eligen y se mueven desde su borde. *@
+                <div class="lz-cruces">
+                    @foreach (var o in L.Objetos.Where(Cruza).OrderBy(o => o.NUM_ORDEN).ThenBy(o => o.NUM_OBJETO))
+                    {
+                        var sel = _sel.Contains(o.NUM_OBJETO);
+                        var linea = o.COD_TIPO_OBJETO == "LIN";
+                        var trazo = $"{F(Math.Max(1, Pt((double)(o.NUM_GROSOR_BORDE ?? 0.5m))))}px solid {o.DES_COLOR_BORDE ?? o.DES_COLOR ?? "#000000"}";
+                        <div @key="o.NUM_OBJETO" class="lz-cruce lz-cruce-@o.COD_TIPO_OBJETO.ToLowerInvariant() @(sel ? "lz-sel" : "") @(TieneCondiciones(Objeto, o.NUM_OBJETO) ? "lz-cond" : "")"
+                             data-cruce="@o.NUM_OBJETO" data-banda="@o.NUM_BANDA" data-banda-fin="@o.NUM_BANDA_FIN" data-tipo="@o.COD_TIPO_OBJETO"
+                             data-x="@F(o.NUM_X)" data-y="@F(o.NUM_Y)" data-an="@F(linea ? 0 : o.NUM_ANCHO)" data-al="@F(o.NUM_ALTO)" data-yf="@F(o.NUM_Y_FIN)"
+                             title="@Ayuda(o)">
+                            @if (!linea && o.DES_COLOR_FONDO is { Length: > 0 } fondo)
+                            {
+                                <div class="lz-cruce-fondo" style="background-color:@fondo;"></div>
+                            }
+                            <div class="lz-cruce-cuerpo" style="@(linea ? $"border-left:{trazo};" : (o.NUM_GROSOR_BORDE ?? 0.5m) > 0 ? $"border:{trazo};" : "border:1px dotted #90a4ae;")"></div>
+                            @foreach (var lado in linea ? new[] { "v" } : new[] { "n", "s", "w", "e" })
+                            {
+                                <i class="lz-ct lz-ct-@lado"></i>
+                            }
+                            @if (sel && _sel.Count == 1)
+                            {
+                                <span class="lz-cruce-fin" data-cruce-fin="1" title="Arrastra para cambiar dónde termina (también a otra sección)"></span>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        @* ══════════ PROPIEDADES ══════════ *@
+        <div class="lz-propiedades">
+            <div class="lz-panel-cab">Propiedades</div>
+            <div class="lz-prop-cuerpo">
+                @if (_formGrupo)
+                {
+                    <div class="lz-prop-titulo">Nuevo grupo (nivel @(L.Grupos.Count + 1))</div>
+                    <div class="lz-campo"><label>Agrupar por</label>
+                        <select class="lz-in" value="@_grupoColumna" @onchange="@(e => _grupoColumna = e.Value?.ToString())">
+                            @foreach (var c in Columnas(1)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                        </select>
+                    </div>
+                    <div class="lz-campo"><label>Orden</label>
+                        <select class="lz-in" value="@_grupoOrden" @onchange="@(e => _grupoOrden = e.Value?.ToString() ?? "A")">
+                            <option value="A">Ascendente</option><option value="D">Descendente</option><option value="N">Como viene del SP</option>
+                        </select>
+                    </div>
+                    <div class="d-flex gap-2 mt-2">
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" OnClick="InsertarGrupo">Insertar</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => _formGrupo = false)">Cancelar</MudButton>
+                    </div>
+                    <div class="lz-ayuda">Crea el encabezado y el pie del grupo. El encabezado lleva el valor del grupo; en el pie van los resúmenes.</div>
+                }
+                else if (Unico is { } o)
+                {
+                    var texto = o.COD_TIPO_OBJETO is "TXT" or "CAM" or "RES" or "ESP" or "FOR";
+                    <div class="lz-prop-titulo">@NombreTipo(o.COD_TIPO_OBJETO) <span style="opacity:.55;font-weight:400;">N° @o.NUM_OBJETO</span></div>
+                    @switch (o.COD_TIPO_OBJETO)
+                    {
+                        case "TXT":
+                            <div class="lz-campo lz-campo-ancho"><label>Texto</label>
+                                <textarea class="lz-in" rows="3" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v ?? "", e.Value))"></textarea>
+                            </div>
+                            <div class="lz-ayuda">Admite {@@PARAMETRO}, {COLUMNA} del resultado 1 y campos especiales: {USUARIO}, {FECHA}, {FECHA_HORA}, {PAGINA}, {TOTAL_PAGINAS}, {FILTROS}, {TITULO}.
+                                Y las referencias de las fórmulas: {F.Nombre}, {R2.COLUMNA}, {Σ.Suma.COLUMNA.Grupo1}, {#Pagina}.</div>
+                            break;
+                        case "FOR":
+                            <div class="lz-campo"><label>Fórmula</label>
+                                <div class="d-flex gap-1 align-center">
+                                    <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                        @foreach (var f in L.Formulas.OrderBy(f => f.DES_NOMBRE, StringComparer.OrdinalIgnoreCase)) { <option value="@f.DES_NOMBRE">@f.DES_NOMBRE</option> }
+                                        @if (SinFormula(o)) { <option value="@o.DES_ORIGEN">@($"{o.DES_ORIGEN} (no existe)")</option> }
+                                    </select>
+                                    <button type="button" class="lz-mini" title="Editar la fórmula" disabled="@SinFormula(o)" @onclick="@(() => EditarFormula(FormulaDe(o.DES_ORIGEN)))">✎</button>
+                                </div>
+                            </div>
+                            @if (FormulaDe(o.DES_ORIGEN) is { } fo)
+                            {
+                                <div class="lz-codigo" title="@fo.DES_FORMULA">@fo.DES_FORMULA</div>
+                            }
+                            else
+                            {
+                                <div class="lz-aviso">La fórmula «@o.DES_ORIGEN» no existe: elige otra o créala.</div>
+                            }
+                            break;
+                        case "CAM":
+                            <div class="lz-campo"><label>Resultado</label>
+                                <select class="lz-in" value="@(o.NUM_RESULTADO ?? 1)" @onchange="@(e => CambiarResultadoCampo(o, Ent(e.Value) ?? 1))">
+                                    @foreach (var r in Resultados) { <option value="@r.NUM_RESULTADO">@($"R{r.NUM_RESULTADO} · {r.DES_RESULTADO}")</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Columna</label>
+                                <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                    @foreach (var c in Columnas(o.NUM_RESULTADO ?? 1)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                </select>
+                            </div>
+                            <div class="lz-ayuda">@((o.NUM_RESULTADO ?? 1) == 1 ? "Del resultado 1: la fila que se imprime." : "De otro resultado: su primera fila.")</div>
+                            break;
+                        case "RES":
+                            <div class="lz-campo"><label>Función</label>
+                                <select class="lz-in" value="@o.COD_FUNCION" @onchange="@(e => Texto(v => o.COD_FUNCION = v ?? "SUM", e.Value))">
+                                    <option value="SUM">Suma</option><option value="CNT">Cuenta</option><option value="CND">Cuenta distinta</option>
+                                    <option value="AVG">Promedio</option><option value="MAX">Máximo</option><option value="MIN">Mínimo</option>
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Columna (R1)</label>
+                                <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                    @foreach (var c in Columnas(1)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>De</label>
+                                <select class="lz-in" value="@(o.NUM_NIVEL ?? 0)" @onchange="@(e => Num(v => o.NUM_NIVEL = (int)v, e.Value, 0, 9))">
+                                    <option value="0">Todo el informe</option>
+                                    @foreach (var g in L.Grupos.OrderBy(g => g.NUM_NIVEL)) { <option value="@g.NUM_NIVEL">@($"Grupo {g.NUM_NIVEL}: {g.DES_COLUMNA}")</option> }
+                                </select>
+                            </div>
+                            break;
+                        case "ESP":
+                            <div class="lz-campo"><label>Muestra</label>
+                                <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                    @foreach (var (codigo, nombre) in Especiales) { <option value="@codigo">@nombre</option> }
+                                    @foreach (var p in Fuente?.Parametros ?? new()) { <option value="@p.DES_PARAMETRO">@($"Parámetro {p.DES_PARAMETRO}")</option> }
+                                </select>
+                            </div>
+                            break;
+                        case "TAB":
+                            <div class="lz-campo"><label>Resultado</label>
+                                <select class="lz-in" value="@(o.NUM_RESULTADO ?? 1)" @onchange="@(e => Num(v => o.NUM_RESULTADO = (int)v, e.Value, 1, 99))">
+                                    @foreach (var r in Resultados) { <option value="@r.NUM_RESULTADO">@($"R{r.NUM_RESULTADO} · {r.DES_RESULTADO}")</option> }
+                                </select>
+                            </div>
+                            <label class="lz-chk"><input type="checkbox" checked="@Opcion(o, "SIN_TITULOS")" @onchange="@(e => PonerOpcion(o, "SIN_TITULOS", e.Value is true))" /> Sin la fila de títulos</label>
+                            <label class="lz-chk"><input type="checkbox" checked="@Opcion(o, "ULTIMA_NEGRITA")" @onchange="@(e => PonerOpcion(o, "ULTIMA_NEGRITA", e.Value is true))" /> Última fila resaltada (total)</label>
+                            <label class="lz-chk" title="La fila de total suma las columnas con «Total» en la pestaña «Columnas». Márcala para no imprimirla."><input type="checkbox" checked="@Opcion(o, "SIN_TOTAL")" @onchange="@(e => PonerOpcion(o, "SIN_TOTAL", e.Value is true))" /> Sin la fila de total</label>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> No imprimirla si no trae filas</label>
+                            <div class="lz-ayuda">Una fila por registro del resultado; si no entra, sigue en la página siguiente repitiendo los títulos. Las columnas, sus títulos, anchos y totales se eligen en la pestaña «Columnas».</div>
+                            @EnlacesTabla(o)
+                            break;
+                        case "CRU":
+                            var rc = o.NUM_RESULTADO ?? 1;
+                            <div class="lz-campo"><label>Resultado</label>
+                                <select class="lz-in" value="@rc" @onchange="@(e => CambiarResultadoCruzada(o, Ent(e.Value) ?? 1))">
+                                    @foreach (var r in Resultados) { <option value="@r.NUM_RESULTADO">@($"R{r.NUM_RESULTADO} · {r.DES_RESULTADO}")</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Filas: una por cada valor de</label>
+                                <select class="lz-in" value="@o.DES_CRUCE_FILAS" @onchange="@(e => Texto(v => o.DES_CRUCE_FILAS = v, e.Value))">
+                                    @if (o.DES_CRUCE_FILAS is null) { <option value="">(elige una columna)</option> }
+                                    @foreach (var c in Columnas(rc)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Columnas: una por cada valor de</label>
+                                <select class="lz-in" value="@o.DES_CRUCE_COLUMNAS" @onchange="@(e => Texto(v => o.DES_CRUCE_COLUMNAS = v, e.Value))">
+                                    @if (o.DES_CRUCE_COLUMNAS is null) { <option value="">(elige una columna)</option> }
+                                    @foreach (var c in Columnas(rc)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                </select>
+                            </div>
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>En cada celda</label>
+                                    <select class="lz-in" value="@(o.COD_FUNCION ?? "SUM")" @onchange="@(e => Texto(v => o.COD_FUNCION = v ?? "SUM", e.Value))">
+                                        <option value="SUM">Suma</option><option value="CNT">Cuenta</option><option value="CND">Cuenta distinta</option>
+                                        <option value="AVG">Promedio</option><option value="MAX">Máximo</option><option value="MIN">Mínimo</option>
+                                    </select>
+                                </div>
+                                <div class="lz-campo"><label>de la columna</label>
+                                    <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                        @if (o.DES_ORIGEN is null) { <option value="">(elige una columna)</option> }
+                                        @foreach (var c in Columnas(rc)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                    </select>
+                                </div>
+                            </div>
+                            @if (o.DES_CRUCE_FILAS is not null && Igual(o.DES_CRUCE_FILAS, o.DES_CRUCE_COLUMNAS))
+                            {
+                                <div class="lz-aviso">Las filas y las columnas tienen que ser columnas distintas.</div>
+                            }
+                            <div class="lz-campo"><label>Formato de las celdas</label>
+                                <input class="lz-in mono" list="lz-formatos" placeholder="(el de la columna)" value="@o.DES_FORMATO" @onchange="@(e => Texto(v => o.DES_FORMATO = v, e.Value))" />
+                            </div>
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Fuente</label>
+                                    <select class="lz-in" value="@(o.DES_FUENTE ?? "")" @onchange="@(e => Texto(v => o.DES_FUENTE = v, e.Value))">
+                                        <option value="">Sin serifa</option><option value="SERIF">Con serifa</option><option value="MONO">Monoespaciada</option>
+                                    </select>
+                                </div>
+                                <div class="lz-campo"><label>Tamaño (pt)</label>
+                                    <input class="lz-in" type="number" step="0.5" min="4" max="72" placeholder="@D.NUM_TAMANO_LETRA" value="@F(o.NUM_TAMANO_LETRA)"
+                                           @onchange="@(e => NumONulo(v => o.NUM_TAMANO_LETRA = v, e.Value, 4, 72))" />
+                                </div>
+                            </div>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> No imprimirla si no trae filas</label>
+                            <div class="lz-ayuda">Una fila por cada valor de las filas y una columna por cada valor de las columnas, ordenadas (los vacíos al final, como «(sin dato)»), con su total.
+                                @(rc == 1 ? "Del resultado 1: en el encabezado o el pie de un grupo resume las filas del grupo; en otra sección, todas." : "De otro resultado: todas sus filas.")
+                                Las columnas que no entran en el ancho del objeto siguen en otra tabla debajo, con las mismas filas.</div>
+                            @EnlacesTabla(o)
+                            break;
+                        case "GRA":
+                            var rg = o.NUM_RESULTADO ?? 1;
+                            var tortaG = o.COD_GRAFICO is "TOR" or "ANI";
+                            <div class="lz-campo"><label>Tipo</label>
+                                <select class="lz-in" value="@(o.COD_GRAFICO ?? "COL")" @onchange="@(e => CambiarTipoGrafico(o, e.Value?.ToString()))">
+                                    @foreach (var (codigo, nombre) in TiposGrafico) { <option value="@codigo">@nombre</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Resultado</label>
+                                <select class="lz-in" value="@rg" @onchange="@(e => CambiarResultadoGrafico(o, Ent(e.Value) ?? 1))">
+                                    @foreach (var r in Resultados) { <option value="@r.NUM_RESULTADO">@($"R{r.NUM_RESULTADO} · {r.DES_RESULTADO}")</option> }
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>@(tortaG ? "Porciones: una por cada valor de" : "Categorías: una por cada valor de")</label>
+                                <select class="lz-in" value="@o.DES_CRUCE_FILAS" @onchange="@(e => Texto(v => o.DES_CRUCE_FILAS = v, e.Value))">
+                                    @if (o.DES_CRUCE_FILAS is null) { <option value="">(elige una columna)</option> }
+                                    @foreach (var c in Columnas(rg)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                </select>
+                            </div>
+                            @if (!tortaG)
+                            {
+                                <div class="lz-campo"><label>Series: una por cada valor de</label>
+                                    <select class="lz-in" value="@(o.DES_CRUCE_COLUMNAS ?? "")" @onchange="@(e => CambiarSeriesGrafico(o, e.Value?.ToString()))">
+                                        <option value="">(una sola serie)</option>
+                                        @foreach (var c in Columnas(rg)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                    </select>
+                                </div>
+                            }
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Cada valor es</label>
+                                    <select class="lz-in" value="@(o.COD_FUNCION ?? "SUM")" @onchange="@(e => Texto(v => o.COD_FUNCION = v ?? "SUM", e.Value))">
+                                        <option value="SUM">Suma</option><option value="CNT">Cuenta</option><option value="CND">Cuenta distinta</option>
+                                        <option value="AVG">Promedio</option><option value="MAX">Máximo</option><option value="MIN">Mínimo</option>
+                                    </select>
+                                </div>
+                                <div class="lz-campo"><label>de la columna</label>
+                                    <select class="lz-in" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))">
+                                        @if (o.DES_ORIGEN is null) { <option value="">(elige una columna)</option> }
+                                        @foreach (var c in Columnas(rg)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                                    </select>
+                                </div>
+                            </div>
+                            @if (!tortaG && o.DES_CRUCE_FILAS is not null && Igual(o.DES_CRUCE_FILAS, o.DES_CRUCE_COLUMNAS))
+                            {
+                                <div class="lz-aviso">Las categorías y las series tienen que ser columnas distintas.</div>
+                            }
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Formato de los valores</label>
+                                    <input class="lz-in mono" list="lz-formatos" placeholder="(el de la columna)" value="@o.DES_FORMATO" @onchange="@(e => Texto(v => o.DES_FORMATO = v, e.Value))" />
+                                </div>
+                                <div class="lz-campo"><label>Máximo de @(tortaG ? "porciones" : "categorías")</label>
+                                    <input class="lz-in" type="number" step="1" min="2" max="@(tortaG ? 8 : 50)" placeholder="@(tortaG ? "6" : "todas")" value="@o.NUM_MAXIMO_CATEGORIAS"
+                                           @onchange="@(e => NumONulo(v => o.NUM_MAXIMO_CATEGORIAS = v is { } m ? (int)Math.Round(m) : null, e.Value, 2, tortaG ? 8 : 50))" />
+                                </div>
+                            </div>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_ORDEN_VALOR" @onchange="@(e => Bool(v => o.FLG_ORDEN_VALOR = v, e.Value))" /> De mayor a menor valor (si no, por su nombre o fecha)</label>
+                            @if (o.COD_GRAFICO is "COL" or "BAR" or null && o.DES_CRUCE_COLUMNAS is not null)
+                            {
+                                <label class="lz-chk"><input type="checkbox" checked="@o.FLG_APILADO" @onchange="@(e => Bool(v => o.FLG_APILADO = v, e.Value))" /> Apiladas (las series una sobre otra)</label>
+                            }
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_VALORES" @onchange="@(e => Bool(v => o.FLG_VALORES = v, e.Value))" /> Mostrar los valores</label>
+                            <div class="lz-prop-sub">Aspecto</div>
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Fuente</label>
+                                    <select class="lz-in" value="@(o.DES_FUENTE ?? "")" @onchange="@(e => Texto(v => o.DES_FUENTE = v, e.Value))">
+                                        <option value="">Sin serifa</option><option value="SERIF">Con serifa</option><option value="MONO">Monoespaciada</option>
+                                    </select>
+                                </div>
+                                <div class="lz-campo"><label>Tamaño (pt)</label>
+                                    <input class="lz-in" type="number" step="0.5" min="4" max="72" placeholder="@D.NUM_TAMANO_LETRA" value="@F(o.NUM_TAMANO_LETRA)"
+                                           @onchange="@(e => NumONulo(v => o.NUM_TAMANO_LETRA = v, e.Value, 4, 72))" />
+                                </div>
+                            </div>
+                            <div class="lz-dos">
+                                @if (!tortaG && o.DES_CRUCE_COLUMNAS is null)
+                                {
+                                    <div class="lz-campo"><label>Color</label>
+                                        <div class="d-flex gap-1 align-center">
+                                            <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR ?? PaletaGrafico[0])" @onchange="@(e => Texto(v => o.DES_COLOR = ColorHex(v), e.Value))" />
+                                            <button type="button" class="lz-mini" title="El de siempre (azul)" disabled="@(o.DES_COLOR is null)" @onclick="@(() => { Antes(); o.DES_COLOR = null; })">✕</button>
+                                        </div>
+                                    </div>
+                                }
+                                <div class="lz-campo"><label>Fondo</label>
+                                    <div class="d-flex gap-1 align-center">
+                                        <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_FONDO ?? "#ffffff")" @onchange="@(e => Texto(v => o.DES_COLOR_FONDO = ColorHex(v), e.Value))" />
+                                        <button type="button" class="lz-mini" title="Sin fondo" disabled="@(o.DES_COLOR_FONDO is null)" @onclick="@(() => { Antes(); o.DES_COLOR_FONDO = null; })">✕</button>
+                                        @Fx(Objeto, o.NUM_OBJETO, "FONDO")
+                                    </div>
+                                </div>
+                            </div>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> No imprimirlo si no trae datos</label>
+                            <div class="lz-ayuda">@AyudaGrafico(o)</div>
+                            @EnlacesTabla(o)
+                            break;
+                        case "SUB":
+                            <div class="lz-campo"><label>Diseño que se imprime adentro</label>
+                                <select class="lz-in" value="@(o.NUM_DISENO_SUB?.ToString() ?? "")" @onchange="@(e => CambiarSubinforme(o, Ent(e.Value)))">
+                                    @if (o.NUM_DISENO_SUB is null) { <option value="">(elige un diseño)</option> }
+                                    @foreach (var d in Subinformables) { <option value="@d.NUM_DISENO">@d.DES_DISENO</option> }
+                                    @if (o.NUM_DISENO_SUB is { } ns && !Subinformables.Any(d => d.NUM_DISENO == ns)) { <option value="@ns">@($"Diseño {ns} (no está en la lista)")</option> }
+                                </select>
+                            </div>
+                            @if (o.NUM_DISENO_SUB is null)
+                            {
+                                <div class="lz-aviso">Elige el diseño libre que va adentro (tiene que estar grabado).</div>
+                            }
+                            <div class="lz-ayuda">Sale @VecesSub(o), en el ancho de este objeto; de alto, lo que ocupe lo que imprime. Su encabezado de página va debajo de su encabezado del informe y se repite arriba si sigue en otra página (pon ahí los títulos de sus columnas). Su pie de página no sale. Sale en el PDF y en el Excel con formato.</div>
+                            <div class="lz-prop-sub">Sus parámetros</div>
+                            @ParametrosSub(o)
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> No imprimirlo si no trae filas (ni si falta el dato que lo enlaza)</label>
+                            break;
+                        case "IMG":
+                            <div class="lz-campo"><label>Imagen</label>
+                                <select class="lz-in" value="@(Igual(o.DES_ORIGEN, "LOGO_APLICACION") ? "LOGO_APLICACION" : EsLogo(o) ? "LOGO" : "")" @onchange="@(e => OrigenImagen(o, e.Value?.ToString()))">
+                                    <option value="LOGO">Logo de la empresa</option><option value="LOGO_APLICACION">Logo de la aplicación</option>
+                                    <option value="">Una imagen propia</option>
+                                </select>
+                            </div>
+                            @if (!EsLogo(o))
+                            {
+                                <div class="lz-campo lz-campo-ancho"><label>Archivo (PNG, JPEG, GIF o BMP; hasta 2 MB)</label>
+                                    <InputFile class="lz-in" accept=".png,.jpg,.jpeg,.gif,.bmp" OnChange="@(e => SubirImagen(o, e))" />
+                                </div>
+                            }
+                            <div class="lz-campo"><label>Alineación</label>
+                                <select class="lz-in" value="@(o.COD_ALINEACION ?? "C")" @onchange="@(e => Texto(v => o.COD_ALINEACION = v, e.Value))">
+                                    <option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option>
+                                </select>
+                            </div>
+                            <div class="lz-ayuda">La imagen entra entera en el recuadro, sin deformarse.</div>
+                            break;
+                        case "BAR":
+                            var qr = o.COD_CODIGO == "QR";
+                            <div class="lz-campo"><label>Tipo</label>
+                                <select class="lz-in" value="@(o.COD_CODIGO ?? "C128")" @onchange="@(e => Texto(v => o.COD_CODIGO = v ?? "C128", e.Value))">
+                                    <option value="C128">Code 128: letras, números y signos</option>
+                                    <option value="EAN">EAN-13: el de los productos (13 números)</option>
+                                    <option value="QR">QR: cualquier texto</option>
+                                </select>
+                            </div>
+                            <div class="lz-campo lz-campo-ancho"><label>Qué codifica</label>
+                                <textarea class="lz-in mono" rows="2" value="@o.DES_ORIGEN" @onchange="@(e => Texto(v => o.DES_ORIGEN = v, e.Value))"></textarea>
+                            </div>
+                            <div class="lz-ayuda">Se escribe como un texto: {COLUMNA} del resultado 1, {@@PARAMETRO}, {F.Nombre}, {R2.COLUMNA}, {PAGINA}... Por ejemplo OC-{NUM_PEDIDO_COMERCIAL}.
+                                @(o.COD_CODIGO == "EAN" ? " En un EAN-13 de 12 números se agrega el dígito de control." : "") Si al imprimir el valor no se puede codificar, en su lugar sale el motivo en rojo.</div>
+                            @if (AvisoCodigo(o) is { } aviso)
+                            {
+                                <div class="lz-aviso">@aviso</div>
+                            }
+                            @if (qr)
+                            {
+                                <div class="lz-campo"><label>Alineación</label>
+                                    <select class="lz-in" value="@(o.COD_ALINEACION ?? "C")" @onchange="@(e => Texto(v => o.COD_ALINEACION = v, e.Value))">
+                                        <option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option>
+                                    </select>
+                                </div>
+                                <div class="lz-ayuda">El QR es cuadrado: toma el lado menor del recuadro.</div>
+                            }
+                            else
+                            {
+                                <label class="lz-chk"><input type="checkbox" checked="@o.FLG_TEXTO_CODIGO" @onchange="@(e => Bool(v => o.FLG_TEXTO_CODIGO = v, e.Value))" /> El texto debajo de las barras</label>
+                                @if (o.FLG_TEXTO_CODIGO)
+                                {
+                                    <div class="lz-dos">
+                                        <div class="lz-campo"><label>Fuente</label>
+                                            <select class="lz-in" value="@(o.DES_FUENTE ?? "")" @onchange="@(e => Texto(v => o.DES_FUENTE = v, e.Value))">
+                                                <option value="">Sin serifa</option><option value="SERIF">Con serifa</option><option value="MONO">Monoespaciada</option>
+                                            </select>
+                                        </div>
+                                        <div class="lz-campo"><label>Tamaño (pt)</label>
+                                            <input class="lz-in" type="number" step="0.5" min="4" max="72" placeholder="@D.NUM_TAMANO_LETRA" value="@F(o.NUM_TAMANO_LETRA)"
+                                                   @onchange="@(e => NumONulo(v => o.NUM_TAMANO_LETRA = v, e.Value, 4, 72))" />
+                                        </div>
+                                    </div>
+                                }
+                                <div class="lz-ayuda">Las barras llenan el ancho del recuadro, con un margen en blanco a cada lado para el lector. Para que se lea bien, dale unos 35 mm de ancho o más.</div>
+                            }
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Color</label>
+                                    <div class="d-flex gap-1 align-center">
+                                        <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR ?? "#000000")" @onchange="@(e => Texto(v => o.DES_COLOR = ColorHex(v), e.Value))" />
+                                        @Fx(Objeto, o.NUM_OBJETO, "COLOR")
+                                    </div>
+                                </div>
+                                <div class="lz-campo"><label>Fondo</label>
+                                    <div class="d-flex gap-1 align-center">
+                                        <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_FONDO ?? "#ffffff")" @onchange="@(e => Texto(v => o.DES_COLOR_FONDO = ColorHex(v), e.Value))" />
+                                        <button type="button" class="lz-mini" title="Sin fondo" disabled="@(o.DES_COLOR_FONDO is null)" @onclick="@(() => { Antes(); o.DES_COLOR_FONDO = null; })">✕</button>
+                                        @Fx(Objeto, o.NUM_OBJETO, "FONDO")
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="lz-ayuda">Oscuro sobre claro: un lector no lee un código claro sobre fondo oscuro.</div>
+                            break;
+                    }
+
+                    @if (texto)
+                    {
+                        @if (o.COD_TIPO_OBJETO is "CAM" or "RES" or "ESP" or "FOR")
+                        {
+                            <div class="lz-campo"><label>Formato</label>
+                                <input class="lz-in mono" list="lz-formatos" placeholder="@(o.COD_TIPO_OBJETO == "FOR" ? "(el de siempre)" : "(el de la columna)")" value="@o.DES_FORMATO" @onchange="@(e => Texto(v => o.DES_FORMATO = v, e.Value))" />
+                            </div>
+                        }
+                        <div class="lz-prop-sub">Letra</div>
+                        <div class="lz-dos">
+                            <div class="lz-campo"><label>Fuente</label>
+                                <select class="lz-in" value="@(o.DES_FUENTE ?? "")" @onchange="@(e => Texto(v => o.DES_FUENTE = v, e.Value))">
+                                    <option value="">Sin serifa</option><option value="SERIF">Con serifa</option><option value="MONO">Monoespaciada</option>
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Tamaño (pt)</label>
+                                <input class="lz-in" type="number" step="0.5" min="4" max="72" placeholder="@D.NUM_TAMANO_LETRA" value="@F(o.NUM_TAMANO_LETRA)"
+                                       @onchange="@(e => NumONulo(v => o.NUM_TAMANO_LETRA = v, e.Value, 4, 72))" />
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <span class="d-inline-flex align-center gap-1"><label class="lz-chk"><input type="checkbox" checked="@o.FLG_NEGRITA" @onchange="@(e => Bool(v => o.FLG_NEGRITA = v, e.Value))" /> <b>Negrita</b></label>@Fx(Objeto, o.NUM_OBJETO, "NEGRITA")</span>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_CURSIVA" @onchange="@(e => Bool(v => o.FLG_CURSIVA = v, e.Value))" /> <i>Cursiva</i></label>
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUBRAYADO" @onchange="@(e => Bool(v => o.FLG_SUBRAYADO = v, e.Value))" /> <u>Subrayado</u></label>
+                        </div>
+                        <div class="lz-dos">
+                            <div class="lz-campo"><label>Alineación</label>
+                                <select class="lz-in" value="@(o.COD_ALINEACION ?? "I")" @onchange="@(e => Texto(v => o.COD_ALINEACION = v, e.Value))">
+                                    <option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option><option value="J">Justificado</option>
+                                </select>
+                            </div>
+                            <div class="lz-campo"><label>Color</label>
+                                <div class="d-flex gap-1 align-center">
+                                    <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR ?? "#000000")" @onchange="@(e => Texto(v => o.DES_COLOR = ColorHex(v), e.Value))" />
+                                    @Fx(Objeto, o.NUM_OBJETO, "COLOR")
+                                </div>
+                            </div>
+                        </div>
+                        <div class="lz-campo"><label>Giro</label>
+                            <select class="lz-in" value="@o.NUM_GIRO" @onchange="@(e => Girar(o, Ent(e.Value) ?? 0))">
+                                <option value="0">Sin girar</option>
+                                <option value="90">90°: se lee de abajo hacia arriba</option>
+                                <option value="270">270°: se lee de arriba hacia abajo</option>
+                                <option value="180">180°: de cabeza</option>
+                            </select>
+                        </div>
+                        @if (o.NUM_GIRO is 90 or 270)
+                        {
+                            <div class="lz-ayuda">Los renglones corren a lo alto del recuadro y no crece: lo que no entra se corta. En el Excel con formato la celda sale girada.</div>
+                        }
+                        else if (o.NUM_GIRO == 180)
+                        {
+                            <div class="lz-ayuda">En el Excel con formato sale sin girar: Excel no gira un texto de cabeza.</div>
+                        }
+                        <div class="lz-prop-sub">Recuadro</div>
+                        <div class="lz-dos">
+                            <div class="lz-campo"><label>Fondo</label>
+                                <div class="d-flex gap-1 align-center">
+                                    <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_FONDO ?? "#ffffff")" @onchange="@(e => Texto(v => o.DES_COLOR_FONDO = ColorHex(v), e.Value))" />
+                                    <button type="button" class="lz-mini" title="Sin fondo" disabled="@(o.DES_COLOR_FONDO is null)" @onclick="@(() => { Antes(); o.DES_COLOR_FONDO = null; })">✕</button>
+                                    @Fx(Objeto, o.NUM_OBJETO, "FONDO")
+                                </div>
+                            </div>
+                            <div class="lz-campo"><label>Bordes</label>
+                                <div class="d-flex gap-1">
+                                    @foreach (var (letra, nombre) in Bordes)
+                                    {
+                                        var l = letra;
+                                        <label class="lz-chk" title="@nombre"><input type="checkbox" checked="@((o.DES_BORDES ?? "").Contains(l))" @onchange="@(e => PonerBorde(o, l, e.Value is true))" />@nombre[0]</label>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                        @if (!string.IsNullOrEmpty(o.DES_BORDES))
+                        {
+                            <div class="lz-dos">
+                                <div class="lz-campo"><label>Grosor (pt)</label>
+                                    <input class="lz-in" type="number" step="0.25" min="0" max="20" value="@F(o.NUM_GROSOR_BORDE ?? 0.5m)" @onchange="@(e => NumONulo(v => o.NUM_GROSOR_BORDE = v, e.Value, 0, 20))" />
+                                </div>
+                                <div class="lz-campo"><label>Color del borde</label>
+                                    <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_BORDE ?? "#000000")" @onchange="@(e => Texto(v => o.DES_COLOR_BORDE = ColorHex(v), e.Value))" />
+                                </div>
+                            </div>
+                        }
+                        <div class="lz-prop-sub">Al imprimir</div>
+                        <label class="lz-chk" title="@(o.NUM_GIRO is 90 or 270 ? "Un texto girado a lo alto no crece" : "")"><input type="checkbox" checked="@o.FLG_PUEDE_CRECER" disabled="@(o.NUM_GIRO is 90 or 270)" @onchange="@(e => Bool(v => o.FLG_PUEDE_CRECER = v, e.Value))" /> Puede crecer (un texto largo baja a otra línea y empuja lo de abajo)</label>
+                        <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> Suprimir si está vacío</label>
+                        @if (o.COD_TIPO_OBJETO is "CAM" or "FOR")
+                        {
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_REPETIDO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_REPETIDO = v, e.Value))" /> Suprimir si se repite (en el detalle)</label>
+                        }
+                    }
+                    else if (o.COD_TIPO_OBJETO is "LIN" or "CUA")
+                    {
+                        <div class="lz-dos">
+                            <div class="lz-campo"><label>Grosor (pt)</label>
+                                <input class="lz-in" type="number" step="0.25" min="0" max="20" value="@F(o.NUM_GROSOR_BORDE ?? 0.5m)" @onchange="@(e => NumONulo(v => o.NUM_GROSOR_BORDE = v, e.Value, 0, 20))" />
+                            </div>
+                            <div class="lz-campo"><label>Color</label>
+                                <div class="d-flex gap-1 align-center">
+                                    <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_BORDE ?? "#000000")" @onchange="@(e => Texto(v => o.DES_COLOR_BORDE = ColorHex(v), e.Value))" />
+                                    @Fx(Objeto, o.NUM_OBJETO, "COLOR")
+                                </div>
+                            </div>
+                        </div>
+                        @if (o.COD_TIPO_OBJETO == "CUA")
+                        {
+                            <div class="lz-campo"><label>Fondo</label>
+                                <div class="d-flex gap-1 align-center">
+                                    <input class="lz-in lz-color" type="color" value="@(o.DES_COLOR_FONDO ?? "#ffffff")" @onchange="@(e => Texto(v => o.DES_COLOR_FONDO = ColorHex(v), e.Value))" />
+                                    <button type="button" class="lz-mini" title="Sin fondo" disabled="@(o.DES_COLOR_FONDO is null)" @onclick="@(() => { Antes(); o.DES_COLOR_FONDO = null; })">✕</button>
+                                    @Fx(Objeto, o.NUM_OBJETO, "FONDO")
+                                </div>
+                            </div>
+                        }
+                        else if (!Cruza(o))
+                        {
+                            <div class="lz-ayuda">Alto 0: horizontal. Ancho 0: vertical. Con ancho y alto: en diagonal.</div>
+                        }
+                        @if (!Cruza(o))
+                        {
+                            var puede = o.COD_TIPO_OBJETO == "CUA" || o.NUM_ANCHO == 0;
+                            <label class="lz-chk"><input type="checkbox" checked="@o.FLG_HASTA_ABAJO" disabled="@(!puede && !o.FLG_HASTA_ABAJO)" @onchange="@(e => Bool(v => o.FLG_HASTA_ABAJO = v, e.Value))" /> Hasta el pie de la sección (si crece)</label>
+                            <div class="lz-ayuda">@(puede
+                                ? $"Si un texto de la sección crece, {(o.COD_TIPO_OBJETO == "CUA" ? "el cuadro se estira" : "la línea se estira")} y su borde de abajo queda a la misma distancia del pie de la sección que en el diseño. Para las rayas entre columnas y el recuadro de cada fila."
+                                : "Solo una línea vertical (ancho 0) o un cuadro llega al pie de la sección.")</div>
+                        }
+                        var inicio = L.Bandas.FirstOrDefault(x => x.NUM_BANDA == o.NUM_BANDA);
+                        var socias = inicio is null ? new List<ReporteLienzoBanda>() : Socias(inicio).ToList();
+                        <div class="lz-prop-sub">Hasta otra sección</div>
+                        <div class="lz-campo"><label>Termina en</label>
+                            <select class="lz-in" value="@(Cruza(o) ? o.NUM_BANDA_FIN.ToString() : "")" disabled="@(socias.Count == 0 && !Cruza(o))"
+                                    @onchange="@(e => TerminarEn(o, Ent(e.Value)))">
+                                <option value="">Esta misma sección</option>
+                                @foreach (var s in socias) { <option value="@s.NUM_BANDA">@NombreBanda(s)</option> }
+                            </select>
+                        </div>
+                        @if (Cruza(o))
+                        {
+                            <div class="lz-campo"><label>Y final (mm, en esa sección)</label>
+                                <input class="lz-in" type="number" step="0.5" min="0" value="@F(o.NUM_Y_FIN)" @onchange="@(e => YFinal(o, e.Value))" />
+                            </div>
+                            <div class="lz-ayuda">Va de la Y de esta sección a la Y final de aquella. Si sigue en otra página, se cierra al pie de cada página y vuelve a empezar arriba.@(o.COD_TIPO_OBJETO == "LIN" ? " Una línea que cruza es vertical." : "")</div>
+                        }
+                        else if (socias.Count == 0)
+                        {
+                            <div class="lz-ayuda">Desde esta sección no puede seguir a otra. Puede ir del encabezado de un grupo a su pie, del encabezado al pie del informe o de la página, o a otra parte de la misma sección (a → b).</div>
+                        }
+                        else
+                        {
+                            <div class="lz-ayuda">Para que siga hasta otra sección (un recuadro de todo el grupo, una raya entre columnas), elígela aquí o estíralo desde el asa de abajo hasta ella.</div>
+                        }
+                    }
+
+                    @if (!texto)
+                    {
+                        <div class="lz-prop-sub">Al imprimir</div>
+                    }
+                    @if (o.COD_TIPO_OBJETO == "BAR")
+                    {
+                        <label class="lz-chk"><input type="checkbox" checked="@o.FLG_SUPRIMIR_VACIO" @onchange="@(e => Bool(v => o.FLG_SUPRIMIR_VACIO = v, e.Value))" /> No imprimirlo si no hay qué codificar</label>
+                    }
+                    <div class="d-flex align-center gap-1"><span class="lz-chk" style="cursor:default;">No imprimir si…</span>@Fx(Objeto, o.NUM_OBJETO, "SUPRIMIR")</div>
+                    @Condiciones(Objeto, o.NUM_OBJETO)
+
+                    var cruza = Cruza(o);
+                    <div class="lz-prop-sub">Posición (mm)</div>
+                    <div class="lz-dos">
+                        <div class="lz-campo"><label>X</label><input class="lz-in" type="number" step="0.5" min="0" value="@F(o.NUM_X)" @onchange="@(e => NumMm(v => o.NUM_X = v, e.Value))" /></div>
+                        <div class="lz-campo"><label>@(cruza ? "Y (donde empieza)" : "Y")</label><input class="lz-in" type="number" step="0.5" min="0" value="@F(o.NUM_Y)" @onchange="@(e => NumMm(v => o.NUM_Y = v, e.Value))" /></div>
+                        @if (!cruza || o.COD_TIPO_OBJETO == "CUA")
+                        {
+                            <div class="lz-campo"><label>Ancho</label><input class="lz-in" type="number" step="0.5" min="0" value="@F(o.NUM_ANCHO)" @onchange="@(e => NumMm(v => o.NUM_ANCHO = v, e.Value))" /></div>
+                        }
+                        @if (!cruza)
+                        {
+                            <div class="lz-campo"><label>Alto</label><input class="lz-in" type="number" step="0.5" min="0" value="@F(o.NUM_ALTO)" @onchange="@(e => NumMm(v => o.NUM_ALTO = v, e.Value))" /></div>
+                        }
+                    </div>
+                    <div class="lz-campo"><label>@(cruza ? "Empieza en" : "Sección")</label>
+                        <select class="lz-in" value="@o.NUM_BANDA" @onchange="@(e => MoverASeccion(o, Ent(e.Value)))">
+                            @foreach (var b in Ordenadas) { <option value="@b.NUM_BANDA">@NombreBanda(b)</option> }
+                        </select>
+                    </div>
+                    @if (Fuera(o))
+                    {
+                        <div class="lz-aviso">Se sale del ancho de la hoja (@F(Ancho) mm útiles): en el PDF se corta.</div>
+                    }
+                }
+                else if (_sel.Count > 1)
+                {
+                    var textos = Seleccion.Where(x => x.COD_TIPO_OBJETO is "TXT" or "CAM" or "RES" or "ESP").ToList();
+                    <div class="lz-prop-titulo">@_sel.Count objetos</div>
+                    <div class="lz-ayuda">Alinéalos con la barra (según el primero elegido), muévelos juntos o bórralos.</div>
+                    @if (textos.Count > 0)
+                    {
+                        <div class="lz-prop-sub">Letra de los @textos.Count textos</div>
+                        <div class="lz-dos">
+                            <div class="lz-campo"><label>Tamaño (pt)</label>
+                                <input class="lz-in" type="number" step="0.5" min="4" max="72" placeholder="@D.NUM_TAMANO_LETRA" @onchange="@(e => ATodos(textos, x => NumONulo(v => x.NUM_TAMANO_LETRA = v, e.Value, 4, 72, guardar: false)))" />
+                            </div>
+                            <div class="lz-campo"><label>Alineación</label>
+                                <select class="lz-in" value="" @onchange="@(e => ATodos(textos, x => x.COD_ALINEACION = Vacio(e.Value?.ToString()) ?? x.COD_ALINEACION))">
+                                    <option value="">—</option><option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option><option value="J">Justificado</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => ATodos(textos, x => x.FLG_NEGRITA = !textos.All(t => t.FLG_NEGRITA)))"><b>Negrita</b></MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => ATodos(textos, x => x.FLG_CURSIVA = !textos.All(t => t.FLG_CURSIVA)))"><i>Cursiva</i></MudButton>
+                        </div>
+                        <div class="lz-campo"><label>Color</label>
+                            <input class="lz-in lz-color" type="color" value="#000000" @onchange="@(e => ATodos(textos, x => x.DES_COLOR = ColorHex(e.Value?.ToString())))" />
+                        </div>
+                    }
+                }
+                else if (BandaElegida is { } b)
+                {
+                    var grupo = b.COD_TIPO_BANDA is "GH" or "GF" ? L.Grupos.FirstOrDefault(g => g.NUM_NIVEL == b.NUM_NIVEL) : null;
+                    <div class="lz-prop-titulo">@NombreBanda(b)</div>
+                    <div class="lz-ayuda">@AyudaBanda(b.COD_TIPO_BANDA)</div>
+                    <div class="lz-dos">
+                        <div class="lz-campo"><label>Alto (mm)</label>
+                            <input class="lz-in" type="number" step="0.5" min="0" max="400" value="@F(b.NUM_ALTO)" @onchange="@(e => Num(v => { b.NUM_ALTO = v; Recortar(b); }, e.Value, 0, 400))" />
+                        </div>
+                        <div class="lz-campo"><label>Fondo</label>
+                            <div class="d-flex gap-1 align-center">
+                                <input class="lz-in lz-color" type="color" value="@(b.DES_COLOR_FONDO ?? "#ffffff")" @onchange="@(e => Texto(v => b.DES_COLOR_FONDO = ColorHex(v), e.Value))" />
+                                <button type="button" class="lz-mini" title="Sin fondo" disabled="@(b.DES_COLOR_FONDO is null)" @onclick="@(() => { Antes(); b.DES_COLOR_FONDO = null; })">✕</button>
+                                @Fx(Seccion, b.NUM_BANDA, "FONDO")
+                            </div>
+                        </div>
+                    </div>
+                    @if (b.COD_TIPO_BANDA == "DE")
+                    {
+                        <div class="lz-campo"><label>Filas cebra</label>
+                            <div class="d-flex gap-1 align-center">
+                                <input class="lz-in lz-color" type="color" value="@(b.DES_COLOR_CEBRA ?? "#F2F5F9")" @onchange="@(e => Texto(v => b.DES_COLOR_CEBRA = ColorHex(v), e.Value))" />
+                                <button type="button" class="lz-mini" title="Sin cebra" disabled="@(b.DES_COLOR_CEBRA is null)" @onclick="@(() => { Antes(); b.DES_COLOR_CEBRA = null; })">✕</button>
+                                @if (b.DES_COLOR_CEBRA is null) { <span class="lz-ayuda">sin cebra</span> }
+                            </div>
+                        </div>
+                        <div class="lz-ayuda">La segunda fila, la cuarta, la sexta... van con este fondo; las otras, con el de la sección. Se cuenta de nuevo en cada grupo. Un fondo con condición (ƒ) manda sobre la cebra.</div>
+                    }
+                    <div class="d-flex align-center gap-1"><label class="lz-chk"><input type="checkbox" checked="@b.FLG_SUPRIMIR" @onchange="@(e => Bool(v => b.FLG_SUPRIMIR = v, e.Value))" /> Suprimir (no se imprime)</label>@Fx(Seccion, b.NUM_BANDA, "SUPRIMIR")</div>
+                    <label class="lz-chk"><input type="checkbox" checked="@b.FLG_SUPRIMIR_EN_BLANCO" @onchange="@(e => Bool(v => b.FLG_SUPRIMIR_EN_BLANCO = v, e.Value))" /> Suprimir si está en blanco</label>
+                    <label class="lz-chk"><input type="checkbox" checked="@b.FLG_MANTENER_JUNTO" @onchange="@(e => Bool(v => b.FLG_MANTENER_JUNTO = v, e.Value))" /> Mantener junta (no partirla entre páginas)</label>
+                    @if (b.COD_TIPO_BANDA is not ("PH" or "PF"))
+                    {
+                        <div class="d-flex align-center gap-1"><label class="lz-chk"><input type="checkbox" checked="@b.FLG_NUEVA_PAGINA_ANTES" @onchange="@(e => Bool(v => b.FLG_NUEVA_PAGINA_ANTES = v, e.Value))" /> Nueva página antes</label>@Fx(Seccion, b.NUM_BANDA, "NUEVA_PAGINA_ANTES")</div>
+                        <div class="d-flex align-center gap-1"><label class="lz-chk"><input type="checkbox" checked="@b.FLG_NUEVA_PAGINA_DESPUES" @onchange="@(e => Bool(v => b.FLG_NUEVA_PAGINA_DESPUES = v, e.Value))" /> Nueva página después</label>@Fx(Seccion, b.NUM_BANDA, "NUEVA_PAGINA_DESPUES")</div>
+                    }
+                    @Condiciones(Seccion, b.NUM_BANDA)
+                    @if (grupo is not null)
+                    {
+                        <div class="lz-prop-sub">Grupo @grupo.NUM_NIVEL</div>
+                        <div class="lz-campo"><label>Agrupa por</label>
+                            <select class="lz-in" value="@grupo.DES_COLUMNA" @onchange="@(e => Texto(v => grupo.DES_COLUMNA = v ?? grupo.DES_COLUMNA, e.Value))">
+                                @foreach (var c in Columnas(1)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                            </select>
+                        </div>
+                        <div class="lz-campo"><label>Orden</label>
+                            <select class="lz-in" value="@grupo.COD_ORDEN" @onchange="@(e => Texto(v => grupo.COD_ORDEN = v ?? "A", e.Value))">
+                                <option value="A">Ascendente</option><option value="D">Descendente</option><option value="N">Como viene del SP</option>
+                            </select>
+                        </div>
+                        <label class="lz-chk"><input type="checkbox" checked="@grupo.FLG_REPETIR_ENCABEZADO" @onchange="@(e => Bool(v => grupo.FLG_REPETIR_ENCABEZADO = v, e.Value))" /> Repetir el encabezado en cada página</label>
+                        <label class="lz-chk"><input type="checkbox" checked="@grupo.FLG_MANTENER_JUNTO" @onchange="@(e => Bool(v => grupo.FLG_MANTENER_JUNTO = v, e.Value))" /> Mantener junto el grupo (si cabe en una página)</label>
+                        <label class="lz-chk"><input type="checkbox" checked="@grupo.FLG_NUEVA_PAGINA" @onchange="@(e => Bool(v => grupo.FLG_NUEVA_PAGINA = v, e.Value))" /> Cada grupo en página nueva</label>
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowUpward" Disabled="@(grupo.NUM_NIVEL == 1)" OnClick="@(() => CambiarNivel(grupo.NUM_NIVEL, -1))">Subir</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowDownward" Disabled="@(grupo.NUM_NIVEL == L.Grupos.Count)" OnClick="@(() => CambiarNivel(grupo.NUM_NIVEL, 1))">Bajar</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="@(() => QuitarGrupo(grupo.NUM_NIVEL))">Quitar grupo</MudButton>
+                        </div>
+                    }
+                    <div class="lz-prop-sub">Secciones</div>
+                    <div class="d-flex flex-wrap gap-1">
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" Disabled="@(Hermanas(b).Count >= 9)" OnClick="@(() => AgregarSubseccion(b))">Otra debajo</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" Disabled="@(Hermanas(b).Count <= 1)" OnClick="@(() => QuitarSeccion(b))">Quitar esta</MudButton>
+                    </div>
+                }
+                else
+                {
+                    <div class="lz-prop-titulo">Lienzo</div>
+                    <div class="lz-ayuda">
+                        Hoja @NombrePapel(D.COD_PAPEL) @(D.COD_ORIENTACION == "H" ? "horizontal" : "vertical"): @F(Ancho) mm útiles de ancho (12 mm de margen por lado).
+                        Letra por defecto: @D.NUM_TAMANO_LETRA pt.
+                    </div>
+                    <div class="lz-ayuda">Elige un objeto para ver sus propiedades, o el nombre de una sección (a la izquierda) para las de la sección.</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<datalist id="lz-marcas">
+    @foreach (var c in Columnas(1)) { <option value="@("{" + c.DES_COLUMNA + "}")"></option> }
+    @foreach (var p in Fuente?.Parametros ?? new()) { <option value="@("{@" + SinArroba(p.DES_PARAMETRO) + "}")"></option> }
+    @foreach (var f in L.Formulas) { <option value="@("{F." + f.DES_NOMBRE + "}")"></option> }
+</datalist>
+<datalist id="lz-formatos">
+    <option value="dd/MM/yyyy"></option><option value="dd/MM/yyyy HH:mm"></option><option value="#,##0.00"></option>
+    <option value="#,##0"></option><option value="#,##0.000"></option><option value="0"></option><option value="LETRAS"></option>
+</datalist>
+
+<style>
+    .lz { display:flex; flex-direction:column; gap:6px; }
+    .lz-barra { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:4px; border:1px solid var(--line); border-radius:6px; background:#fafafa; }
+    .lz-barra-grupo { display:inline-flex; align-items:center; gap:2px; flex-wrap:wrap; }
+    .lz-sep { width:1px; align-self:stretch; background:var(--line); margin:0 4px; }
+    .lz-boton { display:inline-flex; align-items:center; gap:3px; border:1px solid transparent; background:transparent; border-radius:4px; padding:2px 6px; font-size:.75rem; cursor:pointer; color:#263238; }
+    .lz-boton:hover:not(:disabled) { background:#e8eaf6; border-color:#c5cae9; }
+    .lz-boton:disabled { opacity:.35; cursor:default; }
+    .lz-boton.lz-solo { padding:2px 3px; }
+    .lz-boton.lz-activo { background:#e8eaf6; border-color:#9fa8da; }
+    .lz-zoom { font-size:.75rem; min-width:38px; text-align:center; }
+    .lz-chk { display:inline-flex; align-items:center; gap:4px; font-size:.75rem; cursor:pointer; }
+    /* Alto de partida: lienzoEditor.js lo ajusta para que llegue hasta la barra de estado. */
+    .lz-cuerpo { display:grid; grid-template-columns:210px minmax(0,1fr) 270px; gap:6px; height:calc(100vh - 260px); min-height:420px; }
+    @@media (max-width: 1100px) { .lz-cuerpo { grid-template-columns:180px minmax(0,1fr); height:auto; } .lz-propiedades { grid-column:1 / -1; } }
+    .lz-explorador, .lz-propiedades { border:1px solid var(--line); border-radius:6px; overflow:auto; background:#fff; min-height:0; }
+    .lz-panel-cab { position:sticky; top:0; z-index:2; background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:700; font-size:.8rem; padding:4px 8px; }
+    .lz-ex-grupo > summary, .lz-ex-sub > summary { cursor:pointer; font-weight:700; font-size:.76rem; padding:4px 8px; }
+    .lz-ex-sub > summary { font-weight:600; padding-left:14px; opacity:.85; }
+    .lz-ex-item { font-size:.74rem; padding:2px 8px 2px 18px; cursor:grab; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:none; }
+    .lz-ex-item:hover { background:#fff8e1; }
+    .lz-ex-tabla { display:flex; align-items:center; gap:4px; font-weight:600; color:#163a5f; }
+    .lz-ex-tipo { display:inline-block; min-width:18px; margin-right:4px; font-size:.62rem; color:#78909c; font-family:monospace; }
+    .lz-ex-ayuda { font-size:.7rem; opacity:.7; padding:2px 8px 4px; }
+    .lz-ex-opcion { padding:0 8px 2px 14px; font-size:.7rem; }
+    .lz-scroll { overflow:auto; border:1px solid var(--line); border-radius:6px; background:#eceff1; min-height:0; }
+    .lz-raiz { position:relative; display:inline-block; min-width:100%; padding:8px 16px 40px 0; outline:none; }
+    .lz-fila { display:flex; align-items:stretch; }
+    /* Los rótulos quedan encima de lo que se desplaza por debajo (también de la capa de cruces y de lo elegido). */
+    .lz-rotulo { position:sticky; left:0; z-index:1003; width:126px; flex:0 0 126px; background:#cfd8dc; border-bottom:1px solid #b0bec5; font-size:.66rem; padding:2px 6px; cursor:pointer; display:flex; flex-direction:column; justify-content:flex-start; overflow:hidden; user-select:none; }
+    .lz-rotulo-t { font-weight:700; color:#263238; line-height:1.15; }
+    .lz-rotulo small { opacity:.7; }
+    .lz-esquina { cursor:default; font-weight:700; justify-content:flex-end; background:#b0bec5; }
+    .lz-banda-sel .lz-rotulo { background:#ffd54f; }
+    .lz-suprimida .lz-area { opacity:.45; background-image:repeating-linear-gradient(45deg, transparent 0 6px, rgba(0,0,0,.05) 6px 12px) !important; }
+    .lz-columna { display:flex; flex-direction:column; margin-left:8px; }
+    .lz-regla { position:relative; height:18px; margin-left:8px; background-color:#fff; border-bottom:1px solid #90a4ae;
+                background-image:linear-gradient(to right,#607d8b 1px,transparent 1px),linear-gradient(to right,#90a4ae 1px,transparent 1px),linear-gradient(to right,#cfd8dc 1px,transparent 1px);
+                background-size:calc(var(--lz-mm)*10) 9px,calc(var(--lz-mm)*5) 6px,var(--lz-mm) 3px; background-repeat:repeat-x; background-position:left bottom; }
+    .lz-regla-n { position:absolute; top:0; font-size:.58rem; color:#455a64; transform:translateX(2px); }
+    .lz-area { position:relative; background-color:#fff; overflow:hidden; box-shadow:0 0 0 1px #cfd8dc; }
+    .lz-con-rejilla .lz-area { background-image:linear-gradient(to right,rgba(22,58,95,.08) 1px,transparent 1px),linear-gradient(to bottom,rgba(22,58,95,.08) 1px,transparent 1px);
+                               background-size:calc(var(--lz-mm)*5) calc(var(--lz-mm)*5); }
+    .lz-moviendo .lz-area { overflow:visible; }
+    .lz-borde { height:5px; cursor:ns-resize; background:#b0bec5; }
+    .lz-borde:hover { background:#ffb300; }
+    .lz-obj { position:absolute; box-sizing:border-box; cursor:move; user-select:none; }
+    .lz-obj:hover { outline:1px dotted #5c6bc0; }
+    /* Lo elegido va encima de la capa de cruces: sus asas no quedan tapadas por el borde de un cuadro que cruza. */
+    .lz-obj.lz-sel { outline:1px dashed #1e88e5; z-index:1002 !important; }
+    .lz-obj.lz-fuera { outline:1px dashed #e53935; }
+    .lz-t-lin { overflow:visible; }
+    .lz-t-lin::before { content:''; position:absolute; inset:-4px; }
+    .lz-svg { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+    .lz-texto { width:100%; height:100%; overflow:hidden; white-space:pre-wrap; word-break:break-word; line-height:1.15; pointer-events:none; }
+    .lz-t-cam .lz-texto, .lz-t-res .lz-texto, .lz-t-esp .lz-texto { background:rgba(255,248,225,.55); }
+    .lz-logo { width:100%; height:100%; display:flex; align-items:center; justify-content:center; gap:4px; background:#fff8e1; border:1px dashed #ffb300; font-size:.7rem; color:#8d6e63; overflow:hidden; pointer-events:none; }
+    .lz-tab { width:100%; height:100%; overflow:hidden; border:1px dashed #5c6bc0; background:#f5f6fb; pointer-events:none; font-size:.62rem; }
+    .lz-tab-cab { display:flex; background:#163a5f; color:#fff; font-weight:700; }
+    .lz-tab-cab span { flex:1; padding:1px 3px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .lz-tab-sin { opacity:.35; }
+    .lz-tab-pie { padding:2px 4px; color:#5c6bc0; font-style:italic; }
+    .lz-asa { position:absolute; width:7px; height:7px; background:#1e88e5; border:1px solid #fff; z-index:5; }
+    .lz-asa-nw { left:-4px; top:-4px; cursor:nwse-resize; } .lz-asa-n { left:calc(50% - 4px); top:-4px; cursor:ns-resize; }
+    .lz-asa-ne { right:-4px; top:-4px; cursor:nesw-resize; } .lz-asa-e { right:-4px; top:calc(50% - 4px); cursor:ew-resize; }
+    .lz-asa-se { right:-4px; bottom:-4px; cursor:nwse-resize; } .lz-asa-s { left:calc(50% - 4px); bottom:-4px; cursor:ns-resize; }
+    .lz-asa-sw { left:-4px; bottom:-4px; cursor:nesw-resize; } .lz-asa-w { left:-4px; top:calc(50% - 4px); cursor:ew-resize; }
+    .lz-recuadro { position:absolute; border:1px dashed #1e88e5; background:rgba(30,136,229,.08); z-index:20; pointer-events:none; }
+    /* Líneas y cuadros que cruzan secciones: una capa encima; solo su borde (lz-ct) y el asa de fin toman el mouse. */
+    .lz-cruces { position:absolute; left:0; top:0; width:0; height:0; z-index:1000; pointer-events:none; }
+    .lz-cruce { position:absolute; box-sizing:border-box; visibility:hidden; pointer-events:none; }
+    .lz-cruce-cuerpo { position:absolute; inset:0; box-sizing:border-box; }
+    .lz-cruce-lin .lz-cruce-cuerpo { right:auto; width:0; }
+    .lz-cruce-fondo { position:absolute; inset:0; opacity:.35; }
+    .lz-ct { position:absolute; pointer-events:auto; cursor:move; }
+    .lz-ct:hover { background:rgba(92,107,192,.25); }
+    .lz-ct-n { left:0; right:0; top:-3px; height:6px; } .lz-ct-s { left:0; right:0; bottom:-3px; height:6px; }
+    .lz-ct-w { top:0; bottom:0; left:-3px; width:6px; } .lz-ct-e { top:0; bottom:0; right:-3px; width:6px; }
+    .lz-ct-v { top:0; bottom:0; left:-4px; width:9px; }
+    .lz-cruce.lz-sel { outline:1px dashed #1e88e5; outline-offset:3px; }
+    .lz-cruce-fin { position:absolute; left:calc(50% - 4px); bottom:-4px; width:8px; height:8px; background:#ef6c00; border:1px solid #fff; border-radius:50%;
+                    pointer-events:auto; cursor:ns-resize; z-index:2; }
+    .lz-prop-cuerpo { padding:6px 8px; display:flex; flex-direction:column; gap:6px; }
+    .lz-prop-titulo { font-weight:800; font-size:.86rem; color:#163a5f; }
+    .lz-prop-sub { font-weight:700; font-size:.72rem; text-transform:uppercase; letter-spacing:.4px; opacity:.6; margin-top:4px; }
+    .lz-campo { display:flex; flex-direction:column; gap:1px; min-width:0; }
+    .lz-campo label { font-size:.68rem; opacity:.7; }
+    .lz-dos { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .lz-in { width:100%; border:1px solid #cfd8dc; border-radius:4px; padding:3px 5px; font-size:.78rem; background:#fff; color:#16130f; }
+    .lz-in-corto { width:auto; max-width:150px; } .lz-in-mini { width:auto; }
+    .lz-color { padding:0 2px; height:26px; }
+    .lz-mini { border:1px solid #cfd8dc; background:#fff; border-radius:3px; font-size:.7rem; padding:0 5px; cursor:pointer; }
+    .lz-mini:disabled { opacity:.35; cursor:default; }
+    .lz-ayuda { font-size:.7rem; opacity:.7; }
+    .lz-aviso { font-size:.72rem; color:#c62828; }
+    /* Fórmulas y condiciones (botón ƒ) */
+    .lz-ex-nueva { display:flex; align-items:center; gap:4px; color:#ef6c00; font-weight:600; cursor:pointer; }
+    .lz-ex-formula { display:flex; align-items:center; gap:3px; }
+    .lz-ex-nombre { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; }
+    .lz-ex-formula .lz-mini { visibility:hidden; padding:0 3px; }
+    .lz-ex-formula:hover .lz-mini { visibility:visible; }
+    .lz-ex-f, .lz-fx, .lz-rotulo-f { font-family:'Times New Roman',serif; font-style:italic; font-weight:700; }
+    .lz-ex-f { color:#ef6c00; font-size:.8rem; }
+    .lz-t-for .lz-texto { background:rgba(237,231,246,.75); }
+    .lz-cond::after { content:'ƒ'; position:absolute; top:0; right:0; font:italic 700 9px/9px 'Times New Roman',serif; color:#fff; background:#ef6c00;
+                      border-radius:0 0 0 3px; padding:1px 2px; pointer-events:none; z-index:6; }
+    .lz-rotulo-f { color:#ef6c00; font-size:.8rem; }
+    .lz-fx { flex:0 0 auto; width:22px; height:20px; border:1px solid #cfd8dc; border-radius:4px; background:#fff; color:#90a4ae; cursor:pointer; font-size:.85rem; line-height:1; padding:0; }
+    .lz-fx:hover { border-color:#ffb74d; color:#ef6c00; }
+    .lz-fx.lz-fx-on { background:#ef6c00; border-color:#ef6c00; color:#fff; }
+    .lz-codigo { font-family:Consolas,'Courier New',monospace; font-size:.7rem; background:#f5f7f8; border:1px solid #e0e0e0; border-radius:4px; padding:3px 5px;
+                 white-space:pre-wrap; word-break:break-word; max-height:90px; overflow:auto; }
+    .lz-conds { display:flex; flex-direction:column; gap:3px; }
+    .lz-cond-item { display:flex; flex-direction:column; gap:1px; cursor:pointer; border-left:3px solid #ef6c00; padding-left:5px; }
+    .lz-cond-item:hover .lz-codigo { border-color:#ffb74d; }
+    .lz-cond-item > span { font-size:.68rem; font-weight:700; color:#bf360c; }
+    /* Fase 3: códigos (barras o QR), líneas y cuadros hasta el pie de la sección, filas cebra */
+    .lz-cod { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden; pointer-events:none; }
+    .lz-cod-barras { flex:1 1 auto; min-height:2px; margin:0 7%;
+                     background:repeating-linear-gradient(90deg,currentColor 0 2px,transparent 2px 3px,currentColor 3px 4px,transparent 4px 6px,currentColor 6px 9px,transparent 9px 10px,currentColor 10px 11px,transparent 11px 14px); }
+    .lz-cod-texto { flex:0 0 auto; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.1; }
+    .lz-cod-qr { width:100%; height:100%; display:block; }
+    /* Hasta el pie: un triángulo naranja que apunta abajo, al pie de la línea (o en la esquina del cuadro). */
+    .lz-hasta { position:absolute; left:-4px; bottom:0; width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent;
+                border-top:6px solid #ef6c00; pointer-events:none; z-index:6; }
+    .lz-hasta-d { left:auto; right:1px; bottom:1px; }
+    .lz-rotulo-cebra { display:inline-block; width:14px; height:8px; margin-left:4px; vertical-align:middle; border:1px solid #90a4ae; }
+    /* Fase 3b: tablas cruzadas, subinformes y enlaces */
+    .lz-cru-total { flex:0 0 auto !important; background:#2e5a87; }
+    .lz-sub { width:100%; height:100%; overflow:hidden; border:1px dashed #00897b; background:repeating-linear-gradient(135deg,#f1faf8 0 8px,#e6f4f1 8px 16px);
+              pointer-events:none; font-size:.66rem; }
+    .lz-sub-cab { display:flex; align-items:center; gap:4px; padding:1px 4px; background:#00695c; color:#fff; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .lz-sub .lz-tab-pie { color:#00695c; }
+    .lz-enlace { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1.2fr) auto; gap:3px; align-items:center; }
+    .lz-enlace > span { font-size:.72rem; opacity:.7; }
+    .lz-param { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr); gap:4px; align-items:center; }
+    .lz-param > label { font-size:.7rem; font-family:Consolas,'Courier New',monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .lz-param input::placeholder { color:#90a4ae; font-style:italic; }
+    /* Fase 3c: gráficos */
+    .lz-gra { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden; border:1px dashed #90a4ae; pointer-events:none; font-size:.62rem; }
+    .lz-gra-svg { flex:1 1 auto; min-height:0; width:100%; padding:3px 4px 0; box-sizing:border-box; }
+    .lz-gra .lz-tab-pie { color:#52514e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+
+@code {
+    [Parameter] public ReporteDisenoDetalle Detalle { get; set; } = default!;
+    [Parameter] public ReporteFuenteDetalle? Fuente { get; set; }
+    /// <summary>Los diseños grabados (para elegir el subinforme) y cómo leer la fuente de uno (sus parámetros).</summary>
+    [Parameter] public List<ReporteDiseno> Disenos { get; set; } = new();
+    [Parameter] public Func<int, Task<ReporteFuenteDetalle?>>? LeerFuente { get; set; }
+
+    private const double MmPx = 96.0 / 25.4;      // a 100 %, un milímetro de la hoja mide lo mismo en pantalla
+    private const char Seccion = 'B', Objeto = 'O';  // de qué es una condición (COD_ELEMENTO)
+    private const double PtMm = 25.4 / 72.0;
+    private static readonly string[] Asas = { "nw", "n", "ne", "e", "se", "s", "sw", "w" };
+    private static readonly (string Letra, string Nombre)[] Bordes = { ("A", "Arriba"), ("B", "Bajo"), ("I", "Izquierda"), ("D", "Derecha") };
+    private static readonly (string Tipo, string Icono, string Texto)[] Nuevos =
+    {
+        ("TXT", Icons.Material.Filled.TextFields, "Texto"),
+        ("CAM", Icons.Material.Filled.DataObject, "Campo"),
+        ("FOR", Icons.Material.Filled.Calculate, "Fórmula"),
+        ("RES", Icons.Material.Filled.Functions, "Resumen"),
+        ("ESP", Icons.Material.Filled.Tag, "Especial"),
+        ("LIN", Icons.Material.Filled.HorizontalRule, "Línea"),
+        ("CUA", Icons.Material.Filled.CropSquare, "Cuadro"),
+        ("IMG", Icons.Material.Filled.Image, "Imagen"),
+        ("BAR", Icons.Material.Filled.QrCode2, "Código"),
+        ("TAB", Icons.Material.Filled.TableChart, "Tabla"),
+        ("CRU", Icons.Material.Filled.GridOn, "Tabla cruzada"),
+        ("GRA", Icons.Material.Filled.BarChart, "Gráfico"),
+        ("SUB", Icons.Material.Filled.Article, "Subinforme")
+    };
+    public static readonly (string Codigo, string Texto)[] Especiales =
+    {
+        ("PAGINA_N_DE_M", "Página N de M"), ("PAGINA", "Número de página"), ("TOTAL_PAGINAS", "Total de páginas"),
+        ("FECHA", "Fecha de impresión"), ("FECHA_HORA", "Fecha y hora de impresión"), ("USUARIO", "Usuario"),
+        ("FILTROS", "Filtros usados"), ("TITULO", "Título del diseño"), ("SUBTITULO", "Subtítulo del diseño"),
+        ("EMPRESA_NOMBRE", "Nombre de la empresa"), ("EMPRESA_RUC", "RUC de la empresa"), ("EMPRESA_DIRECCION", "Dirección de la empresa"),
+        ("APLICACION_NOMBRE", "Nombre de la aplicación")
+    };
+    /// <summary>Los logos de Configuración General, como origen de una imagen (DES_ORIGEN del objeto IMG).</summary>
+    public static readonly (string Origen, string Texto)[] Logos =
+    {
+        ("LOGO", "Logo de la empresa"), ("LOGO_APLICACION", "Logo de la aplicación")
+    };
+
+    private ElementReference _raiz;
+    private DotNetObjectReference<LienzoEditor>? _ref;
+    private bool _iniciado;
+    private string? _opcionesEnviadas;
+    private double _zoom = 1.0, _rejilla = 1;
+    private bool _cuadricula = true, _ajustar = true, _conTitulo = true, _formGrupo;
+    private readonly List<int> _sel = new();
+    private int? _bandaSel;
+    private readonly List<string> _deshacer = new(), _rehacer = new();
+    private List<ReporteLienzoObjeto> _portapapeles = new();
+    private string? _grupoColumna;
+    private string _grupoOrden = "A";
+    // Las fuentes de los subinformes ya leídas (null: no se pudo) y las que se están leyendo.
+    private readonly Dictionary<int, ReporteFuenteDetalle?> _fuentesSub = new();
+    private readonly HashSet<int> _leyendo = new();
+    // Un objeto que no pudo quedar donde se soltó vuelve a dibujarse en su lugar (el arrastre le cambió la posición en pantalla).
+    private readonly Dictionary<int, int> _redibujar = new();
+
+    private ReporteLienzo L => Detalle.Lienzo ??= Basico(Detalle.Diseno);
+    private ReporteDiseno D => Detalle.Diseno;
+    private double Escala => MmPx * _zoom;
+    private double Ancho => AnchoUtil(D);
+    private List<ReporteFuenteResultado> Resultados => Fuente?.Resultados.OrderBy(r => r.NUM_RESULTADO).ToList() ?? new();
+    private IEnumerable<ReporteLienzoBanda> Ordenadas => L.Bandas.OrderBy(OrdenBanda).ThenBy(b => b.NUM_SUBSECCION);
+    private IEnumerable<ReporteLienzoObjeto> Seleccion => _sel.Select(Obj).OfType<ReporteLienzoObjeto>();
+    private ReporteLienzoObjeto? Unico => _sel.Count == 1 ? Obj(_sel[0]) : null;
+    private ReporteLienzoBanda? BandaElegida => _bandaSel is { } n ? L.Bandas.FirstOrDefault(b => b.NUM_BANDA == n) : null;
+
+    // ── Lo que comparte la pantalla de diseños ──────────────────────────────────
+    /// <summary>El ancho útil de la hoja en milímetros (el papel menos 12 mm por lado).</summary>
+    public static double AnchoUtil(ReporteDiseno d)
+    {
+        var (w, h) = d.COD_PAPEL switch { "CAR" => (215.9, 279.4), "OFI" => (215.9, 355.6), _ => (210.0, 297.0) };
+        return Math.Round((d.COD_ORIENTACION == "H" ? h : w) - 24, 2);
+    }
+
+    /// <summary>El lienzo de un diseño libre nuevo: logo, título y subtítulo arriba, una raya, el detalle vacío y el
+    /// pie con quién lo generó y el número de página.</summary>
+    public static ReporteLienzo Basico(ReporteDiseno d)
+    {
+        var w = AnchoUtil(d);
+        var l = new ReporteLienzo();
+        void Banda(int id, string t, decimal alto) => l.Bandas.Add(new ReporteLienzoBanda { NUM_BANDA = id, COD_TIPO_BANDA = t, NUM_ALTO = alto, FLG_MANTENER_JUNTO = true });
+        Banda(1, "RH", 0); Banda(2, "PH", 16); Banda(3, "DE", 6); Banda(4, "RF", 0); Banda(5, "PF", 5);
+        var n = 0;
+        ReporteLienzoObjeto O(int banda, string tipo, double x, double y, double an, double al, string? origen)
+        {
+            var o = new ReporteLienzoObjeto { NUM_OBJETO = ++n, NUM_ORDEN = n, NUM_BANDA = banda, COD_TIPO_OBJETO = tipo, NUM_X = R(x), NUM_Y = R(y), NUM_ANCHO = R(an), NUM_ALTO = R(al), DES_ORIGEN = origen };
+            l.Objetos.Add(o);
+            return o;
+        }
+        var logo = O(2, "IMG", 0, 0, 30, 13, "LOGO");
+        logo.COD_ALINEACION = "I";
+        var t = O(2, "ESP", 32, 1, w - 64, 6, "TITULO");
+        t.NUM_TAMANO_LETRA = 13; t.FLG_NEGRITA = true; t.COD_ALINEACION = "C"; t.DES_COLOR = "#163A5F"; t.FLG_PUEDE_CRECER = true;
+        var s = O(2, "ESP", 32, 7.5, w - 64, 4, "SUBTITULO");
+        s.NUM_TAMANO_LETRA = 9; s.COD_ALINEACION = "C"; s.FLG_SUPRIMIR_VACIO = true;
+        var r = O(2, "LIN", 0, 14.5, w, 0, null);
+        r.NUM_GROSOR_BORDE = 1.2m; r.DES_COLOR_BORDE = "#163A5F";
+        var lp = O(5, "LIN", 0, 0, w, 0, null);
+        lp.NUM_GROSOR_BORDE = 0.4m; lp.DES_COLOR_BORDE = "#CFD8DC";
+        var g = O(5, "TXT", 0, 1, w * 0.6, 3, "Generado por {USUARIO} el {FECHA_HORA}");
+        g.NUM_TAMANO_LETRA = 6.5m; g.DES_COLOR = "#78909C";
+        var p = O(5, "ESP", w * 0.6, 1, w * 0.4, 3, "PAGINA_N_DE_M");
+        p.NUM_TAMANO_LETRA = 6.5m; p.DES_COLOR = "#78909C"; p.COD_ALINEACION = "D";
+        return l;
+    }
+
+    /// <summary>Asegura las secciones de siempre (encabezado y pie del informe y de página, detalle) aunque no tengan
+    /// nada: así aparecen en el lienzo para soltar cosas en ellas.</summary>
+    public static void Completar(ReporteLienzo l)
+    {
+        foreach (var t in new[] { "RH", "PH", "DE", "RF", "PF" })
+            if (!l.Bandas.Any(b => b.COD_TIPO_BANDA == t))
+                l.Bandas.Add(new ReporteLienzoBanda
+                {
+                    NUM_BANDA = l.Bandas.Select(b => b.NUM_BANDA).DefaultIfEmpty(0).Max() + 1, COD_TIPO_BANDA = t,
+                    NUM_ALTO = t == "DE" ? 6 : 0, FLG_MANTENER_JUNTO = true
+                });
+        foreach (var g in l.Grupos)
+            foreach (var t in new[] { "GH", "GF" })
+                if (!l.Bandas.Any(b => b.COD_TIPO_BANDA == t && b.NUM_NIVEL == g.NUM_NIVEL))
+                    l.Bandas.Add(new ReporteLienzoBanda
+                    {
+                        NUM_BANDA = l.Bandas.Select(b => b.NUM_BANDA).DefaultIfEmpty(0).Max() + 1, COD_TIPO_BANDA = t, NUM_NIVEL = g.NUM_NIVEL,
+                        NUM_ALTO = 0, FLG_MANTENER_JUNTO = true
+                    });
+    }
+
+    // ── JS ──────────────────────────────────────────────────────────────────────
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var op = new { escala = Escala, rejilla = _rejilla, ajustar = _ajustar };
+        var json = JsonSerializer.Serialize(op);
+        if (!_iniciado)
+        {
+            _iniciado = true;
+            _ref ??= DotNetObjectReference.Create(this);
+            try { await JS.InvokeVoidAsync("lienzoEditor.iniciar", _raiz, _ref, op); _opcionesEnviadas = json; }
+            catch (JSException) { Snackbar.Add("No se cargó el lienzo: recarga la página con Ctrl+F5.", Severity.Warning); }
+            return;
+        }
+        if (json != _opcionesEnviadas)
+        {
+            _opcionesEnviadas = json;
+            try { await JS.InvokeVoidAsync("lienzoEditor.opciones", _raiz, op); } catch (JSException) { }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { if (_iniciado) await JS.InvokeVoidAsync("lienzoEditor.destruir", _raiz); }
+        catch { /* el circuito ya se cerró */ }
+        _ref?.Dispose();
+    }
+
+    /// <summary>Lo que manda el script al terminar de mover o estirar (mm). BandaFin e YFin: dónde termina una línea o un
+    /// cuadro que se estiró hasta otra sección, o uno que ya cruza (la misma sección de inicio es dejar de cruzar).</summary>
+    public sealed class Medida
+    {
+        public int Id { get; set; }
+        public int Banda { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Ancho { get; set; }
+        public double Alto { get; set; }
+        public int? BandaFin { get; set; }
+        public double? YFin { get; set; }
+    }
+
+    [JSInvokable]
+    public Task Seleccionar(int[] objetos, int? banda)
+    {
+        _sel.Clear();
+        _sel.AddRange(objetos.Where(id => Obj(id) is not null).Distinct());
+        _bandaSel = _sel.Count > 0 ? Obj(_sel[0])!.NUM_BANDA : banda;
+        _formGrupo = false;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task Geometria(Medida[] cambios)
+    {
+        Antes();
+        foreach (var c in cambios)
+        {
+            if (Obj(c.Id) is not { } o) continue;
+            if (c.Banda != o.NUM_BANDA && L.Bandas.FirstOrDefault(b => b.NUM_BANDA == c.Banda) is { } destino && !CambiarBanda(o, destino))
+            {
+                _redibujar[o.NUM_OBJETO] = _redibujar.GetValueOrDefault(o.NUM_OBJETO) + 1;
+                continue;
+            }
+            o.NUM_X = R(c.X); o.NUM_Y = R(c.Y); o.NUM_ANCHO = R(c.Ancho); o.NUM_ALTO = R(c.Alto);
+            if (c.BandaFin is not { } bf || L.Bandas.FirstOrDefault(b => b.NUM_BANDA == bf) is not { } fin) continue;
+            // Si no puede seguir hasta ahí, lo que se estiró queda hasta el borde de abajo de su sección.
+            if (!Cruzar(o, fin, c.YFin ?? 0) && o.NUM_BANDA_FIN is null && L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA) is { } ini)
+                o.NUM_ALTO = R(Math.Min((double)o.NUM_ALTO, Math.Max(0, (double)(ini.NUM_ALTO - o.NUM_Y))));
+        }
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task AltoBanda(int banda, double alto)
+    {
+        if (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == banda) is { } b)
+        {
+            Antes();
+            b.NUM_ALTO = R(Math.Min(400, alto));
+            Recortar(b);
+            _bandaSel = banda;
+            _sel.Clear();
+        }
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task Soltar(string valor, int banda, double x, double y)
+    {
+        if (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == banda) is { } b) Poner(valor, b, x, y);
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task Tecla(string tecla, bool mayus, bool ctrl)
+    {
+        var paso = (_ajustar ? _rejilla : 0.5) * (mayus ? 5 : 1);
+        switch (ctrl ? tecla.ToLowerInvariant() : tecla)
+        {
+            case "Delete" or "Backspace": Eliminar(); break;
+            case "Escape": _sel.Clear(); _formGrupo = false; break;
+            case "ArrowLeft": Desplazar(-paso, 0); break;
+            case "ArrowRight": Desplazar(paso, 0); break;
+            case "ArrowUp": Desplazar(0, -paso); break;
+            case "ArrowDown": Desplazar(0, paso); break;
+            case "z": Deshacer(); break;
+            case "y": Rehacer(); break;
+            case "d": Duplicar(); break;
+            case "c": _portapapeles = Seleccion.Select(Copia).ToList(); break;
+            case "v": Pegar(); break;
+            case "a":
+                if (BandaDestino() is { } b) { _sel.Clear(); _sel.AddRange(L.Objetos.Where(o => o.NUM_BANDA == b.NUM_BANDA).Select(o => o.NUM_OBJETO)); }
+                break;
+        }
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    // ── Deshacer ────────────────────────────────────────────────────────────────
+    /// <summary>Guarda cómo está el lienzo antes de un cambio (hasta 40 pasos).</summary>
+    private void Antes()
+    {
+        _deshacer.Add(JsonSerializer.Serialize(L));
+        if (_deshacer.Count > 40) _deshacer.RemoveAt(0);
+        _rehacer.Clear();
+    }
+
+    private void Deshacer() => Volver(_deshacer, _rehacer);
+    private void Rehacer() => Volver(_rehacer, _deshacer);
+
+    private void Volver(List<string> desde, List<string> hacia)
+    {
+        if (desde.Count == 0) return;
+        hacia.Add(JsonSerializer.Serialize(L));
+        var l = JsonSerializer.Deserialize<ReporteLienzo>(desde[^1])!;
+        desde.RemoveAt(desde.Count - 1);
+        L.Grupos = l.Grupos; L.Bandas = l.Bandas; L.Objetos = l.Objetos; L.Formulas = l.Formulas; L.Condiciones = l.Condiciones;
+        _sel.RemoveAll(id => Obj(id) is null);
+        if (_bandaSel is { } n && !L.Bandas.Any(b => b.NUM_BANDA == n)) _bandaSel = null;
+    }
+
+    // ── Objetos ─────────────────────────────────────────────────────────────────
+    private ReporteLienzoObjeto? Obj(int id) => L.Objetos.FirstOrDefault(o => o.NUM_OBJETO == id);
+    /// <summary>Los objetos que se dibujan dentro de la sección (los que cruzan van en su propia capa).</summary>
+    private IEnumerable<ReporteLienzoObjeto> ObjetosDe(ReporteLienzoBanda b)
+        => L.Objetos.Where(o => o.NUM_BANDA == b.NUM_BANDA && !Cruza(o)).OrderBy(o => o.NUM_ORDEN).ThenBy(o => o.NUM_OBJETO);
+    private int Siguiente() => L.Objetos.Select(o => o.NUM_OBJETO).DefaultIfEmpty(0).Max() + 1;
+
+    /// <summary>La sección donde va lo que se inserta con un clic: la elegida, la del objeto elegido o el detalle.</summary>
+    private ReporteLienzoBanda? BandaDestino()
+        => BandaElegida
+        ?? (_sel.Count > 0 ? L.Bandas.FirstOrDefault(b => b.NUM_BANDA == Obj(_sel[0])?.NUM_BANDA) : null)
+        ?? Ordenadas.FirstOrDefault(b => b.COD_TIPO_BANDA == "DE")
+        ?? Ordenadas.FirstOrDefault();
+
+    private void Insertar(string tipo) => SoltarAqui($"NUE|{tipo}");
+
+    /// <summary>Con un clic o doble clic: en la sección elegida, arriba a la izquierda (corrido si ahí ya hay algo).</summary>
+    private void SoltarAqui(string valor)
+    {
+        if (BandaDestino() is not { } b) return;
+        double x = 2, y = 1;
+        while (L.Objetos.Any(o => o.NUM_BANDA == b.NUM_BANDA && Math.Abs((double)o.NUM_X - x) < 0.5 && Math.Abs((double)o.NUM_Y - y) < 0.5) && x < Ancho - 20) x += 5;
+        Poner(valor, b, x, y);
+    }
+
+    /// <summary>Lo que se suelta: NUE|TIPO, CAM|resultado|COLUMNA, TAB|resultado|, RES|1|COLUMNA, ESP||ORIGEN, FOR||NOMBRE.</summary>
+    private void Poner(string valor, ReporteLienzoBanda b, double x, double y)
+    {
+        var p = valor.Split('|');
+        if (p.Length < 2) return;
+        var tipo = p[0] == "NUE" ? p[1] : p[0];
+        var resultado = p.Length > 1 && int.TryParse(p[1], out var r) ? r : (int?)null;
+        var origen = p.Length > 2 && p[2].Length > 0 ? p[2] : null;
+        // Una fórmula nueva desde la barra: primero se escribe, después se pone donde se soltó.
+        if (tipo == "FOR" && origen is null)
+        {
+            _ = CrearFormulaYPoner(b, x, y);
+            return;
+        }
+        if (tipo is "CAM" or "RES" or "CRU" or "GRA" && (tipo is "CRU" or "GRA" ? PrimeraColumna(resultado ?? 1, false) : origen ?? PrimeraColumna(tipo == "RES" ? 1 : resultado ?? 1, tipo == "RES")) is null)
+        {
+            Snackbar.Add("La fuente no tiene columnas para eso.", Severity.Warning);
+            return;
+        }
+        if (NoVaEn(tipo, b))
+        {
+            Snackbar.Add($"{NombreTipo(tipo)}: no va en el encabezado ni en el pie de página.", Severity.Warning);
+            return;
+        }
+        if (tipo == "SUB" && origen is null && !Subinformables.Any())
+        {
+            Snackbar.Add("No hay otros diseños libres para ponerlos adentro: graba primero el que va como subinforme.", Severity.Info);
+            return;
+        }
+        Antes();
+        var o = Crear(tipo, b, x, y, origen, resultado);
+        _sel.Clear();
+        _sel.Add(o.NUM_OBJETO);
+        // Como en Crystal: un campo soltado en el detalle pone su título en el encabezado de página, a la misma altura x.
+        if (p[0] is "CAM" or "FOR" && _conTitulo && b.COD_TIPO_BANDA == "DE" && (o.NUM_RESULTADO ?? 1) == 1
+            && Ordenadas.FirstOrDefault(z => z.COD_TIPO_BANDA == "PH") is { } ph)
+        {
+            // Si el encabezado ya tiene títulos de columna, el nuevo va a su altura y con su estilo (la franja de
+            // títulos de un diseño convertido); si no, abajo del encabezado y en negrita.
+            var modelo = L.Objetos.Where(z => z.NUM_BANDA == ph.NUM_BANDA && z.COD_TIPO_OBJETO == "TXT" && !(z.DES_ORIGEN ?? "").Contains('{'))
+                                  .OrderByDescending(z => z.NUM_Y).FirstOrDefault();
+            var lh = Linea(D.NUM_TAMANO_LETRA, true);
+            var yt = modelo is not null ? (double)modelo.NUM_Y : Math.Max(0, (double)ph.NUM_ALTO - lh - 0.5);
+            var t = Crear("TXT", ph, (double)o.NUM_X, yt, p[0] == "FOR" ? o.DES_ORIGEN : Etiqueta(1, o.DES_ORIGEN), null);
+            t.NUM_ANCHO = o.NUM_ANCHO;
+            t.COD_ALINEACION = o.COD_ALINEACION;
+            t.FLG_NEGRITA = modelo?.FLG_NEGRITA ?? true;
+            if (modelo is not null)
+            {
+                t.NUM_ALTO = modelo.NUM_ALTO; t.FLG_CURSIVA = modelo.FLG_CURSIVA; t.NUM_TAMANO_LETRA = modelo.NUM_TAMANO_LETRA; t.DES_FUENTE = modelo.DES_FUENTE;
+                t.DES_COLOR = modelo.DES_COLOR; t.DES_COLOR_FONDO = modelo.DES_COLOR_FONDO; t.DES_BORDES = modelo.DES_BORDES;
+                t.NUM_GROSOR_BORDE = modelo.NUM_GROSOR_BORDE; t.DES_COLOR_BORDE = modelo.DES_COLOR_BORDE;
+            }
+        }
+    }
+
+    private ReporteLienzoObjeto Crear(string tipo, ReporteLienzoBanda b, double x, double y, string? origen, int? resultado)
+    {
+        var lh = Linea(D.NUM_TAMANO_LETRA);
+        var o = new ReporteLienzoObjeto
+        {
+            NUM_OBJETO = Siguiente(), NUM_BANDA = b.NUM_BANDA, COD_TIPO_OBJETO = tipo, NUM_X = R(x), NUM_Y = R(y),
+            NUM_ORDEN = L.Objetos.Where(z => z.NUM_BANDA == b.NUM_BANDA).Select(z => z.NUM_ORDEN).DefaultIfEmpty(0).Max() + 1
+        };
+        switch (tipo)
+        {
+            case "TXT":
+                o.DES_ORIGEN = origen ?? "Texto";
+                o.NUM_ANCHO = 40; o.NUM_ALTO = R(lh);
+                break;
+            case "CAM":
+            {
+                o.NUM_RESULTADO = resultado ?? 1;
+                o.DES_ORIGEN = origen ?? PrimeraColumna(o.NUM_RESULTADO.Value, false);
+                var t = TipoColumna(o.NUM_RESULTADO.Value, o.DES_ORIGEN);
+                o.NUM_ANCHO = EsNumero(t) ? 25 : EsFecha(t) ? 20 : 40;
+                o.NUM_ALTO = R(lh);
+                o.COD_ALINEACION = EsNumero(t) ? "D" : EsFecha(t) ? "C" : "I";
+                o.FLG_PUEDE_CRECER = !EsNumero(t) && !EsFecha(t);
+                break;
+            }
+            case "RES":
+                o.NUM_RESULTADO = 1;
+                o.DES_ORIGEN = origen ?? PrimeraColumna(1, true);
+                o.COD_FUNCION = "SUM";
+                o.NUM_NIVEL = Nivel(b);
+                o.NUM_ANCHO = 25; o.NUM_ALTO = R(lh);
+                o.COD_ALINEACION = "D"; o.FLG_NEGRITA = true;
+                break;
+            case "ESP":
+                o.DES_ORIGEN = origen ?? "PAGINA_N_DE_M";
+                o.NUM_ANCHO = 40; o.NUM_ALTO = R(lh);
+                break;
+            case "FOR":
+                o.DES_ORIGEN = origen;
+                o.NUM_ANCHO = 30; o.NUM_ALTO = R(lh);
+                break;
+            case "LIN":
+                o.NUM_ANCHO = 50; o.NUM_ALTO = 0; o.NUM_GROSOR_BORDE = 0.5m; o.DES_COLOR_BORDE = "#000000";
+                break;
+            case "CUA":
+                o.NUM_ANCHO = 40; o.NUM_ALTO = 15; o.NUM_GROSOR_BORDE = 0.5m; o.DES_COLOR_BORDE = "#000000";
+                break;
+            case "IMG":
+                o.DES_ORIGEN = origen is "LOGO_APLICACION" ? origen : "LOGO"; o.NUM_ANCHO = 30; o.NUM_ALTO = 13; o.COD_ALINEACION = "I";
+                break;
+            case "BAR":
+                o.COD_CODIGO = "C128"; o.FLG_TEXTO_CODIGO = true; o.COD_ALINEACION = "C";
+                o.DES_ORIGEN = origen ?? (PrimeraColumna(1, false) is { } columna ? "{" + columna + "}" : "123456");
+                o.NUM_ANCHO = 45; o.NUM_ALTO = 12;
+                break;
+            case "TAB":
+                o.NUM_RESULTADO = resultado ?? (Resultados.Count > 1 ? Resultados[1].NUM_RESULTADO : 1);
+                o.NUM_ANCHO = R(Math.Max(20, Ancho - x)); o.NUM_ALTO = 12;
+                break;
+            case "CRU":
+                // Filas y columnas: las dos primeras columnas que no son números; lo que resume: la primera que sí.
+                o.NUM_RESULTADO = resultado ?? 1;
+                CambiarResultadoCruzada(o, o.NUM_RESULTADO.Value, guardar: false);
+                o.COD_FUNCION = "SUM";
+                o.NUM_ANCHO = R(Math.Max(40, Math.Min(160, Ancho - x))); o.NUM_ALTO = 15;
+                break;
+            case "GRA":
+                // Columnas con la suma de la primera columna numérica por la primera que no lo es (una fecha o un texto).
+                o.COD_GRAFICO = "COL";
+                o.NUM_RESULTADO = resultado ?? 1;
+                CambiarResultadoGrafico(o, o.NUM_RESULTADO.Value, guardar: false);
+                o.COD_FUNCION = "SUM";
+                o.NUM_ANCHO = R(Math.Max(40, Math.Min(100, Ancho - x))); o.NUM_ALTO = 50;
+                break;
+            case "SUB":
+                o.NUM_DISENO_SUB = int.TryParse(origen, out var sub) ? sub : Subinformables.FirstOrDefault()?.NUM_DISENO;
+                o.NUM_ANCHO = R(Math.Max(30, Ancho - x)); o.NUM_ALTO = 15;
+                break;
+        }
+        L.Objetos.Add(o);
+        // La sección crece si el objeto no entra.
+        var fin = o.NUM_Y + o.NUM_ALTO;
+        if (fin > b.NUM_ALTO) b.NUM_ALTO = Math.Min(400, fin + 0.5m);
+        return o;
+    }
+
+    private void Eliminar()
+    {
+        if (_sel.Count == 0) return;
+        Antes();
+        L.Objetos.RemoveAll(o => _sel.Contains(o.NUM_OBJETO));
+        Huerfanas();
+        _sel.Clear();
+    }
+
+    private static ReporteLienzoObjeto Copia(ReporteLienzoObjeto o) => JsonSerializer.Deserialize<ReporteLienzoObjeto>(JsonSerializer.Serialize(o))!;
+
+    private void Duplicar()
+    {
+        if (_sel.Count == 0) return;
+        Antes();
+        var nuevos = new List<int>();
+        foreach (var o in Seleccion.ToList())
+        {
+            var c = Copia(o);
+            c.NUM_OBJETO = Siguiente();
+            c.NUM_X = Math.Min(1990, c.NUM_X + 3); c.NUM_Y += 3;
+            L.Objetos.Add(c);
+            CopiarCondiciones(o.NUM_OBJETO, c.NUM_OBJETO);
+            nuevos.Add(c.NUM_OBJETO);
+        }
+        _sel.Clear(); _sel.AddRange(nuevos);
+    }
+
+    private void Pegar()
+    {
+        if (_portapapeles.Count == 0 || BandaDestino() is not { } b) return;
+        Antes();
+        var nuevos = new List<int>();
+        foreach (var o in _portapapeles)
+        {
+            var c = Copia(o);
+            c.NUM_OBJETO = Siguiente();
+            if (!CambiarBanda(c, b)) continue;
+            L.Objetos.Add(c);
+            CopiarCondiciones(o.NUM_OBJETO, c.NUM_OBJETO);
+            nuevos.Add(c.NUM_OBJETO);
+        }
+        _sel.Clear(); _sel.AddRange(nuevos);
+    }
+
+    private void Desplazar(double dx, double dy)
+    {
+        if (_sel.Count == 0) return;
+        Antes();
+        foreach (var o in Seleccion)
+        {
+            o.NUM_X = R(Math.Max(0, (double)o.NUM_X + dx));
+            o.NUM_Y = R(Math.Max(0, (double)o.NUM_Y + dy));
+            // Lo que cruza se mueve entero: también donde termina (dentro de su sección final).
+            if (Cruza(o) && L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA_FIN) is { } fin)
+                o.NUM_Y_FIN = R(Math.Min((double)fin.NUM_ALTO, Math.Max(0, (double)o.NUM_Y_FIN!.Value + dy)));
+        }
+    }
+
+    /// <summary>Al frente o atrás dentro de su sección (el orden en que se dibujan).</summary>
+    private void Capa(bool frente)
+    {
+        if (_sel.Count == 0) return;
+        Antes();
+        foreach (var banda in Seleccion.Select(o => o.NUM_BANDA).Distinct().ToList())
+        {
+            var lista = L.Objetos.Where(o => o.NUM_BANDA == banda).OrderBy(o => o.NUM_ORDEN).ThenBy(o => o.NUM_OBJETO).ToList();
+            var elegidos = lista.Where(o => _sel.Contains(o.NUM_OBJETO)).ToList();
+            var resto = lista.Except(elegidos).ToList();
+            var orden = frente ? resto.Concat(elegidos) : elegidos.Concat(resto);
+            var i = 0;
+            foreach (var o in orden) o.NUM_ORDEN = ++i;
+        }
+    }
+
+    /// <summary>Alinea según el primero elegido: I izquierda, D derecha, A arriba, B abajo, W mismo ancho, H mismo alto.</summary>
+    private void Alinear(string como)
+    {
+        var lista = Seleccion.ToList();
+        if (lista.Count < 2) return;
+        Antes();
+        var p = lista[0];
+        foreach (var o in lista.Skip(1))
+            switch (como)
+            {
+                case "I": o.NUM_X = p.NUM_X; break;
+                case "D": o.NUM_X = Math.Max(0, p.NUM_X + p.NUM_ANCHO - o.NUM_ANCHO); break;
+                case "A": o.NUM_Y = p.NUM_Y; break;
+                case "B": o.NUM_Y = Math.Max(0, p.NUM_Y + p.NUM_ALTO - o.NUM_ALTO); break;
+                case "W": o.NUM_ANCHO = p.NUM_ANCHO; break;
+                case "H": o.NUM_ALTO = p.NUM_ALTO; break;
+            }
+    }
+
+    /// <summary>Reparte 3 o más objetos con el mismo espacio entre ellos: el primero y el último quedan donde están
+    /// (de izquierda a derecha, o de arriba abajo dentro de una sección). Si se enciman, reparte sus comienzos.</summary>
+    private void Repartir(bool horizontal)
+    {
+        var lista = Seleccion.ToList();
+        if (lista.Count < 3) return;
+        if (!horizontal && lista.Select(o => o.NUM_BANDA).Distinct().Count() > 1)
+        {
+            Snackbar.Add("Para repartir a lo alto, elige objetos de una misma sección.", Severity.Info);
+            return;
+        }
+        Antes();
+        decimal Ini(ReporteLienzoObjeto o) => horizontal ? o.NUM_X : o.NUM_Y;
+        decimal Tam(ReporteLienzoObjeto o) => horizontal ? o.NUM_ANCHO : o.NUM_ALTO;
+        void Poner(ReporteLienzoObjeto o, decimal v) { if (horizontal) o.NUM_X = R((double)v); else o.NUM_Y = R((double)v); }
+        var orden = lista.OrderBy(Ini).ThenBy(o => o.NUM_OBJETO).ToList();
+        var (primero, ultimo) = (orden[0], orden[^1]);
+        var hueco = (Ini(ultimo) + Tam(ultimo) - Ini(primero) - orden.Sum(Tam)) / (orden.Count - 1);
+        if (hueco < 0)
+        {
+            var paso = (Ini(ultimo) - Ini(primero)) / (orden.Count - 1);
+            for (var i = 1; i < orden.Count - 1; i++) Poner(orden[i], Ini(primero) + paso * i);
+            return;
+        }
+        var pos = Ini(primero) + Tam(primero) + hueco;
+        for (var i = 1; i < orden.Count - 1; i++)
+        {
+            Poner(orden[i], pos);
+            pos += Tam(orden[i]) + hueco;
+        }
+    }
+
+    private void MoverASeccion(ReporteLienzoObjeto o, int? banda)
+    {
+        if (banda is not { } n || n == o.NUM_BANDA || L.Bandas.FirstOrDefault(b => b.NUM_BANDA == n) is not { } destino) return;
+        Antes();
+        if (CambiarBanda(o, destino)) _bandaSel = n;
+    }
+
+    /// <summary>Un resumen que cambia de sección pasa a sumar lo de esa sección: el grupo en su pie, todo en el informe.
+    /// Una línea o un cuadro que cruza sigue cruzando solo si desde la sección nueva puede llegar a donde terminaba.
+    /// Un subinforme o una tabla cruzada no va al encabezado ni al pie de página: se queda donde estaba (false).</summary>
+    private bool CambiarBanda(ReporteLienzoObjeto o, ReporteLienzoBanda destino)
+    {
+        if (NoVaEn(o.COD_TIPO_OBJETO, destino))
+        {
+            Snackbar.Add($"{NombreTipo(o.COD_TIPO_OBJETO)} N° {o.NUM_OBJETO}: no va en el encabezado ni en el pie de página.", Severity.Warning);
+            return false;
+        }
+        o.NUM_BANDA = destino.NUM_BANDA;
+        if (o.COD_TIPO_OBJETO == "RES") o.NUM_NIVEL = Nivel(destino);
+        if (o.NUM_BANDA_FIN is { } f && !(L.Bandas.FirstOrDefault(b => b.NUM_BANDA == f) is { } fin && PuedeTerminar(destino, fin)))
+        {
+            NoCruzar(o);
+            Snackbar.Add($"{NombreTipo(o.COD_TIPO_OBJETO)} N° {o.NUM_OBJETO} ya no sigue hasta otra sección: desde «{NombreBanda(destino)}» no llega a donde terminaba.", Severity.Info);
+        }
+        return true;
+    }
+
+    /// <summary>Lo que ocupa filas de otro lado (subinforme, tabla cruzada) o las resume (gráfico) no se repite en cada página.</summary>
+    private static bool NoVaEn(string tipo, ReporteLienzoBanda b) => tipo is "SUB" or "CRU" or "GRA" && b.COD_TIPO_BANDA is "PH" or "PF";
+
+    // ── Líneas y cuadros que cruzan secciones ───────────────────────────────────
+    /// <summary>¿Sigue hasta otra sección? (Igual que en el motor del PDF.)</summary>
+    private static bool Cruza(ReporteLienzoObjeto o)
+        => o.COD_TIPO_OBJETO is "LIN" or "CUA" && o.NUM_BANDA_FIN is { } f && f != o.NUM_BANDA && o.NUM_Y_FIN is not null;
+
+    /// <summary>¿Una línea o un cuadro que empieza en i puede terminar en f? Del encabezado al pie del mismo grupo, del
+    /// informe o de la página, o en otra parte más abajo de la misma sección (lo mismo que valida el SP al grabar).</summary>
+    private static bool PuedeTerminar(ReporteLienzoBanda i, ReporteLienzoBanda f)
+        => (i.COD_TIPO_BANDA == f.COD_TIPO_BANDA && i.NUM_NIVEL == f.NUM_NIVEL && f.NUM_SUBSECCION > i.NUM_SUBSECCION)
+        || (i.COD_TIPO_BANDA == "RH" && f.COD_TIPO_BANDA == "RF")
+        || (i.COD_TIPO_BANDA == "PH" && f.COD_TIPO_BANDA == "PF")
+        || (i.COD_TIPO_BANDA == "GH" && f.COD_TIPO_BANDA == "GF" && i.NUM_NIVEL == f.NUM_NIVEL);
+
+    /// <summary>Las secciones donde puede terminar lo que empieza en b, de arriba abajo.</summary>
+    private IEnumerable<ReporteLienzoBanda> Socias(ReporteLienzoBanda b) => Ordenadas.Where(f => PuedeTerminar(b, f));
+
+    /// <summary>La línea o el cuadro sigue hasta la sección fin, en yFin (a lo más su borde de abajo). Terminar en la
+    /// misma sección donde empieza es dejar de cruzar. Una línea que cruza es vertical. False si no se puede.</summary>
+    private bool Cruzar(ReporteLienzoObjeto o, ReporteLienzoBanda fin, double yFin)
+    {
+        if (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA) is not { } ini) return false;
+        if (fin.NUM_BANDA == ini.NUM_BANDA)
+        {
+            if (o.NUM_BANDA_FIN is not null) NoCruzar(o, yFin);
+            return true;
+        }
+        if (o.COD_TIPO_OBJETO is not ("LIN" or "CUA") || !PuedeTerminar(ini, fin))
+        {
+            Snackbar.Add($"Desde «{NombreBanda(ini)}» no puede seguir hasta «{NombreBanda(fin)}». Una línea o un cuadro va del encabezado de un grupo a su pie, del encabezado al pie del informe o de la página, o a otra parte de la misma sección (a → b).", Severity.Warning);
+            return false;
+        }
+        o.NUM_BANDA_FIN = fin.NUM_BANDA;
+        o.NUM_Y_FIN = R(Math.Min(yFin, (double)fin.NUM_ALTO));
+        o.NUM_Y = R(Math.Min((double)o.NUM_Y, (double)ini.NUM_ALTO));
+        if (o.COD_TIPO_OBJETO == "LIN") o.NUM_ANCHO = 0;
+        return true;
+    }
+
+    /// <summary>Deja de cruzar: vuelve a ser solo de su sección, hasta yFin si se soltó en ella o hasta su borde de abajo.</summary>
+    private void NoCruzar(ReporteLienzoObjeto o, double? yFin = null)
+    {
+        if (o.NUM_BANDA_FIN is null && o.NUM_Y_FIN is null) return;
+        o.NUM_BANDA_FIN = null;
+        o.NUM_Y_FIN = null;
+        var alto = (double)(L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA)?.NUM_ALTO ?? 0);
+        o.NUM_ALTO = R(Math.Max(0, (yFin ?? alto) - (double)o.NUM_Y));
+    }
+
+    /// <summary>«Termina en» de las propiedades: otra sección (al principio, en su borde de abajo) o la misma.</summary>
+    private void TerminarEn(ReporteLienzoObjeto o, int? banda)
+    {
+        Antes();
+        if (banda is not { } n || L.Bandas.FirstOrDefault(b => b.NUM_BANDA == n) is not { } fin) { NoCruzar(o); return; }
+        Cruzar(o, fin, (double)(Cruza(o) && o.NUM_BANDA_FIN == n ? o.NUM_Y_FIN!.Value : fin.NUM_ALTO));
+    }
+
+    private void YFinal(ReporteLienzoObjeto o, object? valor)
+    {
+        if (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA_FIN) is not { } fin) return;
+        Num(v => o.NUM_Y_FIN = v, valor, 0, fin.NUM_ALTO);
+    }
+
+    /// <summary>Si una sección se achica, lo que termina en ella termina a lo más en su borde de abajo (lo pide el SP).</summary>
+    private void Recortar(ReporteLienzoBanda b)
+    {
+        foreach (var o in L.Objetos.Where(o => o.NUM_BANDA_FIN == b.NUM_BANDA && o.NUM_Y_FIN > b.NUM_ALTO)) o.NUM_Y_FIN = b.NUM_ALTO;
+    }
+
+    private static int Nivel(ReporteLienzoBanda b) => b.COD_TIPO_BANDA is "GH" or "GF" ? b.NUM_NIVEL : 0;
+
+    private void CambiarResultadoCampo(ReporteLienzoObjeto o, int resultado)
+    {
+        Antes();
+        o.NUM_RESULTADO = resultado;
+        if (!Columnas(resultado).Any(c => Igual(c.DES_COLUMNA, o.DES_ORIGEN))) o.DES_ORIGEN = PrimeraColumna(resultado, false);
+    }
+
+    private static bool Opcion(ReporteLienzoObjeto o, string opcion) => (o.DES_ORIGEN ?? "").Contains(opcion, StringComparison.OrdinalIgnoreCase);
+
+    private void PonerOpcion(ReporteLienzoObjeto o, string opcion, bool si)
+    {
+        Antes();
+        var lista = (o.DES_ORIGEN ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(x => !Igual(x, opcion)).ToList();
+        if (si) lista.Add(opcion);
+        o.DES_ORIGEN = lista.Count == 0 ? null : string.Join(" ", lista);
+    }
+
+    /// <summary>Una imagen es un logo de Configuración General (LOGO, el de la empresa; LOGO_APLICACION, el de la aplicación) o
+    /// una propia (PROPIA, con su archivo).</summary>
+    private static bool EsLogo(ReporteLienzoObjeto o) => !Igual(o.DES_ORIGEN, "PROPIA") && o.IMG_IMAGEN is not { Length: > 0 };
+
+    private void OrigenImagen(ReporteLienzoObjeto o, string? origen)
+    {
+        Antes();
+        o.DES_ORIGEN = origen is "LOGO" or "LOGO_APLICACION" ? origen : "PROPIA";
+        if (o.DES_ORIGEN != "PROPIA") o.IMG_IMAGEN = null;
+    }
+
+    private async Task SubirImagen(ReporteLienzoObjeto o, InputFileChangeEventArgs e)
+    {
+        const long max = 2 * 1024 * 1024;
+        var f = e.File;
+        if (f.Size > max) { Snackbar.Add("La imagen pasa de 2 MB.", Severity.Warning); return; }
+        try
+        {
+            await using var s = f.OpenReadStream(max);
+            using var ms = new MemoryStream();
+            await s.CopyToAsync(ms);
+            var bytes = ms.ToArray();
+            if (MimeImagen(bytes) is null) { Snackbar.Add("El archivo no es PNG, JPEG, GIF ni BMP.", Severity.Warning); return; }
+            Antes();
+            o.IMG_IMAGEN = bytes;
+            o.DES_ORIGEN = "PROPIA";
+        }
+        catch (Exception)
+        {
+            Snackbar.Add("No se pudo leer la imagen.", Severity.Warning);
+        }
+    }
+
+    private void PonerBorde(ReporteLienzoObjeto o, string letra, bool si)
+    {
+        Antes();
+        var b = (o.DES_BORDES ?? "").Replace(letra, "");
+        if (si) b += letra;
+        o.DES_BORDES = b.Length == 0 ? null : string.Concat("ABID".Where(ch => b.Contains(ch)));
+    }
+
+    private void ATodos(List<ReporteLienzoObjeto> lista, Action<ReporteLienzoObjeto> accion)
+    {
+        Antes();
+        foreach (var o in lista) accion(o);
+    }
+
+    // ── Secciones y grupos ──────────────────────────────────────────────────────
+    private void ElegirBanda(ReporteLienzoBanda? b)
+    {
+        if (b is null) return;
+        _sel.Clear(); _bandaSel = b.NUM_BANDA; _formGrupo = false;
+    }
+
+    private List<ReporteLienzoBanda> Hermanas(ReporteLienzoBanda b)
+        => L.Bandas.Where(x => x.COD_TIPO_BANDA == b.COD_TIPO_BANDA && x.NUM_NIVEL == b.NUM_NIVEL).OrderBy(x => x.NUM_SUBSECCION).ToList();
+
+    private int SiguienteBanda() => L.Bandas.Select(b => b.NUM_BANDA).DefaultIfEmpty(0).Max() + 1;
+
+    private void AgregarSeccion(string? tipo)
+    {
+        if (string.IsNullOrEmpty(tipo)) return;
+        var hermana = L.Bandas.Where(b => b.COD_TIPO_BANDA == tipo && b.NUM_NIVEL == 0).OrderBy(b => b.NUM_SUBSECCION).LastOrDefault();
+        if (hermana is not null) { AgregarSubseccion(hermana); return; }
+        Antes();
+        var nueva = new ReporteLienzoBanda { NUM_BANDA = SiguienteBanda(), COD_TIPO_BANDA = tipo, NUM_ALTO = 6, FLG_MANTENER_JUNTO = true };
+        L.Bandas.Add(nueva);
+        ElegirBanda(nueva);
+    }
+
+    private void AgregarSubseccion(ReporteLienzoBanda b)
+    {
+        var hermanas = Hermanas(b);
+        if (hermanas.Count >= 9) { Snackbar.Add("Una sección tiene hasta 9 partes (a hasta i).", Severity.Warning); return; }
+        Antes();
+        // La nueva va justo debajo de esta: las de más abajo corren un lugar.
+        foreach (var h in hermanas.Where(h => h.NUM_SUBSECCION > b.NUM_SUBSECCION)) h.NUM_SUBSECCION++;
+        var nueva = new ReporteLienzoBanda
+        {
+            NUM_BANDA = SiguienteBanda(), COD_TIPO_BANDA = b.COD_TIPO_BANDA, NUM_NIVEL = b.NUM_NIVEL, NUM_SUBSECCION = b.NUM_SUBSECCION + 1,
+            NUM_ALTO = 6, FLG_MANTENER_JUNTO = true
+        };
+        L.Bandas.Add(nueva);
+        ElegirBanda(nueva);
+    }
+
+    private void QuitarSeccion(ReporteLienzoBanda b)
+    {
+        var hermanas = Hermanas(b);
+        if (hermanas.Count <= 1) return;
+        Antes();
+        L.Objetos.RemoveAll(o => o.NUM_BANDA == b.NUM_BANDA);
+        L.Bandas.Remove(b);
+        Huerfanas();
+        var i = 0;
+        foreach (var h in hermanas.Where(h => h != b)) h.NUM_SUBSECCION = ++i;
+        _bandaSel = hermanas.First(h => h != b).NUM_BANDA;
+    }
+
+    private void AbrirGrupo()
+    {
+        if (Columnas(1).Count == 0) { Snackbar.Add("Elige la fuente: los grupos son de una columna del resultado 1.", Severity.Warning); return; }
+        _formGrupo = true;
+        _sel.Clear();
+        _grupoColumna ??= Columnas(1)[0].DES_COLUMNA;
+    }
+
+    /// <summary>El grupo nuevo va adentro de los que ya hay (nivel siguiente), con su encabezado (el valor del grupo) y su pie.</summary>
+    private void InsertarGrupo()
+    {
+        if (string.IsNullOrEmpty(_grupoColumna)) return;
+        if (L.Grupos.Count >= 9) { Snackbar.Add("Hasta 9 niveles de grupo.", Severity.Warning); return; }
+        Antes();
+        var n = L.Grupos.Count + 1;
+        L.Grupos.Add(new ReporteLienzoGrupo { NUM_NIVEL = n, DES_COLUMNA = _grupoColumna, COD_ORDEN = _grupoOrden, FLG_REPETIR_ENCABEZADO = true });
+        var gh = new ReporteLienzoBanda { NUM_BANDA = SiguienteBanda(), COD_TIPO_BANDA = "GH", NUM_NIVEL = n, NUM_ALTO = 6, FLG_MANTENER_JUNTO = true };
+        L.Bandas.Add(gh);
+        L.Bandas.Add(new ReporteLienzoBanda { NUM_BANDA = SiguienteBanda(), COD_TIPO_BANDA = "GF", NUM_NIVEL = n, NUM_ALTO = 0, FLG_MANTENER_JUNTO = true });
+        var t = Crear("TXT", gh, 1 + (n - 1) * 3, 1, $"{Etiqueta(1, _grupoColumna)}: {{{_grupoColumna}}}", null);
+        t.NUM_ANCHO = R(Math.Max(20, Ancho - (double)t.NUM_X - 1));
+        t.FLG_NEGRITA = true;
+        t.DES_COLOR = "#163A5F";
+        _formGrupo = false;
+        ElegirBanda(gh);
+    }
+
+    private void QuitarGrupo(int nivel)
+    {
+        Antes();
+        var bandas = L.Bandas.Where(b => b.COD_TIPO_BANDA is "GH" or "GF" && b.NUM_NIVEL == nivel).Select(b => b.NUM_BANDA).ToList();
+        L.Objetos.RemoveAll(o => bandas.Contains(o.NUM_BANDA));
+        L.Bandas.RemoveAll(b => bandas.Contains(b.NUM_BANDA));
+        Huerfanas();
+        L.Grupos.RemoveAll(g => g.NUM_NIVEL == nivel);
+        foreach (var g in L.Grupos.Where(g => g.NUM_NIVEL > nivel)) g.NUM_NIVEL--;
+        foreach (var b in L.Bandas.Where(b => b.COD_TIPO_BANDA is "GH" or "GF" && b.NUM_NIVEL > nivel)) b.NUM_NIVEL--;
+        foreach (var o in L.Objetos.Where(o => o.COD_TIPO_OBJETO == "RES"))
+            if (o.NUM_NIVEL == nivel) o.NUM_NIVEL = 0;
+            else if (o.NUM_NIVEL > nivel) o.NUM_NIVEL--;
+        _bandaSel = null;
+    }
+
+    /// <summary>Sube o baja un grupo: intercambia su nivel con el vecino (las secciones y los resúmenes lo siguen).</summary>
+    private void CambiarNivel(int nivel, int paso)
+    {
+        var otro = nivel + paso;
+        if (otro < 1 || otro > L.Grupos.Count) return;
+        Antes();
+        int Cambio(int n) => n == nivel ? otro : n == otro ? nivel : n;
+        foreach (var g in L.Grupos) g.NUM_NIVEL = Cambio(g.NUM_NIVEL);
+        foreach (var b in L.Bandas.Where(b => b.COD_TIPO_BANDA is "GH" or "GF")) b.NUM_NIVEL = Cambio(b.NUM_NIVEL);
+        foreach (var o in L.Objetos.Where(o => o.COD_TIPO_OBJETO == "RES" && o.NUM_NIVEL > 0)) o.NUM_NIVEL = Cambio(o.NUM_NIVEL!.Value);
+    }
+
+    private static int OrdenBanda(ReporteLienzoBanda b) => b.COD_TIPO_BANDA switch
+    {
+        "RH" => 0,
+        "PH" => 100,
+        "GH" => 200 + b.NUM_NIVEL * 10,
+        "DE" => 300,
+        "GF" => 400 + (9 - b.NUM_NIVEL) * 10,
+        "RF" => 500,
+        _    => 600
+    };
+
+    private string NombreBanda(ReporteLienzoBanda b)
+    {
+        var parte = Hermanas(b).Count > 1 ? " " + (char)('a' + b.NUM_SUBSECCION - 1) : "";
+        var g = L.Grupos.FirstOrDefault(x => x.NUM_NIVEL == b.NUM_NIVEL)?.DES_COLUMNA;
+        return b.COD_TIPO_BANDA switch
+        {
+            "RH" => "Encabezado del informe",
+            "PH" => "Encabezado de página",
+            "GH" => $"Encabezado del grupo {b.NUM_NIVEL}: {g}",
+            "DE" => "Detalle",
+            "GF" => $"Pie del grupo {b.NUM_NIVEL}: {g}",
+            "RF" => "Pie del informe",
+            "PF" => "Pie de página",
+            _    => b.COD_TIPO_BANDA
+        } + parte;
+    }
+
+    private static string AyudaBanda(string tipo) => tipo switch
+    {
+        "RH" => "Sale una vez, al principio del reporte.",
+        "PH" => "Sale arriba en cada página (en la primera, después del encabezado del informe).",
+        "GH" => "Sale cada vez que empieza un grupo; si el grupo sigue en otra página, se repite.",
+        "DE" => "Sale una vez por cada fila del resultado 1.",
+        "GF" => "Sale al terminar cada grupo: sus resúmenes suman el grupo.",
+        "RF" => "Sale una vez, al final del reporte: sus resúmenes suman todo.",
+        _    => "Sale abajo en cada página."
+    };
+
+    // ── Fuente ──────────────────────────────────────────────────────────────────
+    private List<ReporteFuenteColumna> Columnas(int resultado)
+        => Fuente?.Columnas.Where(c => c.NUM_RESULTADO == resultado).OrderBy(c => c.NUM_ORDEN).ToList() ?? new();
+
+    private string? PrimeraColumna(int resultado, bool numerica)
+        => (numerica ? Columnas(resultado).FirstOrDefault(c => EsNumero(c.DES_TIPO_DATO)) : null)?.DES_COLUMNA
+        ?? Columnas(resultado).FirstOrDefault()?.DES_COLUMNA;
+
+    private string? TipoColumna(int resultado, string? columna) => Columnas(resultado).FirstOrDefault(c => Igual(c.DES_COLUMNA, columna))?.DES_TIPO_DATO;
+
+    private string Etiqueta(int resultado, string? columna)
+        => Detalle.Elementos.FirstOrDefault(e => e.NUM_RESULTADO == resultado && Igual(e.DES_COLUMNA, columna))?.DES_ETIQUETA
+        ?? Columnas(resultado).FirstOrDefault(c => Igual(c.DES_COLUMNA, columna))?.DES_ETIQUETA
+        ?? ReportesWebService.EtiquetaDesdeNombre(columna);
+
+    /// <summary>Los títulos de una tabla: las columnas visibles del resultado según la pestaña Columnas.</summary>
+    private List<string> TitulosTabla(int resultado)
+    {
+        var elementos = Detalle.Elementos.Where(e => e.NUM_RESULTADO == resultado).OrderBy(e => e.NUM_ORDEN).ToList();
+        var nombres = elementos.Count > 0 ? elementos.Where(e => e.FLG_VISIBLE).Select(e => e.DES_COLUMNA) : Columnas(resultado).Select(c => c.DES_COLUMNA);
+        return nombres.Select(n => Etiqueta(resultado, n)).Take(12).ToList();
+    }
+
+    private static bool EsNumero(string? t) => (t ?? "").ToLowerInvariant() is "int" or "bigint" or "smallint" or "tinyint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
+    private static bool EsFecha(string? t) => (t ?? "").ToLowerInvariant() is "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset";
+    private static string TipoCorto(string? t) => EsNumero(t) ? "123" : EsFecha(t) ? "📅" : (t ?? "").ToLowerInvariant() == "bit" ? "✓" : "abc";
+    private static string Orden(string? o) => o switch { "D" => "↓", "N" => "", _ => "↑" };
+    private static string NombrePapel(string? p) => p switch { "CAR" => "carta", "OFI" => "oficio", _ => "A4" };
+
+    // ── Cómo se ve cada objeto ──────────────────────────────────────────────────
+    private string NombreTipo(string tipo) => tipo switch
+    {
+        "TXT" => "Texto", "CAM" => "Campo", "RES" => "Resumen", "ESP" => "Campo especial", "LIN" => "Línea",
+        "CUA" => "Cuadro", "IMG" => "Imagen", "TAB" => "Tabla de un resultado", "FOR" => "Campo de fórmula",
+        "BAR" => "Código de barras o QR", "CRU" => "Tabla cruzada", "SUB" => "Subinforme", "GRA" => "Gráfico", _ => tipo
+    };
+
+    private string TextoVisible(ReporteLienzoObjeto o) => o.COD_TIPO_OBJETO switch
+    {
+        "TXT" => o.DES_ORIGEN ?? "",
+        "CAM" => $"{((o.NUM_RESULTADO ?? 1) == 1 ? "" : $"R{o.NUM_RESULTADO}.")}{o.DES_ORIGEN}",
+        "RES" => $"{Funcion(o.COD_FUNCION)} {o.DES_ORIGEN}",
+        "ESP" => o.DES_ORIGEN is { } e && e.StartsWith('@') ? e : $"«{Especiales.FirstOrDefault(x => x.Codigo == o.DES_ORIGEN).Texto ?? o.DES_ORIGEN}»",
+        "FOR" => $"ƒ {o.DES_ORIGEN}",
+        "BAR" => o.DES_ORIGEN ?? "",
+        _ => ""
+    };
+
+    private static string Funcion(string? f) => f switch { "CNT" => "Cuenta", "CND" => "Cuenta ≠", "AVG" => "Prom.", "MAX" => "Máx.", "MIN" => "Mín.", _ => "Σ" };
+
+    // ── Fase 3b: subinformes, tablas cruzadas y enlaces ─────────────────────────
+    /// <summary>La clave del objeto en pantalla: cambia cuando hay que volver a dibujarlo en su lugar.</summary>
+    private string Clave(ReporteLienzoObjeto o) => _redibujar.TryGetValue(o.NUM_OBJETO, out var v) ? $"{o.NUM_OBJETO}.{v}" : o.NUM_OBJETO.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Los diseños que pueden ir adentro: los libres grabados, menos este.</summary>
+    private IEnumerable<ReporteDiseno> Subinformables
+        => Disenos.Where(d => d.COD_TIPO_DISENO == "BAN" && d.NUM_DISENO is not null && d.NUM_DISENO != D.NUM_DISENO)
+                  .OrderBy(d => d.DES_DISENO, StringComparer.CurrentCultureIgnoreCase);
+
+    private string NombreSub(ReporteLienzoObjeto o)
+        => o.NUM_DISENO_SUB is not { } n ? "(elige el diseño)"
+         : Disenos.FirstOrDefault(d => d.NUM_DISENO == n)?.DES_DISENO ?? $"Diseño {n}";
+
+    /// <summary>Cuántas veces sale un subinforme, según la sección donde está.</summary>
+    private string VecesSub(ReporteLienzoObjeto o) => L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA)?.COD_TIPO_BANDA switch
+    {
+        "DE" => "una vez por cada fila",
+        "GH" or "GF" => "una vez por cada grupo",
+        _ => "una vez"
+    };
+
+    private static string NombreTotal(string? funcion) => funcion switch { "MAX" => "Máximo", "MIN" => "Mínimo", "AVG" => "Promedio", _ => "Total" };
+
+    private static string SinArroba(string? nombre) => (nombre ?? "").Trim().TrimStart('@');
+
+    /// <summary>Las líneas de los enlaces («NOMBRE=expresión», con o sin @). Una línea con solo un nombre es NOMBRE={NOMBRE}
+    /// (como la lee el motor).</summary>
+    private static List<(string Nombre, string Expresion)> EnlacesDe(ReporteLienzoObjeto o)
+    {
+        var res = new List<(string, string)>();
+        foreach (var linea in (o.DES_ENLACES ?? "").Replace("\r\n", "\n").Split('\n'))
+        {
+            var i = linea.IndexOf('=');
+            var nombre = SinArroba(i < 0 ? linea : linea[..i]);
+            if (nombre.Length == 0) continue;
+            res.Add((nombre, i < 0 ? "{" + nombre + "}" : linea[(i + 1)..].Trim()));
+        }
+        return res;
+    }
+
+    /// <summary>Guarda los enlaces, una línea por cada uno (los de un subinforme con @, como sus parámetros).</summary>
+    private static void GuardarEnlaces(ReporteLienzoObjeto o, IEnumerable<(string Nombre, string Expresion)> lista)
+    {
+        var arroba = o.COD_TIPO_OBJETO == "SUB" ? "@" : "";
+        o.DES_ENLACES = Vacio(string.Join("\n", lista.Where(x => x.Nombre.Length > 0 && x.Expresion.Length > 0).Select(x => $"{arroba}{x.Nombre}={x.Expresion}")));
+    }
+
+    private void CambiarEnlace(ReporteLienzoObjeto o, int i, string? nombre, string? expresion)
+    {
+        var lista = EnlacesDe(o);
+        if (i < 0 || i >= lista.Count) return;
+        Antes();
+        lista[i] = (SinArroba(nombre ?? lista[i].Nombre), (expresion ?? lista[i].Expresion).Trim());
+        GuardarEnlaces(o, lista);
+    }
+
+    private void QuitarEnlace(ReporteLienzoObjeto o, int i)
+    {
+        var lista = EnlacesDe(o);
+        if (i < 0 || i >= lista.Count) return;
+        Antes();
+        lista.RemoveAt(i);
+        GuardarEnlaces(o, lista);
+    }
+
+    /// <summary>Un enlace nuevo de una tabla: la primera columna del resultado que también trae el resultado 1 (las dos
+    /// del mismo nombre, como el número de la orden); si no hay, la primera de cada uno.</summary>
+    private void AgregarEnlace(ReporteLienzoObjeto o)
+    {
+        var propias = Columnas(o.NUM_RESULTADO ?? 1);
+        var comun = propias.FirstOrDefault(c => Columnas(1).Any(x => Igual(x.DES_COLUMNA, c.DES_COLUMNA)) && !EnlacesDe(o).Any(e => Igual(e.Nombre, c.DES_COLUMNA)));
+        var izq = comun?.DES_COLUMNA ?? propias.FirstOrDefault()?.DES_COLUMNA;
+        var der = comun?.DES_COLUMNA ?? Columnas(1).FirstOrDefault()?.DES_COLUMNA;
+        if (izq is null || der is null) return;
+        Antes();
+        GuardarEnlaces(o, EnlacesDe(o).Append((izq, "{" + der + "}")));
+    }
+
+    /// <summary>El enlace de un parámetro del subinforme (vacío: el automático).</summary>
+    private void PonerEnlace(ReporteLienzoObjeto o, string parametro, string? expresion)
+    {
+        Antes();
+        var lista = EnlacesDe(o).Where(e => !Igual(e.Nombre, parametro)).ToList();
+        if (Vacio(expresion) is { } x) lista.Add((parametro, x));
+        GuardarEnlaces(o, lista);
+    }
+
+    /// <summary>Las filas que muestra una tabla o una tabla cruzada: las que calzan con la fila que se imprime.</summary>
+    private RenderFragment EnlacesTabla(ReporteLienzoObjeto o) => __builder =>
+    {
+        var lista = EnlacesDe(o);
+        var r = o.NUM_RESULTADO ?? 1;
+        <div class="lz-prop-sub">Solo las filas de la fila que se imprime</div>
+        for (var k = 0; k < lista.Count; k++)
+        {
+            var i = k;
+            var (izq, der) = lista[k];
+            <div class="lz-enlace">
+                <select class="lz-in" value="@izq" title="@($"La columna del resultado {r}")" @onchange="@(e => CambiarEnlace(o, i, e.Value?.ToString(), null))">
+                    @foreach (var c in Columnas(r)) { <option value="@c.DES_COLUMNA">@c.DES_COLUMNA</option> }
+                    @if (!Columnas(r).Any(c => Igual(c.DES_COLUMNA, izq))) { <option value="@izq">@($"{izq} (no está)")</option> }
+                </select>
+                <span>=</span>
+                <input class="lz-in mono" list="lz-marcas" value="@der" title="Lo de la fila que se imprime: {COLUMNA} del resultado 1, {@@PARAMETRO}, {F.Formula} o un valor fijo"
+                       @onchange="@(e => CambiarEnlace(o, i, null, e.Value?.ToString()))" />
+                <button type="button" class="lz-mini" title="Quitar el enlace" @onclick="@(() => QuitarEnlace(o, i))">✕</button>
+            </div>
+        }
+        <div><button type="button" class="lz-mini" disabled="@(Columnas(r).Count == 0)" @onclick="@(() => AgregarEnlace(o))">+ Enlace</button></div>
+        <div class="lz-ayuda">@(lista.Count == 0
+            ? $"Sin enlaces salen todas las filas{(o.COD_TIPO_OBJETO is "CRU" or "GRA" && r == 1 ? " (del grupo, en un encabezado o pie de grupo)" : "")}. Con un enlace, solo las que calzan con la fila que se imprime: el detalle de cada orden en un listado de órdenes."
+            : $"Salen solo las filas del resultado {r} cuyas columnas son iguales a lo de la fila que se imprime (en el detalle, cada fila; en un grupo, su primera fila).")</div>
+        if ((o.DES_ENLACES?.Length ?? 0) > 2000) { <div class="lz-aviso">Los enlaces pasan de 2000 caracteres: no se va a poder grabar.</div> }
+    };
+
+    /// <summary>De dónde sale cada parámetro del subinforme: el enlace escrito o, si está vacío, el automático (en gris).</summary>
+    private RenderFragment ParametrosSub(ReporteLienzoObjeto o) => __builder =>
+    {
+        if (o.NUM_DISENO_SUB is null) return;
+        var fs = FuenteSub(o, out var leyendo);
+        if (fs is null)
+        {
+            <div class="lz-ayuda">@(leyendo ? "Leyendo sus parámetros…" : "No se pudo leer la fuente del subinforme: sus parámetros se enlazan solos por nombre.")</div>
+            return;
+        }
+        var enlaces = EnlacesDe(o);
+        var parametros = fs.Parametros.OrderBy(p => p.NUM_ORDEN).ToList();
+        if (parametros.Count == 0) { <div class="lz-ayuda">Su fuente no tiene parámetros: sale igual en cada fila.</div> }
+        foreach (var p in parametros)
+        {
+            var campo = SinArroba(p.DES_PARAMETRO);
+            var actual = enlaces.FirstOrDefault(e => Igual(e.Nombre, campo)).Expresion;
+            <div class="lz-param">
+                <label title="@(p.DES_ETIQUETA ?? campo)">@($"@{campo}{(p.FLG_OBLIGATORIO ? " *" : "")}")</label>
+                @if (p.FLG_SISTEMA)
+                {
+                    <span class="lz-ayuda">lo pone el sistema</span>
+                }
+                else
+                {
+                    <input class="lz-in mono" list="lz-marcas" value="@actual" placeholder="@Automatico(campo, p)"
+                           @onchange="@(e => PonerEnlace(o, campo, e.Value?.ToString()))" />
+                }
+            </div>
+            if (!p.FLG_SISTEMA && actual is null && p.FLG_OBLIGATORIO && Automatico(campo, p) == "(vacío)")
+            {
+                <div class="lz-aviso">@($"@{campo} es obligatorio y no tiene de dónde salir: enlázalo.")</div>
+            }
+        }
+        foreach (var e in enlaces.Where(e => !parametros.Any(p => Igual(SinArroba(p.DES_PARAMETRO), e.Nombre))))
+        {
+            var nombre = e.Nombre;
+            <div class="lz-aviso">@($"@{nombre} ya no es un parámetro del subinforme.") <button type="button" class="lz-mini" @onclick="@(() => PonerEnlace(o, nombre, null))">Quitar</button></div>
+        }
+        <div class="lz-ayuda">Vacío: lo de la columna de la fila con su mismo nombre, el parámetro del reporte con su mismo nombre o su valor por defecto (lo que se ve en gris). Puedes escribir {COLUMNA}, {@@PARAMETRO}, {F.Formula}, {R2.COLUMNA} o un valor fijo.</div>
+    };
+
+    /// <summary>De dónde sale solo un parámetro del subinforme que no se enlazó (lo mismo que hace el motor).</summary>
+    private string Automatico(string campo, ReporteFuenteParametro p)
+        => Columnas(1).Any(c => Igual(c.DES_COLUMNA, campo)) ? $"{{{campo}}} de la fila"
+         : Fuente?.Parametros.Any(x => Igual(SinArroba(x.DES_PARAMETRO), campo)) == true ? $"{{@{campo}}} del reporte"
+         : p.COD_VALOR_DEFECTO is { Length: > 0 } d ? $"su valor por defecto ({d})"
+         : "(vacío)";
+
+    /// <summary>La fuente del subinforme (sus parámetros). La primera vez se pide y se dibuja cuando llega.</summary>
+    private ReporteFuenteDetalle? FuenteSub(ReporteLienzoObjeto o, out bool leyendo)
+    {
+        leyendo = false;
+        if (o.NUM_DISENO_SUB is not { } n || Disenos.FirstOrDefault(d => d.NUM_DISENO == n)?.NUM_FUENTE is not { } nf) return null;
+        if (Fuente is not null && Fuente.Fuente.NUM_FUENTE == nf) return Fuente;
+        if (_fuentesSub.TryGetValue(nf, out var f)) return f;
+        leyendo = LeerFuente is not null;
+        if (leyendo && _leyendo.Add(nf)) _ = Leer(nf);
+        return null;
+    }
+
+    private async Task Leer(int nf)
+    {
+        try { _fuentesSub[nf] = await LeerFuente!(nf); }
+        catch { _fuentesSub[nf] = null; }
+        finally { _leyendo.Remove(nf); }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void CambiarSubinforme(ReporteLienzoObjeto o, int? numero)
+    {
+        if (numero == o.NUM_DISENO_SUB) return;
+        Antes();
+        o.NUM_DISENO_SUB = numero;
+    }
+
+    /// <summary>Al cambiar el resultado de una tabla cruzada, las columnas que ese resultado no tiene se cambian por las
+    /// primeras que sirven (filas y columnas: las que no son números; lo que resume: un número que no sea ninguna de esas).</summary>
+    private void CambiarResultadoCruzada(ReporteLienzoObjeto o, int resultado, bool guardar = true)
+    {
+        if (guardar) Antes();
+        o.NUM_RESULTADO = resultado;
+        var cols = Columnas(resultado);
+        bool Tiene(string? c) => c is not null && cols.Any(x => Igual(x.DES_COLUMNA, c));
+        var textos = cols.Where(c => !EsNumero(c.DES_TIPO_DATO)).Select(c => c.DES_COLUMNA).Concat(cols.Select(c => c.DES_COLUMNA)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!Tiene(o.DES_CRUCE_FILAS)) o.DES_CRUCE_FILAS = textos.FirstOrDefault(c => !Igual(c, o.DES_CRUCE_COLUMNAS));
+        if (!Tiene(o.DES_CRUCE_COLUMNAS)) o.DES_CRUCE_COLUMNAS = textos.FirstOrDefault(c => !Igual(c, o.DES_CRUCE_FILAS));
+        if (!Tiene(o.DES_ORIGEN))
+            o.DES_ORIGEN = cols.Where(c => EsNumero(c.DES_TIPO_DATO)).Select(c => c.DES_COLUMNA)
+                               .FirstOrDefault(c => !Igual(c, o.DES_CRUCE_FILAS) && !Igual(c, o.DES_CRUCE_COLUMNAS)) ?? PrimeraColumna(resultado, true);
+        // Los enlaces eran de las columnas del resultado anterior.
+        if (guardar) GuardarEnlaces(o, EnlacesDe(o).Where(e => Tiene(e.Nombre)));
+    }
+
+    // ── Gráficos ────────────────────────────────────────────────────────────────
+    // Los colores del motor, en el mismo orden (la primera serie, o la única, en azul).
+    private static readonly string[] PaletaGrafico = { "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948" };
+    private static readonly (string Codigo, string Nombre)[] TiposGrafico =
+        { ("COL", "Columnas"), ("BAR", "Barras horizontales"), ("LIN", "Líneas"), ("TOR", "Torta"), ("ANI", "Anillo") };
+
+    private void CambiarTipoGrafico(ReporteLienzoObjeto o, string? tipo)
+    {
+        Antes();
+        o.COD_GRAFICO = tipo is "BAR" or "LIN" or "TOR" or "ANI" ? tipo : "COL";
+        // Una torta o un anillo no tiene series; solo las columnas y las barras se apilan.
+        if (o.COD_GRAFICO is "TOR" or "ANI") o.DES_CRUCE_COLUMNAS = null;
+        if (o.COD_GRAFICO is not ("COL" or "BAR")) o.FLG_APILADO = false;
+        if (o.COD_GRAFICO is "TOR" or "ANI" && o.NUM_MAXIMO_CATEGORIAS > 8) o.NUM_MAXIMO_CATEGORIAS = 8;
+    }
+
+    private void CambiarSeriesGrafico(ReporteLienzoObjeto o, string? columna)
+    {
+        Antes();
+        o.DES_CRUCE_COLUMNAS = Vacio(columna);
+        if (o.DES_CRUCE_COLUMNAS is null) o.FLG_APILADO = false;
+    }
+
+    /// <summary>Al elegir el resultado: las categorías, la primera columna que no es un número (una fecha o un texto); lo
+    /// que resume, la primera que sí. Las series y los enlaces que no son de ese resultado se quitan.</summary>
+    private void CambiarResultadoGrafico(ReporteLienzoObjeto o, int resultado, bool guardar = true)
+    {
+        if (guardar) Antes();
+        o.NUM_RESULTADO = resultado;
+        var cols = Columnas(resultado);
+        bool Tiene(string? c) => c is not null && cols.Any(x => Igual(x.DES_COLUMNA, c));
+        if (!Tiene(o.DES_CRUCE_FILAS))
+            o.DES_CRUCE_FILAS = cols.Where(c => !EsNumero(c.DES_TIPO_DATO)).Select(c => c.DES_COLUMNA).FirstOrDefault() ?? cols.FirstOrDefault()?.DES_COLUMNA;
+        if (!Tiene(o.DES_CRUCE_COLUMNAS)) o.DES_CRUCE_COLUMNAS = null;
+        if (!Tiene(o.DES_ORIGEN))
+            o.DES_ORIGEN = cols.Where(c => EsNumero(c.DES_TIPO_DATO)).Select(c => c.DES_COLUMNA).FirstOrDefault(c => !Igual(c, o.DES_CRUCE_FILAS))
+                           ?? PrimeraColumna(resultado, true);
+        if (guardar) GuardarEnlaces(o, EnlacesDe(o).Where(e => Tiene(e.Nombre)));
+    }
+
+    private string PieGrafico(ReporteLienzoObjeto o)
+    {
+        var tipo = TiposGrafico.FirstOrDefault(t => t.Codigo == (o.COD_GRAFICO ?? "COL")).Nombre ?? "Gráfico";
+        var series = o.DES_CRUCE_COLUMNAS is not null && o.COD_GRAFICO is not ("TOR" or "ANI") ? $" y {o.DES_CRUCE_COLUMNAS}" : "";
+        return $"{tipo} R{o.NUM_RESULTADO ?? 1} · {Funcion(o.COD_FUNCION)} {o.DES_ORIGEN} por {o.DES_CRUCE_FILAS}{series}{(EnlacesDe(o).Count > 0 ? " · enlazado" : "")}";
+    }
+
+    private static string AyudaGrafico(ReporteLienzoObjeto o)
+    {
+        var torta = o.COD_GRAFICO is "TOR" or "ANI";
+        var r = o.NUM_RESULTADO ?? 1;
+        return (torta
+                ? "Una porción por cada valor de la columna (solo las que suman algo positivo). Si no dices un máximo, 6: las 5 mayores y las demás juntas en «Otros» (a lo más 8)."
+                : "Una columna, barra o punto por cada valor de las categorías y, si eliges series, uno de cada color por cada valor de las series (hasta 8: las demás juntas en «Otros»). "
+                  + (o.COD_GRAFICO == "LIN" ? "En líneas, el máximo de categorías deja las últimas." : "Con un máximo de categorías, quedan las de mayor valor y las demás van en «Otros»."))
+             + (r == 1 ? " Del resultado 1: en el encabezado o el pie de un grupo resume las filas del grupo; en otra sección, todas." : " De otro resultado: todas sus filas.")
+             + " Sale en el PDF y en el Excel con formato, como gráfico de Excel con sus números en la hoja «Datos de gráficos».";
+    }
+
+    /// <summary>Un dibujo del tipo de gráfico (no son sus datos), para reconocerlo en el lienzo.</summary>
+    private static MarkupString MiniGrafico(ReporteLienzoObjeto o)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        string N(double d) => d.ToString("0.##", inv);
+        var tipo = o.COD_GRAFICO ?? "COL";
+        var torta = tipo is "TOR" or "ANI";
+        var series = o.DES_CRUCE_COLUMNAS is null || torta ? 1 : 3;
+        // El color va tal cual en el dibujo: solo si es un #rrggbb.
+        var uno = o.DES_COLOR is { } dc && Regex.IsMatch(dc, "^#[0-9A-Fa-f]{6}$") ? dc : PaletaGrafico[0];
+        string C(int j) => series == 1 ? uno : PaletaGrafico[j];
+        double[][] v = { new[] { .55, .8, .4, .95, .65 }, new[] { .35, .5, .6, .45, .3 }, new[] { .2, .3, .25, .35, .4 } };
+        var s = new System.Text.StringBuilder();
+        if (torta)
+        {
+            double[] partes = { .34, .24, .18, .14, .1 };
+            double a = -Math.PI / 2;
+            for (var i = 0; i < partes.Length; i++)
+            {
+                var b = a + partes[i] * 2 * Math.PI;
+                s.Append($"<path d=\"M50,50 L{N(50 + 46 * Math.Cos(a))},{N(50 + 46 * Math.Sin(a))} A46,46 0 {(partes[i] > .5 ? 1 : 0)} 1 {N(50 + 46 * Math.Cos(b))},{N(50 + 46 * Math.Sin(b))} Z\" fill=\"{PaletaGrafico[i]}\" stroke=\"#fff\" stroke-width=\"1.5\"/>");
+                a = b;
+            }
+            if (tipo == "ANI") s.Append("<circle cx=\"50\" cy=\"50\" r=\"25\" fill=\"#fff\"/>");
+            return new MarkupString($"<svg class=\"lz-gra-svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"xMidYMid meet\">{s}</svg>");
+        }
+        var apilado = o.FLG_APILADO && series > 1;
+        if (tipo == "LIN")
+        {
+            for (var j = 0; j < series; j++)
+                s.Append($"<polyline points=\"{string.Join(" ", v[j].Select((y, i) => $"{N(10 + i * 20)},{N(58 - y * 52)}"))}\" fill=\"none\" stroke=\"{C(j)}\" stroke-width=\"2\" vector-effect=\"non-scaling-stroke\"/>");
+        }
+        else
+        {
+            var barras = tipo == "BAR";
+            for (var i = 0; i < 5; i++)
+            {
+                double base0 = 0;
+                for (var j = 0; j < series; j++)
+                {
+                    var largo = v[j][i] * (apilado ? 0.55 : 1);
+                    var grueso = apilado || series == 1 ? 12.0 : 4.5;
+                    var corrido = apilado || series == 1 ? 0 : (j - 1) * 4.8;
+                    // Las barras van en franjas de 12 de alto: más delgadas que las columnas (franjas de 20 de ancho).
+                    var gruesoB = apilado || series == 1 ? 7.0 : 3.0;
+                    var corridoB = apilado || series == 1 ? 0 : (j - 1) * 3.2;
+                    if (barras) s.Append($"<rect x=\"{N(base0 * 96)}\" y=\"{N(i * 12 + 6 - gruesoB / 2 + corridoB)}\" width=\"{N(largo * 96)}\" height=\"{N(gruesoB)}\" fill=\"{C(j)}\"/>");
+                    else s.Append($"<rect x=\"{N(i * 20 + 10 - grueso / 2 + corrido)}\" y=\"{N(60 - (base0 + largo) * 58)}\" width=\"{N(grueso)}\" height=\"{N(largo * 58)}\" fill=\"{C(j)}\"/>");
+                    if (apilado) base0 += largo;
+                }
+            }
+        }
+        s.Append(tipo == "BAR"
+            ? "<line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"60\" stroke=\"#c3c2b7\" vector-effect=\"non-scaling-stroke\"/>"
+            : "<line x1=\"0\" y1=\"60\" x2=\"100\" y2=\"60\" stroke=\"#c3c2b7\" vector-effect=\"non-scaling-stroke\"/>");
+        return new MarkupString($"<svg class=\"lz-gra-svg\" viewBox=\"0 0 100 60\" preserveAspectRatio=\"none\">{s}</svg>");
+    }
+
+    private string Ayuda(ReporteLienzoObjeto o)
+    {
+        if (!Cruza(o))
+            return $"{NombreTipo(o.COD_TIPO_OBJETO)} · x {F(o.NUM_X)} y {F(o.NUM_Y)} · {F(o.NUM_ANCHO)} × {F(o.NUM_ALTO)} mm"
+                 + (o.FLG_HASTA_ABAJO ? " · llega al pie de la sección si esta crece" : "")
+                 + (o.NUM_GIRO != 0 ? $" · girado {o.NUM_GIRO}°" : "")
+                 + (o.COD_TIPO_OBJETO == "BAR" ? $" · {(o.COD_CODIGO == "EAN" ? "EAN-13" : o.COD_CODIGO == "QR" ? "QR" : "Code 128")}: {o.DES_ORIGEN}" : "");
+        string Nombre(int? n) => L.Bandas.FirstOrDefault(b => b.NUM_BANDA == n) is { } b ? NombreBanda(b) : "?";
+        return $"{NombreTipo(o.COD_TIPO_OBJETO)} que cruza · de {Nombre(o.NUM_BANDA)} (y {F(o.NUM_Y)}) a {Nombre(o.NUM_BANDA_FIN)} (y {F(o.NUM_Y_FIN)})"
+             + $" · x {F(o.NUM_X)}{(o.COD_TIPO_OBJETO == "CUA" ? $" · {F(o.NUM_ANCHO)} de ancho" : "")} mm";
+    }
+
+    private bool Fuera(ReporteLienzoObjeto o) => (double)(o.NUM_X + o.NUM_ANCHO) > Ancho + 0.01;
+
+    private string EstiloObjeto(ReporteLienzoObjeto o)
+    {
+        var s = new System.Text.StringBuilder();
+        s.Append($"left:{Px((double)o.NUM_X)};top:{Px((double)o.NUM_Y)};width:{Px((double)o.NUM_ANCHO)};height:{Px((double)o.NUM_ALTO)};z-index:{Math.Max(1, o.NUM_ORDEN)};");
+        if (o.COD_TIPO_OBJETO == "LIN") return s.ToString();
+        if (o.DES_COLOR_FONDO is { Length: > 0 } fondo) s.Append($"background-color:{fondo};");
+        if (o.COD_TIPO_OBJETO == "CUA")
+        {
+            var g = (double)(o.NUM_GROSOR_BORDE ?? 0.5m);
+            if (g > 0) s.Append($"border:{F(Math.Max(1, Pt(g)))}px solid {o.DES_COLOR_BORDE ?? "#000000"};");
+            return s.ToString();
+        }
+        if (o.COD_TIPO_OBJETO is "IMG" or "TAB" or "CRU" or "SUB" or "GRA") return s.ToString();
+        var tam = (double)(o.NUM_TAMANO_LETRA ?? D.NUM_TAMANO_LETRA);
+        s.Append($"font-size:{F(Pt(tam))}px;");
+        s.Append(o.DES_FUENTE switch { "SERIF" => "font-family:'Times New Roman',Times,serif;", "MONO" => "font-family:'Courier New',Courier,monospace;", _ => "font-family:Arial,Helvetica,sans-serif;" });
+        // Un código lleva la letra y el color de su texto (las barras son de ese color); sin bordes.
+        if (o.COD_TIPO_OBJETO == "BAR") return s.Append($"color:{o.DES_COLOR ?? "#000000"};").ToString();
+        if (o.FLG_NEGRITA) s.Append("font-weight:700;");
+        if (o.FLG_CURSIVA) s.Append("font-style:italic;");
+        if (o.FLG_SUBRAYADO) s.Append("text-decoration:underline;");
+        s.Append($"color:{o.DES_COLOR ?? "#000000"};");
+        s.Append((o.COD_ALINEACION ?? "I") switch { "C" => "text-align:center;", "D" => "text-align:right;", "J" => "text-align:justify;", _ => "text-align:left;" });
+        var bordes = o.DES_BORDES ?? "";
+        if (bordes.Length > 0 || !string.IsNullOrEmpty(o.DES_COLOR_FONDO)) s.Append($"padding:{Px(0.6)};");
+        if (bordes.Length > 0)
+        {
+            var linea = $"{F(Math.Max(1, Pt((double)(o.NUM_GROSOR_BORDE ?? 0.5m))))}px solid {o.DES_COLOR_BORDE ?? "#000000"}";
+            if (bordes.Contains('A')) s.Append($"border-top:{linea};");
+            if (bordes.Contains('B')) s.Append($"border-bottom:{linea};");
+            if (bordes.Contains('I')) s.Append($"border-left:{linea};");
+            if (bordes.Contains('D')) s.Append($"border-right:{linea};");
+        }
+        return s.ToString();
+    }
+
+    /// <summary>Un texto girado se ve girado también en el lienzo: a lo alto, su caja tiene el ancho y el alto cambiados y
+    /// se gira desde el centro (90: se lee de abajo hacia arriba, como en el PDF).</summary>
+    private string Girado(ReporteLienzoObjeto o) => o.NUM_GIRO switch
+    {
+        90 or 270 => $"position:absolute;left:50%;top:50%;width:{Px((double)o.NUM_ALTO)};height:{Px((double)o.NUM_ANCHO)};"
+                   + $"transform:translate(-50%,-50%) rotate({(o.NUM_GIRO == 90 ? -90 : 90)}deg);",
+        180 => "transform:rotate(180deg);",
+        _ => ""
+    };
+
+    /// <summary>Al pasar de horizontal a girado a lo alto (o al revés), el recuadro se gira con el texto si quedaba echado
+    /// al otro lado; la sección crece si no entra.</summary>
+    private void Girar(ReporteLienzoObjeto o, int giro)
+    {
+        Antes();
+        giro = giro is 90 or 180 or 270 ? giro : 0;
+        var vertical = giro is 90 or 270;
+        if (vertical != (o.NUM_GIRO is 90 or 270) && (vertical ? o.NUM_ANCHO > o.NUM_ALTO : o.NUM_ALTO > o.NUM_ANCHO))
+            (o.NUM_ANCHO, o.NUM_ALTO) = (o.NUM_ALTO, o.NUM_ANCHO);
+        o.NUM_GIRO = giro;
+        if (vertical) o.FLG_PUEDE_CRECER = false;
+        if (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == o.NUM_BANDA) is { } banda && o.NUM_Y + o.NUM_ALTO > banda.NUM_ALTO)
+            banda.NUM_ALTO = Math.Min(400, o.NUM_Y + o.NUM_ALTO + 0.5m);
+    }
+
+    /// <summary>Lo que se ve antes de imprimir de un código con un valor fijo (sin marcas): lo mismo que diría el reporte.
+    /// Con marcas, el valor se sabe al imprimir.</summary>
+    private static string? AvisoCodigo(ReporteLienzoObjeto o)
+    {
+        var v = o.DES_ORIGEN ?? "";
+        if (v.Trim().Length == 0) return "Falta qué codifica: sin eso no se graba.";
+        if (v.Contains('{')) return null;
+        switch (o.COD_CODIGO)
+        {
+            case "EAN":
+                // Los espacios y guiones no cuentan (775-1234-56789).
+                var t = v.Replace(" ", "").Replace("-", "");
+                if (t.Length is not (12 or 13) || !t.All(char.IsAsciiDigit)) return "EAN-13: 12 o 13 números.";
+                var suma = 0;
+                for (var i = 0; i < 12; i++) suma += (t[i] - '0') * (i % 2 == 0 ? 1 : 3);
+                var control = (10 - suma % 10) % 10;
+                return t.Length == 13 && t[12] - '0' != control ? $"EAN-13: el dígito de control no cuadra (debería ser {control})." : null;
+            case "QR":
+                return null;
+            default:
+                if (v.Length > 80) return "Code 128: hasta 80 caracteres.";
+                return v.Any(c => c < 32 || c > 126) ? "Code 128: solo letras sin tilde, números y signos." : null;
+        }
+    }
+
+    private static string Lado(string? a) => a switch { "I" => "left", "D" => "right", _ => "center" };
+
+    private static string? MimeImagen(byte[] b)
+    {
+        if (b.Length < 8) return null;
+        if (b[0] == 0x89 && b[1] == 0x50) return "image/png";
+        if (b[0] == 0xFF && b[1] == 0xD8) return "image/jpeg";
+        if (b[0] == 0x47 && b[1] == 0x49) return "image/gif";
+        if (b[0] == 0x42 && b[1] == 0x4D) return "image/bmp";
+        return null;
+    }
+
+    private static string DataUrl(byte[] b) => $"data:{MimeImagen(b) ?? "image/png"};base64,{Convert.ToBase64String(b)}";
+
+    // ── Fórmulas ────────────────────────────────────────────────────────────────
+    private ReporteLienzoFormula? FormulaDe(string? nombre) => L.Formulas.FirstOrDefault(f => Igual(f.DES_NOMBRE, nombre));
+    private bool SinFormula(ReporteLienzoObjeto o) => o.COD_TIPO_OBJETO == "FOR" && FormulaDe(o.DES_ORIGEN) is null;
+
+    /// <summary>{F.Nombre} escrito como sea ({ F.nombre }...), para renombrar o ver dónde se usa.</summary>
+    private static Regex Referencia(string nombre) => new(@"\{\s*F\s*\.\s*" + Regex.Escape(nombre) + @"\s*\}", RegexOptions.IgnoreCase);
+
+    /// <summary>Abre el editor. modo F: una fórmula (nombre, texto, descripción); C: la condición de una propiedad.</summary>
+    private async Task<FormulaEditorDialog.Resultado?> AbrirEditor(string modo, string? nombre, string? texto, string? descripcion,
+                                                                  char? elemento = null, string? propiedad = null, string? donde = null, bool puedeQuitar = false)
+    {
+        if (Fuente is null || D.NUM_FUENTE is not { } fuente)
+        {
+            Snackbar.Add("Elige la fuente en «General»: las fórmulas usan sus datos.", Severity.Warning);
+            return null;
+        }
+        var p = new DialogParameters
+        {
+            [nameof(FormulaEditorDialog.Modo)] = modo,
+            [nameof(FormulaEditorDialog.Nombre)] = nombre,
+            [nameof(FormulaEditorDialog.Texto)] = texto,
+            [nameof(FormulaEditorDialog.Descripcion)] = descripcion,
+            [nameof(FormulaEditorDialog.Elemento)] = elemento?.ToString(),
+            [nameof(FormulaEditorDialog.Propiedad)] = propiedad,
+            [nameof(FormulaEditorDialog.Donde)] = donde,
+            [nameof(FormulaEditorDialog.PuedeQuitar)] = puedeQuitar,
+            [nameof(FormulaEditorDialog.NumFuente)] = fuente,
+            [nameof(FormulaEditorDialog.Fuente)] = Fuente,
+            [nameof(FormulaEditorDialog.Formulas)] = L.Formulas.Select(f => new ReporteLienzoFormula { DES_NOMBRE = f.DES_NOMBRE, DES_FORMULA = f.DES_FORMULA, DES_DESCRIPCION = f.DES_DESCRIPCION }).ToList(),
+            [nameof(FormulaEditorDialog.Grupos)] = L.Grupos.OrderBy(g => g.NUM_NIVEL).Select(g => g.DES_COLUMNA).ToList()
+        };
+        var dlg = await DialogService.ShowAsync<FormulaEditorDialog>("", p,
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = true, BackdropClick = false });
+        var res = await dlg.Result;
+        return res is { Canceled: false, Data: FormulaEditorDialog.Resultado r } ? r : null;
+    }
+
+    private Task NuevaFormula() => CrearFormula();
+
+    private async Task<ReporteLienzoFormula?> CrearFormula()
+    {
+        var r = await AbrirEditor("F", null, "", null);
+        if (r is null) return null;
+        Antes();
+        var f = new ReporteLienzoFormula { DES_NOMBRE = r.Nombre, DES_FORMULA = r.Texto, DES_DESCRIPCION = r.Descripcion };
+        L.Formulas.Add(f);
+        StateHasChanged();
+        return f;
+    }
+
+    /// <summary>«Fórmula» de la barra: se escribe la fórmula y queda su campo donde se soltó (o en la sección elegida).</summary>
+    private async Task CrearFormulaYPoner(ReporteLienzoBanda b, double x, double y)
+    {
+        var f = await CrearFormula();
+        if (f is null) return;
+        var destino = L.Bandas.FirstOrDefault(z => z.NUM_BANDA == b.NUM_BANDA) ?? BandaDestino();
+        if (destino is null) return;
+        Poner($"FOR||{f.DES_NOMBRE}", destino, x, y);
+        StateHasChanged();
+    }
+
+    private async Task EditarFormula(ReporteLienzoFormula? f)
+    {
+        if (f is null) return;
+        var anterior = f.DES_NOMBRE;
+        var r = await AbrirEditor("F", f.DES_NOMBRE, f.DES_FORMULA, f.DES_DESCRIPCION);
+        if (r is null || FormulaDe(anterior) is not { } actual) return;
+        Antes();
+        actual.DES_FORMULA = r.Texto;
+        actual.DES_DESCRIPCION = r.Descripcion;
+        if (!string.Equals(anterior, r.Nombre, StringComparison.Ordinal))
+        {
+            Renombrar(anterior, r.Nombre);
+            actual.DES_NOMBRE = r.Nombre;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>El nombre nuevo también donde se usa: otras fórmulas, condiciones, textos y campos de fórmula.</summary>
+    private void Renombrar(string anterior, string nuevo)
+    {
+        var rx = Referencia(anterior);
+        var marca = "{F." + nuevo + "}";
+        foreach (var x in L.Formulas) x.DES_FORMULA = rx.Replace(x.DES_FORMULA ?? "", marca);
+        foreach (var c in L.Condiciones) c.DES_FORMULA = rx.Replace(c.DES_FORMULA ?? "", marca);
+        foreach (var o in L.Objetos)
+        {
+            if (o.COD_TIPO_OBJETO == "TXT" && o.DES_ORIGEN is { } t) o.DES_ORIGEN = rx.Replace(t, marca);
+            if (o.COD_TIPO_OBJETO == "FOR" && Igual(o.DES_ORIGEN, anterior)) o.DES_ORIGEN = nuevo;
+        }
+    }
+
+    /// <summary>Una fórmula que usa otra fórmula, una condición o un texto no se elimina (quedarían con error). Los
+    /// campos que solo la muestran se quitan con ella, avisando antes.</summary>
+    private async Task EliminarFormula(ReporteLienzoFormula f)
+    {
+        var rx = Referencia(f.DES_NOMBRE);
+        var usos = L.Formulas.Where(x => x != f && rx.IsMatch(x.DES_FORMULA ?? "")).Select(x => $"la fórmula {x.DES_NOMBRE}").ToList();
+        var conds = L.Condiciones.Count(c => rx.IsMatch(c.DES_FORMULA ?? ""));
+        if (conds > 0) usos.Add(conds == 1 ? "una condición" : $"{conds} condiciones");
+        var textos = L.Objetos.Count(o => o.COD_TIPO_OBJETO == "TXT" && rx.IsMatch(o.DES_ORIGEN ?? ""));
+        if (textos > 0) usos.Add(textos == 1 ? "un texto" : $"{textos} textos");
+        if (usos.Count > 0)
+        {
+            Snackbar.Add($"No se puede eliminar «{f.DES_NOMBRE}»: la usa {string.Join(", ", usos)}. Primero cambia o quita esos usos.", Severity.Warning);
+            return;
+        }
+        var campos = L.Objetos.Where(o => o.COD_TIPO_OBJETO == "FOR" && Igual(o.DES_ORIGEN, f.DES_NOMBRE)).Select(o => o.NUM_OBJETO).ToHashSet();
+        var mensaje = campos.Count == 0 ? $"¿Eliminar la fórmula «{f.DES_NOMBRE}»?"
+                    : $"¿Eliminar la fórmula «{f.DES_NOMBRE}»? También se quita{(campos.Count == 1 ? " el campo" : $"n los {campos.Count} campos")} del lienzo que la muestra{(campos.Count == 1 ? "" : "n")}.";
+        var ok = await DialogService.ShowMessageBox("Eliminar fórmula", mensaje, yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        Antes();
+        L.Formulas.RemoveAll(x => Igual(x.DES_NOMBRE, f.DES_NOMBRE));
+        L.Objetos.RemoveAll(o => campos.Contains(o.NUM_OBJETO));
+        Huerfanas();
+        _sel.RemoveAll(campos.Contains);
+        StateHasChanged();
+    }
+
+    // ── Condiciones (botón ƒ) ───────────────────────────────────────────────────
+    private static readonly Dictionary<string, string> NombresPropiedad = new()
+    {
+        ["SUPRIMIR"] = "No imprimir", ["NEGRITA"] = "Negrita", ["COLOR"] = "Color", ["FONDO"] = "Fondo",
+        ["NUEVA_PAGINA_ANTES"] = "Página nueva antes", ["NUEVA_PAGINA_DESPUES"] = "Página nueva después"
+    };
+
+    private ReporteLienzoCondicion? Condicion(char elemento, int numero, string propiedad)
+        => L.Condiciones.FirstOrDefault(c => c.COD_ELEMENTO == elemento.ToString() && c.NUM_ELEMENTO == numero && c.COD_PROPIEDAD == propiedad);
+
+    private bool TieneCondiciones(char elemento, int numero) => L.Condiciones.Any(c => c.COD_ELEMENTO == elemento.ToString() && c.NUM_ELEMENTO == numero);
+
+    /// <summary>Las condiciones de una sección u objeto que ya no existe se van con él; lo que terminaba en una sección
+    /// que ya no existe deja de cruzar.</summary>
+    private void Huerfanas()
+    {
+        L.Condiciones.RemoveAll(c => c.COD_ELEMENTO == Objeto.ToString()
+            ? !L.Objetos.Any(o => o.NUM_OBJETO == c.NUM_ELEMENTO)
+            : !L.Bandas.Any(b => b.NUM_BANDA == c.NUM_ELEMENTO));
+        foreach (var o in L.Objetos.Where(o => o.NUM_BANDA_FIN is { } f && !L.Bandas.Any(b => b.NUM_BANDA == f)).ToList()) NoCruzar(o);
+    }
+
+    private void CopiarCondiciones(int desde, int hacia)
+    {
+        foreach (var c in L.Condiciones.Where(c => c.COD_ELEMENTO == Objeto.ToString() && c.NUM_ELEMENTO == desde).ToList())
+            L.Condiciones.Add(new ReporteLienzoCondicion { COD_ELEMENTO = c.COD_ELEMENTO, NUM_ELEMENTO = hacia, COD_PROPIEDAD = c.COD_PROPIEDAD, DES_FORMULA = c.DES_FORMULA });
+    }
+
+    private string DondeCondicion(char elemento, int numero, string propiedad)
+    {
+        var que = elemento == Seccion
+            ? (L.Bandas.FirstOrDefault(b => b.NUM_BANDA == numero) is { } b ? NombreBanda(b) : "Sección")
+            : (Obj(numero) is { } o ? $"{NombreTipo(o.COD_TIPO_OBJETO)} {TextoVisible(o)}".Trim() : "Objeto");
+        return $"{que} · {NombresPropiedad.GetValueOrDefault(propiedad, propiedad)}";
+    }
+
+    private async Task EditarCondicion(char elemento, int numero, string propiedad)
+    {
+        var c = Condicion(elemento, numero, propiedad);
+        var r = await AbrirEditor("C", null, c?.DES_FORMULA ?? "", null, elemento, propiedad, DondeCondicion(elemento, numero, propiedad), c is not null);
+        if (r is null) return;
+        var existe = elemento == Seccion ? L.Bandas.Any(b => b.NUM_BANDA == numero) : Obj(numero) is not null;
+        if (!existe) return;
+        Antes();
+        c = Condicion(elemento, numero, propiedad);
+        if (r.Quitar) { if (c is not null) L.Condiciones.Remove(c); }
+        else if (c is not null) c.DES_FORMULA = r.Texto;
+        else L.Condiciones.Add(new ReporteLienzoCondicion { COD_ELEMENTO = elemento.ToString(), NUM_ELEMENTO = numero, COD_PROPIEDAD = propiedad, DES_FORMULA = r.Texto });
+        StateHasChanged();
+    }
+
+    /// <summary>El botón ƒ de una propiedad: naranja si tiene condición.</summary>
+    private RenderFragment Fx(char elemento, int numero, string propiedad) => __builder =>
+    {
+        var c = Condicion(elemento, numero, propiedad);
+        <button type="button" class="lz-fx @(c is not null ? "lz-fx-on" : "")"
+                title="@(c is null ? "Poner una condición (fórmula) a esta propiedad" : $"Condición: {c.DES_FORMULA}")"
+                @onclick="@(() => EditarCondicion(elemento, numero, propiedad))">ƒ</button>
+    };
+
+    /// <summary>Las condiciones que tiene una sección u objeto, para verlas de un vistazo (clic para editar).</summary>
+    private RenderFragment Condiciones(char elemento, int numero) => __builder =>
+    {
+        var lista = L.Condiciones.Where(c => c.COD_ELEMENTO == elemento.ToString() && c.NUM_ELEMENTO == numero).OrderBy(c => c.COD_PROPIEDAD).ToList();
+        if (lista.Count > 0)
+        {
+            <div class="lz-prop-sub">Condiciones <span class="lz-ex-f" style="text-transform:none;">ƒ</span></div>
+            <div class="lz-conds">
+                @foreach (var c in lista)
+                {
+                    var cc = c;
+                    <div class="lz-cond-item" title="Editar la condición" @onclick="@(() => EditarCondicion(elemento, numero, cc.COD_PROPIEDAD))">
+                        <span>@NombresPropiedad.GetValueOrDefault(cc.COD_PROPIEDAD, cc.COD_PROPIEDAD)</span>
+                        <div class="lz-codigo">@cc.DES_FORMULA</div>
+                    </div>
+                }
+            </div>
+        }
+    };
+
+    // ── Medidas y entradas ──────────────────────────────────────────────────────
+    /// <summary>Alto de una línea de texto en mm (aprox. el de Arial en el PDF).</summary>
+    private static double Linea(double puntos, bool negrita = false) => Math.Round(puntos * PtMm * 1.16 + 0.3, 1);
+
+    private double Pt(double puntos) => puntos * PtMm * Escala;
+    private string Px(double mm) => F(mm * Escala) + "px";
+    private static decimal R(double v) => Math.Round((decimal)Math.Clamp(v, 0, 2000), 2);
+    private static string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+    private static string F(decimal v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+    private static string F(decimal? v) => v is { } x ? F(x) : "";
+    private static decimal? Dec(object? v) => decimal.TryParse(v?.ToString()?.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var n) ? n : null;
+    private static int? Ent(object? v) => int.TryParse(v?.ToString(), out var n) ? n : null;
+    private static string? Vacio(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    private static bool Igual(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+    private static string? ColorHex(string? v) => v is { Length: 7 } c && c[0] == '#' ? c.ToUpperInvariant() : null;
+
+    private void Zoom(double paso) => _zoom = Math.Clamp(Math.Round(_zoom + paso, 2), 0.5, 2.5);
+
+    private void Texto(Action<string?> poner, object? valor) { Antes(); poner(Vacio(valor?.ToString())); }
+    private void Bool(Action<bool> poner, object? valor) { Antes(); poner(valor is true); }
+
+    private void Num(Action<decimal> poner, object? valor, decimal min, decimal max)
+    {
+        if (Dec(valor) is not { } n) return;
+        Antes();
+        poner(Math.Clamp(Math.Round(n, 2), min, max));
+    }
+
+    private void NumMm(Action<decimal> poner, object? valor) => Num(poner, valor, 0, 2000);
+
+    private void NumONulo(Action<decimal?> poner, object? valor, decimal min, decimal max, bool guardar = true)
+    {
+        if (guardar) Antes();
+        poner(Dec(valor) is { } n ? Math.Clamp(Math.Round(n, 2), min, max) : null);
+    }
+}

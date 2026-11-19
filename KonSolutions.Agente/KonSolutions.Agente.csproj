@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Agente local de equipos RFID ("RFID Bridge"), adaptador para lectores Impinj (Speedway, R700...).
+       Corre en la estacion de planta donde esta el lector. Usa el contrato de KonSolutions.Shared (IRfidAdaptador, RfidEquipoConfig) y los DTO de la API. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>agente-rfid</AssemblyName>
+    <RootNamespace>KonSolutions.Agente</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Donde esta KonSolutions.Shared respecto de esta carpeta. Se prueban, en orden: (1) el agente dentro de KonSolutionsWebApp, al lado de Shared y Web (KonSolutionsWebApp\KonSolutions.Agente);
+         (2) el agente en agent\KonSolutions.Agente, en la raiz del repositorio. Si tu arbol es otro: dotnet build -p:RutaShared=C:\ruta\KonSolutions.Shared.csproj -->
+    <RutaShared Condition="'$(RutaShared)' == '' And Exists('$(MSBuildProjectDirectory)\..\KonSolutions.Shared\KonSolutions.Shared.csproj')">..\KonSolutions.Shared\KonSolutions.Shared.csproj</RutaShared>
+    <RutaShared Condition="'$(RutaShared)' == ''">..\..\KonSolutionsWebApp\KonSolutions.Shared\KonSolutions.Shared.csproj</RutaShared>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(RutaShared)" />
+    <!-- SDK oficial de Impinj (Octane SDK para .NET). Su licencia la tienes que aceptar tu: https://support.impinj.com/article/177670698335216849 -->
+    <PackageReference Include="OctaneSDK" Version="6.0.0" />
+    <!-- El servicio de Windows (agente-rfid servicio): el anfitrion generico de .NET y su soporte para correr como servicio de Windows. Son paquetes oficiales de Microsoft. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Si por un descuido quedo una copia del agente dentro de esta misma carpeta (KonSolutions.Agente\KonSolutions.Agente o agent\...), el compilador la ignora en vez de dar errores de definiciones duplicadas.
+         Esa copia no se usa para nada: puedes borrarla. -->
+    <Compile Remove="KonSolutions.Agente\**" />
+    <Compile Remove="agent\**" />
+    <EmbeddedResource Remove="KonSolutions.Agente\**" />
+    <EmbeddedResource Remove="agent\**" />
+    <None Remove="KonSolutions.Agente\**" />
+    <None Remove="agent\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.ejemplo.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="appsettings.json" Condition="Exists('appsettings.json')" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

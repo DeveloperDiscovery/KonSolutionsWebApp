@@ -1,0 +1,130 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
+    <div style="flex:1 1 480px;min-width:0;">
+        <div class="d-flex align-center gap-2 flex-wrap mb-2">
+            <MudText Typo="Typo.subtitle1" Style="flex:1;">Archivos</MudText>
+            @if (!ReadOnly)
+            {
+                <div style="min-width:180px;max-width:240px;"><AriaCombo TItem="ComboboxItem" Items="_fasesCombo" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" Class="" /></div>
+                <div style="min-width:180px;max-width:240px;"><AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" Class="" /></div>
+                <MudFileUpload T="IBrowserFile" FilesChanged="Subir" Accept="*/*">
+                    <ActivatorContent><MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.UploadFile" Disabled="_subiendo">@(_subiendo ? "Subiendo..." : "Subir archivo")</MudButton></ActivatorContent>
+                </MudFileUpload>
+            }
+        </div>
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <MudSimpleTable Dense="true" Hover="true" Style="overflow-x:auto;">
+                <thead><tr><th>Archivo</th><th>Fase / tarea</th><th>Subido por</th><th>Fecha</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var a in _d.Archivos)
+                    {
+                        var arch = a;
+                        <tr>
+                            <td><MudIcon Icon="@IconoArchivo(arch)" Size="Size.Small" Style="vertical-align:middle;opacity:.7;" /> @Nombre(arch)</td>
+                            <td>@(arch.DES_TAREA ?? arch.DES_FASE ?? "Proyecto")</td>
+                            <td>@arch.COD_USUARIO_REGISTRO</td>
+                            <td class="mono">@arch.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</td>
+                            <td style="white-space:nowrap;">
+                                <MudIconButton Icon="@Icons.Material.Filled.Download" Size="Size.Small" OnClick="@(() => Descargar(arch))" title="Descargar" />
+                                @if (!ReadOnly) { <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => QuitarArchivo(arch))" title="Quitar" /> }
+                            </td>
+                        </tr>
+                    }
+                    @if (_d.Archivos.Count == 0) { <tr><td colspan="5" class="mono" style="opacity:.5;">Todavía no hay archivos.</td></tr> }
+                </tbody>
+            </MudSimpleTable>
+        </MudPaper>
+        <MudText Typo="Typo.caption" Style="opacity:.65;">Se guardan en la carpeta de Compras configurada (Configuración general &gt; Compras), subcarpeta PROYECTOS. Máximo 50 MB por archivo.</MudText>
+    </div>
+
+</div>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private ExpedienteDocumentos _d = new();
+    private ExpedientePlanificacion _plan = new();
+    private List<ComboboxItem> _fasesCombo = new();
+    private string? _fase, _tarea;
+    private bool _subiendo;
+
+    private List<ComboboxItem> TareasDeFase => _plan.Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    /// <summary>El nombre que ve la persona: sin la carpeta ni el prefijo único con el que se guarda en el servidor.</summary>
+    private static string Nombre(ExpedienteArchivo a)
+    {
+        var n = System.IO.Path.GetFileName((a.DES_PATH_FILE ?? "").Replace('\\', '/'));
+        return n.Length > 33 && n[32] == '_' ? n[33..] : n;
+    }
+
+    private static string IconoArchivo(ExpedienteArchivo a) => System.IO.Path.GetExtension(Nombre(a)).ToLowerInvariant() switch
+    {
+        ".pdf" => Icons.Material.Filled.PictureAsPdf, ".png" or ".jpg" or ".jpeg" or ".gif" => Icons.Material.Filled.Image,
+        ".xls" or ".xlsx" or ".csv" => Icons.Material.Filled.TableChart, ".doc" or ".docx" => Icons.Material.Filled.Description, ".zip" or ".rar" or ".7z" => Icons.Material.Filled.FolderZip,
+        _ => Icons.Material.Filled.InsertDriveFile
+    };
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _d = await Http.SafeGetAsync<ExpedienteDocumentos>(ApiRoutes.Proyectos.Exp(NumProyecto, "documentos")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+            _fasesCombo = _plan.Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentos), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los documentos. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Subir(IBrowserFile? archivo)
+    {
+        if (archivo is null) return;
+        _subiendo = true;
+        try
+        {
+            using var contenido = new MultipartFormDataContent();
+            await using var stream = archivo.OpenReadStream(50L * 1024 * 1024);
+            var parte = new StreamContent(stream);
+            contenido.Add(parte, "archivo", archivo.Name);
+            if (int.TryParse(_fase, out var f)) contenido.Add(new StringContent(f.ToString()), "codFase");
+            if (int.TryParse(_tarea, out var t)) contenido.Add(new StringContent(t.ToString()), "codTarea");
+            var resp = await Http.PostAsync(ApiRoutes.Proyectos.Exp(NumProyecto, "archivos"), contenido);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<int>>();
+            if (r is { Success: true }) { Snackbar.Add("Archivo guardado.", Severity.Success); await CargarAsync(); await OnCambio.InvokeAsync(); }
+            else Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? $"No se pudo guardar el archivo (HTTP {(int)resp.StatusCode})." : r!.Message, Severity.Warning);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentos), nameof(Subir)); Snackbar.Add("No se pudo subir el archivo. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _subiendo = false; }
+    }
+
+    private async Task Descargar(ExpedienteArchivo a)
+    {
+        try
+        {
+            var resp = await Http.GetAsync(ApiRoutes.Proyectos.Exp(NumProyecto, $"archivos/{a.NUM_SECUENCIA}"));
+            if (!resp.IsSuccessStatusCode) { Snackbar.Add("El archivo no está en el servidor.", Severity.Warning); return; }
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            await JS.InvokeVoidAsync("blobViewer.descargar", bytes, Nombre(a), resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentos), nameof(Descargar)); Snackbar.Add("No se pudo descargar. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task QuitarArchivo(ExpedienteArchivo a)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar archivo", $"¿Quitar «{Nombre(a)}» del proyecto? Se borra del servidor.", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"archivos/{a.NUM_SECUENCIA}"));
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el archivo.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

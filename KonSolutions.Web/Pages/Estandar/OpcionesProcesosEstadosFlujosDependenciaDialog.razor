@@ -1,0 +1,159 @@
+@* OpcionesProcesosEstadosFlujosDependenciaDialog.razor
+   -----------------------------------------------------------------------
+   Estados previos requeridos para que un flujo (botón) pueda ejecutarse
+   (ESTANDAR.OPCIONES_PROCESOS_ESTADOS_FLUJOS_DEPENDENCIA, clave compuesta
+   COD_APLICACION + COD_OPCION_APLICACION + COD_TIPO_ESTADO + COD_BOTON_OPCION +
+   COD_ESTADO). Tabla de asignación pura: sin flujos previos requeridos = el
+   botón se ejecuta desde cualquier estado. Se abre desde el ícono nuevo en la
+   grilla de OpcionesProcesosEstados.razor (panel 3), al lado de Editar/Eliminar. *@
+@using Modelo = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosDependencia
+@using ModeloInsert = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosDependenciaInsertDto
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.AltRoute" />
+            <span>Estados previos de "@DesBotonOpcion"</span>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="min-width:340px;">
+            <MudText Style="opacity:.7;font-size:.8rem;" Class="mb-3">
+                El botón solo se habilita si el registro está en alguno de estos estados. Sin
+                estados agregados, se ejecuta desde cualquier estado.
+            </MudText>
+
+            @if (_cargando)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" Size="Size.Small" Class="mb-3" />
+            }
+            else if (!_dependencias.Any())
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">Sin estados previos requeridos.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap gap-2 mb-4">
+                    @foreach (var d in _dependencias)
+                    {
+                        <div class="dep-chip" style="background:@(d.DES_BACKCOLOR ?? "#6b6358");color:@(d.DES_FORECOLOR ?? "#fff");">
+                            <span>@d.DES_ESTADO</span>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                           Style="color:inherit;padding:2px;" OnClick="() => Quitar(d)" />
+                        </div>
+                    }
+                </div>
+            }
+
+            <div class="d-flex align-end gap-2">
+                <div style="flex:1;"><EstadoCombo CodTipoEstado="@CodTipoEstado" @bind-Value="_nuevoEstado" Class="mb-0" /></div>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Style="margin-bottom:4px;"
+                           Disabled="@(_nuevoEstado is null || _guardando)" OnClick="Agregar">
+                    Agregar
+                </MudButton>
+            </div>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        @* Cerrar es el unico boton del dialogo, y aun asi lleva el estilo configurado: un
+               boton gris entre dialogos que los tienen del color de la casa se lee como si
+               estuviera deshabilitado. *@
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar"
+                       OnClick="@(() => MudDialog.Close(DialogResult.Ok(_huboCambios)))">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .dep-chip {
+        display:inline-flex; align-items:center; gap:6px;
+        padding:4px 6px 4px 12px; border-radius:14px; font-size:.8rem; font-weight:600;
+    }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcionAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public short CodTipoEstado { get; set; }
+    [Parameter, EditorRequired] public string CodBotonOpcion { get; set; } = "";
+    [Parameter] public string? DesBotonOpcion { get; set; }
+
+    private List<Modelo> _dependencias = new();
+    private bool _cargando, _guardando, _huboCambios;
+    private int? _nuevoEstado;
+
+    protected override async Task OnInitializedAsync() => await Cargar();
+
+    private async Task Cargar()
+    {
+        _cargando = true;
+        StateHasChanged();
+        try
+        {
+            var url = $"{EstandarRoute.OpcionesProcesosEstadosFlujosDependencia}" +
+                      $"?codAplicacion={Uri.EscapeDataString(CodAplicacion)}" +
+                      $"&codOpcionAplicacion={Uri.EscapeDataString(CodOpcionAplicacion)}" +
+                      $"&codTipoEstado={CodTipoEstado}" +
+                      $"&codBotonOpcion={Uri.EscapeDataString(CodBotonOpcion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<Modelo>>>(url);
+            _dependencias = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorDialogHelper.MostrarMensajeAsync(ex.Message, DialogService, nameof(OpcionesProcesosEstadosFlujosDependenciaDialog)); }
+        finally { _cargando = false; StateHasChanged(); }
+    }
+
+    private async Task Agregar()
+    {
+        if (_nuevoEstado is null) return;
+        _guardando = true;
+        var dto = new ModeloInsert
+        {
+            COD_APLICACION = CodAplicacion,
+            COD_OPCION_APLICACION = CodOpcionAplicacion,
+            COD_TIPO_ESTADO = CodTipoEstado,
+            COD_BOTON_OPCION = CodBotonOpcion,
+            COD_ESTADO = (short)_nuevoEstado.Value
+        };
+        var resp = await Http.PostAsJsonAsync(EstandarRoute.OpcionesProcesosEstadosFlujosDependencia, dto);
+        _guardando = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Estado previo agregado.", Severity.Success);
+            _nuevoEstado = null;
+            _huboCambios = true;
+            await Cargar();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstadosFlujosDependenciaDialog), nameof(Agregar));
+    }
+
+    private async Task Quitar(Modelo d)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar estado previo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar estado previo",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar '{d.DES_ESTADO}' de los estados previos requeridos?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync(
+            $"{EstandarRoute.OpcionesProcesosEstadosFlujosDependencia}/{Uri.EscapeDataString(d.COD_APLICACION)}/{Uri.EscapeDataString(d.COD_OPCION_APLICACION)}/{d.COD_TIPO_ESTADO}/{Uri.EscapeDataString(d.COD_BOTON_OPCION)}/{d.COD_ESTADO}");
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Estado previo quitado.", Severity.Success);
+            _huboCambios = true;
+            await Cargar();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstadosFlujosDependenciaDialog), nameof(Quitar));
+    }
+}

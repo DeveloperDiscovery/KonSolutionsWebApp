@@ -1,0 +1,407 @@
+@* InventariosAlmacenesPuntoTomaConteoGrid.razor
+   -----------------------------------------------------------------------
+   Panel "Conteo": líneas de conteo tomadas dentro de UN punto de conteo
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA_CONTEO). Panel derecho grande del layout de 4
+   paneles de InventariosAlmacenesPuntoTomaPanel.razor (rediseño de la pantalla de Puntos de
+   Conteo).
+
+   ALTA POR LECTOR RFID/CÓDIGO DE BARRAS (reemplaza el alta manual por combo de Producto):
+   1. "Ubicación" (COD_STICKER_UBICACION) se lee/tipea una vez y NO se borra sola — el usuario
+      la vuelve a escribir/leer recién cuando cambia de ubicación física.
+   2. Cada lectura de "RFID/CODEBAR" (COD_STICKER_RFID, Enter dispara la resolución — mismo
+      criterio que un lector físico que manda Enter al terminar) llama a
+      PROC_LOGISTICA_INVENTARIOS_ALMACENES_PUNTO_TOMA_READRFIDCODEBAR con AMBOS códigos, que
+      resuelve Almacén/Ubicación, Producto, Lote, Proceso, Orden/Item/Unidad y UM — se
+      autocompletan los campos de solo lectura de abajo.
+   3. Si el resultado trae FLG_MEDICION = 0 (unidad de medida NO indivisible, ej. KG), la línea
+      se graba automático con Cantidad = 1, sin esperar al usuario. Si no, se espera a que
+      digite la Cantidad y presione "GRABAR".
+   Edición de una línea existente sí abre InventariosAlmacenesPuntoTomaConteoDialog.razor (mismo
+   patrón grilla+diálogo que el resto del módulo, sin tocar ese flujo). *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaConteo
+@using ResultadoModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaReadRfidCodebarResult
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+@inject MenuService MenuSvc
+
+<div class="d-flex align-center gap-3 mb-3">
+    <MudText Typo="Typo.h6">Conteo</MudText>
+    <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">@_items.Count línea(s)</MudText>
+    <MudSpacer />
+    @* Búsqueda contra el SP _SEARCH (server-side, LIKE sobre Producto/Lote/Proceso/Orden/
+       Ubicación/etc. — ver comentario del SP), no filtro en memoria: útil apenas la lista
+       crece, sin traer todo el punto de conteo cada vez que se tipea. *@
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar en el conteo..." DebounceInterval="400" MaxWidth="320px" Class="grid-header-search" />
+</div>
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+    <MudGrid Class="align-end" Spacing="2">
+        @* Grilla de 12 columnas: no divide exacto en tercios, se aproxima al entero más
+           cercano (Ubicación 4→2, el resto repartido ~parejo entre las otras dos: +1 c/u). *@
+        <MudItem xs="12" sm="2">
+            <MudTextField T="string" @bind-Value="_codStickerUbicacion" Label="Ubicación"
+                          Variant="Variant.Outlined" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="6" sm="3">
+            <MudTextField T="string" Value="@AlmacenUbicacionTexto" Label="Almacén / Ubicación"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="12" sm="7">
+            <MudTextField T="string" @bind-Value="_codStickerRfid" Label="RFID/CODEBAR"
+                          Variant="Variant.Outlined" Immediate="true"
+                          OnKeyDown="OnRfidKeyDown" Class="mb-1" />
+        </MudItem>
+
+        <MudItem xs="12" sm="3">
+            <MudTextField T="string" Value="@_resultado?.DES_PRODUCTO" Label="Producto"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="6" sm="2">
+            <MudTextField T="string" Value="@(_resultado?.NUM_LOTE_CONTROL_ENTIDAD ?? _resultado?.NUM_LOTE_CONTROL)" Label="# Lote"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="6" sm="2">
+            <MudTextField T="string" Value="@_resultado?.DES_PROCESO" Label="Proceso"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField T="string" Value="@OrdenItemUnidadTexto" Label="Orden / Item / Unidad"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="6" sm="1">
+            <MudTextField T="string" Value="@(string.IsNullOrWhiteSpace(_resultado?.COD_UNIDAD_MEDIDA) ? "—" : _resultado!.COD_UNIDAD_MEDIDA)" Label="U.M."
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-1" />
+        </MudItem>
+        <MudItem xs="6" sm="2">
+            <MudNumericField T="decimal?" @bind-Value="_cantidad" Label="Cantidad" Variant="Variant.Outlined" Class="mb-1 campo-numerico-derecha" />
+        </MudItem>
+
+        <MudItem xs="12" sm="12">
+            @* El botón "GRABAR" es el botón "Nuevo" configurado en Seguridad (POST) para esta
+               opción — mantiene su texto/ícono fijos (no los de BD, a diferencia de
+               AccionesBotones) pero su habilitación depende 100% del permiso: si el admin le
+               quita el POST al rol, este botón se deshabilita solo, sin tocar código. *@
+            <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save" FullWidth="true"
+                       Disabled="@(!_puedeGrabar || _resultado is null || _grabando || string.IsNullOrWhiteSpace(_codStickerUbicacion) || !_cantidad.HasValue || _cantidad.Value <= 0)"
+                       OnClick="Grabar" Style="@EstilosBoton.Confirmar">
+                GRABAR
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="inventarios-puntotoma-conteo" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Secuencia" Width="90" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.NUM_SECUENCIA</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Almacén / Ubicación" Width="180">
+                <CellTemplate>@context.Item.DES_ALMACEN_UBIACION</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Producto" Width="220">
+                <CellTemplate>
+                    <div>@context.Item.DES_PRODUCTO</div>
+                    <div class="mono" style="opacity:.55;font-size:.75rem;">@context.Item.COD_PRODUCTO</div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="# Lote" Width="110">
+                <CellTemplate><span class="mono">@(context.Item.NUM_LOTE_CONTROL_ENTIDAD ?? context.Item.NUM_LOTE_CONTROL)</span></CellTemplate>
+            </TemplateColumn>
+            @* Proceso/Orden/Item/Unidad juntos en una sola columna — antes 4 columnas separadas.
+               Solo se unen con " - " las partes que tengan dato (no arrastra "1 -  - 2" cuando
+               algún campo viene vacío). *@
+            <TemplateColumn Sortable="false" Title="Proceso / Orden / Item / Unidad" Width="200">
+                <CellTemplate>
+                    <div>@context.Item.DES_PROCESO</div>
+                    <div class="mono" style="opacity:.65;font-size:.75rem;">
+                        @string.Join(" - ", new[] {
+                            context.Item.NUM_ORDEN_PRODUCCION?.ToString(),
+                            context.Item.NUM_ORDEN_PRODUCCION_ITEM?.ToString(),
+                            context.Item.NUM_ORDEN_PRODUCCION_UNIDAD?.ToString()
+                        }.Where(s => !string.IsNullOrWhiteSpace(s)))
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="U.M." Width="70" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_UNIDAD_MEDIDA) ? "—" : context.Item.COD_UNIDAD_MEDIDA)</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Cantidad" Width="110" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.CAN_PRODUCTO</span></CellTemplate>
+            </TemplateColumn>
+            @* Auditoría en una sola columna (usuario + estación + fecha) — esta tabla solo
+               registra el alta (sin columnas de actualización), a diferencia de otras
+               entidades que sí tienen COD_USUARIO_ACTUALIZACION/FEC_ACTUALIZACION. *@
+            <TemplateColumn Sortable="false" Title="Auditoría" Width="200">
+                <CellTemplate>
+                    <span class="mono" style="font-size:.68rem;opacity:.75;">
+                        @context.Item.COD_USUARIO_REGISTRO @(string.IsNullOrWhiteSpace(context.Item.COD_ESTACION_REGISTRO) ? "" : $"({context.Item.COD_ESTACION_REGISTRO})")<br />
+                        @(context.Item.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                    </span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div class="d-flex align-center gap-1">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(item))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => Eliminar(item))" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin líneas de conteo agregadas a este punto.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter, EditorRequired] public byte NumPuntoTomaInventario { get; set; }
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+    /// <summary>Avisa al panel contenedor (InventariosAlmacenesPuntoTomaPanel) que se grabó una
+    /// línea de conteo, para que refresque la grilla "Puntos de Inventario" — por si el conteo
+    /// afecta algo que se ve ahí (estado, contador, etc.).</summary>
+    [Parameter] public EventCallback OnGrabado { get; set; }
+
+
+    private string _codAplicacion = "";
+    private string _codOpcionAplicacion = "";
+    // Permiso POST del botón "Nuevo" configurado para esta opción — controla la habilitación
+    // de "GRABAR", NO su texto/ícono (esos quedan fijos). Se revisa TAMBIÉN dentro de Grabar()
+    // (no solo en el Disabled del botón): el guardado automático por FLG_MEDICION=0 dispara
+    // Grabar() desde la lectura de RFID, sin pasar por el botón, así que sin este segundo
+    // chequeo un usuario sin permiso igual podría grabar escaneando.
+    private bool _puedeGrabar;
+
+    private List<Modelo> _items = new();
+
+    private string? _codStickerUbicacion;
+    private string? _codStickerRfid;
+    private ResultadoModelo? _resultado;
+    private decimal? _cantidad;
+    private bool _grabando;
+
+    private string? AlmacenUbicacionTexto => _resultado is null ? null
+        : $"{_resultado.DES_ALMACEN} / {_resultado.DES_UBICACION_ALMACEN}";
+    private string? OrdenItemUnidadTexto => _resultado is null || _resultado.NUM_ORDEN_PRODUCCION is null ? null
+        : $"{_resultado.NUM_ORDEN_PRODUCCION} / {_resultado.NUM_ORDEN_PRODUCCION_ITEM} / {_resultado.NUM_ORDEN_PRODUCCION_UNIDAD}";
+
+    private byte _puntoCargado;
+    private string? _almacenCargado;
+    private int? _inventarioCargado;
+
+    private string _search = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cod = await MenuSvc.BuscarCodigosPorFormularioAsync(CodAplicacion, "Logistica/InventariosAlmacenesPuntoTomaConteo.razor");
+        (_codAplicacion, _codOpcionAplicacion) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+        await MenuSvc.AsegurarBotonesFrescosAsync(_codAplicacion, _codOpcionAplicacion);
+        _puedeGrabar = MenuSvc.PuedeAsync(_codAplicacion, _codOpcionAplicacion, "POST");
+
+        await Load();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_inventarioCargado != NumInventario || _almacenCargado != CodAlmacen || _puntoCargado != NumPuntoTomaInventario)
+            await Load();
+    }
+
+    private Task Buscar() => Load();
+
+    /// <summary>Con texto de búsqueda pega contra PROC_..._CONTEO_SEARCH (LIKE server-side
+    /// sobre Producto/Lote/Proceso/Orden/Ubicación/etc.); vacío, contra SHOWALL — mismo criterio
+    /// que BarraBusqueda en el resto de la app (dispara con 0 o ≥ mínimo configurado).</summary>
+    private async Task Load()
+    {
+        _inventarioCargado = NumInventario; _almacenCargado = CodAlmacen; _puntoCargado = NumPuntoTomaInventario;
+        try
+        {
+            // OJO: el endpoint de búsqueda recibe el DTO vía [FromQuery] (propiedades
+            // NUM_INVENTARIO/COD_ALMACEN/NUM_PUNTO_TOMA_INVENTARIO, con guion bajo) — el
+            // model binding de ASP.NET compara el nombre COMPLETO de la query key contra el de
+            // la propiedad, así que "numInventario" (sin guion bajo) NUNCA calza con
+            // "NUM_INVENTARIO" y esos 3 filtros quedaban en 0/null por más que el SP filtrara
+            // bien. El endpoint sin búsqueda SÍ usa parámetros sueltos con nombres camelCase
+            // normales, por eso ese caso nunca tuvo el problema.
+            var ruta = string.IsNullOrWhiteSpace(_search)
+                ? $"{LogisticaRoute.InventariosAlmacenesPuntoTomaConteo}?numInventario={NumInventario}&codAlmacen={Uri.EscapeDataString(CodAlmacen)}&numPuntoTomaInventario={NumPuntoTomaInventario}"
+                : $"{LogisticaRoute.InventariosAlmacenesPuntoTomaConteoSearch}?NUM_INVENTARIO={NumInventario}&COD_ALMACEN={Uri.EscapeDataString(CodAlmacen)}&NUM_PUNTO_TOMA_INVENTARIO={NumPuntoTomaInventario}&Search={Uri.EscapeDataString(_search)}";
+            var resp = await Http.GetAsync(ruta);
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<Modelo>>>();
+                _items = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(Load));
+                _items = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(Load));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Error al cargar");
+            _items = new();
+        }
+        StateHasChanged();
+    }
+
+    private async Task OnRfidKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key != "Enter") return;
+        await ResolverRfid();
+    }
+
+    /// <summary>Llama a PROC_..._READRFIDCODEBAR con la Ubicación actual + el RFID/código de
+    /// barras recién leído. Si el producto resuelto NO es de medición (FLG_MEDICION = 0), graba
+    /// la línea automático con Cantidad = 1; si no, deja los campos autocompletados a la espera
+    /// de que el usuario digite la Cantidad y presione GRABAR.</summary>
+    private async Task ResolverRfid()
+    {
+        if (string.IsNullOrWhiteSpace(_codStickerRfid)) return;
+        if (string.IsNullOrWhiteSpace(_codStickerUbicacion))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Debe indicar la Ubicación antes de leer el RFID/código de barras.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Falta la Ubicación");
+            return;
+        }
+        try
+        {
+            var url = $"{LogisticaRoute.InventariosAlmacenesPuntoTomaConteoReadRfidCodebar}" +
+                      $"?codStickerUbicacion={Uri.EscapeDataString(_codStickerUbicacion ?? "")}" +
+                      $"&codStickerRfid={Uri.EscapeDataString(_codStickerRfid)}";
+            var resp = await Http.GetAsync(url);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(ResolverRfid));
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<ResultadoModelo>>();
+            _resultado = r?.Data;
+            if (_resultado is null)
+            {
+                await ErrorDialogHelper.MostrarMensajeAsync("No se pudo resolver la lectura.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Lectura sin resultado");
+                return;
+            }
+
+            if (_resultado.FLG_MEDICION == false)
+            {
+                _cantidad = 1;
+                await Grabar();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(ResolverRfid));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo leer el RFID/código de barras. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Error de lectura");
+        }
+    }
+
+    /// <summary>Alta: NUM_SECUENCIA va en null, el SP lo recalcula (MAX+1) internamente. Se
+    /// mandan también los códigos crudos leídos (COD_STICKER_RFID/UBICACION) — el SP _INSERT
+    /// los vuelve a resolver del lado servidor por si el cliente quedó desactualizado.</summary>
+    private async Task Grabar()
+    {
+        // Bajo ninguna circunstancia se ejecuta sin el permiso — cubre TANTO el clic del
+        // botón (ya deshabilitado si no hay permiso) COMO el guardado automático que dispara
+        // ResolverRfid() al leer un producto con FLG_MEDICION=0, que llama a Grabar()
+        // directo sin pasar por el botón.
+        if (!_puedeGrabar)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("No tienes permiso para grabar en este punto de conteo.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Sin permiso");
+            return;
+        }
+        if (_resultado is null) return;
+        if (string.IsNullOrWhiteSpace(_codStickerUbicacion))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Debe indicar la Ubicación antes de grabar.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Falta la Ubicación");
+            return;
+        }
+        if (!_cantidad.HasValue || _cantidad.Value <= 0)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Debe indicar la Cantidad antes de grabar.", DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), "Falta la Cantidad");
+            return;
+        }
+        _grabando = true;
+        var dto = new
+        {
+            NUM_INVENTARIO = NumInventario,
+            COD_ALMACEN = CodAlmacen,
+            NUM_PUNTO_TOMA_INVENTARIO = NumPuntoTomaInventario,
+            NUM_SECUENCIA = (int?)null,
+            COD_UBICACION_ALMACEN = _resultado.COD_UBICACION_ALMACEN,
+            COD_PRODUCTO = _resultado.COD_PRODUCTO,
+            NUM_LOTE_CONTROL = _resultado.NUM_LOTE_CONTROL,
+            COD_PROCESO = _resultado.COD_PROCESO,
+            NUM_ORDEN_PRODUCCION = _resultado.NUM_ORDEN_PRODUCCION,
+            NUM_ORDEN_PRODUCCION_ITEM = _resultado.NUM_ORDEN_PRODUCCION_ITEM,
+            NUM_ORDEN_PRODUCCION_UNIDAD = _resultado.NUM_ORDEN_PRODUCCION_UNIDAD,
+            CAN_PRODUCTO = _cantidad,
+            COD_UNIDAD_MEDIDA = _resultado.COD_UNIDAD_MEDIDA,
+            COD_STICKER_RFID = _codStickerRfid,
+            COD_STICKER_UBICACION = _codStickerUbicacion,
+        };
+        var resp = await Http.PostAsJsonAsync(LogisticaRoute.InventariosAlmacenesPuntoTomaConteo, dto);
+        _grabando = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Línea de conteo agregada.", Severity.Success);
+            _codStickerRfid = null; _resultado = null; _cantidad = null;
+            await Load();
+            if (OnGrabado.HasDelegate) await OnGrabado.InvokeAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(Grabar));
+    }
+
+    private async Task Editar(Modelo item)
+    {
+        var parametros = new DialogParameters
+        {
+            ["Item"] = item,
+            ["Modo"] = CrudModo.Update,
+            ["NumInventario"] = NumInventario,
+            ["CodAlmacen"] = CodAlmacen,
+            ["NumPuntoTomaInventario"] = NumPuntoTomaInventario,
+            ["CodAplicacion"] = CodAplicacion,
+            ["CodOpcionAplicacion"] = CodOpcionAplicacion
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaConteoDialog>($"Editar · Secuencia {item.NUM_SECUENCIA}", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Eliminar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar línea de conteo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar línea de conteo",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar la línea de conteo de \"{item.DES_PRODUCTO}\"?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesPuntoTomaConteo}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.NUM_PUNTO_TOMA_INVENTARIO}/{item.NUM_SECUENCIA}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Línea de conteo quitada.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoGrid), nameof(Eliminar));
+    }
+}

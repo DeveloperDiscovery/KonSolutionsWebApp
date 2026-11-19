@@ -1,0 +1,68 @@
+@* Comparacion de disposiciones de un armado (script SQL 127): para la misma ruta, proceso, turno, eficiencia y meta, el balance que armaria "sugerir" en cada disposicion
+   (lineal, modular, circular, estacion fija) y el personal que le faltaria. La fila ACTUAL es el reparto guardado. No guarda nada. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+        <div style="overflow-x:auto;">
+            <table class="of-tabla" data-tabla="disposiciones">
+                <thead><tr><th>Disposición</th><th>Origen</th><th class="n">Puestos</th><th class="n">Operarios</th><th class="n">Ciclo</th><th class="n">Capacidad</th><th class="n">Balanceo</th><th>Meta</th><th class="n">Faltan</th><th>Personal por categoría (hay / pide)</th></tr></thead>
+                <tbody>
+                    @foreach (var d in _filas)
+                    {
+                        <tr data-disposicion="@d.COD_TIPO_DISTRIBUCION" data-origen="@d.ORIGEN" class="@(d.ORIGEN == "ACTUAL" ? "cp-actual" : "")">
+                            <td>@d.DES_TIPO_DISTRIBUCION <span style="opacity:.5;font-size:.74rem;">@(d.COD_REGLA_CICLO == "MAX_PUESTO" ? "puesto más lento" : "se reparten el trabajo")</span></td>
+                            <td>@(d.ORIGEN == "ACTUAL" ? "Guardado" : "Sugerido")</td>
+                            <td class="n mono">@d.CAN_PUESTOS</td><td class="n mono">@d.CAN_OPERARIOS</td>
+                            <td class="n mono">@OperacionesApi.Min(d.VAL_CICLO)</td>
+                            <td class="n mono">@(d.VAL_CAPACIDAD_TURNO is { } c ? c.ToString("0", System.Globalization.CultureInfo.InvariantCulture) : "—")</td>
+                            <td class="n mono">@(d.TAS_EFICIENCIA_BALANCEO is { } b ? b.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " %" : "—")</td>
+                            <td>@if (d.FLG_CUMPLE_META is { } m) { <MudIcon Icon="@(m ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Warning)" Color="@(m ? Color.Success : Color.Warning)" Size="Size.Small" data-meta="@(m ? "si" : "no")" /> }</td>
+                            <td class="n mono">@if (d.CAN_FALTANTES > 0) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" data-faltan="@d.CAN_FALTANTES">@d.CAN_FALTANTES</MudChip> } else { <span>0</span> }</td>
+                            <td style="font-size:.78rem;">@Detalle(d)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (!_cargando && _filas.Count == 0 && string.IsNullOrEmpty(_error)) { <MudText Style="opacity:.6;">Sin datos.</MudText> }
+        <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.65;">Capacidad = unidades por turno; "Faltan" = operarios que no cubre ni el sobrante de categorías superiores. Para quedarte con otra disposición, cambia la del armado y usa "Sugerir balance".</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .of-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .of-tabla th, .of-tabla td { padding: 4px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .of-tabla th { font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+    .of-tabla .n { text-align: right; white-space: nowrap; }
+    .cp-actual td { font-weight: 600; background: rgba(128,128,128,.08); }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodArmado { get; set; } = "";
+
+    private List<ArmadoComparacion> _filas = new();
+    private List<ArmadoComparacionCategoria> _cats = new();
+    private bool _cargando = true;
+    private string _error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var r = await OperacionesApi.LeerAsync<ArmadoComparacionResultado>(Http, IngRoute.LineaArmado(CodArmado, "comparar"));
+        _cargando = false;
+        if (!r.Ok || r.Data is null) { _error = r.Mensaje ?? "No se pudo comparar."; return; }
+        _filas = r.Data.Disposiciones; _cats = r.Data.Categorias;
+    }
+
+    /// <summary>"A 5/2 · B 8/3..." (disponible / requerido) de la disposicion de la fila.</summary>
+    private string Detalle(ArmadoComparacion d) =>
+        string.Join(" · ", _cats.Where(c => c.ORIGEN == d.ORIGEN && c.COD_TIPO_DISTRIBUCION == d.COD_TIPO_DISTRIBUCION && c.CAN_REQUERIDOS > 0).OrderBy(c => c.NUM_ORDEN).Select(c => $"{c.COD_CATEGORIA_OCUPACIONAL} {c.CAN_DISPONIBLES}/{c.CAN_REQUERIDOS}"));
+}

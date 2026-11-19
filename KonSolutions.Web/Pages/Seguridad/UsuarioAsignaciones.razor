@@ -1,0 +1,365 @@
+@* Tabs de asignaciones en la pantalla de Usuarios.
+   Tab 1: Roles asignados al usuario.
+   Tab 2: Opciones (TreeView) por rol, con botones (check verde si habilitado, rojo si no).
+          Selector: "Por Rol" (un árbol por rol) o "Todos los Roles" (distinct de opciones). *@
+@inject AsignacionService Asignacion
+@inject CatalogoService<Aplicacion, AplicacionDto> AplicacionSvc
+@inject ConfigService ConfigSvc
+
+<MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" Class="mt-2" PanelClass="pa-4">
+
+    @* ── TAB 1: Roles asignados ── *@
+    <MudTabPanel Text="Roles asignados" Icon="@Icons.Material.Filled.AdminPanelSettings">
+        @if (_loadingRoles)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else if (!_roles.Any())
+        {
+            <MudText Class="mono pa-4" Style="opacity:.5;">Este usuario no tiene roles asignados.</MudText>
+        }
+        else
+        {
+            <MudDataGrid T="RolAsignado" Items="_rolesVisibles" Dense="true" Hover="true" Striped="true"
+                         FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+                <Columns>
+                    <TemplateColumn Sortable="false" Title="Código de rol">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="COD_ROL_USUARIO" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                                <FiltroExcelColumna T="RolAsignado" ItemsBase="@BaseRol(0)" ValorDe="@(x=>x.COD_ROL_USUARIO ?? "")"
+                                                    ValoresActivos="_filtrosRol.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>FiltroRol(0,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.COD_ROL_USUARIO</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Descripción">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ROL_USUARIO" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                                <FiltroExcelColumna T="RolAsignado" ItemsBase="@BaseRol(1)" ValorDe="@(x=>x.DES_ROL_USUARIO ?? "")"
+                                                    ValoresActivos="_filtrosRol.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>FiltroRol(1,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_ROL_USUARIO</CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin roles asignados.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="RolAsignado" /></PagerContent>
+            </MudDataGrid>
+        }
+    </MudTabPanel>
+
+    @* ── TAB 2: Opciones asignadas (TreeView jerárquico) ── *@
+    <MudTabPanel Text="Opciones asignadas" Icon="@Icons.Material.Filled.AccountTree">
+        <div class="d-flex align-center gap-4 mb-3">
+            <MudRadioGroup T="string" Value="_modo" ValueChanged="OnModoChanged">
+                <MudRadio T="string" Value="@("rol")" Color="Color.Primary" Dense="true">Por Rol</MudRadio>
+                <MudRadio T="string" Value="@("todos")" Color="Color.Primary" Dense="true">Todos los Roles</MudRadio>
+            </MudRadioGroup>
+            <MudSpacer />
+            <MudTooltip Text="Expandir todo">
+                <MudIconButton Icon="@Icons.Material.Filled.UnfoldMore" Size="Size.Small"
+                               OnClick="@(() => { _expandirTodo = true; StateHasChanged(); })" />
+            </MudTooltip>
+            <MudTooltip Text="Contraer todo">
+                <MudIconButton Icon="@Icons.Material.Filled.UnfoldLess" Size="Size.Small"
+                               OnClick="@(() => { _expandirTodo = false; StateHasChanged(); })" />
+            </MudTooltip>
+        </div>
+
+        @if (_loadingOpciones)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else if (!_roles.Any())
+        {
+            <MudText Class="mono pa-4" Style="opacity:.5;">Sin roles para mostrar opciones.</MudText>
+        }
+        else if (_modo == "rol")
+        {
+            @foreach (var rol in _roles)
+            {
+                <div class="d-flex align-center gap-1 mt-3 mb-1">
+                    <MudIcon Icon="@Icons.Material.Filled.Badge" Size="Size.Small" />
+                    <MudText Typo="Typo.subtitle2" Class="mono">@rol.DES_ROL_USUARIO</MudText>
+                </div>
+                @foreach (var app in ArbolPorRol(rol.COD_ROL_USUARIO))
+                {
+                    <NodoAsignacion Nodo="app" Nivel="0" BotonesPorOpcion="_botonesPorOpcion" CodRol="@rol.COD_ROL_USUARIO"
+                                    ExpandirTodo="_expandirTodo" NodoFoco="_nodoFoco" NodoFocoChanged="@(v => { _nodoFoco = v; StateHasChanged(); })" />
+                }
+            }
+        }
+        else
+        {
+            <div class="d-flex align-center gap-1 mt-2 mb-1">
+                <MudIcon Icon="@Icons.Material.Filled.Groups" Size="Size.Small" />
+                <MudText Typo="Typo.subtitle2" Class="mono">Todas las opciones (distinct)</MudText>
+            </div>
+            @foreach (var app in ArbolDistinct())
+            {
+                <NodoAsignacion Nodo="app" Nivel="0" BotonesPorOpcion="_botonesPorOpcion" CodRol="@("")"
+                                ExpandirTodo="_expandirTodo" NodoFoco="_nodoFoco" NodoFocoChanged="@(v => { _nodoFoco = v; StateHasChanged(); })" />
+            }
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    [Parameter] public string CodUsuario { get; set; } = string.Empty;
+
+    private List<RolAsignado>   _roles            = new();
+    private List<OpcionAsignada> _todasOpciones   = new();
+    private Dictionary<string, List<BotonAsignado>> _botonesPorOpcion = new();
+    private Dictionary<string, string> _desApps  = new();
+    private string _modo = "rol";
+    private bool _expandirTodo = false;
+    private string? _nodoFoco;
+    private bool _loadingRoles = true, _loadingOpciones;
+
+    private readonly Dictionary<int, HashSet<string>?> _filtrosRol = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private List<RolAsignado> Ordenar(List<RolAsignado> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_ROL_USUARIO).ToList() : items.OrderByDescending(x => x.COD_ROL_USUARIO).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_ROL_USUARIO).ToList() : items.OrderByDescending(x => x.DES_ROL_USUARIO).ToList(),
+        _ => items
+    };
+    private List<RolAsignado> _rolesVisibles => Ordenar(AplicarRol(_roles, -1));
+    private List<RolAsignado> BaseRol(int col) => AplicarRol(_roles, col);
+    private List<RolAsignado> AplicarRol(List<RolAsignado> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosRol) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<RolAsignado> q = src;
+        foreach (var (c, v) in _filtrosRol)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.COD_ROL_USUARIO ?? "")),
+                1 => q.Where(x => v.Contains(x.DES_ROL_USUARIO ?? "")),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+    private void FiltroRol(int c, HashSet<string>? v) { _filtrosRol[c] = v; StateHasChanged(); }
+
+    // ── POR QUE ESTE COMPONENTE CONGELABA LA PANTALLA ───────────────────────────
+    //
+    // Al hacer clic en un usuario, esto disparaba una cascada de llamadas al servidor
+    // EN SERIE, una esperando a la anterior:
+    //
+    //     por cada ROL                     (R)
+    //       por cada APLICACION            (A)   -> 1 llamada de opciones
+    //         por cada OPCION devuelta     (O)   -> 1 llamada de botones
+    //
+    // Con 2 roles, 10 aplicaciones y ~150 opciones son más de 300 viajes de ida y
+    // vuelta, uno detrás de otro. A 200 ms cada uno son más de 60 segundos con la
+    // pantalla tomada. Eso es el congelamiento: no es dibujado ni teclado, es red.
+    //
+    // Y PEOR: OnParametersSetAsync llamaba a CargarRoles SIEMPRE. Ese método se
+    // ejecuta en CADA re-render del padre —al escribir en el buscador, al filtrar una
+    // columna, al ordenar—, así que la cascada volvía a empezar sin que hubiera
+    // cambiado el usuario. Por eso también se sentía al moverse por la grilla.
+    //
+    // Tres arreglos:
+    //   1. No recargar si el usuario es el mismo.
+    //   2. Las llamadas van EN PARALELO, de a 6. En paralelo sin tope el navegador
+    //      igual las encola (límite de conexiones) y además se pierde el orden de
+    //      llegada; de a 6 se aprovecha la concurrencia sin ahogar al servidor.
+    //   3. Un número de generación: si haces clic en otro usuario a media carga, la
+    //      carga vieja se abandona en vez de pisar los datos del nuevo con los del
+    //      anterior.
+    //
+    // LO QUE FALTA, Y NO HICE PORQUE NO CORRESPONDE DECIDIRLO SOLO: esto debería ser
+    // UNA llamada que devuelva todo el árbol del usuario de una vez. Son dos SP
+    // nuevos. Con lo de acá pasa de minutos a segundos; con el SP pasaría a una sola
+    // llamada. Dime si lo armo.
+
+    /// <summary>Para qué usuario está cargado lo que se ve. Sin esto, cualquier
+    /// re-render del padre relanzaba toda la carga.</summary>
+    private string? _cargadoPara;
+
+    /// <summary>Sube con cada carga. Una carga vieja que termina tarde compara este
+    /// número y, si ya no es la suya, se descarta sin tocar nada.</summary>
+    private int _generacion;
+
+    private const int EnParalelo = 6;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.Equals(CodUsuario, _cargadoPara, StringComparison.Ordinal)) return;
+        _cargadoPara = CodUsuario;
+        await CargarRoles();
+    }
+
+    private async Task CargarRoles()
+    {
+        var mia = ++_generacion;
+
+        _loadingRoles = true;
+        StateHasChanged();
+
+        var roles = await Asignacion.GetRolesAsync(CodUsuario);
+        if (mia != _generacion) return;          // hubo otro clic: esto ya no interesa
+
+        _roles = roles;
+        _loadingRoles = false;
+        await CargarOpciones(mia);
+    }
+
+    private async Task CargarOpciones(int mia)
+    {
+        _loadingOpciones = true;
+        StateHasChanged();
+
+        var aplicaciones = await AplicacionSvc.GetComboboxAsync();
+        if (mia != _generacion) return;
+
+        var desApps = aplicaciones.ToDictionary(a => a.Id ?? "", a => a.Texto ?? a.Id ?? "");
+
+        // ── Paso 1 · las opciones de cada par (rol, aplicación), en paralelo ────
+        var pares = (from rol in _roles
+                     where !string.IsNullOrWhiteSpace(rol.COD_ROL_USUARIO)
+                     from app in aplicaciones
+                     where !string.IsNullOrWhiteSpace(app.Id)
+                     select (Rol: rol.COD_ROL_USUARIO!, App: app.Id!)).ToList();
+
+        var opciones = new List<OpcionAsignada>();
+        foreach (var lote in EnLotes(pares, EnParalelo))
+        {
+            var resultados = await Task.WhenAll(lote.Select(p => Asignacion.GetOpcionesAsync(p.Rol, p.App)));
+            if (mia != _generacion) return;
+            foreach (var r in resultados) opciones.AddRange(r);
+        }
+
+        // ── Paso 2 · los botones de cada (rol, opción), también en paralelo ────
+        // Se deduplica ANTES de pedir: la misma opción puede venir repetida entre
+        // aplicaciones, y pedir dos veces lo mismo es puro tiempo perdido.
+        var claves = opciones
+            .Where(o => !string.IsNullOrWhiteSpace(o.COD_OPCION_APLICACION)
+                     && !string.IsNullOrWhiteSpace(o.COD_ROL_USUARIO))
+            .Select(o => (Rol: o.COD_ROL_USUARIO!, Opcion: o.COD_OPCION_APLICACION!))
+            .Distinct()
+            .ToList();
+
+        var botones = new Dictionary<string, List<BotonAsignado>>();
+        foreach (var lote in EnLotes(claves, EnParalelo))
+        {
+            var resultados = await Task.WhenAll(
+                lote.Select(async k => (Clave: $"{k.Rol}|{k.Opcion}",
+                                        Lista: await Asignacion.GetBotonesAsync(k.Rol, k.Opcion))));
+            if (mia != _generacion) return;
+            foreach (var r in resultados) botones[r.Clave] = r.Lista;
+        }
+
+        // Recién acá se reemplaza lo que se ve. Vaciar las listas al empezar, como se
+        // hacía antes, dejaba la pantalla en blanco durante todo el minuto que tardaba.
+        _desApps = desApps;
+        _todasOpciones.Clear();
+        _todasOpciones.AddRange(opciones);
+        _botonesPorOpcion.Clear();
+        foreach (var kv in botones) _botonesPorOpcion[kv.Key] = kv.Value;
+
+        _loadingOpciones = false;
+        StateHasChanged();
+    }
+
+    /// <summary>Parte una lista en grupos de n. Es lo que limita cuántas llamadas hay
+    /// en vuelo a la vez.</summary>
+    private static IEnumerable<List<T>> EnLotes<T>(List<T> origen, int n)
+    {
+        for (int i = 0; i < origen.Count; i += n)
+            yield return origen.GetRange(i, Math.Min(n, origen.Count - i));
+    }
+
+    private void OnModoChanged(string modo) => _modo = modo;
+
+    // Construye árboles de NodoAsignacionVm para un rol dado, agrupando por aplicación.
+    private List<NodoAsignacionVm> ArbolPorRol(string? codRol)
+    {
+        var opciones = _todasOpciones.Where(o => o.COD_ROL_USUARIO == codRol).ToList();
+        return ConstruirArbol(opciones, codRol, _desApps);
+    }
+
+    private List<NodoAsignacionVm> ArbolDistinct()
+    {
+        var opciones = _todasOpciones
+            .GroupBy(o => $"{o.COD_APLICACION}|{o.COD_OPCION_APLICACION}")
+            .Select(g => g.First())
+            .ToList();
+        return ConstruirArbol(opciones, null, _desApps);
+    }
+
+    private static List<NodoAsignacionVm> ConstruirArbol(List<OpcionAsignada> opciones, string? codRol, Dictionary<string, string> desApps)
+    {
+        var porApp = opciones.GroupBy(o => o.COD_APLICACION ?? "");
+        var resultado = new List<NodoAsignacionVm>();
+
+        foreach (var grupo in porApp.OrderBy(g => g.Key))
+        {
+            var des = desApps.TryGetValue(grupo.Key, out var d) ? d : grupo.Key;
+            var appNodo = new NodoAsignacionVm
+            {
+                Cod   = grupo.Key,
+                Des   = des,
+                EsApp = true,
+                CodRol = codRol,
+                Hijos  = ArmarJerarquia(grupo.ToList(), codRol)
+            };
+            resultado.Add(appNodo);
+        }
+        return resultado;
+    }
+
+    // Arma jerarquía padre-hijo usando longitud de COD_OPCION_APLICACION (2 chars por nivel).
+    private static List<NodoAsignacionVm> ArmarJerarquia(List<OpcionAsignada> opciones, string? codRol)
+    {
+        var dict = opciones
+            .GroupBy(o => o.COD_OPCION_APLICACION ?? "")
+            .ToDictionary(
+                g => g.Key,
+                g => { var o = g.First(); return new NodoAsignacionVm
+                {
+                    Cod     = o.COD_OPCION_APLICACION ?? "",
+                    Des     = o.DES_OPCION_APLICACION ?? o.COD_OPCION_APLICACION ?? "",
+                    Formula = o.DES_FORMULARIO,
+                    Acceso  = o.FLG_ACCESO_PERMITIDO,
+                    CodRol  = codRol
+                }; });
+
+        var raices = new List<NodoAsignacionVm>();
+
+        foreach (var nodo in dict.Values.OrderBy(n => n.Cod))
+        {
+            var cod = nodo.Cod;
+            if (cod.Length <= 2)
+            {
+                raices.Add(nodo);
+            }
+            else
+            {
+                var codPadre = cod[..^2];
+                if (dict.TryGetValue(codPadre, out var padre))
+                    padre.Hijos.Add(nodo);
+                else
+                    raices.Add(nodo);
+            }
+        }
+        return raices;
+    }
+}

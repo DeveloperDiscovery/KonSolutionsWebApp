@@ -1,0 +1,106 @@
+@using TipoCuentaBancariaModel = KONSolutions.Shared.Models.Finanzas.TipoCuentaBancaria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_CUENTA_BANCARIA" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es parte de la PK: solo se fija al crear. *@
+                    <CampoTexto Tabla="FINANZAS.TIPOS_CUENTAS_BANCARIAS" Columna="COD_TIPO_CUENTA_BANCARIA"
+                                @bind-Value="_model.COD_TIPO_CUENTA_BANCARIA"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="FINANZAS.TIPOS_CUENTAS_BANCARIAS" Columna="DES_TIPO_CUENTA_BANCARIA"
+                                @bind-Value="_model.DES_TIPO_CUENTA_BANCARIA" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12">
+                    <ImagePicker Image="_model.IMG_ICONO" ImageChanged="@(v => _model.IMG_ICONO = v)"
+                                 Label="Ícono del tipo" ReadOnly="_readonly" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TipoCuentaBancariaModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TipoCuentaBancariaModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(TipoCuentaBancariaModel m)
+    {
+        _model = new TipoCuentaBancariaModel
+        {
+            COD_TIPO_CUENTA_BANCARIA = m.COD_TIPO_CUENTA_BANCARIA,
+            DES_TIPO_CUENTA_BANCARIA = m.DES_TIPO_CUENTA_BANCARIA,
+            IMG_ICONO                = m.IMG_ICONO
+        };
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID — evita editar sobre datos que la
+    /// grilla pueda tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<TipoCuentaBancariaModel>(
+            $"{ApiRoutes.Finanzas.TiposCuentasBancarias}/{Uri.EscapeDataString(_model.COD_TIPO_CUENTA_BANCARIA)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Finanzas.TiposCuentasBancarias;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_CUENTA_BANCARIA)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposCuentasBancariasDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP INSERT no es upsert.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposCuentasBancariasDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,2825 @@
+@page "/estandar/configuracion-general"
+@attribute [Authorize]
+@implements IDisposable
+@inject ConfiguracionGeneralService CfgSvc
+@inject ConfigService Config
+@inject ControlCambiosClientService Cambios
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject JwtAuthStateProvider AuthStateProvider
+@using KONSolutions.Shared.Models.Config
+@using SharedCfg = KONSolutions.Shared.Models.Estandar.ConfiguracionGeneral
+@using ConfigProductoModel = KONSolutions.Shared.Models.Estandar.ConfiguracionesProductos
+
+<PageTitle>Configuración General · @Config.Current.NombreApp</PageTitle>
+
+<div class="cfg-page-labels-paper">
+<div class="cfg-titulo-fijo d-flex align-center justify-space-between mb-4">
+    <div>
+        <TituloPagina Fallback="Configuración General" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+            Schema ESTANDAR · @(_cfg.DES_NOMBRE_EMPRESA)
+        </MudText>
+    </div>
+    <div class="d-flex align-center gap-2">
+        <PanelAuditoria CodUsuarioRegistro="@_cfg.COD_USUARIO_REGISTRO"
+                        CodEstacionRegistro="@_cfg.COD_ESTACION_REGISTRO"
+                        FecRegistro="@_cfg.FEC_REGISTRO"
+                        CodUsuarioActualizacion="@_cfg.COD_USUARIO_ACTUALIZACION"
+                        CodEstacionActualizacion="@_cfg.COD_ESTACION_ACTUALIZACION"
+                        FecActualizacion="@_cfg.FEC_ACTUALIZACION" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="Guardar" Disabled="_saving"
+                   Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));">
+            @(_saving ? "Guardando…" : "Guardar")
+        </MudButton>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+}
+else
+{
+<MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true" Class="cfg-tabs" PanelClass="pt-4">
+
+    @* ════════════════════════════ EMPRESA ════════════════════════════ *@
+<MudTabPanel Text="Empresa" Icon="@Icons.Material.Filled.Business">
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Datos de la empresa</MudText>
+                    <div class="campos-config">
+                        <CampoTextoEstable @bind-Value="_cfg.DES_NOMBRE_EMPRESA"    Label="Nombre de la empresa"    Variant="Variant.Outlined" Class="mb-3" MaxLength="100" />
+                        <CampoTextoEstable @bind-Value="_cfg.DES_NOMBRE_APLICACION" Label="Nombre de la aplicación" Variant="Variant.Outlined" Class="mb-3" MaxLength="100" />
+                        <CampoTextoEstable @bind-Value="_cfg.NUM_DOCUMENTO_IDENTIDAD" Label="RUC / Documento"       Variant="Variant.Outlined" Class="mb-3" MaxLength="15" />
+                        <CampoTextoEstable @bind-Value="_cfg.DES_DOMICILIO_FISCAL"  Label="Domicilio fiscal"         Variant="Variant.Outlined" Class="mb-3" MaxLength="100" />
+                        <CampoTextoEstable @bind-Value="_cfg.DES_REFERENCIA_FISCAL" Label="Referencia fiscal"        Variant="Variant.Outlined" Class="mb-3" MaxLength="100" />
+                        <AriaCombo TItem="ComboboxItem"
+                                   Items="Enumerable.Empty<ComboboxItem>()"
+                                   TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                   ValueFunc="@(x => x.Id)"
+                                   Value="@_cfg.COD_PAIS"
+                                   ValueChanged="@(v => _cfg.COD_PAIS = v ?? "")"
+                                   SearchFunc="BuscarPaisAsync"
+                                   MinCharacters="2"
+                                   TextoInicial="@_cfg.DES_PAIS"
+                                   Label="País" Class="mb-3" />
+                        <AriaCombo TItem="ComboboxItem"
+                                   Items="Enumerable.Empty<ComboboxItem>()"
+                                   TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                   ValueFunc="@(x => x.Id)"
+                                   Value="@_cfg.COD_UBIGEO"
+                                   ValueChanged="@(v => _cfg.COD_UBIGEO = v ?? "")"
+                                   SearchFunc="BuscarUbigeoAsync"
+                                   MinCharacters="2"
+                                   TextoInicial="@_cfg.DES_UBIGEO"
+                                   Label="Ubigeo" />
+                        <AriaCombo TItem="ComboboxItem"
+                                   Items="Enumerable.Empty<ComboboxItem>()"
+                                   TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                   ValueFunc="@(x => x.Id)"
+                                   Value="@_cfg.COD_TIPO_EMPRESA"
+                                   ValueChanged="@(v => _cfg.COD_TIPO_EMPRESA = v ?? "")"
+                                   SearchFunc="BuscarTipoEmpresaAsync"
+                                   MinCharacters="1"
+                                   TextoInicial="@_cfg.DES_TIPO_EMPRESA"
+                                   Label="Tipo de empresa" />
+                        <CampoTextoEstable @bind-Value="_cfg.COD_TIPO_AUTORIZACION_COMERCIAL" Label="Autorización comercial" Variant="Variant.Outlined" MaxLength="3" />
+                    </div>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Identidad visual</MudText>
+
+                    <MudText Typo="Typo.caption" Class="mono mb-1" Style="opacity:.6;">Logo de la empresa:</MudText>
+                    @if (_cfg.IMG_LOGO_EMPRESA is { Length: > 0 })
+                    {
+                        <div class="d-flex justify-center mb-2 pa-2" style="border:1px dashed var(--line);border-radius:8px;background:#fff;">
+                            <MudImage Src="@($"data:image/png;base64,{Convert.ToBase64String(_cfg.IMG_LOGO_EMPRESA)}")"
+                                      Height="80" Style="object-fit:contain;max-width:100%;" />
+                        </div>
+                    }
+                    <ImagePicker Image="_cfg.IMG_LOGO_EMPRESA" ImageChanged="@(b => _cfg.IMG_LOGO_EMPRESA = b)" Label="Logo empresa" />
+
+                    <MudText Typo="Typo.caption" Class="mono mt-3 mb-1" Style="opacity:.6;">Logo de la aplicación:</MudText>
+                    @if (_cfg.IMG_LOGO_APLICACION is { Length: > 0 })
+                    {
+                        <div class="d-flex justify-center mb-2 pa-2" style="border:1px dashed var(--line);border-radius:8px;background:#fff;">
+                            <MudImage Src="@($"data:image/png;base64,{Convert.ToBase64String(_cfg.IMG_LOGO_APLICACION)}")"
+                                      Height="80" Style="object-fit:contain;max-width:100%;" />
+                        </div>
+                    }
+                    <ImagePicker Image="_cfg.IMG_LOGO_APLICACION" ImageChanged="@(b => _cfg.IMG_LOGO_APLICACION = b)" Label="Logo aplicación" />
+                </MudPaper>
+            </MudItem>
+
+            @* Dominios de correo de la empresa — CRUD in-place en la misma grilla, sin
+               diálogo aparte (tabla mínima: código autonumérico + descripción). Si el
+               usuario puede entrar a Configuración General, puede administrar esto —
+               no hay un permiso separado. *@
+            <MudItem xs="12">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <div class="d-flex align-center justify-space-between mb-3">
+                        <MudText Typo="Typo.h6">Dominios de correo de la empresa</MudText>
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarDominio">Agregar dominio</MudButton>
+                    </div>
+                    <table class="tabla-simple-editable" style="width:100%;">
+                        <thead>
+                            <tr>
+                                <th>Dominio (ej. empresa.com)</th>
+                                <th style="width:100px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in _dominios)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="grilla-campo-texto">
+                                            <CampoTexto Tabla="ENTORNO.DOMINIOS_EMPRESA" Columna="DES_DOMINIO_EMPRESA"
+                                                        Label="Dominio" @bind-Value="row.DesDominio" MostrarLabel="false"
+                                                        Margin="Margin.None" Class="mb-0" />
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || string.IsNullOrWhiteSpace(row.DesDominio))"
+                                                       OnClick="@(() => GuardarDominioAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarDominioAsync(row))" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    @if (_dominios.Count == 0)
+                    {
+                        <MudText Class="pa-2 mono" Style="opacity:.5;">Sin dominios registrados.</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+
+        </MudGrid>
+    </MudTabPanel>
+
+    @* ════════════════════════════ PRODUCTOS ════════════════════════════ *@
+    <MudTabPanel Text="Productos" Icon="@Icons.Material.Filled.Inventory2">
+        <MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true" Class="cfg-tabs" PanelClass="pt-4">
+
+    @* ════════════════════════════ ESTRUCTURA (Productos) ════════════════════════════ *@
+    <MudTabPanel Text="Estructura" Icon="@Icons.Material.Filled.AccountTree">
+        <MudGrid>
+            <MudItem xs="12">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <div class="d-flex align-center gap-2 mb-2">
+                        <MudText Typo="Typo.subtitle2">Estructura de código de producto</MudText>
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarEstructuraProducto">Agregar</MudButton>
+                    </div>
+
+                    <div data-resizable-grid="estructura-producto" style="position:relative;">
+                    <MudDataGrid T="EstructuraProductoRow" Items="_estructuraProducto" Dense="true" Hover="true" Striped="true"
+                                 ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                                 CommittedItemChanges="@(async (EstructuraProductoRow it) => await GuardarEstructuraProductoConAviso(it))"
+                                 Height="420px" FixedHeader="true">
+                        <Columns>
+                            <TemplateColumn Title="Grupo" Sortable="false" Width="260px">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <span class="mono" style="opacity:.65;">@it.CodGrupoProducto</span>
+                                    <span class="ml-1">@it.DesGrupoProducto</span>
+                                </CellTemplate>
+                                <EditTemplate>
+                                    @{ var it = context.Item; }
+                                    <AriaCombo TItem="ComboboxItem" Items="_gruposProducto"
+                                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@it.CodGrupoProducto"
+                                               ValueChanged="@(v => OnGrupoEstructuraFilaChanged(it, v))"
+                                               Disabled="@(!it.EsNueva)" Obligatorio="true" Class="" />
+                                </EditTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Alias Grupo" Sortable="false" Editable="false" Width="100px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudCheckBox T="bool" Value="@it.FlgIncluirAliasGrupoProducto"
+                                                 ValueChanged="@(v => { it.FlgIncluirAliasGrupoProducto = v; _ = GuardarEstructuraProductoConAviso(it); })"
+                                                 Dense="true" />
+                                </CellTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Incluir Familia" Sortable="false" Editable="false" Width="110px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudCheckBox T="bool" Value="@it.FlgIncluirFamiliaProducto"
+                                                 ValueChanged="@(v => OnFlgIncluirFamiliaChanged(it, v))"
+                                                 Dense="true" />
+                                </CellTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Alias Familia" Sortable="false" Editable="false" Width="105px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudCheckBox T="bool" Value="@it.FlgIncluirAliasFamiliaProducto"
+                                                 Disabled="@(!it.FlgIncluirFamiliaProducto)"
+                                                 ValueChanged="@(v => { it.FlgIncluirAliasFamiliaProducto = v; _ = GuardarEstructuraProductoConAviso(it); })"
+                                                 Dense="true" />
+                                </CellTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Incluir Sub Familia" Sortable="false" Editable="false" Width="130px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudCheckBox T="bool" Value="@it.FlgIncluirSubFamiliaProducto"
+                                                 Disabled="@(!it.FlgIncluirFamiliaProducto)"
+                                                 ValueChanged="@(v => OnFlgIncluirSubFamiliaChanged(it, v))"
+                                                 Dense="true" />
+                                </CellTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Alias Sub Familia" Sortable="false" Editable="false" Width="115px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudCheckBox T="bool" Value="@it.FlgIncluirAliasSubFamiliaProducto"
+                                                 Disabled="@(!it.FlgIncluirSubFamiliaProducto)"
+                                                 ValueChanged="@(v => { it.FlgIncluirAliasSubFamiliaProducto = v; _ = GuardarEstructuraProductoConAviso(it); })"
+                                                 Dense="true" />
+                                </CellTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Correlativo" Sortable="false" Width="130px" CellStyle="text-align:right;">
+                                <CellTemplate>@context.Item.LngCorrelativo</CellTemplate>
+                                <EditTemplate>
+                                    @{ var it = context.Item; var largoMax = LongitudMaximaCorrelativo(it); var tope = (int)Math.Pow(10, Math.Min(largoMax, 9)) - 1; }
+                                    <MudNumericField @bind-Value="it.LngCorrelativo" Immediate="true" Min="0" Max="@tope"
+                                                      HelperText="@($"Máx. {largoMax} dígito(s)")" Class="campo-numerico-derecha" />
+                                </EditTemplate>
+                            </TemplateColumn>
+
+                            <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                                <CellTemplate>
+                                    @{ var it = context.Item; }
+                                    <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                   Color="Color.Primary" OnClick="@(() => GuardarEstructuraProductoConAviso(it))" Title="Grabar" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                   Color="Color.Error" OnClick="@(() => QuitarEstructuraProducto(it))" Title="Quitar" />
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+                    </MudDataGrid>
+                    <div class="grid-resize-handle"></div>
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+        <MudTabPanel Text="Configuración de Objetos" Icon="@Icons.Material.Filled.Extension">
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <div class="d-flex align-center gap-2 mb-2">
+                            <MudText Typo="Typo.subtitle2">Configuraciones de producto</MudText>
+                            <MudSpacer />
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarConfigProducto">Agregar</MudButton>
+                        </div>
+
+                        <div data-resizable-grid="configuraciones-productos" style="position:relative;">
+                        <MudDataGrid T="ConfigProductoModel" Items="_configProductos" Dense="true" Hover="true" Striped="true"
+                                     ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                                     CommittedItemChanges="@(async (ConfigProductoModel it) => await GuardarConfigProducto(it))"
+                                     Height="420px" FixedHeader="true">
+                            <Columns>
+                                <TemplateColumn Title="Sec." Sortable="false" Editable="false" Width="55px" CellStyle="text-align:right;">
+                                    <CellTemplate><span class="mono">@context.Item.NUM_SECUENCIA</span></CellTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Tipo de Configuración" Sortable="false" Width="260px">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <span class="mono" style="opacity:.65;">@it.COD_TIPO_CONFIGURACION</span>
+                                        <span class="ml-1">@it.DES_TIPO_CONFIGURACION</span>
+                                    </CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <AriaCombo TItem="ComboboxItem" Items="_tiposConfig"
+                                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                                   Value="@it.COD_TIPO_CONFIGURACION"
+                                                   ValueChanged="@(v => OnTipoFilaChanged(it, v))"
+                                                   Obligatorio="true" Class="" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Grupo" Sortable="false" Width="280px">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <span class="mono" style="opacity:.65;">@it.COD_GRUPO_PRODUCTO</span>
+                                        <span class="ml-1">@it.DES_GRUPO_PRODUCTO</span>
+                                    </CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <AriaCombo TItem="ComboboxItem" Items="_gruposProducto"
+                                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                                   Value="@it.COD_GRUPO_PRODUCTO"
+                                                   ValueChanged="@(v => OnGrupoFilaChanged(it, v))"
+                                                   Obligatorio="true" Class="" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Familia" Sortable="false" Width="280px">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <span class="mono" style="opacity:.65;">@it.COD_FAMILIA_PRODUCTO</span>
+                                        <span class="ml-1">@it.DES_FAMILIA_PRODUCTO</span>
+                                    </CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <AriaCombo TItem="ComboboxItem" Items="@FamiliasDeFila(it.NUM_SECUENCIA)"
+                                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                                   Value="@it.COD_FAMILIA_PRODUCTO"
+                                                   ValueChanged="@(v => OnFamiliaFilaChanged(it, v))"
+                                                   Disabled="@(string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO))" Class="" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Sub Familia" Sortable="false" Width="280px">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <span class="mono" style="opacity:.65;">@it.COD_SUB_FAMILIA_PRODUCTO</span>
+                                        <span class="ml-1">@it.DES_SUB_FAMILIA_PRODUCTO</span>
+                                    </CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <AriaCombo TItem="ComboboxItem" Items="@SubFamiliasDeFila(it.NUM_SECUENCIA)"
+                                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                                   Value="@it.COD_SUB_FAMILIA_PRODUCTO"
+                                                   ValueChanged="@(v => it.COD_SUB_FAMILIA_PRODUCTO = Vacio(v))"
+                                                   Disabled="@(string.IsNullOrWhiteSpace(it.COD_FAMILIA_PRODUCTO))" Class="" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                       Color="Color.Primary" OnClick="@(() => GuardarConfigProductoConAviso(it))" Title="Grabar" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                       Color="Color.Error" OnClick="@(() => QuitarConfigProducto(it))" Title="Quitar" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+                        </MudDataGrid>
+                        <div class="grid-resize-handle"></div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="RFID" Icon="@Icons.Material.Filled.Sensors">
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.subtitle2" Class="mb-1">Equipos RFID: qué productos son y qué dice su ficha técnica</MudText>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Un equipo RFID (impresora, antena de escritura, lector) es un producto: se registra en Productos y sus datos van en su ficha técnica.
+                            Aquí se dice QUÉ productos son equipos (su grupo y, si quieres, su familia) y QUÉ especificación técnica guarda cada dato que necesitan la
+                            emisión y la impresión de etiquetas. Dejar un dato sin especificación es válido: ese dato no se leerá del equipo. Se graba con «Guardar».
+                            El tipo de equipo (fijo, portátil, impresora...) no se configura: sale del grupo, la familia y la sub familia del producto.
+                            La estación donde corre el agente (un producto, por ejemplo el PC) y el archivo de la plantilla de impresión (ZPL) son uno solo para todo el sistema.
+                        </MudText>
+                        <div class="campos-config">
+                            <AriaCombo TItem="ComboboxItem" Items="_gruposProducto"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_GRUPO_PRODUCTO_EQUIPO_RFID"
+                                       ValueChanged="OnGrupoEquipoRfidChanged"
+                                       Label="Grupo de los equipos RFID" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_familiasEquipoRfid"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_FAMILIA_PRODUCTO_EQUIPO_RFID"
+                                       ValueChanged="@(v => _cfg.COD_FAMILIA_PRODUCTO_EQUIPO_RFID = VacioANulo(v))"
+                                       Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_GRUPO_PRODUCTO_EQUIPO_RFID)"
+                                       Label="Familia (opcional: sin familia son todos los del grupo)" />
+                            @if (_familiasEquipoRfidAviso is not null)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="familias-rfid">@_familiasEquipoRfidAviso</MudText>
+                            }
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_MARCA"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_MARCA = VacioANulo(v))"
+                                       Label="Especificación de la marca (el fabricante)" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_MODELO"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_MODELO = VacioANulo(v))"
+                                       Label="Especificación del modelo" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_PROTOCOLO"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_PROTOCOLO = VacioANulo(v))"
+                                       Label="Especificación del protocolo (LLRP, REST, SDK, ZPL…)" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_DIRECCION"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_DIRECCION = VacioANulo(v))"
+                                       Label="Especificación de la dirección (IP, nombre o puerto serie)" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_PUERTO"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_PUERTO = VacioANulo(v))"
+                                       Label="Especificación del puerto de comunicación" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_PUERTOS_ANTENA"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_PUERTOS_ANTENA = VacioANulo(v))"
+                                       Label="Especificación de los puertos de antena" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_ESPECIFICACION_TECNICA_RFID_POTENCIA"
+                                       ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_RFID_POTENCIA = VacioANulo(v))"
+                                       Label="Especificación de la potencia de escritura (TX POWER)" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_gruposProducto"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID"
+                                       ValueChanged="OnGrupoEstacionRfidChanged"
+                                       Label="Grupo de las estaciones (los PC donde corre el agente)" />
+
+                            <AriaCombo TItem="ComboboxItem" Items="_familiasEstacionRfid"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID"
+                                       ValueChanged="OnFamiliaEstacionRfidChanged"
+                                       Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID)"
+                                       Label="Familia de las estaciones (opcional: sin familia son todas las del grupo)" />
+                            @if (_familiasEstacionRfidAviso is not null)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="familias-estacion-rfid">@_familiasEstacionRfidAviso</MudText>
+                            }
+
+                            <AriaCombo TItem="ComboboxItem" Items="_subFamiliasEstacionRfid"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_SUB_FAMILIA_PRODUCTO_ESTACION_RFID"
+                                       ValueChanged="OnSubFamiliaEstacionRfidChanged"
+                                       Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID)"
+                                       Label="Sub familia de las estaciones (opcional: sin sub familia son todas las de la familia)" />
+                            @if (_subFamiliasEstacionRfidAviso is not null)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="subfamilias-estacion-rfid">@_subFamiliasEstacionRfidAviso</MudText>
+                            }
+
+                            <AriaCombo TItem="ComboboxItem" Items="_estacionesRfid"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_PRODUCTO_ESTACION_RFID"
+                                       ValueChanged="@(v => _cfg.COD_PRODUCTO_ESTACION_RFID = VacioANulo(v))"
+                                       Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID)"
+                                       Label="Estación donde corre el agente (producto de ESTANDAR.PRODUCTOS)" />
+                            @if (_estacionesRfidAviso is not null)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="estaciones-rfid">@_estacionesRfidAviso</MudText>
+                            }
+
+                            <AriaCombo TItem="ComboboxItem" Items="_rutasPlantillasRfid"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@_cfg.COD_KEY_PATHFILE_PLANTILLA_RFID"
+                                       ValueChanged="OnRutaPlantillaRfidChanged"
+                                       Label="Ruta donde están los archivos de plantilla (Entorno > Rutas de archivos)" />
+                            @if (_rutasPlantillasRfid.Count == 0)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="rutas-rfid">No hay rutas para elegir: registra la carpeta de las plantillas en Entorno &gt; Rutas de archivos (o no se pudieron leer).</MudText>
+                            }
+
+                            @if (_archivosPlantillaRfidFalla)
+                            {
+                                <MudTextField T="string" Value="@_cfg.DES_ARCHIVO_PLANTILLA_RFID" ValueChanged="@(v => _cfg.DES_ARCHIVO_PLANTILLA_RFID = VacioANulo(v))" Immediate="true" MaxLength="100"
+                                              Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_KEY_PATHFILE_PLANTILLA_RFID)" data-campo="archivo-plantilla-rfid"
+                                              Label="Nombre del archivo de la plantilla (escríbelo: la carpeta no se pudo leer)" />
+                            }
+                            else
+                            {
+                                <AriaCombo TItem="ComboboxItem" Items="_archivosPlantillaRfid"
+                                           TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                           Value="@_cfg.DES_ARCHIVO_PLANTILLA_RFID"
+                                           ValueChanged="@(v => _cfg.DES_ARCHIVO_PLANTILLA_RFID = VacioANulo(v))"
+                                           Disabled="@string.IsNullOrWhiteSpace(_cfg.COD_KEY_PATHFILE_PLANTILLA_RFID)"
+                                           Label="Archivo de la plantilla (los que hay en esa carpeta)" />
+                            }
+                            @if (_archivosPlantillaRfidAviso is not null)
+                            {
+                                <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="archivos-plantilla-rfid">@_archivosPlantillaRfidAviso</MudText>
+                            }
+
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <div class="d-flex align-center gap-2 mb-2">
+                            <MudText Typo="Typo.subtitle2">Estructura de códigos RFID</MudText>
+                            <MudSpacer />
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarEstructuraRfid">Agregar</MudButton>
+                        </div>
+
+                        <div data-resizable-grid="estructura-rfid" style="position:relative;">
+                        <MudDataGrid T="EstructuraRfidRow" Items="_estructuraRfid" Dense="true" Hover="true" Striped="true"
+                                     ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                                     CommittedItemChanges="@(async (EstructuraRfidRow it) => await GuardarEstructuraRfid(it))"
+                                     Height="420px" FixedHeader="true">
+                            <Columns>
+                                <TemplateColumn Title="Código" Sortable="false" Width="160px">
+                                    <CellTemplate><span class="mono">@context.Item.CodEstructuraRfid</span></CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudTextField @bind-Value="it.CodEstructuraRfid" Disabled="@(!it.EsNueva)"
+                                                      Immediate="true" MaxLength="50" Class="mono" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Descripción" Sortable="false">
+                                    <CellTemplate>@context.Item.DesEstructuraRfid</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudTextField @bind-Value="it.DesEstructuraRfid" Immediate="true" MaxLength="50" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Longitud" Sortable="false" Width="120px" CellStyle="text-align:right;">
+                                    <CellTemplate>@context.Item.ValLongitud</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudNumericField @bind-Value="it.ValLongitud" Immediate="true" Min="0" Class="campo-numerico-derecha" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Orden" Sortable="false" Width="100px" CellStyle="text-align:right;">
+                                    <CellTemplate>@context.Item.NumOrden</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudNumericField @bind-Value="it.NumOrden" Immediate="true" Min="0" Class="campo-numerico-derecha" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                       Color="Color.Primary" OnClick="@(() => GuardarEstructuraRfidConAviso(it))" Title="Grabar" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                       Color="Color.Error" OnClick="@(() => QuitarEstructuraRfid(it))" Title="Quitar" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+                        </MudDataGrid>
+                        <div class="grid-resize-handle"></div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Código de barras" Icon="@Icons.Material.Filled.QrCode">
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <div class="d-flex align-center gap-2 mb-2">
+                            <MudText Typo="Typo.subtitle2">Estructura de códigos de barras</MudText>
+                            <MudSpacer />
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarEstructuraCodebar">Agregar</MudButton>
+                        </div>
+
+                        <div data-resizable-grid="estructura-codebar" style="position:relative;">
+                        <MudDataGrid T="EstructuraCodebarRow" Items="_estructuraCodebar" Dense="true" Hover="true" Striped="true"
+                                     ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                                     CommittedItemChanges="@(async (EstructuraCodebarRow it) => await GuardarEstructuraCodebar(it))"
+                                     Height="420px" FixedHeader="true">
+                            <Columns>
+                                <TemplateColumn Title="Código" Sortable="false" Width="160px">
+                                    <CellTemplate><span class="mono">@context.Item.CodEstructuraCodebar</span></CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudTextField @bind-Value="it.CodEstructuraCodebar" Disabled="@(!it.EsNueva)"
+                                                      Immediate="true" MaxLength="50" Class="mono" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Descripción" Sortable="false">
+                                    <CellTemplate>@context.Item.DesEstructuraCodebar</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudTextField @bind-Value="it.DesEstructuraCodebar" Immediate="true" MaxLength="50" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Longitud" Sortable="false" Width="120px" CellStyle="text-align:right;">
+                                    <CellTemplate>@context.Item.ValLongitud</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudNumericField @bind-Value="it.ValLongitud" Immediate="true" Min="0" Class="campo-numerico-derecha" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Orden" Sortable="false" Width="100px" CellStyle="text-align:right;">
+                                    <CellTemplate>@context.Item.NumOrden</CellTemplate>
+                                    <EditTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudNumericField @bind-Value="it.NumOrden" Immediate="true" Min="0" Class="campo-numerico-derecha" />
+                                    </EditTemplate>
+                                </TemplateColumn>
+
+                                <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                                    <CellTemplate>
+                                        @{ var it = context.Item; }
+                                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                       Color="Color.Primary" OnClick="@(() => GuardarEstructuraCodebarConAviso(it))" Title="Grabar" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                       Color="Color.Error" OnClick="@(() => QuitarEstructuraCodebar(it))" Title="Quitar" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+                        </MudDataGrid>
+                        <div class="grid-resize-handle"></div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        </MudTabs>
+    </MudTabPanel>
+
+    @* ════════════════════════════ COMPRAS ════════════════════════════ *@
+    @* Compras es una pestaña principal con dos solapas: el Registro de Compras (carpeta de los XML, tolerancias y usuario SOL) y los XML recibidos por correo (carpetas de Outlook y servicio). La carpeta de los archivos es una sola: la de Registro de compras. *@
+    <MudTabPanel Text="Compras" Icon="@Icons.Material.Filled.ReceiptLong">
+        <MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true" Class="cfg-tabs" PanelClass="pt-4">
+
+            <MudTabPanel Text="Registro de compras" Icon="@Icons.Material.Filled.ReceiptLong">
+                <MudGrid>
+                    <MudItem xs="12">
+                        <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                            <MudText Typo="Typo.subtitle2" Class="mb-1">Registro de Compras: de dónde se importan los XML y qué diferencias se aceptan</MudText>
+                            <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                                Los XML de las facturas y boletas de los proveedores se leen de una carpeta y entran como comprobantes del Registro de Compras. La carpeta es una de las rutas
+                                de Entorno &gt; Rutas de archivos, y es la misma donde el servicio de XML recibidos deja los archivos que baja del correo. Los XML que entran pasan a la subcarpeta de procesados y los que no, a la de errores (con un .txt que dice por qué).
+                                Las tolerancias se usan al validar el comprobante contra su orden. El usuario SOL y su clave sirven para validar los comprobantes de pago electrónicos. Se graba con «Guardar».
+                            </MudText>
+                            <div style="display:flex;flex-direction:column;gap:4px;max-width:720px;">
+                                <AriaCombo TItem="ComboboxItem" Items="_rutasPlantillasRfid"
+                                           TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                           Value="@_cfg.COD_KEY_PATHFILE_COMPRAS_XML"
+                                           ValueChanged="@(v => _cfg.COD_KEY_PATHFILE_COMPRAS_XML = VacioANulo(v))"
+                                           Label="Ruta donde están los XML de los proveedores (Entorno > Rutas de archivos)" />
+                                @if (_rutasPlantillasRfid.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;" data-aviso="rutas-compras">No hay rutas para elegir: registra la carpeta de los XML en Entorno &gt; Rutas de archivos (o no se pudieron leer).</MudText>
+                                }
+                                <MudTextField T="string" Value="@_cfg.DES_CARPETA_COMPRAS_PROCESADOS" ValueChanged="@(v => _cfg.DES_CARPETA_COMPRAS_PROCESADOS = VacioANulo(v))" Immediate="true" MaxLength="100"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="carpeta-procesados"
+                                              Label="Subcarpeta de los XML ya importados (vacío: procesados)" />
+                                <MudTextField T="string" Value="@_cfg.DES_CARPETA_COMPRAS_ERRORES" ValueChanged="@(v => _cfg.DES_CARPETA_COMPRAS_ERRORES = VacioANulo(v))" Immediate="true" MaxLength="100"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="carpeta-errores"
+                                              Label="Subcarpeta de los XML que no se pudieron importar (vacío: errores)" />
+                                <MudTextField T="string" Value="@_cfg.COD_TIPO_OPERACION_COMPRAS_XML" ValueChanged="@(v => _cfg.COD_TIPO_OPERACION_COMPRAS_XML = VacioANulo(v))" Immediate="true" MaxLength="5"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="tipo-operacion-xml"
+                                              Label="Tipo de operación por defecto de los XML (si el XML no lo decide)"
+                                              HelperText="Es un tipo de operación de la clase del Registro de Compras. Solo se usa si el XML no lo decide: el tipo sale del XML (tipo de operación de SUNAT y unidad ZZ = servicios). Si lo dejas vacío y el XML no lo decide, se elige al importar." />
+                                <MudNumericField T="decimal?" Value="@_cfg.TAS_TOLERANCIA_PRECIO_COMPRAS" ValueChanged="@(v => _cfg.TAS_TOLERANCIA_PRECIO_COMPRAS = v)" Min="0" Max="100" Format="0.###"
+                                                 Variant="Variant.Outlined" Class="mb-2" HideSpinButtons="true" data-campo="tolerancia-precio"
+                                                 Label="Tolerancia de precio (%)" HelperText="Cuánto puede pasar el precio de la factura al de la orden. Vacío: 0." />
+                                <MudNumericField T="decimal?" Value="@_cfg.VAL_TOLERANCIA_IMPORTE_COMPRAS" ValueChanged="@(v => _cfg.VAL_TOLERANCIA_IMPORTE_COMPRAS = v)" Min="0" Format="0.##"
+                                                 Variant="Variant.Outlined" Class="mb-2" HideSpinButtons="true" data-campo="tolerancia-importe"
+                                                 Label="Diferencia de importe que se acepta" HelperText="Por redondeo, entre la suma de las líneas y los totales del comprobante. Vacío: 0.10." />
+
+                                <MudText Typo="Typo.subtitle2" Class="mt-2">Validación de comprobantes de pago electrónicos</MudText>
+                                <MudTextField T="string" Value="@_cfg.COD_USUARIO_VCDP" ValueChanged="@(v => _cfg.COD_USUARIO_VCDP = VacioANulo(v))" Immediate="true" MaxLength="50"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="vcdp-usuario" AutoComplete="off"
+                                              Label="Usuario SOL" HelperText="El usuario secundario de SUNAT con permiso para consultar comprobantes." />
+                                <MudTextField T="string" Value="@_cfg.DES_PASSWORD_VCDP_NUEVO" ValueChanged="@(v => { _cfg.DES_PASSWORD_VCDP_NUEVO = VacioANulo(v); if (_cfg.DES_PASSWORD_VCDP_NUEVO is not null) _cfg.FLG_QUITAR_PASSWORD_VCDP = false; })" Immediate="true" MaxLength="15"
+                                              InputType="InputType.Password" Variant="Variant.Outlined" Class="mb-2" data-campo="vcdp-clave" AutoComplete="new-password"
+                                              Label="@(_cfg.TIENE_PASSWORD_VCDP && !_cfg.FLG_QUITAR_PASSWORD_VCDP ? "Clave SOL (hay una guardada; escribe otra para cambiarla)" : "Clave SOL")"
+                                              Placeholder="@(_cfg.TIENE_PASSWORD_VCDP && !_cfg.FLG_QUITAR_PASSWORD_VCDP ? "••••••••" : null)"
+                                              HelperText="Hasta 15 caracteres. Se guarda cifrada en la base de datos y no vuelve a mostrarse." />
+                                @if (_cfg.TIENE_PASSWORD_VCDP)
+                                {
+                                    <MudSwitch T="bool" Value="@_cfg.FLG_QUITAR_PASSWORD_VCDP" ValueChanged="@OnQuitarClaveVcdp" Color="Color.Error" data-campo="vcdp-quitar"
+                                               Label="Borrar la clave guardada al guardar" />
+                                }
+                            </div>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+
+            <MudTabPanel Text="XML recibidos" Icon="@Icons.Material.Filled.MarkEmailRead">
+                <MudGrid>
+                    <MudItem xs="12">
+                        <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                            <MudText Typo="Typo.subtitle2" Class="mb-1">Comprobantes y guías de los proveedores: de qué carpeta del correo se bajan y a dónde pasan</MudText>
+                            <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                                El servicio lee los correos de la carpeta de recepción y baja los XML (y los PDF) de los comprobantes y las guías de remisión. Cuando se bajaron, el correo pasa a la carpeta de procesados;
+                                el que no se pudo bajar o procesar pasa a la carpeta de errores. Las tres carpetas de Outlook tienen que ser distintas. Se escriben como aparecen en el buzón, separadas por «/»
+                                (por ejemplo: Bandeja de entrada/Comprobantes). Se graba con «Guardar».
+                            </MudText>
+                            <div style="display:flex;flex-direction:column;gap:4px;max-width:720px;">
+                                <MudSwitch T="bool" Value="@(_cfg.FLG_XML_RECIBIDOS_ACTIVO ?? false)" ValueChanged="@(v => _cfg.FLG_XML_RECIBIDOS_ACTIVO = v)" Color="Color.Primary" data-campo="xml-activo"
+                                           Label="Bajar automáticamente los XML del correo" />
+                                <MudNumericField T="int?" Value="@_cfg.CAN_MINUTOS_XML_RECIBIDOS" ValueChanged="@(v => _cfg.CAN_MINUTOS_XML_RECIBIDOS = v)" Min="1" Max="1440"
+                                                 Variant="Variant.Outlined" Class="mb-2" HideSpinButtons="true" data-campo="xml-minutos"
+                                                 Label="Cada cuántos minutos se revisa el correo" HelperText="Entre 1 y 1440. Vacío: 15." />
+
+                                <MudText Typo="Typo.subtitle2" Class="mt-2">Carpetas de Outlook</MudText>
+                                <MudTextField T="string" Value="@_cfg.DES_CARPETA_CORREO_RECEPCION" ValueChanged="@(v => _cfg.DES_CARPETA_CORREO_RECEPCION = VacioANulo(v))" Immediate="true" MaxLength="300"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="correo-recepcion"
+                                              Label="Carpeta de recepción" HelperText="Donde llegan los correos con los XML y PDF de los proveedores." />
+                                <MudTextField T="string" Value="@_cfg.DES_CARPETA_CORREO_PROCESADOS" ValueChanged="@(v => _cfg.DES_CARPETA_CORREO_PROCESADOS = VacioANulo(v))" Immediate="true" MaxLength="300"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="correo-procesados"
+                                              Label="Carpeta de procesados" HelperText="A donde pasa cada correo cuando se bajaron sus XML y PDF." />
+                                <MudTextField T="string" Value="@_cfg.DES_CARPETA_CORREO_ERRORES" ValueChanged="@(v => _cfg.DES_CARPETA_CORREO_ERRORES = VacioANulo(v))" Immediate="true" MaxLength="300"
+                                              Variant="Variant.Outlined" Class="mb-2" data-campo="correo-errores"
+                                              Label="Carpeta de no procesados o con error" HelperText="A donde pasa el correo que no se pudo bajar o procesar." />
+                                @if (CarpetasCorreoRepetidas())
+                                {
+                                    <MudText Typo="Typo.caption" Class="mb-2" Style="color:var(--bad, #c62828);" data-aviso="correo-repetidas">Las tres carpetas de Outlook tienen que ser distintas.</MudText>
+                                }
+
+                                <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;color:var(--ink);" data-aviso="xml-ruta-compras">
+                                    Los archivos que se bajan se guardan en la ruta de la solapa «Registro de compras» (@(string.IsNullOrWhiteSpace(_cfg.COD_KEY_PATHFILE_COMPRAS_XML) ? "todavía sin elegir" : _cfg.COD_KEY_PATHFILE_COMPRAS_XML)),
+                                    con sus mismas subcarpetas de procesados y de errores. Para activar la carga hacen falta esa ruta y las tres carpetas de Outlook. Los datos de la cuenta de correo no se guardan aquí: van en la configuración del servicio.
+                                </MudText>
+                            </div>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+
+        </MudTabs>
+    </MudTabPanel>
+
+    @* ════════════════════════════ ENTORNO ════════════════════════════ *@
+    <MudTabPanel Text="Entorno" Icon="@Icons.Material.Filled.Public">
+        <MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true" Class="cfg-tabs" PanelClass="pt-4">
+
+        <MudTabPanel Text="Apariencia" Icon="@Icons.Material.Filled.Palette">
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    @* Vista previa en vivo del "Color de fondo": se sobreescriben las variables
+                       SOLO dentro de esta tarjeta con el color que se está editando (las globales
+                       recién se actualizan al Guardar, ver Guardar() más abajo).
+                       Van las DOS: el fondo de las etiquetas outlined ahora se pinta con
+                       --dialog-back (ver app.css), así que sin sobreescribir también esa variable
+                       las etiquetas de esta tarjeta mostrarían el color de diálogo global en vez
+                       del color de pantalla que se está previsualizando aquí. *@
+                    <MudPaper Elevation="0" Class="pa-4 cfg-page-labels-paper" Style="@($"border:1px solid var(--line);--paper:{NuloA(_cfg.DES_BACKCOLOR, "#efe9df")};--dialog-back:{NuloA(_cfg.DES_BACKCOLOR, "#efe9df")};")">
+                        <MudText Typo="Typo.h6" Class="mb-3">Colores de pantalla</MudText>
+                        <ColorConSwatch @bind-Text="_cfg.DES_COLOR_PRIMARY"   Label="Color primario"   Class="mb-3" />
+                        <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR"       Label="Color de fondo"   Class="mb-2" />
+                        <div class="d-flex align-center gap-1 mb-2"><MudIcon Icon="@Icons.Material.Filled.Gradient" Color="Color.Primary" Size="Size.Medium" />
+                            <MudSwitch @bind-Value="_cfg.FLG_DEGRADE_BACKGROUND_COLOR" Color="Color.Primary" Label="Degradar color de fondo" /></div>
+                        @if (_cfg.FLG_DEGRADE_BACKGROUND_COLOR && !string.IsNullOrWhiteSpace(_cfg.DES_BACKCOLOR))
+                        {
+                            <div style="height:24px;border-radius:4px;background:linear-gradient(135deg,@_cfg.DES_BACKCOLOR,color-mix(in srgb,@(_cfg.DES_BACKCOLOR) 40%,white));border:1px solid rgba(0,0,0,.12);margin-bottom:8px;" title="Vista previa degradado fondo"></div>
+                        }
+                        <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR"       Label="Color de texto"   Class="mb-3" />
+                        <ColorConSwatch @bind-Text="_cfg.DES_COLOR_SECONDARY" Label="Color secundario" Class="mb-2" />
+                        <div class="d-flex align-center gap-1 mb-2"><MudIcon Icon="@Icons.Material.Filled.Gradient" Color="Color.Primary" Size="Size.Medium" />
+                            <MudSwitch @bind-Value="_cfg.FLG_DEGRADE_SECUNDARY_COLOR" Color="Color.Primary" Label="Degradar color secundario" /></div>
+                        @if (_cfg.FLG_DEGRADE_SECUNDARY_COLOR && !string.IsNullOrWhiteSpace(_cfg.DES_COLOR_SECONDARY))
+                        {
+                            <div style="height:24px;border-radius:4px;background:linear-gradient(135deg,@_cfg.DES_COLOR_SECONDARY,color-mix(in srgb,@(_cfg.DES_COLOR_SECONDARY) 40%,white));border:1px solid rgba(0,0,0,.12);" title="Vista previa degradado secundario"></div>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Tipografía</MudText>
+
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-1">Títulos</MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TYPOGRAPHY_TITLE_FONT" Label="Fuente" Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudNumericField @bind-Value="_cfg.DES_TYPOGRAPHY_TITLE_SIZE" Label="Tamaño (px)" Variant="Variant.Outlined" Min="8" Max="72" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_TITLE" Label="Color" />
+                        </div>
+
+                        <MudText Typo="Typo.subtitle2" Class="mono">Subtítulos</MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TYPOGRAPHY_SUBTITLE_FONT" Label="Fuente" Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudNumericField @bind-Value="_cfg.NUM_TYPOGRAPHY_SUBTITLE_SIZE" Label="Tamaño (px)" Variant="Variant.Outlined" Min="8" Max="48" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_SUBTITLE" Label="Color" />
+                        </div>
+
+                        <MudText Typo="Typo.subtitle2" Class="mono">Controles</MudText>
+                        <div class="d-flex gap-2">
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TYPOGRAPHY_CONTROLS_FONT" Label="Fuente" Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudNumericField @bind-Value="_cfg.NUM_TYPOGRAPHY_CONTROLS_SIZE" Label="Tamaño (px)" Variant="Variant.Outlined" Min="8" Max="32" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Botones de Diálogo y Acciones de Cabecera</MudText>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Color del botón de confirmación (Crear/Modificar/Regresar) en todos los diálogos de la app,
+                            y de los botones de Refrescar datos / Imprimir en la cabecera de las grillas.
+                            Eliminar siempre usa rojo (color de peligro), independiente de esta configuración.
+                            Vacío = usa el color por defecto de la app.
+                        </MudText>
+                        <div class="d-flex gap-2 mb-2">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BUTTON_BACKCOLOR" Label="Fondo del botón" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_BUTTON_FORECOLOR" Label="Texto del botón" />
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(_cfg.DES_BUTTON_BACKCOLOR))
+                        {
+                            @* No usar Disabled="true": MudBlazor sobreescribe fondo/texto con su gris de
+                               botón deshabilitado, ignorando el color elegido aquí. Se deja "habilitado"
+                               pero sin acción (pointer-events:none) — solo es una vista previa visual. *@
+                            <MudButton Variant="Variant.Filled"
+                                       Style="@($"background:{_cfg.DES_BUTTON_BACKCOLOR};color:{(string.IsNullOrWhiteSpace(_cfg.DES_BUTTON_FORECOLOR) ? "#fff" : _cfg.DES_BUTTON_FORECOLOR)};font-weight:700;opacity:1;pointer-events:none;")"
+                                       StartIcon="@Icons.Material.Filled.Save">
+                                Vista previa
+                            </MudButton>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Colores de Diálogos</MudText>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Fondo y texto de las ventanas de Crear / Modificar / Consultar / Eliminar en toda la app —
+                            independientes del resto de la pantalla.
+                        </MudText>
+                        <div class="d-flex gap-2 mb-2">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_DIALOG" Label="Fondo del diálogo" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_DIALOG" Label="Texto del diálogo" />
+                        </div>
+                        <div class="prev-card" style="@($"border-radius:6px;overflow:hidden;border:1px solid var(--line);background:{(string.IsNullOrWhiteSpace(_cfg.DES_BACKCOLOR_DIALOG) ? "#efe9df" : _cfg.DES_BACKCOLOR_DIALOG)};color:{(string.IsNullOrWhiteSpace(_cfg.DES_FORECOLOR_DIALOG) ? "#16130f" : _cfg.DES_FORECOLOR_DIALOG)};")">
+                            <div class="pa-3" style="font-weight:700;">Vista previa · Nuevo registro</div>
+                            <div class="pa-3 pt-0" style="font-size:.85rem;opacity:.85;">Así se vería el contenido del diálogo con estos colores.</div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Grillas" Icon="@Icons.Material.Filled.TableChart">
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Grillas e imágenes</MudText>
+                        <MudText Typo="Typo.subtitle2" Class="mono mb-2">Iconos de acción</MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <MudNumericField @bind-Value="_cfg.NUM_ICONS_GRID_WIDTH_SIZE"  Label="Ancho (px)" Variant="Variant.Outlined" Min="12" Max="64" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_ICONS_GRID_HEIGHT_SIZE" Label="Alto (px)"  Variant="Variant.Outlined" Min="12" Max="64" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        </div>
+                        <div class="d-flex gap-2 mb-3">
+                            <ColorConSwatch @bind-Text="_cfg.DES_ICONCOLOR_ACTIONS" Label="Color de iconos de acción" />
+                        </div>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Aplica a los íconos de acciones (Editar, Ver, etc.) en las grillas. Dejar vacío usa el color calculado por defecto.
+                            El ícono de Eliminar siempre se muestra en rojo, sin importar este color.
+                        </MudText>
+                        <MudText Typo="Typo.subtitle2" Class="mono mb-2">Imágenes en grilla</MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <MudNumericField @bind-Value="_cfg.NUM_IMAGES_GRID_WIDTH_SIZE"  Label="Ancho (px)" Variant="Variant.Outlined" Min="16" Max="200" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_IMAGES_GRID_HEIGHT_SIZE" Label="Alto (px)"  Variant="Variant.Outlined" Min="16" Max="200" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        </div>
+                        <MudNumericField @bind-Value="_cfg.NUM_IMAGENES_MEGAS_UPLOAD" Label="Tamaño máx. imágenes (MB)" Variant="Variant.Outlined" Min="1" Max="50" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-3 mb-2">Filas por página</MudText>
+                        <div class="d-flex gap-2">
+                            <MudNumericField @bind-Value="_cfg.NUM_ROWS_SHOW_GRID_UNIQUE"   Label="Única"  Variant="Variant.Outlined" Min="5" Max="200" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_ROWS_SHOW_GRID_FATHER"   Label="Padre"  Variant="Variant.Outlined" Min="5" Max="200" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_ROWS_SHOW_GRID_CHILDREN" Label="Hijo"   Variant="Variant.Outlined" Min="5" Max="200" Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Fila con foco / seleccionada</MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_ROWS_FOCUS" Label="Fondo del foco" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_ROWS_FOCUS" Label="Texto del foco" />
+                        </div>
+                        <MudSelect T="string" @bind-Value="_cfg.DES_TIPOGRAFIA_ROWS_FOCUS" Label="Fuente del foco" Variant="Variant.Outlined" Class="mb-3">
+                            @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                        </MudSelect>
+                        <MudText Typo="Typo.subtitle2" Class="mono mb-2">Campos obligatorios</MudText>
+                        <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_CONTROLS_REQUIRED" Label="Fondo obligatorio" />
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Colores de la grilla</MudText>
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_GRID_HEADER" Label="Cabecera · fondo" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_GRID_HEADER" Label="Cabecera · texto" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_GRID_ROWS" Label="Filas · texto" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_GRID_ROWS_EVEN" Label="Fila par (even)" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_GRID_ROWS_ODD" Label="Fila impar (odd)" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_LINECOLOR_GRID_ROWS" Label="Líneas / bordes" />
+                            </MudItem>
+                        </MudGrid>
+
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-3 mb-2">Fuentes de filas</MudText>
+                        <div class="d-flex gap-2">
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TIPOGRAFIA_GRID_ROWS"      Label="Todas las filas" Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TIPOGRAFIA_GRID_ROWS_EVEN" Label="Fila par"        Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TIPOGRAFIA_GRID_ROWS_ODD"  Label="Fila impar"      Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                            <MudSelect T="string" @bind-Value="_cfg.DES_TYPOGRAPHY_GRID_ROWS"      Label="Tipografía grilla" Variant="Variant.Outlined">
+                                @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                            </MudSelect>
+                        </div>
+
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-3 mb-2">Alto y tamaño de fuente</MudText>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;display:block;margin-bottom:8px;">
+                            Vacío = automático (según el tamaño de fuente de Controles).
+                        </MudText>
+                        <div class="d-flex gap-2">
+                            <MudNumericField @bind-Value="_cfg.NUM_HIGH_ROW_GRID" Label="Alto de fila (px)"
+                                             Variant="Variant.Outlined"
+                                             Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_FONT_ROW_SIZE" Label="Fuente de fila (px)"
+                                             Variant="Variant.Outlined"
+                                             Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_HIGH_HEAD_GRID" Label="Alto de cabecera (px)"
+                                             Variant="Variant.Outlined"
+                                             Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            <MudNumericField @bind-Value="_cfg.NUM_FONT_HEAD_SIZE" Label="Fuente de cabecera (px)"
+                                             Variant="Variant.Outlined"
+                                             Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                        </div>
+
+                        @* Vista previa en vivo: usa los valores actuales de _cfg directamente
+                           (no las variables CSS ya guardadas), así refleja los cambios sin
+                           grabar todavía — 7 filas de muestra, la 4ª con foco. *@
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-4 mb-2">Vista previa (7 filas, foco en la 4ª)</MudText>
+                        @{
+                            var cabFontSize = _cfg.NUM_FONT_HEAD_SIZE is > 0 ? $"{_cfg.NUM_FONT_HEAD_SIZE}px" : ".8rem";
+                            var cabAlto     = _cfg.NUM_HIGH_HEAD_GRID  is > 0 ? $"{_cfg.NUM_HIGH_HEAD_GRID}px"  : "auto";
+                            var filaFontSize = _cfg.NUM_FONT_ROW_SIZE is > 0 ? $"{_cfg.NUM_FONT_ROW_SIZE}px" : ".82rem";
+                            var filaAlto     = _cfg.NUM_HIGH_ROW_GRID is > 0 ? $"{_cfg.NUM_HIGH_ROW_GRID}px" : "auto";
+                        }
+                        <div style="border:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");border-radius:4px;overflow:hidden;">
+                            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;background:@_cfg.DES_BACKCOLOR_GRID_HEADER;color:@_cfg.DES_FORECOLOR_GRID_HEADER;font-weight:700;font-size:@cabFontSize;">
+                                <div style="padding:8px 12px;min-height:@cabAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">Código</div>
+                                <div style="padding:8px 12px;min-height:@cabAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">Descripción</div>
+                                <div style="padding:8px 12px;min-height:@cabAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">Estado</div>
+                            </div>
+                            @for (var i = 1; i <= 7; i++)
+                            {
+                                var fila = i;
+                                var esFoco = fila == 4;
+                                var esPar  = fila % 2 == 0;
+                                var fondo   = esFoco ? _cfg.DES_BACKCOLOR_ROWS_FOCUS : (esPar ? _cfg.DES_BACKCOLOR_GRID_ROWS_EVEN : _cfg.DES_BACKCOLOR_GRID_ROWS_ODD);
+                                var texto   = esFoco ? _cfg.DES_FORECOLOR_ROWS_FOCUS : _cfg.DES_FORECOLOR_GRID_ROWS;
+                                var fuente  = esFoco ? _cfg.DES_TIPOGRAFIA_ROWS_FOCUS : (esPar ? _cfg.DES_TIPOGRAFIA_GRID_ROWS_EVEN : _cfg.DES_TIPOGRAFIA_GRID_ROWS_ODD);
+                                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;background:@fondo;color:@texto;font-family:@(string.IsNullOrWhiteSpace(fuente) ? _cfg.DES_TIPOGRAFIA_GRID_ROWS : fuente);font-size:@filaFontSize;">
+                                    <div style="padding:6px 12px;min-height:@filaAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">FILA-@fila.ToString("00")</div>
+                                    <div style="padding:6px 12px;min-height:@filaAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">@(esFoco ? "Registro con foco" : $"Registro de ejemplo {fila}")</div>
+                                    <div style="padding:6px 12px;min-height:@filaAlto;box-sizing:border-box;display:flex;align-items:center;border-bottom:1px solid @(_cfg.DES_LINECOLOR_GRID_ROWS ?? "#ccc");">ACTIVO</div>
+                                </div>
+                            }
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Búsqueda en grillas</MudText>
+                        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.7;">
+                            Mínimo de caracteres antes de consultar a la base de datos al escribir en el buscador —
+                            aplica a todas las pantallas que tienen ese campo.
+                        </MudText>
+                        <MudNumericField T="int" @bind-Value="_cfg.NUM_CHARACTERS_MIO_SEARCH" Label="Mínimo de caracteres"
+                                          Variant="Variant.Outlined" Min="1" Max="10"
+                                          Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Inputs" Icon="@Icons.Material.Filled.TextFields">
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        @* ── Apariencia de los inputs ──────────────────────────────
+                           Los seis campos son opcionales: vacíos, cada uno cae al valor que
+                           la app usaba antes (línea var(--line), fondo heredado, texto y
+                           etiqueta según el tamaño/color de Controles). *@
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-4 mb-2">Apariencia de los inputs</MudText>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;display:block;margin-bottom:8px;">
+                            Vacío = como estaba (no se toca). Aplica a los campos de texto, combos, fechas y numéricos de toda la app.
+                        </MudText>
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_INPUTLINECOLOR" Label="Línea / borde" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_INPUTBACKCOLOR" Label="Fondo" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_INPUTFORECOLOR" Label="Color del texto" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <ColorConSwatch @bind-Text="_cfg.DES_INPUTLABELFORECOLOR" Label="Color de la etiqueta" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudNumericField @bind-Value="_cfg.NUM_INPUTFORESIZE" Label="Tamaño del texto (px)"
+                                                 Variant="Variant.Outlined"
+                                                 Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudNumericField @bind-Value="_cfg.NUM_INPUTLABELSIZE" Label="Tamaño de la etiqueta (px)"
+                                                 Variant="Variant.Outlined"
+                                                 Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudNumericField @bind-Value="_cfg.NUM_INPUTSPACEHORIZONTAL" Label="Separación horizontal (px)"
+                                                 Variant="Variant.Outlined"
+                                                 Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudNumericField @bind-Value="_cfg.NUM_INPUTSPACEVERTICAL" Label="Separación vertical (px)"
+                                                 Variant="Variant.Outlined"
+                                                 Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                            </MudItem>
+                        </MudGrid>
+
+                        @* Muestra en vivo. Lee _cfg directamente (no las variables CSS ya
+                           guardadas), así refleja lo que estás editando antes de grabar.
+                           Son 4 campos en una grilla 2x2: el hueco entre las dos columnas es la
+                           separación horizontal y el hueco entre las dos filas la vertical, así
+                           las dos se ven de una. *@
+                        <MudText Typo="Typo.subtitle2" Class="mono mt-4 mb-2">Muestra</MudText>
+                        @{
+                            var inLine  = string.IsNullOrWhiteSpace(_cfg.DES_INPUTLINECOLOR) ? "rgba(22,19,15,.14)" : _cfg.DES_INPUTLINECOLOR;
+                            var inBack  = string.IsNullOrWhiteSpace(_cfg.DES_INPUTBACKCOLOR) ? "transparent" : _cfg.DES_INPUTBACKCOLOR;
+                            var inFore  = string.IsNullOrWhiteSpace(_cfg.DES_INPUTFORECOLOR) ? "inherit" : _cfg.DES_INPUTFORECOLOR;
+                            var inLblFo = string.IsNullOrWhiteSpace(_cfg.DES_INPUTLABELFORECOLOR) ? "inherit" : _cfg.DES_INPUTLABELFORECOLOR;
+                            var inSize  = _cfg.NUM_INPUTFORESIZE  is > 0 ? $"{_cfg.NUM_INPUTFORESIZE}px"  : "14px";
+                            var inLabel = _cfg.NUM_INPUTLABELSIZE is > 0 ? $"{_cfg.NUM_INPUTLABELSIZE}px" : "13px";
+                            var espH    = _cfg.NUM_INPUTSPACEHORIZONTAL is > 0 ? _cfg.NUM_INPUTSPACEHORIZONTAL.Value : 16;
+                            var espV    = _cfg.NUM_INPUTSPACEVERTICAL   is > 0 ? _cfg.NUM_INPUTSPACEVERTICAL.Value   : 20;
+                            var inLblBg = inBack == "transparent" ? "var(--dialog-back,var(--paper,#efe9df))" : inBack;
+                            var muestras = new[] { ("Descripción", "Texto de ejemplo"), ("Fecha de pedido", "27/8/2026"),
+                                                   ("Proveedor", "ACME S.A."),          ("Moneda", "PEN — Soles") };
+                        }
+                        @* El row-gap crudo es la separación configurada, y cada campo con etiqueta
+                           flotante suma aparte lo que su etiqueta sobresale hacia arriba (0.6 × su
+                           tamaño). Así el hueco que se VE entre dos filas es el número configurado,
+                           que es exactamente lo que hace el CSS real.
+
+                           La tercera fila —casilla y radio— no lleva ese extra: su texto va al lado
+                           del control, no flotando sobre el borde, así que no sobresale nada. Está
+                           aquí justamente para que se vea que queda alineada y con el mismo hueco
+                           que las filas de campos, sin importar qué números pongas arriba. *@
+                        @{ var salienteEtq = $"calc({inLabel} * 0.6)"; }
+                        <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:@(espH)px;row-gap:@(espV)px;padding:14px 4px 4px;">
+                            @foreach (var m in muestras)
+                            {
+                                <div style="position:relative;margin-top:@salienteEtq;">
+                                    <span style="position:absolute;left:8px;top:0;transform:translateY(-50%);
+                                                 font-size:@inLabel;font-weight:700;padding:0 4px;white-space:nowrap;
+                                                 color:@inLblFo;background:@inLblBg;">@m.Item1</span>
+                                    <div style="border:1px solid @inLine;background:@inBack;border-radius:6px;
+                                                height:51.25px;box-sizing:border-box;display:flex;align-items:center;
+                                                padding:0 12px;font-size:@inSize;color:@inFore;">@m.Item2</div>
+                                </div>
+                            }
+                            <div style="display:flex;align-items:center;gap:8px;font-size:@inSize;color:@inFore;">
+                                <span style="width:18px;height:18px;flex:none;border:2px solid @inLine;border-radius:3px;
+                                             display:flex;align-items:center;justify-content:center;
+                                             font-size:13px;line-height:1;">✓</span>
+                                <span>Afecta al stock</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px;font-size:@inSize;color:@inFore;">
+                                <span style="width:18px;height:18px;flex:none;border:2px solid @inLine;border-radius:50%;
+                                             display:flex;align-items:center;justify-content:center;">
+                                    <span style="width:9px;height:9px;border-radius:50%;background:@inLine;"></span>
+                                </span>
+                                <span>Ingreso</span>
+                            </div>
+                        </div>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;display:block;margin-top:6px;">
+                            Separación actual: @(espH)px entre columnas · @(espV)px entre filas.
+                            Casillas y radios usan la misma separación.
+                        </MudText>
+
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Navegación" Icon="@Icons.Material.Filled.Menu">
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Modo de entorno</MudText>
+                        <AriaCombo TItem="ComboboxItem" Items="_opcionesEntorno"
+                                   TextFunc="@(o => o.Texto)" ValueFunc="@(o => o.Id)"
+                                   @bind-Value="_cfg.DES_SKIN_COLOR" Label="Entorno" />
+                        <AriaCombo TItem="ComboboxItem" Items="_opcionesModoTexto"
+                                   TextFunc="@(o => o.Texto)" ValueFunc="@(o => o.Id)"
+                                   @bind-Value="_cfg.DES_MODE_TEXT" Label="Modo de texto" />
+                        <div class="prev-card mt-3" style="border-radius:6px;overflow:hidden;border:1px solid var(--line);padding:.7rem 1rem;background:var(--paper);color:var(--ink);">
+                            <MudText Typo="Typo.caption" Style="opacity:.55;">Vista previa</MudText>
+                            <div style="font-weight:700;">@TransformarTexto("Texto de ejemplo")</div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Entorno (cabecera / sidebar)</MudText>
+                        <div class="d-flex gap-2 mb-2">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_ENVIRONMENT" Label="Fondo del entorno" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_ENVIRONMENT" Label="Texto del entorno" />
+                        </div>
+                        <div class="d-flex align-center gap-1 mb-2"><MudIcon Icon="@Icons.Material.Filled.Gradient" Color="Color.Primary" Size="Size.Medium" />
+                            <MudSwitch @bind-Value="_cfg.FLG_DEGRADE_ENVIRONMENT" Color="Color.Primary" Label="Degradar colores del entorno" /></div>
+                        @if (_cfg.FLG_DEGRADE_ENVIRONMENT && !string.IsNullOrWhiteSpace(_cfg.DES_BACKCOLOR_ENVIRONMENT))
+                        {
+                            <div style="height:24px;border-radius:4px;background:linear-gradient(to bottom,@_cfg.DES_BACKCOLOR_ENVIRONMENT,color-mix(in srgb,@(_cfg.DES_BACKCOLOR_ENVIRONMENT) 40%,white));border:1px solid rgba(0,0,0,.12);margin-bottom:8px;" title="Vista previa degradado entorno"></div>
+                        }
+                        <MudSelect T="string" @bind-Value="_cfg.DES_TYPOGRAPHY_ENVIRONMENT_FONT" Label="Fuente del entorno" Variant="Variant.Outlined" Class="mb-3">
+                            @foreach (var f in _fuentes) { <MudSelectItem Value="@f">@f</MudSelectItem> }
+                        </MudSelect>
+                        <div style="border-radius:6px;overflow:hidden;border:1px solid var(--line);font-size:.78rem;font-family:@(_cfg.DES_TYPOGRAPHY_ENVIRONMENT_FONT);">
+                            <div style="display:flex;align-items:center;gap:.5rem;padding:.5rem .7rem;background:@(NuloA(_cfg.DES_BACKCOLOR_ENVIRONMENT,"#01162a"));color:@(NuloA(_cfg.DES_FORECOLOR_ENVIRONMENT,"#dcdb60"));">
+                                <span style="font-weight:700;">@TransformarTexto("KonSolutions ERP")</span>
+                            </div>
+                            <div style="display:flex;">
+                                <div style="width:96px;padding:.6rem .5rem;display:flex;flex-direction:column;gap:.4rem;background:@(NuloA(_cfg.DES_BACKCOLOR_ENVIRONMENT,"#01162a"));color:@(NuloA(_cfg.DES_FORECOLOR_ENVIRONMENT,"#dcdb60"));">
+                                    <div style="padding:.25rem .35rem;border-radius:3px;font-weight:700;background:@(NuloA(_cfg.DES_FORECOLOR_ENVIRONMENT,"#dcdb60"));color:@(NuloA(_cfg.DES_BACKCOLOR_ENVIRONMENT,"#01162a"));">@TransformarTexto("Inicio")</div>
+                                    <div>@TransformarTexto("Usuarios")</div>
+                                </div>
+                                <div style="flex:1;background:var(--paper);color:var(--ink);opacity:.5;padding:.6rem;">contenido…</div>
+                            </div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Login</MudText>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Colores propios de la pantalla de ingreso — independientes de los del entorno.
+                        </MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_LOGIN" Label="Fondo del login" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_LOGIN" Label="Texto del login" />
+                        </div>
+                        <div style="max-width:220px;border-radius:6px;overflow:hidden;border:1px solid var(--line);padding:1rem;text-align:center;background:@(NuloA(_cfg.DES_BACKCOLOR_LOGIN,"#16130f"));color:@(NuloA(_cfg.DES_FORECOLOR_LOGIN,"#efe9df"));">
+                            <div style="width:32px;height:32px;border-radius:50%;margin:0 auto .5rem;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.15);">
+                                <MudIcon Icon="@Icons.Material.Filled.Person" Style="color:inherit;" Size="Size.Small" />
+                            </div>
+                            <div style="font-weight:700;margin-bottom:.4rem;font-size:.85rem;">Iniciar sesión</div>
+                            <div style="border:1px solid rgba(255,255,255,.25);border-radius:4px;padding:.35rem .5rem;font-size:.72rem;margin-bottom:.4rem;opacity:.85;text-align:left;">Usuario</div>
+                            <div style="border:1px solid rgba(255,255,255,.25);border-radius:4px;padding:.35rem .5rem;font-size:.72rem;opacity:.85;text-align:left;">Contraseña</div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                        <MudText Typo="Typo.h6" Class="mb-3">Menú contextual</MudText>
+                        <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                            Colores de los menús de clic derecho (Workspace, árboles de Opciones/Especificaciones, Asignación de Roles).
+                        </MudText>
+                        <div class="d-flex gap-2 mb-3">
+                            <ColorConSwatch @bind-Text="_cfg.DES_BACKCOLOR_CONTEXTUALMENU" Label="Fondo del menú" />
+                            <ColorConSwatch @bind-Text="_cfg.DES_FORECOLOR_CONTEXTUALMENU" Label="Texto del menú" />
+                        </div>
+                        <div style="max-width:220px;border-radius:4px;padding:.3rem;font-size:.8rem;box-shadow:3px 3px 0 rgba(0,0,0,.25);background:@(NuloA(_cfg.DES_BACKCOLOR_CONTEXTUALMENU,"#2b2622"));color:@(NuloA(_cfg.DES_FORECOLOR_CONTEXTUALMENU,"#fff"));">
+                            <div style="padding:.4rem .6rem;border-radius:3px;display:flex;align-items:center;gap:.5rem;opacity:.85;">
+                                <MudIcon Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Style="color:inherit;" /> Modificar
+                            </div>
+                            <div style="padding:.4rem .6rem;border-radius:3px;display:flex;align-items:center;gap:.5rem;">
+                                <MudIcon Icon="@Icons.Material.Filled.Search" Size="Size.Small" Style="color:inherit;" /> Consultar
+                            </div>
+                            <div style="padding:.4rem .6rem;border-radius:3px;display:flex;align-items:center;gap:.5rem;">
+                                <MudIcon Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Style="color:inherit;" /> Eliminar
+                            </div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudTabPanel>
+
+        </MudTabs>
+    </MudTabPanel>
+
+    @* ════════════════════════════ COMPORTAMIENTO ════════════════════════════ *@
+<MudTabPanel Text="Comportamiento" Icon="@Icons.Material.Filled.Tune">
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Refresco automático</MudText>
+                    <div class="d-flex align-center gap-1 mb-2"><MudIcon Icon="@Icons.Material.Filled.Sync" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch @bind-Value="_cfg.FLG_ACTIVATE_REFRESH_AUTOMATIC" Color="Color.Primary" Label="Activar refresco automático" /></div>
+                    <MudNumericField @bind-Value="_cfg.NUM_SECONDS_REFRESH_GRID" Label="Intervalo (segundos)"
+                                     Variant="Variant.Outlined" Min="3" Max="300"
+                                     Disabled="@(!_cfg.FLG_ACTIVATE_REFRESH_AUTOMATIC)"
+                                     Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                    <div class="d-flex align-center gap-1 mt-2"><MudIcon Icon="@Icons.Material.Filled.History" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch @bind-Value="_cfg.FLG_CONTROL_CAMBIOS_ACTIVO" Color="Color.Primary" Label="Activar control de cambios" /></div>
+                    <MudText Typo="Typo.caption" Style="opacity:.6;">Determina si las grillas se refrescan automáticamente al detectar cambios de otros usuarios.</MudText>
+                    <MudDivider Class="my-3" />
+                    <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Keyboard" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch @bind-Value="_cfg.FLG_TECLADO_VIRTUAL" Color="Color.Primary" Label="Habilitar teclado virtual" /></div>
+                    <MudText Typo="Typo.caption" Style="opacity:.6;">Global. El teclado aparece solo si además la opción y el usuario lo tienen activo.</MudText>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Bloqueo por inactividad</MudText>
+                    <div class="d-flex align-center gap-1 mb-3"><MudIcon Icon="@Icons.Material.Filled.Lock" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch @bind-Value="_cfg.FLG_ACTIVAR_LOCKOUT_SCREEN" Color="Color.Primary" Label="Activar bloqueo" /></div>
+                    <div class="d-flex align-center gap-2">
+                        <MudNumericField @bind-Value="_cfg.NUM_MINUTOS_LOCKOUT_SCREEN" Label="Minutos de inactividad"
+                                         Variant="Variant.Outlined" Min="1" Max="120"
+                                         Disabled="@(!_cfg.FLG_ACTIVAR_LOCKOUT_SCREEN)"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture" Class="flex-grow-1" />
+                        @if (_tokenRestante is not null)
+                        {
+                            <MudTooltip Text="Tiempo restante de la sesión (token)">
+                                <div class="d-flex align-center gap-1" style="color:var(--mud-palette-primary);white-space:nowrap;">
+                                    <MudIcon Icon="@Icons.Material.Filled.Timer" Size="Size.Small" Color="Color.Primary" />
+                                    <span class="mono" style="font-size:.85rem;font-weight:700;">@FormatearRestante(_tokenRestante.Value)</span>
+                                </div>
+                            </MudTooltip>
+                        }
+                    </div>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Reconocimiento facial</MudText>
+                    <MudNumericField @bind-Value="_cfg.NUM_SECONDS_OUT_FACIAL_RECOGNITION"
+                                     Label="Segundos de espera" Variant="Variant.Outlined" Min="10" Max="120"
+                                     Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+    @* ════════════════════════════ REGIONAL ════════════════════════════ *@
+<MudTabPanel Text="Regional" Icon="@Icons.Material.Filled.Language">
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Formato regional</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        Define el separador decimal y formato de fechas/números en toda la app.
+                    </MudText>
+                    <MudSelect T="string" @bind-Value="_cfg.DES_CULTURE"
+                               Label="Cultura regional" Variant="Variant.Outlined"
+                               SearchFunc="@((string s, CancellationToken ct) => FiltrarCultura(s, ct))" ToStringFunc="@(c => _culturas.TryGetValue(c, out var n) ? $"{n} ({c})" : c)"
+                               Dense="true">
+                        @foreach (var (code, name) in _culturasFiltradas)
+                        {
+                            <MudSelectItem T="string" Value="@(code)">@name (@(code))</MudSelectItem>
+                        }
+                    </MudSelect>
+                    @if (!string.IsNullOrWhiteSpace(_cfg.DES_CULTURE))
+                    {
+                        <MudText Class="mono mt-2" Style="font-size:.78rem;opacity:.55;">
+                            Ejemplo: @(GetEjemploCultura(_cfg.DES_CULTURE))
+                        </MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Monedas</MudText>
+                    <div class="campos-config">
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_monedas"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_MONEDA_OFICIAL"
+                                     Label="Moneda oficial" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_monedas"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_MONEDA_EXTRANJERA_REFERENCIA"
+                                     Label="Moneda extranjera de referencia" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_monedas"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_MONEDA_PIVOT_TIPO_CAMBIO"
+                                     Label="Moneda pivot tipo de cambio" />
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+    @* ════════════════════════════ FINANCIERO ════════════════════════════ *@
+    <MudTabPanel Text="Financiero" Icon="@Icons.Material.Filled.AttachMoney">
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Valores de cálculo del pedido comercial</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        Qué fila de PEDIDOS_COMERCIALES_CALCULO (COMERCIAL.TIPOS_VALOR_CALCULO)
+                        representa el importe total y el descuento de un pedido comercial.
+                    </MudText>
+                    <div class="campos-config">
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_tiposValorCalculo"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_TIPO_VALOR_CALCULO_IMPORTE_TOTAL"
+                                     Label="Tipo de valor de cálculo — Importe total" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_tiposValorCalculo"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_TIPO_VALOR_CALCULO_DESCUENTO"
+                                     Label="Tipo de valor de cálculo — Descuento" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_tiposValorCalculo"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_TIPO_VALOR_CALCULO_SUBTOTAL"
+                                     Label="Tipo de valor de cálculo — Subtotal (sin impuestos)" />
+                        <MudText Typo="Typo.caption" Style="opacity:.7;">El subtotal es el valor del comprobante de pago sin impuestos; Proyectos lo suma al costo de cada proyecto.</MudText>
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+    @* ═════════════════════════ CLASES POR DEFECTO ═══════════════════════════ *@
+    @* La clase que cada módulo usa cuando no se le indica otra. El mismo combo de
+       clases de movimiento se reutiliza para Almacén y Producción, igual que
+       TiposValorCalculo se reutiliza arriba para Importe Total y Descuento. *@
+    <MudTabPanel Text="Clases por Defecto" Icon="@Icons.Material.Filled.Category">
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Clases por defecto</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        La clase que cada módulo usa cuando no se le indica otra.
+                    </MudText>
+                    @* campos-config: sin esto, el margen fijo de la etiqueta flotante (16px)
+                       colapsa con el margen configurado y los tres combos se ven pegados sin
+                       importar la Separación vertical que hayas puesto en Inputs. *@
+                    <div class="campos-config">
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_clasesOperacion"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_CLASE_OPERACION_ORDEN_COMPRA"
+                                     Label="Clase de operación — Orden de Compra" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_clasesMovimiento"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_CLASE_MOVIMIENTO_ALMACEN"
+                                     Label="Clase de movimiento — Almacén" />
+                        <AriaCombo TItem="ComboboxItem"
+                                     Items="_clasesMovimiento"
+                                     ValueFunc="@(x => x.Id)"
+                                     TextFunc="@(x => $"{x.Id} – {x.Texto}")"
+                                     @bind-Value="_cfg.COD_CLASE_MOVIMIENTO_PRODUCCION"
+                                     Label="Clase de movimiento — Producción" />
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+
+    @* ═══════════════════════════════ ALMACENES ═══════════════════════════════
+       Lo que Reservas y Requerimientos graban en una linea cuando NO se eligio lote,
+       proceso u orden de produccion.
+
+       No son "valores sugeridos" para el usuario: son lo que va a la base en lugar de
+       NULL. La diferencia importa porque esas cuatro columnas se comparan contra el
+       stock, y una comparacion contra NULL no es verdadera ni falsa: no matchea. Un
+       valor convenido - un lote "sin lote", un proceso generico - si matchea. *@
+    <MudTabPanel Text="Almacenes" Icon="@Icons.Material.Filled.Warehouse">
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Valores por Defecto de Producción</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        Lo que Reservas y Requerimientos graban cuando la línea no trae lote,
+                        proceso u orden de producción. Dejar un campo vacío es válido: esa
+                        columna sigue grabándose en NULL, como hasta hoy.
+                    </MudText>
+                    @* Combos, y los cuatro de produccion EN CASCADA: sin proceso no hay de
+                       donde sacar las ordenes, sin orden no hay items, sin item no hay unidades
+                       minimas. Por eso cada uno se habilita solo cuando el de arriba tiene
+                       valor, y cambiar uno invalida los de abajo: son de otra orden y
+                       combinados no existirian.
+
+                       Es la misma cascada de OrdenProduccionDialog, pero contra los maestros
+                       COMPLETOS (los endpoints de PLANEAMIENTO) y no contra el stock de un
+                       producto: aca no hay producto, y el valor por defecto es justamente el
+                       que se usa cuando no hay nada elegido. *@
+                    <div class="campos-config">
+                        <AriaCombo TItem="ComboboxItem" Items="_lotesDefault"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.NUM_LOTE_CONTROL_DEFAULT"
+                                   ValueChanged="@(v => _cfg.NUM_LOTE_CONTROL_DEFAULT = VacioANulo(v))"
+                                   Label="Lote de control por defecto" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_procesosDefault"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_PROCESO_DEFAULT"
+                                   ValueChanged="OnProcesoDefaultChanged"
+                                   Label="Proceso por defecto" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_ordenesDefault"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_cfg.NUM_ORDEN_PRODUCCION_DEFAULT?.ToString())"
+                                   ValueChanged="OnOrdenDefaultChanged"
+                                   Label="Orden de producción por defecto"
+                                   Disabled="@(string.IsNullOrWhiteSpace(_cfg.COD_PROCESO_DEFAULT))" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_itemsOrdenDefault"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT?.ToString())"
+                                   ValueChanged="OnItemOrdenDefaultChanged"
+                                   Label="Ítem de orden por defecto"
+                                   Disabled="@(_cfg.NUM_ORDEN_PRODUCCION_DEFAULT is null)" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_unidadesOrdenDefault"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_cfg.NUM_ORDEN_PRODUCCION_UNIDAD_DEFAULT?.ToString())"
+                                   ValueChanged="@(v => _cfg.NUM_ORDEN_PRODUCCION_UNIDAD_DEFAULT = byte.TryParse(v, out var u) ? u : null)"
+                                   Label="Unidad mínima de orden por defecto"
+                                   Disabled="@(_cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT is null)" />
+                    </div>
+
+                    @* El proceso y los tres números son UNA cadena: una orden sin su proceso no
+                       identifica nada. Se avisa acá en vez de dejar que se grabe a medias. *@
+                    @if (!string.IsNullOrWhiteSpace(_cfg.COD_PROCESO_DEFAULT)
+                         != (_cfg.NUM_ORDEN_PRODUCCION_DEFAULT is > 0))
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                            El proceso y la orden de producción se usan juntos: conviene completar
+                            los dos, o ninguno.
+                        </MudAlert>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            @* Al lado de los valores por defecto de producción. La guía de remisión pide la placa
+               y los datos del vehículo, pero TRANSPORTES no tiene esas columnas: se guardan como
+               especificaciones técnicas del transporte (TRANSPORTES_ESPECIFICACIONES_TECNICAS).
+               Aquí se dice CUÁL especificación es cada dato, para que el SP de la guía la encuentre. *@
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Especificaciones Técnicas del Transporte</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        Qué especificación técnica del vehículo guarda cada dato que pide la guía de
+                        remisión. Dejar un campo vacío es válido: ese dato no se podrá sacar del vehículo.
+                    </MudText>
+                    <div class="campos-config">
+                        <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_ESPECIFICACION_TECNICA_PLACA"
+                                   ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_PLACA = VacioANulo(v))"
+                                   Label="Especificación de la placa" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_ESPECIFICACION_TECNICA_CONSTANCIA_INSCRIPCION"
+                                   ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_CONSTANCIA_INSCRIPCION = VacioANulo(v))"
+                                   Label="Especificación de la constancia de inscripción" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_ESPECIFICACION_TECNICA_CERTIFICADO_VEHICULAR"
+                                   ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_CERTIFICADO_VEHICULAR = VacioANulo(v))"
+                                   Label="Especificación del certificado vehicular" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_ESPECIFICACION_TECNICA_CERTIFICADO_HABILITACION_MTC"
+                                   ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_CERTIFICADO_HABILITACION_MTC = VacioANulo(v))"
+                                   Label="Especificación del certificado de habilitación MTC" />
+
+                        <AriaCombo TItem="ComboboxItem" Items="_especificacionesTecnicas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_cfg.COD_ESPECIFICACION_TECNICA_VEHICULO_ACARREO"
+                                   ValueChanged="@(v => _cfg.COD_ESPECIFICACION_TECNICA_VEHICULO_ACARREO = VacioANulo(v))"
+                                   Label="Especificación del vehículo de acarreo" />
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+    @* ════════════════════════════ ADMINISTRACIÓN ════════════════════════════ *@
+<MudTabPanel Text="Administración" Icon="@Icons.Material.Filled.AccountTree">
+        <MudGrid>
+            <MudItem xs="12">
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.h6" Class="mb-3">Etiquetas de Búsqueda por Área</MudText>
+                    <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;color:var(--ink);">
+                        Enlaza cada Etiqueta de Búsqueda con el Área responsable y los niveles jerárquicos
+                        a los que aplica (tabla ESTANDAR.ETIQUETAS_BUSQUEDA_AREAS).
+                    </MudText>
+
+                    <div class="d-flex align-center justify-space-between mb-3">
+                        <MudText Typo="Typo.subtitle2">Enlaces registrados</MudText>
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarFilaEba">Agregar</MudButton>
+                    </div>
+                    <table class="tabla-simple-editable" style="width:100%;">
+                        <thead>
+                            <tr>
+                                <th>Etiqueta de Búsqueda</th>
+                                <th>Área</th>
+                                <th style="width:70px;text-align:center;" title="Gerencia">GER</th>
+                                <th style="width:70px;text-align:center;" title="Sub Gerencia">SGER</th>
+                                <th style="width:70px;text-align:center;" title="Jefatura">JEF</th>
+                                <th style="width:70px;text-align:center;" title="Subjefatura">SJEF</th>
+                                <th style="width:70px;text-align:center;" title="Supervisor">SUP</th>
+                                <th style="width:120px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in _filasEba)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="grilla-campo-texto">
+                                            <MudTextField T="string" @bind-Value="row.CodEtiquetaBusqueda"
+                                                          ReadOnly="@(!row.EditModo)" MaxLength="25"
+                                                          Margin="Margin.None"
+                                                          Class="mb-0" Style="margin-top:0;" />
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <AriaCombo TItem="ComboboxItem"
+                                                     Items="_areasEba"
+                                                     ValueFunc="@(x => x.Id)"
+                                                     TextFunc="@(x => x.Texto)"
+                                                     @bind-Value="row.CodAreaId"
+                                                     Disabled="@(!row.EditModo)"
+                                                     Class="mb-0" Style="margin-top:0;" />
+                                    </td>
+                                    <td style="text-align:center;"><div class="d-flex justify-center"><MudSwitch T="bool" @bind-Value="row.FlgGerencia" Color="Color.Primary" Disabled="@(!row.EditModo)" Class="ma-0" /></div></td>
+                                    <td style="text-align:center;"><div class="d-flex justify-center"><MudSwitch T="bool" @bind-Value="row.FlgSubGerencia" Color="Color.Primary" Disabled="@(!row.EditModo)" Class="ma-0" /></div></td>
+                                    <td style="text-align:center;"><div class="d-flex justify-center"><MudSwitch T="bool" @bind-Value="row.FlgJefatura" Color="Color.Primary" Disabled="@(!row.EditModo)" Class="ma-0" /></div></td>
+                                    <td style="text-align:center;"><div class="d-flex justify-center"><MudSwitch T="bool" @bind-Value="row.FlgSubjefatura" Color="Color.Primary" Disabled="@(!row.EditModo)" Class="ma-0" /></div></td>
+                                    <td style="text-align:center;"><div class="d-flex justify-center"><MudSwitch T="bool" @bind-Value="row.FlgSupervisor" Color="Color.Primary" Disabled="@(!row.EditModo)" Class="ma-0" /></div></td>
+                                    <td>
+                                        <div class="d-flex align-center">
+                                            @if (row.EditModo)
+                                            {
+                                                <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                               Disabled="@(row.Guardando || string.IsNullOrWhiteSpace(row.CodEtiquetaBusqueda))"
+                                                               OnClick="@(() => GuardarFilaEbaAsync(row))" />
+                                            }
+                                            else
+                                            {
+                                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Info"
+                                                               OnClick="@(() => row.EditModo = true)" />
+                                            }
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                           Disabled="row.Guardando" OnClick="@(() => EliminarFilaEbaAsync(row))" />
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    @if (_filasEba.Count == 0)
+                    {
+                        <MudText Class="pa-2 mono" Style="opacity:.5;">Sin registros.</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudTabPanel>
+
+</MudTabs>
+}
+</div>
+
+@code {
+    [Parameter] public string CodAplicacion          { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion    { get; set; } = "";
+
+    private SharedCfg _cfg = new();
+    private bool _loading = true;
+    private bool _saving  = false;
+
+    private List<ComboboxItem> _monedas = new();
+
+    private readonly string[] _fuentes =
+    {
+        "Archivo", "Spline Sans Mono", "Arial", "Roboto",
+        "Georgia", "Courier New", "Verdana", "Times New Roman"
+    };
+
+    private readonly List<ComboboxItem> _opcionesEntorno = new()
+    {
+        new ComboboxItem { Id = "claro",  Texto = "Claro" },
+        new ComboboxItem { Id = "oscuro", Texto = "Oscuro" }
+    };
+    private readonly List<ComboboxItem> _opcionesModoTexto = new()
+    {
+        new ComboboxItem { Id = "normal", Texto = "Normal" },
+        new ComboboxItem { Id = "upper",  Texto = "MAYÚSCULAS" },
+        new ComboboxItem { Id = "lower",  Texto = "minúsculas" }
+    };
+
+    // Cultura regional
+    private Dictionary<string, string> _culturas = new();
+    private IEnumerable<KeyValuePair<string, string>> _culturasFiltradas => _culturas;
+    private string _searchCultura = "";
+
+
+    // ── Dominios de correo de la empresa (ficha Empresa, grilla in-place) ──
+    private class DominioEmpresaRow
+    {
+        public byte CodDominio { get; set; }
+        public string DesDominio { get; set; } = "";
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+    }
+    private List<DominioEmpresaRow> _dominios = new();
+
+    private async Task CargarDominiosAsync()
+    {
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Entorno.DominiosEmpresa>>(ApiRoutes.Entorno.DominiosEmpresa) ?? new();
+        _dominios = lista.Select(d => new DominioEmpresaRow { CodDominio = d.COD_DOMINIO_EMPRESA, DesDominio = d.DES_DOMINIO_EMPRESA }).ToList();
+    }
+
+    private void AgregarDominio() => _dominios.Add(new DominioEmpresaRow { EsNueva = true });
+
+    private async Task GuardarDominioAsync(DominioEmpresaRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new { COD_DOMINIO_EMPRESA = row.CodDominio, DES_DOMINIO_EMPRESA = row.DesDominio };
+            // PROC_ENTORNO_DOMINIOS_EMPRESA_INSERT es upsert — siempre POST. Al crear, el
+            // código va en 0 y el SP devuelve el SCOPE_IDENTITY() asignado — se recarga la
+            // grilla completa para tomarlo (evita parsear el WriteResult a mano).
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Entorno.DominiosEmpresa, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                if (row.EsNueva) await CargarDominiosAsync(); else row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarDominioAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarDominioAsync(DominioEmpresaRow row)
+    {
+        if (row.EsNueva) { _dominios.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Entorno.DominiosEmpresa}/{row.CodDominio}");
+            if (resp.IsSuccessStatusCode) { _dominios.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(EliminarDominioAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    // ── Estructura de códigos RFID (pestaña RFID, grilla editable con MudDataGrid) ──
+    private class EstructuraRfidRow
+    {
+        public string CodEstructuraRfid { get; set; } = "";
+        public string? DesEstructuraRfid { get; set; }
+        public int? ValLongitud { get; set; }
+        public int? NumOrden { get; set; }
+        public bool EsNueva { get; set; }
+    }
+    private List<EstructuraRfidRow> _estructuraRfid = new();
+
+    private async Task CargarEstructuraRfidAsync()
+    {
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.EstructuraRfid>>(ApiRoutes.Estandar.EstructuraRfid) ?? new();
+        _estructuraRfid = lista.Select(d => new EstructuraRfidRow
+        {
+            CodEstructuraRfid = d.COD_ESTRUCTURA_RFID,
+            DesEstructuraRfid = d.DES_ESTRUCTURA_RFID,
+            ValLongitud = d.VAL_LONGITUD,
+            NumOrden = d.NUM_ORDEN
+        }).ToList();
+    }
+
+    private void AgregarEstructuraRfid() => _estructuraRfid.Add(new EstructuraRfidRow { EsNueva = true });
+
+    /// <summary>Dispara al confirmar una celda (Enter/Tab/click afuera) — mismo trigger que
+    /// CommittedItemChanges usa en "Configuraciones de producto".</summary>
+    private Task GuardarEstructuraRfid(EstructuraRfidRow it) => GuardarEstructuraRfidConAviso(it);
+
+    private async Task GuardarEstructuraRfidConAviso(EstructuraRfidRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.CodEstructuraRfid))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("El código no puede quedar vacío.", DialogService, nameof(ConfiguracionGeneral), "Validación");
+            return;
+        }
+        try
+        {
+            HttpResponseMessage resp;
+            if (row.EsNueva)
+            {
+                var dto = new { COD_ESTRUCTURA_RFID = row.CodEstructuraRfid, DES_ESTRUCTURA_RFID = row.DesEstructuraRfid, VAL_LONGITUD = row.ValLongitud, NUM_ORDEN = row.NumOrden };
+                resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.EstructuraRfid, dto);
+            }
+            else
+            {
+                var dto = new { COD_ESTRUCTURA_RFID = row.CodEstructuraRfid, DES_ESTRUCTURA_RFID = row.DesEstructuraRfid, VAL_LONGITUD = row.ValLongitud, NUM_ORDEN = row.NumOrden };
+                resp = await Http.PutAsJsonAsync(ApiRoutes.Estandar.EstructuraRfid, dto);
+            }
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraRfidConAviso));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraRfidConAviso));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo guardar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al guardar");
+        }
+    }
+
+    private async Task QuitarEstructuraRfid(EstructuraRfidRow row)
+    {
+        if (row.EsNueva) { _estructuraRfid.Remove(row); return; }
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Estandar.EstructuraRfid}/{Uri.EscapeDataString(row.CodEstructuraRfid)}");
+            if (resp.IsSuccessStatusCode) { _estructuraRfid.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraRfid), "No se pudo eliminar el registro");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraRfid));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo eliminar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al eliminar");
+        }
+    }
+
+    // ── Estructura de códigos de barras (pestaña Código de barras, grilla editable con MudDataGrid) ──
+    private class EstructuraCodebarRow
+    {
+        public string CodEstructuraCodebar { get; set; } = "";
+        public string? DesEstructuraCodebar { get; set; }
+        public int? ValLongitud { get; set; }
+        public int? NumOrden { get; set; }
+        public bool EsNueva { get; set; }
+    }
+    private List<EstructuraCodebarRow> _estructuraCodebar = new();
+
+    private async Task CargarEstructuraCodebarAsync()
+    {
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.EstructuraCodebar>>(ApiRoutes.Estandar.EstructuraCodebar) ?? new();
+        _estructuraCodebar = lista.Select(d => new EstructuraCodebarRow
+        {
+            CodEstructuraCodebar = d.COD_ESTRUCTURA_CODEBAR,
+            DesEstructuraCodebar = d.DES_ESTRUCTURA_CODEBAR,
+            ValLongitud = d.VAL_LONGITUD,
+            NumOrden = d.NUM_ORDEN
+        }).ToList();
+    }
+
+    private void AgregarEstructuraCodebar() => _estructuraCodebar.Add(new EstructuraCodebarRow { EsNueva = true });
+
+    /// <summary>Dispara al confirmar una celda (Enter/Tab/click afuera) — mismo trigger que
+    /// CommittedItemChanges usa en "Configuraciones de producto".</summary>
+    private Task GuardarEstructuraCodebar(EstructuraCodebarRow it) => GuardarEstructuraCodebarConAviso(it);
+
+    private async Task GuardarEstructuraCodebarConAviso(EstructuraCodebarRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.CodEstructuraCodebar))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("El código no puede quedar vacío.", DialogService, nameof(ConfiguracionGeneral), "Validación");
+            return;
+        }
+        try
+        {
+            HttpResponseMessage resp;
+            if (row.EsNueva)
+            {
+                var dto = new { COD_ESTRUCTURA_CODEBAR = row.CodEstructuraCodebar, DES_ESTRUCTURA_CODEBAR = row.DesEstructuraCodebar, VAL_LONGITUD = row.ValLongitud, NUM_ORDEN = row.NumOrden };
+                resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.EstructuraCodebar, dto);
+            }
+            else
+            {
+                var dto = new { COD_ESTRUCTURA_CODEBAR = row.CodEstructuraCodebar, DES_ESTRUCTURA_CODEBAR = row.DesEstructuraCodebar, VAL_LONGITUD = row.ValLongitud, NUM_ORDEN = row.NumOrden };
+                resp = await Http.PutAsJsonAsync(ApiRoutes.Estandar.EstructuraCodebar, dto);
+            }
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraCodebarConAviso));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraCodebarConAviso));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo guardar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al guardar");
+        }
+    }
+
+    private async Task QuitarEstructuraCodebar(EstructuraCodebarRow row)
+    {
+        if (row.EsNueva) { _estructuraCodebar.Remove(row); return; }
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Estandar.EstructuraCodebar}/{Uri.EscapeDataString(row.CodEstructuraCodebar)}");
+            if (resp.IsSuccessStatusCode) { _estructuraCodebar.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraCodebar), "No se pudo eliminar el registro");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraCodebar));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo eliminar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al eliminar");
+        }
+    }
+
+    // ── Estructura de código de producto (pestaña Productos > Estructura) ──
+    // Un registro por Grupo de Producto (ya no hay Familia: la tabla dejó de tenerla).
+    private List<EstructuraProductoRow> _estructuraProducto = new();
+
+    private class EstructuraProductoRow
+    {
+        public string? CodGrupoProducto { get; set; }
+        public string? DesGrupoProducto { get; set; }
+        public bool FlgIncluirAliasGrupoProducto { get; set; }
+        public bool FlgIncluirFamiliaProducto { get; set; }
+        public bool FlgIncluirAliasFamiliaProducto { get; set; }
+        public bool FlgIncluirSubFamiliaProducto { get; set; }
+        public bool FlgIncluirAliasSubFamiliaProducto { get; set; }
+        public int? LngCorrelativo { get; set; }
+        public bool EsNueva { get; set; }
+    }
+
+    private async Task CargarEstructuraProductoAsync()
+    {
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.EstructuraProducto>>(
+            ApiRoutes.Estandar.EstructuraProducto) ?? new();
+        _estructuraProducto = lista.Select(d => new EstructuraProductoRow
+        {
+            CodGrupoProducto = d.COD_GRUPO_PRODUCTO,
+            DesGrupoProducto = d.DES_GRUPO_PRODUCTO,
+            FlgIncluirAliasGrupoProducto = d.FLG_INCLUIR_ALIAS_GRUPO_PRODUCTO ?? false,
+            FlgIncluirFamiliaProducto = d.FLG_INCLUIR_FAMILIA_PRODUCTO ?? false,
+            FlgIncluirAliasFamiliaProducto = d.FLG_INCLUIR_ALIAS_FAMILIA_PRODUCTO ?? false,
+            FlgIncluirSubFamiliaProducto = d.FLG_INCLUIR_SUB_FAMILIA_PRODUCTO ?? false,
+            FlgIncluirAliasSubFamiliaProducto = d.FLG_INCLUIR_ALIAS_SUB_FAMILIA_PRODUCTO ?? false,
+            LngCorrelativo = d.LNG_CORRELATIVO
+        }).ToList();
+    }
+
+    private void AgregarEstructuraProducto()
+    {
+        _estructuraProducto.Add(new EstructuraProductoRow { EsNueva = true });
+    }
+
+    private void OnGrupoEstructuraFilaChanged(EstructuraProductoRow it, string? cod)
+    {
+        it.CodGrupoProducto = cod;
+        it.DesGrupoProducto = _gruposProducto.FirstOrDefault(g => g.Id == cod)?.Texto;
+    }
+
+    /// <summary>Regla 1: FLG_INCLUIR_FAMILIA_PRODUCTO habilita Alias Familia y Sub Familia.
+    /// Al apagarlo, además de deshabilitar esos dos checks, los apaga (no puede quedar un
+    /// "incluir alias familia" prendido sin "incluir familia").</summary>
+    private Task OnFlgIncluirFamiliaChanged(EstructuraProductoRow it, bool v)
+    {
+        it.FlgIncluirFamiliaProducto = v;
+        if (!v)
+        {
+            it.FlgIncluirAliasFamiliaProducto = false;
+            it.FlgIncluirSubFamiliaProducto = false;
+            it.FlgIncluirAliasSubFamiliaProducto = false;
+        }
+        return GuardarEstructuraProductoConAviso(it);
+    }
+
+    /// <summary>Regla 2: FLG_INCLUIR_SUB_FAMILIA_PRODUCTO habilita Alias Sub Familia — mismo
+    /// criterio, se apaga junto con el padre.</summary>
+    private Task OnFlgIncluirSubFamiliaChanged(EstructuraProductoRow it, bool v)
+    {
+        it.FlgIncluirSubFamiliaProducto = v;
+        if (!v) it.FlgIncluirAliasSubFamiliaProducto = false;
+        return GuardarEstructuraProductoConAviso(it);
+    }
+
+    /// <summary>Longitud del segmento de Grupo dentro del código de producto: 3 dígitos si
+    /// usa alias, 5 si no.</summary>
+    private const int LargoCodigoTotal = 30;
+
+    /// <summary>Cuántos dígitos le quedan disponibles al Correlativo de una fila, según qué
+    /// segmentos participan del código (Grupo + Familia + Sub Familia) y su longitud:
+    /// alias = 3, código completo = 5, segmento no incluido = 0. El Correlativo se queda con
+    /// lo que sobra hasta el máximo de 30.</summary>
+    private static int LongitudMaximaCorrelativo(EstructuraProductoRow row)
+    {
+        var largoGrupo = row.FlgIncluirAliasGrupoProducto ? 3 : 5;
+
+        var largoFamilia = !row.FlgIncluirFamiliaProducto ? 0
+            : row.FlgIncluirAliasFamiliaProducto ? 3 : 5;
+
+        var largoSubFamilia = !row.FlgIncluirSubFamiliaProducto ? 0
+            : row.FlgIncluirAliasSubFamiliaProducto ? 3 : 5;
+
+        return Math.Max(0, LargoCodigoTotal - largoGrupo - largoFamilia - largoSubFamilia);
+    }
+
+    private async Task GuardarEstructuraProductoConAviso(EstructuraProductoRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.CodGrupoProducto))
+        {
+            if (!row.EsNueva)
+                await ErrorDialogHelper.MostrarMensajeAsync("Elige un Grupo antes de grabar.", DialogService, nameof(ConfiguracionGeneral), "Validación");
+            return;
+        }
+        var largoMaximo = LongitudMaximaCorrelativo(row);
+        var largoActual = row.LngCorrelativo?.ToString().Length ?? 0;
+        if (largoActual > largoMaximo)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                $"El Correlativo puede tener como máximo {largoMaximo} dígito(s) con esta combinación de Grupo/Familia/Sub Familia (código total ≤ {LargoCodigoTotal}).",
+                DialogService, nameof(ConfiguracionGeneral), "Validación");
+            return;
+        }
+        try
+        {
+            var dto = new
+            {
+                COD_GRUPO_PRODUCTO = row.CodGrupoProducto,
+                FLG_INCLUIR_ALIAS_GRUPO_PRODUCTO = row.FlgIncluirAliasGrupoProducto,
+                FLG_INCLUIR_FAMILIA_PRODUCTO = row.FlgIncluirFamiliaProducto,
+                FLG_INCLUIR_ALIAS_FAMILIA_PRODUCTO = row.FlgIncluirAliasFamiliaProducto,
+                FLG_INCLUIR_SUB_FAMILIA_PRODUCTO = row.FlgIncluirSubFamiliaProducto,
+                FLG_INCLUIR_ALIAS_SUB_FAMILIA_PRODUCTO = row.FlgIncluirAliasSubFamiliaProducto,
+                LNG_CORRELATIVO = row.LngCorrelativo
+            };
+            var resp = row.EsNueva
+                ? await Http.PostAsJsonAsync(ApiRoutes.Estandar.EstructuraProducto, dto)
+                : await Http.PutAsJsonAsync(ApiRoutes.Estandar.EstructuraProducto, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraProductoConAviso));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(GuardarEstructuraProductoConAviso));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo guardar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al guardar");
+        }
+    }
+
+    private async Task QuitarEstructuraProducto(EstructuraProductoRow row)
+    {
+        if (row.EsNueva || string.IsNullOrWhiteSpace(row.CodGrupoProducto))
+        { _estructuraProducto.Remove(row); return; }
+        try
+        {
+            var resp = await Http.DeleteAsync(ApiRoutes.Estandar.EstructuraProductoPorId(row.CodGrupoProducto));
+            if (resp.IsSuccessStatusCode) { _estructuraProducto.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraProducto), "No se pudo eliminar el registro");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), nameof(QuitarEstructuraProducto));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo eliminar el registro. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionGeneral), "Error al eliminar");
+        }
+    }
+
+    // ── Etiquetas de Búsqueda por Área (ficha Administración, grilla in-place) ──
+    // Fila 100% autocontenida: Etiqueta + Área + niveles jerárquicos editables en la misma
+    // celda, con ✎ para habilitar edición, ✓ para grabar (varias filas, cada una
+    // independiente) y 🗑 para eliminar.
+    private class EtiquetaBusquedaAreaRow
+    {
+        public string CodEtiquetaBusqueda { get; set; } = "";
+        public string? CodAreaId { get; set; }
+        public bool FlgGerencia { get; set; }
+        public bool FlgSubGerencia { get; set; }
+        public bool FlgJefatura { get; set; }
+        public bool FlgSubjefatura { get; set; }
+        public bool FlgSupervisor { get; set; }
+        // Clave con la que quedó grabada en la BD (vacía si es nueva) — al grabar, si la
+        // Etiqueta cambió respecto a esto, hay que borrar la fila vieja e insertar la
+        // nueva en vez de un simple upsert (la PK real cambió).
+        public string CodEtiquetaBusquedaOriginal { get; set; } = "";
+        public bool EsNueva { get; set; }
+        public bool EditModo { get; set; }
+        public bool Guardando { get; set; }
+    }
+
+    private List<ComboboxItem> _areasEba = new();
+    private List<EtiquetaBusquedaAreaRow> _filasEba = new();
+
+    private async Task CargarEtiquetasBusquedaAreasAsync()
+    {
+        var tAreas = Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>($"{ApiRoutes.Administracion.Areas}/combobox");
+        var tFilas = Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<KONSolutions.Shared.Models.Estandar.EtiquetasBusquedaAreas>>>(ApiRoutes.Estandar.EtiquetasBusquedaAreas);
+        await Task.WhenAll(tAreas, tFilas);
+        _areasEba = tAreas.Result?.Data ?? new();
+
+        _filasEba = (tFilas.Result?.Data ?? new()).Select(f => new EtiquetaBusquedaAreaRow
+        {
+            CodEtiquetaBusqueda = f.COD_ETIQUETA_BUSQUEDA,
+            CodAreaId = f.COD_AREA?.ToString(),
+            FlgGerencia = f.FLG_GERENCIA ?? false,
+            FlgSubGerencia = f.FLG_SUB_GERENCIA ?? false,
+            FlgJefatura = f.FLG_JEFATURA ?? false,
+            FlgSubjefatura = f.FLG_SUBJEFATURA ?? false,
+            FlgSupervisor = f.FLG_SUPERVISOR ?? false,
+            CodEtiquetaBusquedaOriginal = f.COD_ETIQUETA_BUSQUEDA
+        }).ToList();
+    }
+
+    private void AgregarFilaEba() => _filasEba.Add(new EtiquetaBusquedaAreaRow { EsNueva = true, EditModo = true });
+
+    private async Task GuardarFilaEbaAsync(EtiquetaBusquedaAreaRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.CodEtiquetaBusqueda)) return;
+        row.Guardando = true;
+        try
+        {
+            // Si la fila ya existía y la PK (Etiqueta) cambió, no alcanza con el upsert del
+            // INSERT (matchearía por la clave NUEVA, dejando huérfana la fila vieja) —
+            // primero hay que borrar el registro original.
+            var cambioClave = !row.EsNueva && row.CodEtiquetaBusqueda != row.CodEtiquetaBusquedaOriginal;
+            if (cambioClave)
+            {
+                var del = await Http.DeleteAsync(
+                    $"{ApiRoutes.Estandar.EtiquetasBusquedaAreas}/{Uri.EscapeDataString(row.CodEtiquetaBusquedaOriginal)}");
+                if (!del.IsSuccessStatusCode)
+                { await ErrorDialogHelper.MostrarAsync(del, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarFilaEbaAsync)); return; }
+            }
+
+            var dto = new
+            {
+                COD_ETIQUETA_BUSQUEDA = row.CodEtiquetaBusqueda,
+                COD_AREA = string.IsNullOrWhiteSpace(row.CodAreaId) ? (byte?)null : byte.Parse(row.CodAreaId),
+                FLG_GERENCIA = row.FlgGerencia,
+                FLG_SUB_GERENCIA = row.FlgSubGerencia,
+                FLG_JEFATURA = row.FlgJefatura,
+                FLG_SUBJEFATURA = row.FlgSubjefatura,
+                FLG_SUPERVISOR = row.FlgSupervisor
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.EtiquetasBusquedaAreas, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                row.EsNueva = false;
+                row.EditModo = false;
+                row.CodEtiquetaBusquedaOriginal = row.CodEtiquetaBusqueda;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(GuardarFilaEbaAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarFilaEbaAsync(EtiquetaBusquedaAreaRow row)
+    {
+        if (row.EsNueva) { _filasEba.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync(
+                $"{ApiRoutes.Estandar.EtiquetasBusquedaAreas}/{Uri.EscapeDataString(row.CodEtiquetaBusquedaOriginal)}");
+            if (resp.IsSuccessStatusCode) { _filasEba.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(EliminarFilaEbaAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarPaisAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Length < 2) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Estandar.PaisesCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarUbigeoAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Length < 2) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Estandar.UbigeosCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarTipoEmpresaAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto)) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Estandar.TiposEmpresaCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    private Task<IEnumerable<string>> FiltrarCultura(string? texto, CancellationToken _)
+    {
+        _searchCultura = texto ?? "";
+        return Task.FromResult(
+            _culturas
+                .Where(kv => string.IsNullOrWhiteSpace(_searchCultura)
+                          || kv.Key.Contains(_searchCultura, StringComparison.OrdinalIgnoreCase)
+                          || kv.Value.Contains(_searchCultura, StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key));
+    }
+
+    private static string GetEjemploCultura(string code)
+    {
+        try
+        {
+            var ciFecha = new System.Globalization.CultureInfo(code);
+            var ci = KONSolutions.Web.Services.CultureHelper.Construir(code);
+            var nf = ci.NumberFormat;
+            var num = (1234567.89).ToString("N2", ci);
+            var dec = nf.NumberDecimalSeparator;
+            var mil = nf.NumberGroupSeparator;
+            return $"{num}  (dec='{dec}'  miles='{mil}')  ·  {DateTime.Today.ToString("d", ciFecha)}";
+        }
+        catch { return ""; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _culturas = System.Globalization.CultureInfo
+            .GetCultures(System.Globalization.CultureTypes.SpecificCultures)
+            .OrderBy(c => c.DisplayName)
+            .ToDictionary(c => c.Name, c => c.DisplayName);
+
+        // Combos independientes (Monedas + Tipos de Configuración + Grupos de Producto) en un
+        // solo viaje vía LOADCOMBOS, en paralelo con los datos propios de la ficha — antes eran
+        // 3 llamadas separadas (una por combo) más la de _cfg, todas secuenciales.
+        var tCombos = CfgSvc.GetLoadcombosAsync();
+        var tData   = CfgSvc.GetCurrentAsync();
+
+        await Task.WhenAll(tCombos, tData);
+
+        var combos = tCombos.Result;
+        _monedas            = combos.Monedas;
+        _tiposConfig        = combos.TiposConfiguracion;
+        _gruposProducto     = combos.GruposProducto;
+        _tiposValorCalculo  = combos.TiposValorCalculo;
+        _clasesOperacion    = combos.ClasesOperacion;
+        _clasesMovimiento   = combos.ClasesMovimiento;
+        var data = tData.Result;
+        if (data is not null) _cfg = data;
+        // Después de _cfg, no en el Task.WhenAll de arriba: la cascada arranca de lo que ya
+        // está grabado, y si corre antes de tener _cfg no tiene de dónde partir.
+        await CargarCombosAlmacenAsync();
+        await CargarDominiosAsync();
+        await CargarEtiquetasBusquedaAreasAsync();
+        await CargarConfigProductosAsync();
+        await CargarEstructuraProductoAsync();
+        await CargarEstructuraRfidAsync();
+        await CargarFamiliasEquipoRfidAsync();
+        await CargarFamiliasEstacionRfidAsync();
+        await CargarSubFamiliasEstacionRfidAsync();
+        await CargarEstacionesRfidAsync();
+        await CargarArchivosPlantillaRfidAsync();
+        await CargarEstructuraCodebarAsync();
+        _loading = false;
+
+        _tokenExpira = await AuthStateProvider.GetExpiracionTokenAsync();
+        ActualizarTokenRestante();
+        _timerToken = new System.Threading.Timer(_ => InvokeAsync(() => { ActualizarTokenRestante(); StateHasChanged(); }),
+            null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    // ── Tiempo restante del token (al costado del bloqueo por inactividad) ──
+    private DateTimeOffset? _tokenExpira;
+    private TimeSpan? _tokenRestante;
+    private System.Threading.Timer? _timerToken;
+
+    private void ActualizarTokenRestante()
+    {
+        if (_tokenExpira is null) { _tokenRestante = null; return; }
+        var restante = _tokenExpira.Value - DateTimeOffset.UtcNow;
+        _tokenRestante = restante > TimeSpan.Zero ? restante : TimeSpan.Zero;
+    }
+
+    private static string FormatearRestante(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}" : $"{t.Minutes:00}:{t.Seconds:00}";
+
+    public void Dispose() => _timerToken?.Dispose();
+
+    private string TransformarTexto(string texto) => _cfg.DES_MODE_TEXT switch
+    {
+        "upper" => texto.ToUpperInvariant(),
+        "lower" => texto.ToLowerInvariant(),
+        _ => texto
+    };
+
+    private static string NuloA(string? valor, string fallback) => string.IsNullOrWhiteSpace(valor) ? fallback : valor;
+
+    private async Task Guardar()
+    {
+        _saving = true;
+        var resp = await CfgSvc.SaveRawAsync(_cfg);
+        if (resp.IsSuccessStatusCode)
+        {
+            // Aplica a la web en caliente — mapea los campos de BD → AppConfig
+            // (mismo mapeo que usa MainLayout al arrancar la app, ver ConfigService)
+            var app = Config.Current;
+            ConfigService.MapearDesdeConfiguracionGeneral(_cfg, app);
+
+            // El logo de la aplicación: la copia en base64 se reemplaza por lo grabado (o se borra si se quitó la imagen), y se le
+            // pide al servidor la versión del logo, que es parte de su dirección (…/logo-aplicacion?v=XXXX). Sin esto la cabecera y
+            // el próximo arranque pedirían la dirección anterior, que el navegador ya tiene guardada con el logo viejo.
+            if (_cfg.IMG_LOGO_APLICACION is not { Length: > 0 }) { app.LogoApp = null; app.LogoAppVersion = null; }
+            else if (await CfgSvc.GetPublicAsync() is { } pub)
+                app.LogoAppVersion = pub.FLG_TIENE_LOGO_APLICACION ? pub.DES_VERSION_LOGO_APLICACION : null;
+
+            await Config.SaveAsync(app);   // guarda en localStorage Y aplica CSS en caliente (y la cabecera toma el logo nuevo)
+
+            // Aplicar cultura regional en caliente
+            if (!string.IsNullOrWhiteSpace(_cfg.DES_CULTURE))
+            {
+                try
+                {
+                    var ci = new System.Globalization.CultureInfo(_cfg.DES_CULTURE);
+                    System.Globalization.CultureInfo.DefaultThreadCurrentCulture   = ci;
+                    System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = ci;
+                }
+                catch { }
+            }
+
+            if (app.RefrescoAutomatico && app.ControlCambiosActivo) Cambios.Iniciar(app.RefrescoIntervaloSegs);
+            else Cambios.Detener();
+
+            // la clave SOL ya quedó (o se borró) en el servidor: la pantalla solo recuerda que hay una y suelta lo escrito
+            if (_cfg.FLG_QUITAR_PASSWORD_VCDP) _cfg.TIENE_PASSWORD_VCDP = false;
+            else if (!string.IsNullOrEmpty(_cfg.DES_PASSWORD_VCDP_NUEVO)) _cfg.TIENE_PASSWORD_VCDP = true;
+            _cfg.DES_PASSWORD_VCDP_NUEVO = null; _cfg.FLG_QUITAR_PASSWORD_VCDP = false;
+
+            Snackbar.Add("Configuración guardada y aplicada.", Severity.Success);
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionGeneral), nameof(Guardar));
+        }
+        _saving = false;
+    }
+
+    // ── Configuración de Objetos ──
+    // Grilla única, sin selector externo: cada fila elige su propio Tipo de Configuración
+    // (primera columna) y, a partir del Grupo, su Familia/Sub Familia.
+    private List<ComboboxItem> _tiposConfig = new();
+    private List<ConfigProductoModel> _configProductos = new();
+    private List<ComboboxItem> _gruposProducto = new();
+    private List<ComboboxItem> _tiposValorCalculo = new();
+    private List<ComboboxItem> _clasesOperacion  = new();
+    private List<ComboboxItem> _clasesMovimiento = new();
+
+    // ── Valores por defecto de almacén (pestaña Almacenes) ──────────────────
+    // Los lotes y los procesos son listas completas y se piden al abrir la pantalla, junto
+    // con el resto de los combos. La cascada de abajo se pide recién cuando hace falta:
+    // pedir todas las órdenes de todos los procesos al abrir Configuración General sería
+    // traer un maestro entero para un campo que casi nunca se toca.
+    private List<ComboboxItem> _lotesDefault         = new();
+    private List<ComboboxItem> _procesosDefault      = new();
+    private List<ComboboxItem> _ordenesDefault       = new();
+    private List<ComboboxItem> _itemsOrdenDefault    = new();
+    private List<ComboboxItem> _unidadesOrdenDefault = new();
+    // Todas las especificaciones técnicas (INGENIERIA): las cinco del transporte eligen entre las mismas.
+    private List<ComboboxItem> _especificacionesTecnicas = new();
+
+    private static string? VacioANulo(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+
+    // La clave SOL guardada se borra al guardar si se enciende «Borrar»; escribir una nueva lo apaga (no se puede cambiar y borrar a la vez).
+    private void OnQuitarClaveVcdp(bool quitar)
+    {
+        _cfg.FLG_QUITAR_PASSWORD_VCDP = quitar;
+        if (quitar) _cfg.DES_PASSWORD_VCDP_NUEVO = null;
+    }
+
+    // XML recibidos: las tres carpetas de Outlook tienen que ser distintas (si no, el servicio leería los mismos correos una y otra vez). Aquí solo se avisa; el servidor es el que lo exige al guardar.
+    private bool CarpetasCorreoRepetidas()
+    {
+        var c = new[] { _cfg.DES_CARPETA_CORREO_RECEPCION, _cfg.DES_CARPETA_CORREO_PROCESADOS, _cfg.DES_CARPETA_CORREO_ERRORES }
+                .Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+        return c.Count != c.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+    }
+
+    // ── Equipos RFID (pestaña RFID): la familia depende del grupo ──
+    private List<ComboboxItem> _familiasEquipoRfid = new();
+
+    private async Task OnGrupoEquipoRfidChanged(string? v)
+    {
+        _cfg.COD_GRUPO_PRODUCTO_EQUIPO_RFID = VacioANulo(v);
+        _cfg.COD_FAMILIA_PRODUCTO_EQUIPO_RFID = null;   // la familia elegida era de otro grupo
+        await CargarFamiliasEquipoRfidAsync();
+    }
+
+    /// <summary>Una familia o sub familia tal como la devuelva la API: con las columnas de la base (COD_FAMILIA_PRODUCTO / DES_FAMILIA_PRODUCTO, COD_SUB_FAMILIA_PRODUCTO / DES_SUB_FAMILIA_PRODUCTO,
+    /// como las leen las demás pantallas) o como combo (Id / Texto).</summary>
+    private sealed class ClasificacionRfidLite
+    {
+        public string? Id { get; set; }
+        public string? Texto { get; set; }
+        public string? COD_FAMILIA_PRODUCTO { get; set; }
+        public string? DES_FAMILIA_PRODUCTO { get; set; }
+        public string? COD_SUB_FAMILIA_PRODUCTO { get; set; }
+        public string? DES_SUB_FAMILIA_PRODUCTO { get; set; }
+    }
+
+    private string? _familiasEquipoRfidAviso;   // por qué el combo de familias sale vacío (nulo si hay familias o no hay grupo)
+
+    /// <summary>Las familias del grupo elegido (vacío si no hay grupo). Primero la ruta del combo por grupo y, si no trae nada o falla, la lista de familias del grupo del catálogo.
+    /// Si ninguna da familias, el combo queda vacío y debajo se dice por qué (antes quedaba mudo). No tumba la pantalla.</summary>
+    private async Task CargarFamiliasEquipoRfidAsync()
+        => (_familiasEquipoRfid, _familiasEquipoRfidAviso) = await CargarFamiliasRfidAsync(_cfg.COD_GRUPO_PRODUCTO_EQUIPO_RFID);
+
+    // ── Estación donde corre el agente (pestaña RFID): UN producto, elegido por grupo › familia › sub familia ──
+    private List<ComboboxItem> _familiasEstacionRfid = new();
+    private string? _familiasEstacionRfidAviso;
+    private List<ComboboxItem> _subFamiliasEstacionRfid = new();
+    private string? _subFamiliasEstacionRfidAviso;
+    private List<ComboboxItem> _estacionesRfid = new();
+    private string? _estacionesRfidAviso;
+
+    // ── Plantilla de impresión: una ruta de Entorno > Rutas de archivos y un archivo de esa carpeta ──
+    private List<ComboboxItem> _rutasPlantillasRfid = new();
+    private List<ComboboxItem> _archivosPlantillaRfid = new();
+    private string? _archivosPlantillaRfidAviso;
+    private bool _archivosPlantillaRfidFalla;   // la carpeta no se pudo leer: el nombre del archivo se escribe a mano
+
+    private async Task OnGrupoEstacionRfidChanged(string? v)
+    {
+        _cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID = VacioANulo(v);
+        _cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID = null;   // la familia, la sub familia y la estación elegidas eran de otro grupo
+        _cfg.COD_SUB_FAMILIA_PRODUCTO_ESTACION_RFID = null;
+        _cfg.COD_PRODUCTO_ESTACION_RFID = null;
+        await CargarFamiliasEstacionRfidAsync();
+        await CargarSubFamiliasEstacionRfidAsync();
+        await CargarEstacionesRfidAsync();
+    }
+
+    private async Task OnFamiliaEstacionRfidChanged(string? v)
+    {
+        _cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID = VacioANulo(v);
+        _cfg.COD_SUB_FAMILIA_PRODUCTO_ESTACION_RFID = null;
+        _cfg.COD_PRODUCTO_ESTACION_RFID = null;
+        await CargarSubFamiliasEstacionRfidAsync();
+        await CargarEstacionesRfidAsync();
+    }
+
+    private async Task OnSubFamiliaEstacionRfidChanged(string? v)
+    {
+        _cfg.COD_SUB_FAMILIA_PRODUCTO_ESTACION_RFID = VacioANulo(v);
+        _cfg.COD_PRODUCTO_ESTACION_RFID = null;
+        await CargarEstacionesRfidAsync();
+    }
+
+    private async Task OnRutaPlantillaRfidChanged(string? v)
+    {
+        _cfg.COD_KEY_PATHFILE_PLANTILLA_RFID = VacioANulo(v);
+        _cfg.DES_ARCHIVO_PLANTILLA_RFID = null;   // el archivo elegido era de la otra carpeta
+        await CargarArchivosPlantillaRfidAsync();
+    }
+
+    private async Task CargarFamiliasEstacionRfidAsync()
+        => (_familiasEstacionRfid, _familiasEstacionRfidAviso) = await CargarFamiliasRfidAsync(_cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID);
+
+    private async Task<(List<ComboboxItem> Lista, string? Aviso)> CargarFamiliasRfidAsync(string? grupo)
+    {
+        if (string.IsNullOrWhiteSpace(grupo)) return (new(), null);
+        var (lista, error) = await LeerPrimeraListaRfidAsync(
+            new[] { ApiRoutes.Estandar.FamiliasProductoPorGrupo(grupo), $"{ApiRoutes.Estandar.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(grupo)}" },
+            f => new ComboboxItem { Id = (f.Id ?? f.COD_FAMILIA_PRODUCTO ?? "").Trim(), Texto = (f.Texto ?? f.DES_FAMILIA_PRODUCTO ?? "").Trim() });
+        if (lista.Count > 0) return (lista, null);
+        return (lista, error is not null
+            ? $"No se pudieron leer las familias del grupo {grupo}: {error}"
+            : $"El grupo {grupo} no tiene familias registradas.");
+    }
+
+    /// <summary>Prueba las rutas en orden y se queda con la primera que trae datos (cada API tiene su ruta: el combo por padre, o la lista con filtros). Si ninguna trae:
+    /// sin error si alguna respondió bien (de verdad no hay datos), o con el primer motivo si todas fallaron.</summary>
+    private async Task<(List<ComboboxItem> Lista, string? Error)> LeerPrimeraListaRfidAsync(IEnumerable<string> urls, Func<ClasificacionRfidLite, ComboboxItem> mapa)
+    {
+        string? motivo = null; var respondio = false;
+        foreach (var url in urls)
+        {
+            var (datos, error) = await LeerListaRfidAsync<ClasificacionRfidLite>(url);
+            var lista = datos.Select(mapa).Where(i => i.Id.Length > 0).ToList();
+            if (lista.Count > 0) return (lista, null);
+            if (error is null) respondio = true; else motivo ??= error;
+        }
+        return (new(), respondio ? null : motivo);
+    }
+
+    /// <summary>Las sub familias de la familia elegida de las estaciones (vacío si no hay familia). Primero la lista con filtros (GET sub-familias-producto?codGrupoProducto=&amp;codFamiliaProducto=)
+    /// y, si no trae nada o falla, el combo por padre. Si ninguna da sub familias, lo dice debajo.</summary>
+    private async Task CargarSubFamiliasEstacionRfidAsync()
+    {
+        _subFamiliasEstacionRfid = new(); _subFamiliasEstacionRfidAviso = null;
+        var (grupo, familia) = (_cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID, _cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID);
+        if (string.IsNullOrWhiteSpace(grupo) || string.IsNullOrWhiteSpace(familia)) return;
+        var (lista, error) = await LeerPrimeraListaRfidAsync(
+            new[] { ApiRoutes.Estandar.SubFamiliasProductoLista(grupo, familia), ApiRoutes.Estandar.SubFamiliasProductoPorFamilia(grupo, familia) },
+            f => new ComboboxItem { Id = (f.Id ?? f.COD_SUB_FAMILIA_PRODUCTO ?? "").Trim(), Texto = (f.Texto ?? f.DES_SUB_FAMILIA_PRODUCTO ?? "").Trim() });
+        _subFamiliasEstacionRfid = lista;
+        if (lista.Count == 0)
+            _subFamiliasEstacionRfidAviso = error is not null
+                ? $"No se pudieron leer las sub familias de la familia {familia}: {error}"
+                : $"La familia {familia} no tiene sub familias registradas.";
+    }
+
+    /// <summary>Los productos que pueden ser la estación: los del grupo, familia y sub familia elegidos (sin grupo, ninguno). La estación ya grabada sigue en la lista
+    /// aunque ya no cumpla (con su nota), para que no parezca que se perdió. Si falla o no hay productos, lo dice debajo.</summary>
+    private async Task CargarEstacionesRfidAsync()
+    {
+        _estacionesRfid = new(); _estacionesRfidAviso = null;
+        var grupo = _cfg.COD_GRUPO_PRODUCTO_ESTACION_RFID;
+        if (string.IsNullOrWhiteSpace(grupo)) return;
+        var (datos, error) = await LeerListaRfidAsync<ComboboxItem>(ApiRoutes.Estandar.ConfiguracionGeneralRfidEstaciones(grupo, _cfg.COD_FAMILIA_PRODUCTO_ESTACION_RFID, _cfg.COD_SUB_FAMILIA_PRODUCTO_ESTACION_RFID));
+        _estacionesRfid = datos;
+        if (datos.Count == 0)
+            _estacionesRfidAviso = error is not null
+                ? $"No se pudieron leer las estaciones: {error}"
+                : "No hay productos con ese grupo, familia y sub familia.";
+        var grabada = _cfg.COD_PRODUCTO_ESTACION_RFID;
+        if (!string.IsNullOrWhiteSpace(grabada) && !_estacionesRfid.Any(e => e.Id == grabada))
+            _estacionesRfid.Insert(0, new ComboboxItem { Id = grabada, Texto = "(no está en este grupo, familia y sub familia)" });
+    }
+
+    /// <summary>Los archivos de la carpeta de la ruta elegida (sin ruta, ninguno). Si la API no alcanza la carpeta, avisa y el nombre se escribe a mano; si está vacía, lo dice.
+    /// El archivo ya grabado sigue en la lista aunque ya no esté en la carpeta (con su nota).</summary>
+    private async Task CargarArchivosPlantillaRfidAsync()
+    {
+        _archivosPlantillaRfid = new(); _archivosPlantillaRfidAviso = null; _archivosPlantillaRfidFalla = false;
+        var ruta = _cfg.COD_KEY_PATHFILE_PLANTILLA_RFID;
+        if (string.IsNullOrWhiteSpace(ruta)) return;
+        var (datos, error) = await LeerListaRfidAsync<ComboboxItem>(ApiRoutes.Estandar.ConfiguracionGeneralRfidPlantillas(ruta));
+        if (error is not null)
+        {
+            _archivosPlantillaRfidFalla = true;
+            _archivosPlantillaRfidAviso = $"No se pudieron leer los archivos de la ruta {ruta}: {error}";
+            return;
+        }
+        _archivosPlantillaRfid = datos;
+        if (datos.Count == 0) _archivosPlantillaRfidAviso = $"La carpeta de la ruta {ruta} no tiene archivos.";
+        var grabado = _cfg.DES_ARCHIVO_PLANTILLA_RFID;
+        if (!string.IsNullOrWhiteSpace(grabado) && !_archivosPlantillaRfid.Any(a => a.Id == grabado))
+            _archivosPlantillaRfid.Insert(0, new ComboboxItem { Id = grabado, Texto = $"{grabado} (ya no está en la carpeta)" });
+    }
+
+    /// <summary>GET de una lista de la API con el error a la vista: devuelve los datos o el motivo (el de la API si lo dio; si no, el HTTP). No tumba la pantalla.</summary>
+    private async Task<(List<T> Lista, string? Error)> LeerListaRfidAsync<T>(string url)
+    {
+        try
+        {
+            using var resp = await Http.GetAsync(url);
+            ApiResponse<List<T>>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<T>>>(); } catch { }
+            if (!resp.IsSuccessStatusCode || r is not { Success: true })
+                return (new(), !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : $"la API respondió HTTP {(int)resp.StatusCode}");
+            return (r.Data ?? new(), null);
+        }
+        catch (Exception ex) { return (new(), ex.Message); }
+    }
+
+    /// <summary>Trae lotes y procesos. Si alguna falla, esa lista queda vacía y el combo
+    /// simplemente no ofrece nada: no es motivo para tumbar la pantalla entera, que tiene
+    /// otras quince pestañas que no dependen de esto.</summary>
+    private async Task CargarCombosAlmacenAsync()
+    {
+        _lotesDefault    = await PedirComboAsync(ApiRoutes.Logistica.LotesControlCombobox, nameof(CargarCombosAlmacenAsync));
+        _procesosDefault = await PedirComboAsync(ApiRoutes.Produccion.ProcesosCombobox,    nameof(CargarCombosAlmacenAsync));
+        _especificacionesTecnicas = await PedirComboAsync(ApiRoutes.Ingenieria.EspecificacionesTecnicasCombobox, nameof(CargarCombosAlmacenAsync));
+        _rutasPlantillasRfid = await PedirComboAsync(ApiRoutes.Entorno.PathFilesCombobox, nameof(CargarCombosAlmacenAsync));
+
+        // Lo que ya está grabado: sin esto, al abrir la pantalla los tres combos de abajo
+        // salen vacíos y parece que el dato se perdió.
+        await CargarOrdenesDefaultAsync();
+        await CargarItemsOrdenDefaultAsync();
+        await CargarUnidadesOrdenDefaultAsync();
+    }
+
+    private async Task<List<ComboboxItem>> PedirComboAsync(string ruta, string metodo)
+    {
+        try   { return (await Http.SafeGetAsync<List<ComboboxItem>>(ruta)) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionGeneral), metodo);
+            return new();
+        }
+    }
+
+    /// <summary>Cambiar de proceso invalida orden, ítem y unidad: son de otro proceso y,
+    /// combinados con el nuevo, no devolverían nada.</summary>
+    private async Task OnProcesoDefaultChanged(string? cod)
+    {
+        _cfg.COD_PROCESO_DEFAULT                 = VacioANulo(cod);
+        _cfg.NUM_ORDEN_PRODUCCION_DEFAULT        = null;
+        _cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT   = null;
+        _cfg.NUM_ORDEN_PRODUCCION_UNIDAD_DEFAULT = null;
+        _ordenesDefault = new(); _itemsOrdenDefault = new(); _unidadesOrdenDefault = new();
+        await CargarOrdenesDefaultAsync();
+    }
+
+    private async Task OnOrdenDefaultChanged(string? valor)
+    {
+        _cfg.NUM_ORDEN_PRODUCCION_DEFAULT        = int.TryParse(valor, out var n) ? n : null;
+        _cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT   = null;
+        _cfg.NUM_ORDEN_PRODUCCION_UNIDAD_DEFAULT = null;
+        _itemsOrdenDefault = new(); _unidadesOrdenDefault = new();
+        await CargarItemsOrdenDefaultAsync();
+    }
+
+    private async Task OnItemOrdenDefaultChanged(string? valor)
+    {
+        _cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT   = short.TryParse(valor, out var n) ? n : null;
+        _cfg.NUM_ORDEN_PRODUCCION_UNIDAD_DEFAULT = null;
+        _unidadesOrdenDefault = new();
+        await CargarUnidadesOrdenDefaultAsync();
+    }
+
+    private async Task CargarOrdenesDefaultAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_cfg.COD_PROCESO_DEFAULT)) return;
+        _ordenesDefault = await PedirComboAsync(
+            ApiRoutes.Planeamiento.OrdenProduccionComboboxPorProceso(_cfg.COD_PROCESO_DEFAULT!),
+            nameof(CargarOrdenesDefaultAsync));
+    }
+
+    private async Task CargarItemsOrdenDefaultAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_cfg.COD_PROCESO_DEFAULT) || _cfg.NUM_ORDEN_PRODUCCION_DEFAULT is not { } orden) return;
+        _itemsOrdenDefault = await PedirComboAsync(
+            ApiRoutes.Planeamiento.OrdenProduccionItemsComboboxPorOrden(_cfg.COD_PROCESO_DEFAULT!, orden),
+            nameof(CargarItemsOrdenDefaultAsync));
+    }
+
+    private async Task CargarUnidadesOrdenDefaultAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_cfg.COD_PROCESO_DEFAULT)
+            || _cfg.NUM_ORDEN_PRODUCCION_DEFAULT is not { } orden
+            || _cfg.NUM_ORDEN_PRODUCCION_ITEM_DEFAULT is not { } item) return;
+        _unidadesOrdenDefault = await PedirComboAsync(
+            ApiRoutes.Planeamiento.OrdenProduccionUnidadComboboxPorItem(_cfg.COD_PROCESO_DEFAULT!, orden, item),
+            nameof(CargarUnidadesOrdenDefaultAsync));
+    }
+
+    /// <summary>Familias / sub familias cargadas por fila (clave = NUM_SECUENCIA): cada fila
+    /// puede tener un Grupo/Familia distinto, así que no alcanza una sola lista compartida
+    /// como en un formulario de un solo registro (ver StocksAlmacen.razor).</summary>
+    private readonly Dictionary<short, List<ComboboxItem>> _familiasPorFila = new();
+    private readonly Dictionary<short, List<ComboboxItem>> _subFamiliasPorFila = new();
+
+    /// <summary>Secuencias que todavía no existen en la base: deciden POST contra PUT al grabar
+    /// cada fila.</summary>
+    private readonly HashSet<short> _configProductoNuevos = new();
+
+    private List<ComboboxItem> FamiliasDeFila(short sec) => _familiasPorFila.GetValueOrDefault(sec) ?? new();
+    private List<ComboboxItem> SubFamiliasDeFila(short sec) => _subFamiliasPorFila.GetValueOrDefault(sec) ?? new();
+
+    /// <summary>Carga inicial: como no hay selector externo, trae las configuraciones de TODOS
+    /// los tipos (uno por uno, ya que el SP exige codTipoConfiguracion) y arma una sola grilla.</summary>
+    private async Task CargarConfigProductosAsync()
+    {
+        _configProductos = new();
+        _configProductoNuevos.Clear();
+        _familiasPorFila.Clear();
+        _subFamiliasPorFila.Clear();
+
+        foreach (var tipo in _tiposConfig)
+        {
+            var lista = (await Http.SafeGetAsync<List<ConfigProductoModel>>(
+                ApiRoutes.Estandar.ConfiguracionesProductosPorTipo(tipo.Id))) ?? new();
+            _configProductos.AddRange(lista);
+        }
+
+        // Precarga, para las filas ya existentes, las familias/sub familias de su Grupo/Familia
+        // actual — sin esto el combo de la celda aparecería vacío hasta tocarla. Mismo mapeo
+        // Lite que OnGrupoFilaChanged/OnFamiliaFilaChanged: el GET general (?codGrupoProducto=)
+        // devuelve la entidad completa, no un ComboboxItem — deserializar directo a ComboboxItem
+        // dejaba Id/Texto vacíos ("—" en el combo) porque los nombres de propiedad no matchean.
+        foreach (var it in _configProductos)
+        {
+            if (!string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO))
+            {
+                var familias = (await Http.SafeGetAsync<List<FamiliaProductoLite>>(
+                    ApiRoutes.Estandar.FamiliasProductoPorGrupo(it.COD_GRUPO_PRODUCTO))) ?? new();
+                _familiasPorFila[it.NUM_SECUENCIA] = familias
+                    .Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO, Texto = f.DES_FAMILIA_PRODUCTO })
+                    .ToList();
+            }
+
+            if (!string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO) && !string.IsNullOrWhiteSpace(it.COD_FAMILIA_PRODUCTO))
+            {
+                var subFamilias = (await Http.SafeGetAsync<List<SubFamiliaProductoLite>>(
+                    ApiRoutes.Estandar.SubFamiliasProductoPorFamilia(it.COD_GRUPO_PRODUCTO, it.COD_FAMILIA_PRODUCTO))) ?? new();
+                _subFamiliasPorFila[it.NUM_SECUENCIA] = subFamilias
+                    .Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO, Texto = s.DES_SUB_FAMILIA_PRODUCTO })
+                    .ToList();
+            }
+        }
+    }
+
+    /// <summary>La secuencia es parte de la clave primaria: la asigna la pantalla como el
+    /// máximo + 1, igual que en RequerimientoDocumento.razor.</summary>
+    private void AgregarConfigProducto()
+    {
+        var sig = (short)((_configProductos.Count == 0 ? 0 : _configProductos.Max(x => x.NUM_SECUENCIA)) + 1);
+        _configProductos.Add(new ConfigProductoModel { NUM_SECUENCIA = sig });
+        _configProductoNuevos.Add(sig);
+    }
+
+    private void OnTipoFilaChanged(ConfigProductoModel it, string? cod)
+    {
+        it.COD_TIPO_CONFIGURACION = cod ?? string.Empty;
+        it.DES_TIPO_CONFIGURACION = _tiposConfig.FirstOrDefault(t => t.Id == cod)?.Texto;
+    }
+
+    /// <summary>Cambiar de grupo invalida la familia y la sub familia elegidas de esa fila:
+    /// pertenecen al grupo anterior. Igual criterio que OnGrupoChanged en StocksAlmacen.razor,
+    /// pero por fila en vez de sobre un único modelo.</summary>
+    /// <summary>El endpoint de familias no tiene un "combobox/{grupo}" dedicado — el GET
+    /// general (?codGrupoProducto=) devuelve la entidad completa, así que aquí se mapea a
+    /// ComboboxItem (Id=código, Texto=descripción).</summary>
+    private sealed class FamiliaProductoLite
+    {
+        public string COD_FAMILIA_PRODUCTO { get; set; } = "";
+        public string DES_FAMILIA_PRODUCTO { get; set; } = "";
+    }
+    private sealed class SubFamiliaProductoLite
+    {
+        public string COD_SUB_FAMILIA_PRODUCTO { get; set; } = "";
+        public string DES_SUB_FAMILIA_PRODUCTO { get; set; } = "";
+    }
+
+    private async Task OnGrupoFilaChanged(ConfigProductoModel it, string? cod)
+    {
+        it.COD_GRUPO_PRODUCTO = cod;
+        it.COD_FAMILIA_PRODUCTO = null;
+        it.COD_SUB_FAMILIA_PRODUCTO = null;
+        _subFamiliasPorFila[it.NUM_SECUENCIA] = new();
+        if (string.IsNullOrWhiteSpace(cod))
+        {
+            _familiasPorFila[it.NUM_SECUENCIA] = new();
+            return;
+        }
+
+        var familias = (await Http.SafeGetAsync<List<FamiliaProductoLite>>(
+            ApiRoutes.Estandar.FamiliasProductoPorGrupo(cod))) ?? new();
+        _familiasPorFila[it.NUM_SECUENCIA] = familias
+            .Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO, Texto = f.DES_FAMILIA_PRODUCTO })
+            .ToList();
+        StateHasChanged();
+    }
+
+    private async Task OnFamiliaFilaChanged(ConfigProductoModel it, string? cod)
+    {
+        it.COD_FAMILIA_PRODUCTO = cod;
+        it.COD_SUB_FAMILIA_PRODUCTO = null;
+        if (string.IsNullOrWhiteSpace(cod) || string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO))
+        {
+            _subFamiliasPorFila[it.NUM_SECUENCIA] = new();
+            return;
+        }
+
+        var subFamilias = (await Http.SafeGetAsync<List<SubFamiliaProductoLite>>(
+            ApiRoutes.Estandar.SubFamiliasProductoPorFamilia(it.COD_GRUPO_PRODUCTO!, cod))) ?? new();
+        _subFamiliasPorFila[it.NUM_SECUENCIA] = subFamilias
+            .Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO, Texto = s.DES_SUB_FAMILIA_PRODUCTO })
+            .ToList();
+        StateHasChanged();
+    }
+
+    /// <summary>Cadena vacía y "sin valor" son cosas distintas para la base: los códigos
+    /// viajan a claves foráneas, y "" no existe en ningún maestro.</summary>
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+
+    private async Task QuitarConfigProducto(ConfigProductoModel it)
+    {
+        var sec = it.NUM_SECUENCIA;
+        if (!_configProductoNuevos.Contains(sec))
+        {
+            var rd = await Http.DeleteAsync(ApiRoutes.Estandar.ConfiguracionesProductosPorId(it.COD_TIPO_CONFIGURACION, sec));
+            if (!rd.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService,
+                    nameof(ConfiguracionGeneral), nameof(QuitarConfigProducto), $"No se pudo eliminar el registro {sec}");
+                return;
+            }
+        }
+        _configProductoNuevos.Remove(sec);
+        _familiasPorFila.Remove(sec);
+        _subFamiliasPorFila.Remove(sec);
+        _configProductos.Remove(it);
+    }
+
+    private async Task GuardarConfigProductoConAviso(ConfigProductoModel it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_TIPO_CONFIGURACION) || string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                "Elige el Tipo de Configuración y el Grupo de producto antes de grabar la fila.", DialogService,
+                nameof(ConfiguracionGeneral), "Falta un dato obligatorio");
+            return;
+        }
+        if (await GuardarConfigProducto(it)) Snackbar.Add($"Fila {it.NUM_SECUENCIA} grabada.", Severity.Success);
+    }
+
+    private async Task<bool> GuardarConfigProducto(ConfigProductoModel it)
+    {
+        // Tipo de Configuración y Grupo son obligatorios: sin ellos el SP igual los aceptaría
+        // (columnas nullable), pero la regla de negocio de esta pantalla lo exige — ver
+        // Obligatorio="true" de ambos combos.
+        if (string.IsNullOrWhiteSpace(it.COD_TIPO_CONFIGURACION) || string.IsNullOrWhiteSpace(it.COD_GRUPO_PRODUCTO)) return false;
+
+        it.COD_FAMILIA_PRODUCTO = Vacio(it.COD_FAMILIA_PRODUCTO);
+        it.COD_SUB_FAMILIA_PRODUCTO = Vacio(it.COD_SUB_FAMILIA_PRODUCTO);
+        var esNuevo = _configProductoNuevos.Contains(it.NUM_SECUENCIA);
+
+        var r = await Http.GuardarAsync(ApiRoutes.Estandar.ConfiguracionesProductos, it, esNuevo);
+        if (!r.IsSuccessStatusCode)
+        {
+            await ErrorDialogHelper.MostrarAsync(r, ErrorLog, DialogService,
+                nameof(ConfiguracionGeneral), nameof(GuardarConfigProducto), $"No se pudo grabar la fila {it.NUM_SECUENCIA}");
+            return false;
+        }
+        _configProductoNuevos.Remove(it.NUM_SECUENCIA);
+        return true;
+    }
+}

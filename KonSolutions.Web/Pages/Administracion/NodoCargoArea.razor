@@ -1,0 +1,79 @@
+@using KONSolutions.Shared.Models.Administracion
+
+@* Nodo recursivo Cargo/Persona anidado bajo un Área en el árbol de Áreas
+   (fusionado desde la ex-pantalla "Áreas · Cargos · Entidades"). *@
+
+<div>
+    <div class="tl-row-spec" style="cursor:pointer;user-select:none;" @onclick="Toggle">
+        <div class="d-flex align-center gap-1" style="@($"padding-left:{8 + Nivel * 18}px;")">
+            @if (Nodo.Hijos.Any())
+            {
+                <MudIcon Icon="@(_expandido ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)"
+                         Style="font-size:1rem;opacity:.6;flex-shrink:0;" />
+            }
+            else
+            {
+                <span style="width:20px;flex-shrink:0;"></span>
+            }
+            <MudIcon Icon="@(Nodo.COD_TIPO == "C" ? Icons.Material.Filled.Badge : Icons.Material.Filled.Person)"
+                     Style="font-size:.95rem;opacity:.7;flex-shrink:0;" />
+            <span style="font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                @Nodo.DES_NODO
+            </span>
+        </div>
+        <div></div>
+        <div></div>
+        <div @onclick:stopPropagation="true" style="justify-self:end;display:flex;gap:2px;">
+            @if (Nodo.COD_TIPO == "C")
+            {
+                <MudTooltip Text="Asignar persona">
+                    <MudIconButton Icon="@Icons.Material.Filled.PersonAdd" Size="Size.Small" Color="Color.Success"
+                                   OnClick="@(() => OnAsignar.InvokeAsync(Nodo))" />
+                </MudTooltip>
+                <MudTooltip Text="Modificar cargo">
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                   OnClick="@(() => OnCargoAccion.InvokeAsync((Nodo, CrudModo.Update)))" />
+                </MudTooltip>
+                <MudTooltip Text="Consultar cargo">
+                    <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small"
+                                   OnClick="@(() => OnCargoAccion.InvokeAsync((Nodo, CrudModo.Read)))" />
+                </MudTooltip>
+                <MudTooltip Text="Eliminar cargo">
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                   OnClick="@(() => OnCargoAccion.InvokeAsync((Nodo, CrudModo.Delete)))" />
+                </MudTooltip>
+            }
+            else
+            {
+                <MudTooltip Text="Desasignar">
+                    <MudIconButton Icon="@Icons.Material.Filled.PersonRemove" Size="Size.Small" Color="Color.Error"
+                                   OnClick="@(() => OnDesasignar.InvokeAsync(Nodo))" />
+                </MudTooltip>
+            }
+        </div>
+    </div>
+
+    @if (_expandido && Nodo.Hijos.Any())
+    {
+        @foreach (var hijo in Nodo.Hijos)
+        {
+            <NodoCargoArea Nodo="hijo" Nivel="@(Nivel + 1)"
+                           OnAsignar="OnAsignar" OnCargoAccion="OnCargoAccion" OnDesasignar="OnDesasignar" />
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public AreaCargoEntidadNodo Nodo { get; set; } = null!;
+    [Parameter] public int Nivel { get; set; } = 0;
+    [Parameter] public EventCallback<AreaCargoEntidadNodo> OnAsignar { get; set; }
+    [Parameter] public EventCallback<(AreaCargoEntidadNodo Nodo, CrudModo Modo)> OnCargoAccion { get; set; }
+    [Parameter] public EventCallback<AreaCargoEntidadNodo> OnDesasignar { get; set; }
+
+    private bool _expandido = true;
+
+    private void Toggle()
+    {
+        if (Nodo.Hijos.Any()) _expandido = !_expandido;
+    }
+}

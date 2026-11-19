@@ -1,0 +1,395 @@
+@page "/estandar/configuracion-emision-electronica"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Estandar.ConfiguracionEmisionElectronica
+@using GuardarDto = KONSolutions.Shared.Models.Estandar.ConfiguracionEmisionElectronicaGuardar
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Logistica
+@using Microsoft.AspNetCore.Components.Forms
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Configuración de Emisión Electrónica · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   CONFIGURACIÓN DE EMISIÓN ELECTRÓNICA (SUNAT)
+
+   Una sola ficha: dónde se emite (pruebas o producción), con qué credenciales y con qué
+   certificado digital.
+
+   LOS SECRETOS SOLO SE ESCRIBEN. La API nunca devuelve el client_secret, la clave SOL, el
+   certificado ni su clave: devuelve qué hay cargado. Por eso los cuatro campos se ven vacíos
+   aunque estén cargados; lo que se escriba reemplaza, y vacío deja lo que hay.
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+<div class="d-flex align-center justify-space-between mb-4">
+    <div>
+        <TituloPagina Fallback="Configuración de Emisión Electrónica" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema ESTANDAR · SUNAT</MudText>
+    </div>
+    <div class="d-flex align-center gap-2">
+        <PanelAuditoria CodUsuarioActualizacion="@_cfg.COD_USUARIO_ACTUALIZACION" FecActualizacion="@_cfg.FEC_ACTUALIZACION" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="GuardarAsync" Disabled="@(_saving || _loading)"
+                   Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));">
+            @(_saving ? "Guardando…" : "Guardar")
+        </MudButton>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+}
+else
+{
+    @if (!_cfg.CIFRADO_DISPONIBLE)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-4" Icon="@Icons.Material.Filled.Key">
+            <b>El servidor no puede guardar ni leer secretos.</b> @_cfg.DES_CIFRADO_NO_DISPONIBLE
+        </MudAlert>
+    }
+
+    @* ── Resumen: ¿está lista la emisión? ── *@
+    <MudPaper Elevation="0" Class="pa-3 mb-4" Style="border:1px solid var(--line);">
+        <div class="d-flex align-center gap-3 flex-wrap">
+            @if (_cfg.FLG_ACTIVA)
+            {
+                <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Size="Size.Small" Icon="@Icons.Material.Filled.CheckCircle">Emisión activa</MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Color="Color.Default" Variant="Variant.Filled" Size="Size.Small" Icon="@Icons.Material.Filled.PauseCircle">Emisión desactivada</MudChip>
+            }
+            <MudChip T="string" Color="@(_cfg.COD_AMBIENTE == "PRODUCCION" ? Color.Warning : Color.Info)" Variant="Variant.Outlined" Size="Size.Small">
+                Ambiente @_cfg.COD_AMBIENTE
+            </MudChip>
+            @if (string.IsNullOrWhiteSpace(_cfg.DES_FALTA))
+            {
+                <span style="color:var(--mud-palette-success);"><MudIcon Icon="@Icons.Material.Filled.Done" Size="Size.Small" /> Datos completos</span>
+            }
+            else
+            {
+                <span style="color:var(--mud-palette-warning-darken);"><MudIcon Icon="@Icons.Material.Filled.ErrorOutline" Size="Size.Small" /> @Capitalizado(_cfg.DES_FALTA)</span>
+            }
+        </div>
+    </MudPaper>
+
+    @* LA SEPARACIÓN DE LOS CAMPOS ES LA DE CONFIGURACIÓN GENERAL. Cada campo va en su MudItem dentro de un MudGrid Spacing="2", como en
+       los diálogos: así el espacio vertical y el horizontal salen de "Separación vertical/horizontal de inputs" (las reglas de app.css
+       sobre .mud-grid-item). Los campos no llevan margen propio (mb-*): el hueco lo pone la celda. Las ayudas van como HelperText,
+       dentro del control, para que queden pegadas a su campo y el hueco venga después. *@
+    <MudGrid>
+        @* ════════════ AMBIENTE Y DIRECCIONES ════════════ *@
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                <MudText Typo="Typo.h6" Class="mb-3">Ambiente y direcciones</MudText>
+                <MudGrid Spacing="2">
+                    <MudItem xs="12">
+                        <AriaCombo TItem="ComboboxItem" Items="_ambientes"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_g.COD_AMBIENTE" ValueChanged="@(v => _g.COD_AMBIENTE = v ?? "PRUEBAS")"
+                                   Label="Ambiente" Class="mb-2" />
+                    </MudItem>
+                    @if (_g.COD_AMBIENTE == "PRODUCCION")
+                    {
+                        <MudItem xs="12">
+                            <MudAlert Severity="Severity.Warning" Dense="true">En producción las guías que se emitan tienen validez tributaria.</MudAlert>
+                        </MudItem>
+                    }
+                    <MudItem xs="12">
+                        <CampoTextoEstable @bind-Value="_g.DES_URL_SEGURIDAD" Label="Dirección de seguridad (token)" MaxLength="200"
+                                           HelperText="Donde se pide el token de acceso. La que SUNAT publica para la API de guías." />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <CampoTextoEstable @bind-Value="_g.DES_URL_API" Label="Dirección de la API de guías" MaxLength="200"
+                                           HelperText="Donde se envía la guía y se consulta el ticket." />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <div class="d-flex align-center gap-2">
+                            <MudIcon Icon="@Icons.Material.Filled.PowerSettingsNew" Color="Color.Primary" Size="Size.Medium" />
+                            <MudSwitch T="bool" Value="_g.FLG_ACTIVA" ValueChanged="@((bool v) => _g.FLG_ACTIVA = v)"
+                                       Color="Color.Primary" Label="Emisión activa" />
+                        </div>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;">Solo se puede activar con todos los datos cargados y el certificado vigente.</MudText>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudItem>
+
+        @* ════════════ CREDENCIALES ════════════ *@
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                <MudText Typo="Typo.h6" Class="mb-3">Credenciales de SUNAT</MudText>
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" sm="6">
+                        <CampoTextoEstable @bind-Value="_g.DES_CLIENT_ID" Label="client_id" MaxLength="100" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <CampoTextoEstable @bind-Value="_g.DES_USUARIO_SOL" Label="Usuario SOL" MaxLength="50"
+                                           HelperText="El usuario secundario que SUNAT habilita para la emisión." />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <CampoTextoEstable @bind-Value="_g.DES_CLIENT_SECRET_NUEVO" Label="client_secret" MaxLength="200"
+                                           InputType="InputType.Password" Disabled="@(!_cfg.CIFRADO_DISPONIBLE)" UserAttributes="SinAutocompletar"
+                                           HelperText="@Estado(_cfg.TIENE_CLIENT_SECRET)" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <CampoTextoEstable @bind-Value="_g.DES_CLAVE_SOL_NUEVA" Label="Clave SOL" MaxLength="100"
+                                           InputType="InputType.Password" Disabled="@(!_cfg.CIFRADO_DISPONIBLE)" UserAttributes="SinAutocompletar"
+                                           HelperText="@Estado(_cfg.TIENE_CLAVE_SOL)" />
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudItem>
+
+        @* ════════════ CERTIFICADO ════════════ *@
+        <MudItem xs="12">
+            <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);">
+                <MudText Typo="Typo.h6" Class="mb-3">Certificado digital</MudText>
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="6">
+                        @if (_cfg.TIENE_CERTIFICADO)
+                        {
+                            <div class="mb-3">
+                                <div class="mono" style="font-size:.78rem;opacity:.6;">Cargado</div>
+                                <div><b>@_cfg.NOM_ARCHIVO_CERTIFICADO</b></div>
+                                <div style="font-size:.85rem;">@_cfg.DES_SUJETO_CERTIFICADO</div>
+                                <div class="mono" style="font-size:.75rem;opacity:.6;word-break:break-all;">SHA-256 @_cfg.DES_HUELLA_CERTIFICADO</div>
+                                <div style="margin-top:6px;">@VencimientoTexto()</div>
+                            </div>
+                        }
+                        else
+                        {
+                            <MudText Class="mb-3" Style="opacity:.6;">Todavía no hay un certificado cargado.</MudText>
+                        }
+
+                        <MudFileUpload T="IBrowserFile" Accept=".pfx,.p12" FilesChanged="ElegirCertificado" Disabled="@(!_cfg.CIFRADO_DISPONIBLE)">
+                            <ActivatorContent>
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.UploadFile" Disabled="@(!_cfg.CIFRADO_DISPONIBLE)">
+                                    @(_cfg.TIENE_CERTIFICADO ? "Reemplazar certificado (.pfx)" : "Elegir certificado (.pfx)")
+                                </MudButton>
+                            </ActivatorContent>
+                        </MudFileUpload>
+                        @if (!string.IsNullOrEmpty(_g.DES_CERTIFICADO_BASE64))
+                        {
+                            <MudText Typo="Typo.caption" Class="mt-2" Style="color:var(--mud-palette-info);">
+                                <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" /> @_g.NOM_ARCHIVO_CERTIFICADO está listo: se carga al guardar.
+                            </MudText>
+                        }
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <CampoTextoEstable @bind-Value="_g.DES_CLAVE_CERTIFICADO_NUEVA" Label="Clave del certificado" MaxLength="100"
+                                           InputType="InputType.Password" Disabled="@(!_cfg.CIFRADO_DISPONIBLE)" UserAttributes="SinAutocompletar"
+                                           HelperText="@(string.IsNullOrEmpty(_g.DES_CERTIFICADO_BASE64) ? Estado(_cfg.TIENE_CLAVE_CERTIFICADO) : "Es la clave del archivo que elegiste: se revisa al guardar.")" />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.caption" Style="opacity:.6;">
+                            El certificado se abre al guardar: si el archivo está dañado, la clave no es la correcta, no tiene clave privada o ya venció, no se guarda y se te dice por qué.
+                        </MudText>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @* ════════════ CATÁLOGOS CON DATOS PENDIENTES ════════════
+       La guía sale con códigos de SUNAT que viven en los catálogos (motivos, unidades, tipos de documento, sucursales...). Un código que falta se
+       descubre recién al emitir, movimiento por movimiento; esta revisión los busca todos de una vez, y solo en lo que usan las salidas. *@
+    <MudPaper Elevation="0" Class="pa-4 mt-4" Style="border:1px solid var(--line);" id="gre-catalogos">
+        <div class="d-flex align-center justify-space-between flex-wrap gap-2 mb-2">
+            <div>
+                <MudText Typo="Typo.h6">Catálogos con datos pendientes</MudText>
+                <MudText Typo="Typo.caption" Style="opacity:.65;">
+                    La guía sale con códigos de SUNAT que viven en tus catálogos. Esta revisión busca los que faltan, pero solo en lo que usan las salidas: lo que ninguna salida usa no estorba.
+                </MudText>
+            </div>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.FactCheck" OnClick="RevisarCatalogos" Disabled="_revisando" id="gre-revisar-catalogos">Revisar catálogos</MudButton>
+        </div>
+        @if (_revisando)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" />
+        }
+        else if (_errorCatalogos is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">@_errorCatalogos</MudAlert>
+        }
+        else if (_pendientes is { Count: 0 })
+        {
+            <MudAlert Severity="Severity.Success" Variant="Variant.Outlined" id="gre-catalogos-ok">Todo en orden: no falta ningún código ni ubigeo en lo que usan las salidas.</MudAlert>
+        }
+        else if (_pendientes is not null)
+        {
+            var impiden = _pendientes.Count(x => x.FLG_IMPIDE_EMITIR);
+            <div class="d-flex gap-2 flex-wrap mb-3">
+                @if (impiden > 0)
+                {
+                    <MudChip T="string" Color="Color.Error" Variant="Variant.Filled" Size="Size.Small" Icon="@Icons.Material.Filled.Cancel">@impiden impide@(impiden == 1 ? "" : "n") emitir</MudChip>
+                }
+                @if (_pendientes.Count - impiden > 0)
+                {
+                    <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Size="Size.Small" Icon="@Icons.Material.Filled.WarningAmber">@(_pendientes.Count - impiden) aviso@(_pendientes.Count - impiden == 1 ? "" : "s")</MudChip>
+                }
+            </div>
+            @foreach (var grupo in _pendientes.GroupBy(x => x.DES_CATALOGO))
+            {
+                <div class="mono" style="font-size:.78rem;opacity:.6;text-transform:uppercase;letter-spacing:.04em;margin:8px 0 4px;">@grupo.Key (@grupo.Count())</div>
+                <MudSimpleTable Dense="true" Hover="true" Class="grilla-simple mb-2" Style="font-size:.84rem;">
+                    <thead><tr><th style="width:26px;"></th><th>Código</th><th>Descripción</th><th>Falta</th><th>Se corrige en</th><th style="text-align:right;">Usos</th></tr></thead>
+                    <tbody>
+                        @foreach (var x in grupo)
+                        {
+                            <tr>
+                                <td>
+                                    @if (x.FLG_IMPIDE_EMITIR) { <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" Size="Size.Small" Title="Impide emitir las guías que lo usen" /> }
+                                    else { <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Color="Color.Warning" Size="Size.Small" Title="Aviso: se puede emitir, conviene completarlo" /> }
+                                </td>
+                                <td class="mono">@x.COD_REGISTRO</td>
+                                <td>@x.DES_REGISTRO</td>
+                                <td>@x.DES_FALTA</td>
+                                <td>@x.DES_DONDE</td>
+                                <td class="mono" style="text-align:right;">@x.NUM_USOS</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+            <MudText Typo="Typo.caption" Style="opacity:.6;">Usos: cuántas salidas (o líneas de salida, en unidades de medida y productos) lo usan. Cada catálogo muestra hasta 200 registros, los más usados primero.</MudText>
+        }
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // Un .pfx de firma pesa unos pocos KB; 1 MB sobra y evita que alguien suba cualquier cosa.
+    private const long MaximoCertificadoBytes = 1024 * 1024;
+
+    // Que el navegador no ofrezca guardar ni rellenar estas claves. Va por UserAttributes: CampoTextoEstable lo reenvía
+    // a MudTextField, y un atributo suelto (autocomplete="...") choca con ese parámetro y el campo no se dibuja.
+    private static readonly Dictionary<string, object> SinAutocompletar = new() { ["autocomplete"] = "new-password" };
+
+    private Modelo _cfg = new();
+    private GuardarDto _g = new();
+    private bool _loading = true, _saving;
+
+    // El chequeo de catálogos (se pide con el botón: recorre las salidas, no se hace al abrir la pantalla)
+    private List<GuiaRemisionCatalogoPendiente>? _pendientes;
+    private bool _revisando;
+    private string? _errorCatalogos;
+
+    private readonly List<ComboboxItem> _ambientes = new()
+    {
+        new ComboboxItem { Id = "PRUEBAS",    Texto = "PRUEBAS (beta de SUNAT)" },
+        new ComboboxItem { Id = "PRODUCCION", Texto = "PRODUCCIÓN" }
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ESTANDAR", "ConfiguracionEmisionElectronica");
+        await Cargar();
+    }
+
+    private async Task Cargar()
+    {
+        _loading = true;
+        try
+        {
+            var r = await Http.SafeGetAsync<Modelo>(ApiRoutes.Estandar.ConfiguracionEmisionElectronica);
+            _cfg = r ?? new Modelo();
+            // Los secretos no vuelven de la API: los campos *_NUEVO arrancan vacíos, y vacío = no cambiar.
+            _g = new GuardarDto
+            {
+                COD_AMBIENTE = _cfg.COD_AMBIENTE, FLG_ACTIVA = _cfg.FLG_ACTIVA,
+                DES_URL_SEGURIDAD = _cfg.DES_URL_SEGURIDAD, DES_URL_API = _cfg.DES_URL_API,
+                DES_CLIENT_ID = _cfg.DES_CLIENT_ID, DES_USUARIO_SOL = _cfg.DES_USUARIO_SOL
+            };
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionEmisionElectronica), nameof(Cargar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(ConfiguracionEmisionElectronica));
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task RevisarCatalogos()
+    {
+        _revisando = true; _errorCatalogos = null;
+        StateHasChanged();
+        try
+        {
+            var resp = await Http.GetAsync(ApiRoutes.Logistica.GuiasRemisionCatalogosPendientes);
+            if (resp.IsSuccessStatusCode)
+                _pendientes = (await resp.Content.ReadFromJsonAsync<ApiResponse<List<GuiaRemisionCatalogoPendiente>>>())?.Data ?? new();
+            else
+            {
+                _pendientes = null;
+                _errorCatalogos = resp.StatusCode == System.Net.HttpStatusCode.Forbidden
+                    ? "No tienes permiso para revisar los catálogos."
+                    : $"No se pudo revisar los catálogos (el servidor respondió {(int)resp.StatusCode}).";
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfiguracionEmisionElectronica), nameof(RevisarCatalogos));
+            _pendientes = null;
+            _errorCatalogos = "No se pudo revisar los catálogos. Ver detalle en el log de errores.";
+        }
+        finally { _revisando = false; }
+    }
+
+    private static string Capitalizado(string? t) => string.IsNullOrEmpty(t) ? "" : char.ToUpper(t[0]) + t[1..];
+
+    private static string Estado(bool hay) => hay ? "Cargado. Déjalo vacío para conservarlo." : "Sin cargar.";
+
+    private RenderFragment VencimientoTexto() => builder =>
+    {
+        if (_cfg.FEC_VENCIMIENTO_CERTIFICADO is not { } v) return;
+        var dias = _cfg.NUM_DIAS_PARA_VENCER ?? 0;
+        var color = dias < 0 ? "var(--mud-palette-error)" : dias <= 30 ? "var(--mud-palette-warning-darken)" : "inherit";
+        var texto = dias < 0
+            ? $"Venció el {v:dd/MM/yyyy} (hace {-dias} día{(dias == -1 ? "" : "s")})"
+            : dias <= 30
+                ? $"Vence el {v:dd/MM/yyyy}: quedan {dias} día{(dias == 1 ? "" : "s")}"
+                : $"Vence el {v:dd/MM/yyyy}";
+        builder.AddMarkupContent(0, $"<span style=\"color:{color};font-weight:600;\">{System.Net.WebUtility.HtmlEncode(texto)}</span>");
+    };
+
+    private async Task ElegirCertificado(IBrowserFile? file)
+    {
+        if (file is null) return;
+        try
+        {
+            using var stream = file.OpenReadStream(MaximoCertificadoBytes);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            _g.DES_CERTIFICADO_BASE64 = Convert.ToBase64String(ms.ToArray());
+            _g.NOM_ARCHIVO_CERTIFICADO = file.Name;
+        }
+        catch (IOException)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("El archivo es demasiado grande para ser un certificado (máximo 1 MB).", DialogService, nameof(ConfiguracionEmisionElectronica));
+        }
+    }
+
+    private async Task GuardarAsync()
+    {
+        _saving = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Estandar.ConfiguracionEmisionElectronica, _g);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Configuración guardada.", Severity.Success);
+                await Cargar();
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfiguracionEmisionElectronica), nameof(GuardarAsync));
+        }
+        finally { _saving = false; }
+    }
+}

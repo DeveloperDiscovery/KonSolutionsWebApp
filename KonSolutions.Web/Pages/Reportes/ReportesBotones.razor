@@ -1,0 +1,173 @@
+@page "/reportes/reportes-botones"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject MenuService MenuService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+
+<PageTitle>Reportes en botones · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* REPORTEADOR · ASIGNACIÓN A BOTONES
+
+   Qué diseño dispara cada botón de una opción (SEGURIDAD.APLICACIONES_OPCIONES_BOTONES) y de dónde sale cada
+   parámetro. Un botón con reporte lo atiende el reporteador desde AccionesBotones: la pantalla no se entera, solo
+   tiene que pasarle la fila con Fila="..." para que los parámetros se llenen con ella.
+
+   Origen de cada parámetro:
+     AUT  automático: el campo de la fila que se llama igual; si la fila no lo trae, se pide (si es visible)
+     DLG  se pide siempre en el diálogo
+     FIL  el campo de la fila que se indique (cuando se llama distinto)
+     FIJ  siempre el valor que se indique
+     SIS  usuario, rol o estación: lo pone la API
+
+   El permiso para usar el reporte es el del botón (ROLES_USUARIOS_APLICACIONES_OPCIONES_BOTONES).
+   El editor de la derecha es BotonReporteEditor: el panel de botones del diálogo de la opción (Seguridad) abre el
+   mismo editor en BotonReporteDialog. *@
+<div>
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Reportes en botones" CodAplicacion="@_codAp" CodOpcionAplicacion="@_codOp" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Reporteador · qué diseño dispara cada botón de las opciones
+            </MudText>
+        </div>
+    </div>
+
+    <div class="rep-columnas">
+        @* ══════════ LISTA ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel">
+            <div class="pa-2 px-3 rep-cab">Botones de las opciones</div>
+            <div class="pa-2 d-flex flex-column gap-1">
+                <AriaCombo TItem="ComboboxItem" Items="_aplicaciones" TextFunc="@(a => $"{a.Id} - {a.Texto}")" ValueFunc="@(a => a.Id)"
+                           Value="@_app" ValueChanged="CambiarAplicacion" Label="Aplicación" Class="" />
+                <MudTextField T="string" @bind-Value="_buscar" Label="Opción, botón o diseño" Variant="Variant.Outlined" Margin="Margin.Dense"
+                              Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Filled.Search" OnAdornmentClick="Cargar"
+                              OnKeyDown="@(async e => { if (e.Key == "Enter") await Cargar(); })" Immediate="true" Clearable="true" />
+                <MudSwitch T="bool" Value="_soloAsignados" ValueChanged="@(async v => { _soloAsignados = v; await Cargar(); })"
+                           Label="Solo los que tienen reporte" Color="Color.Primary" />
+            </div>
+            @if (_cargando)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            <div style="overflow:auto;max-height:64vh;">
+                @foreach (var g in _botones.GroupBy(b => (b.COD_APLICACION, b.COD_OPCION_APLICACION)))
+                {
+                    var primero = g.First();
+                    <div class="rep-grupo">
+                        <span>@primero.DES_OPCION_APLICACION</span>
+                        <span class="mono" style="opacity:.6;font-weight:400;"> · @($"{primero.COD_APLICACION}/{primero.COD_OPCION_APLICACION}")</span>
+                    </div>
+                    @foreach (var b in g)
+                    {
+                        var x = b;
+                        <div class="rep-item @(EsSel(x) ? "rep-item-sel" : "")" @onclick="@(() => Abrir(x))">
+                            <div class="d-flex align-center gap-1">
+                                <span class="mono" style="font-weight:700;">@x.COD_BOTON_OPCION</span>
+                                <span>@x.DES_BOTON_OPCION</span>
+                                <MudSpacer />
+                                @foreach (var z in BotonReporteEditor.Zonas(x)) { <span class="rep-chip">@z</span> }
+                            </div>
+                            @if (x.NUM_DISENO is not null)
+                            {
+                                <div style="font-size:.74rem;color:#0d47a1;">
+                                    <MudIcon Icon="@(x.COD_TIPO_DISENO == "FIC" ? Icons.Material.Filled.Article : x.COD_TIPO_DISENO == "BAN" ? Icons.Material.Filled.Dashboard : Icons.Material.Filled.ListAlt)" Size="Size.Small" Style="font-size:.9rem;vertical-align:middle;" />
+                                    @x.DES_DISENO · @ReportesWebService.NombreFormato(x.COD_FORMATO_DEFECTO)
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+                @if (!_cargando && _botones.Count == 0)
+                {
+                    <MudText Class="pa-3" Typo="Typo.body2" Style="opacity:.6;">
+                        @(string.IsNullOrWhiteSpace(_app) && !_soloAsignados ? "Elige una aplicación." : "No hay botones con ese filtro.")
+                    </MudText>
+                }
+            </div>
+        </MudPaper>
+
+        @* ══════════ EDITOR ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel">
+            @if (_sel is not { } sel)
+            {
+                <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">Elige un botón de la lista.</MudText>
+            }
+            else
+            {
+                <BotonReporteEditor @key="_sel" CodAplicacion="@sel.App" CodOpcion="@sel.Op" CodBoton="@sel.Boton" Disenos="_disenos" OnCambio="Cargar" />
+            }
+        </MudPaper>
+    </div>
+</div>
+
+<style>
+    .rep-columnas { display:grid; grid-template-columns:minmax(260px,360px) minmax(0,1fr); gap:12px; align-items:start; }
+    @@media (max-width: 900px) { .rep-columnas { grid-template-columns:1fr; } }
+    .rep-panel { border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+    .rep-cab { background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:700; }
+    .rep-grupo { padding:6px 12px; background:var(--mud-palette-background-grey,#f3f4f6); border-bottom:1px solid var(--line); font-size:.78rem; font-weight:800; }
+    .rep-item { padding:6px 12px 6px 20px; border-bottom:1px solid var(--line); cursor:pointer; font-size:.82rem; }
+    .rep-item:hover { background:rgba(0,0,0,.03); }
+    .rep-item-sel { background:#fffde7; border-left:3px solid var(--grilla-cab-fondo,#163a5f); }
+    .rep-chip { font-size:.64rem; padding:1px 6px; border-radius:8px; background:#eceff1; color:#37474f; font-weight:700; }
+</style>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const string Formulario = "Reportes/ReportesBotones.razor";
+    private string _codAp = "", _codOp = "";
+    private List<ComboboxItem> _aplicaciones = new();
+    private List<ReporteBoton> _botones = new();
+    private List<ReporteDiseno> _disenos = new();
+    /// <summary>El botón que se ve en el editor.</summary>
+    private (string App, string Op, string Boton)? _sel;
+    private string? _app, _buscar;
+    private bool _soloAsignados = true, _cargando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("REPORTES", "ReportesBotones");
+        _codAp = CodAplicacion;
+        _codOp = CodOpcionAplicacion;
+        if ((string.IsNullOrWhiteSpace(_codAp) || string.IsNullOrWhiteSpace(_codOp)) && MenuService.BuscarCodigosPorFormulario(Formulario) is { } cod)
+            (_codAp, _codOp) = cod;
+        _aplicaciones = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Seguridad.AplicacionesCombobox) ?? new();
+        var (d, err) = await Reportes.GetAsync<List<ReporteDiseno>>(ApiRoutes.Reportes.BotonesDisenos);
+        _disenos = d ?? new();
+        if (err is not null) Snackbar.Add(err, Severity.Warning);
+        await Cargar();
+    }
+
+    private async Task CambiarAplicacion(string? app)
+    {
+        _app = app;
+        if (!string.IsNullOrWhiteSpace(app)) _soloAsignados = false;
+        await Cargar();
+    }
+
+    /// <summary>Sin aplicación solo se listan los botones que ya tienen reporte: todos los botones de todas las opciones son demasiados.</summary>
+    private async Task Cargar()
+    {
+        if (string.IsNullOrWhiteSpace(_app) && !_soloAsignados && string.IsNullOrWhiteSpace(_buscar)) { _botones = new(); return; }
+        _cargando = true;
+        try
+        {
+            var (l, err) = await Reportes.GetAsync<List<ReporteBoton>>(ApiRoutes.Reportes.BotonesListar(_app, Vacio(_buscar), _soloAsignados));
+            _botones = l ?? new();
+            if (err is not null) Snackbar.Add(err, Severity.Warning);
+        }
+        finally { _cargando = false; }
+    }
+
+    private bool EsSel(ReporteBoton b) => _sel == (b.COD_APLICACION, b.COD_OPCION_APLICACION, b.COD_BOTON_OPCION);
+
+    private void Abrir(ReporteBoton b) => _sel = (b.COD_APLICACION, b.COD_OPCION_APLICACION, b.COD_BOTON_OPCION);
+
+    private static string? Vacio(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}

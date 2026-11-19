@@ -1,0 +1,155 @@
+@* CopiarConfiguracionEstadosDialog.razor
+   -----------------------------------------------------------------------
+   Copia la configuracion de estados (flujos por boton y sus dependencias) de una Opcion / Tipo de Estado a otra.
+   Primero VALIDA (simulacion en la API: no graba nada) y muestra que se copia, que ya existe y que se omite y por que
+   (el boton no existe en la opcion destino, o el estado no existe en el tipo de estado destino). Recien despues se copia.
+   Con "Reemplazar" se borra antes la configuracion del destino; sin eso se respeta lo que ya tiene. *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Estandar
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(980px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">Copiar configuración de estados</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.8;">
+            Origen: <b>@DesOpcionOrigen</b> (@CodOpcionOrigen) · Tipo de estado <b>@DesTipoEstadoOrigen</b> (@CodTipoEstadoOrigen)
+        </MudText>
+        <div class="d-flex gap-3 flex-wrap">
+            <div style="flex:1 1 320px;min-width:0;">
+                <AriaCombo TItem="ComboboxItem" Items="Opciones" TextFunc="@(o => o.Texto)" ValueFunc="@(o => o.Id)"
+                           Value="@_opcionDestino" ValueChanged="@(v => { _opcionDestino = v; Invalidar(); })"
+                           Label="Opción destino" />
+            </div>
+            <div style="flex:1 1 280px;min-width:0;">
+                <AriaCombo TItem="ComboboxItem" Items="_tiposEstado" TextFunc="@(o => o.Texto)" ValueFunc="@(o => o.Id)"
+                           Value="@_tipoDestino" ValueChanged="@(v => { _tipoDestino = v; Invalidar(); })"
+                           Label="Tipo de estado destino" />
+            </div>
+        </div>
+        <MudSwitch T="bool" Value="_reemplazar" ValueChanged="@(v => { _reemplazar = v; Invalidar(); })" Color="Color.Primary"
+                   Label="Reemplazar: borrar antes la configuración que el destino ya tiene para ese tipo de estado" />
+        @if (_reemplazar)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">Se borran los flujos y las dependencias actuales del destino y se deja la configuración del origen (la parte que sea válida).</MudAlert>
+        }
+        <div class="d-flex gap-2 mt-2 mb-2 align-center">
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.FactCheck"
+                       Disabled="@(_cargando || !PuedeValidar)" OnClick="ValidarAsync">Validar</MudButton>
+            @if (_cargando) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
+            @if (_filas is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Success">Copiar: @Cuenta("COPIAR")</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Info">Ya existen: @Cuenta("EXISTE")</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning">Omitidos: @Cuenta("OMITIDO")</MudChip>
+            }
+        </div>
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2">@_error</MudAlert>
+        }
+        @if (_filas is not null)
+        {
+            <div style="max-height:46vh;overflow:auto;">
+                <MudSimpleTable Dense="true" Hover="true" FixedHeader="true" Style="min-width:0;">
+                    <thead><tr><th>Tipo</th><th>Botón</th><th>Estado origen</th><th>Estado destino</th><th>Resultado</th><th>Motivo</th></tr></thead>
+                    <tbody>
+                    @foreach (var f in _filas)
+                    {
+                        <tr>
+                            <td>@(f.TIPO == "ASIGNACION" ? "Asignación" : f.TIPO == "FLUJO" ? "Flujo" : "Dependencia")</td>
+                            <td>@f.DES_BOTON @(string.IsNullOrEmpty(f.COD_BOTON_OPCION) ? "" : $"({f.COD_BOTON_OPCION})")</td>
+                            <td>@(f.TIPO == "DEPENDENCIA" ? Estado(f.COD_ESTADO_DEP, f.DES_ESTADO_DEP) : Estado(f.COD_ESTADO, f.DES_ESTADO))</td>
+                            <td>@(f.ACCION == "OMITIDO" && !string.IsNullOrEmpty(f.MOTIVO) && f.MOTIVO.Contains("no existe") ? "—" : (f.DES_ESTADO_DESTINO ?? ""))</td>
+                            <td><MudChip T="string" Size="Size.Small" Color="@ColorAccion(f.ACCION)">@TextoAccion(f.ACCION)</MudChip></td>
+                            <td style="font-size:.78rem;opacity:.8;">@f.MOTIVO</td>
+                        </tr>
+                    }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+            <MudText Typo="Typo.caption" Class="mt-1 d-block" Style="opacity:.65;">Los estados se emparejan por código: revisa que el nombre del estado destino sea el que esperas.</MudText>
+        }
+        <div class="d-flex justify-end gap-2 mt-4">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ContentCopy"
+                       Disabled="@(_copiando || _filas is null || Cuenta("COPIAR") == 0 && !HayAsignacionNueva)" OnClick="CopiarAsync">
+                @(_copiando ? "Copiando..." : _reemplazar ? "Reemplazar y copiar" : "Copiar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodAplicacionOrigen { get; set; } = "";
+    [Parameter] public string CodOpcionOrigen { get; set; } = "";
+    [Parameter] public string DesOpcionOrigen { get; set; } = "";
+    [Parameter] public short CodTipoEstadoOrigen { get; set; }
+    [Parameter] public string DesTipoEstadoOrigen { get; set; } = "";
+    /// <summary>Opciones elegibles como destino; Id = "COD_APLICACION|COD_OPCION_APLICACION".</summary>
+    [Parameter] public List<ComboboxItem> Opciones { get; set; } = new();
+
+    private List<ComboboxItem> _tiposEstado = new();
+    private string? _opcionDestino, _tipoDestino;
+    private bool _reemplazar, _cargando, _copiando;
+    private string? _error;
+    private List<CopiaConfiguracionEstadosFila>? _filas;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tiposEstado = await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.TiposEstadosCombobox) ?? new();
+        _tipoDestino = CodTipoEstadoOrigen.ToString();   // lo habitual: el mismo tipo de estado en otra opcion
+    }
+
+    private bool PuedeValidar => !string.IsNullOrEmpty(_opcionDestino) && short.TryParse(_tipoDestino, out _);
+    private bool HayAsignacionNueva => _filas?.Any(f => f.TIPO == "ASIGNACION" && f.ACCION == "COPIAR") == true;
+    private void Invalidar() { _filas = null; _error = null; }
+    private int Cuenta(string accion) => _filas?.Count(f => f.TIPO != "ASIGNACION" && f.ACCION == accion) ?? 0;
+    private static string Estado(int? cod, string? des) => cod is null ? "" : $"{cod} · {des}";
+    private static string TextoAccion(string a) => a switch { "COPIAR" => "Se copia", "EXISTE" => "Ya existe", "OMITIDO" => "Se omite", _ => a };
+    private static Color ColorAccion(string a) => a switch { "COPIAR" => Color.Success, "EXISTE" => Color.Info, "OMITIDO" => Color.Warning, _ => Color.Default };
+
+    private CopiaConfiguracionEstadosDto Dto(bool simular)
+    {
+        var p = _opcionDestino!.Split('|');
+        return new CopiaConfiguracionEstadosDto
+        {
+            COD_APLICACION_ORIGEN = CodAplicacionOrigen, COD_OPCION_ORIGEN = CodOpcionOrigen, COD_TIPO_ESTADO_ORIGEN = CodTipoEstadoOrigen,
+            COD_APLICACION_DESTINO = p[0], COD_OPCION_DESTINO = p.Length > 1 ? p[1] : "", COD_TIPO_ESTADO_DESTINO = short.Parse(_tipoDestino!),
+            REEMPLAZAR = _reemplazar, SIMULAR = simular
+        };
+    }
+
+    private async Task<List<CopiaConfiguracionEstadosFila>?> LlamarAsync(bool simular)
+    {
+        _error = null;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(EstandarRoute.CopiaEstadosConfiguracion, Dto(simular));
+            var body = await resp.Content.ReadFromJsonAsync<ApiResponse<List<CopiaConfiguracionEstadosFila>>>();
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success) { _error = body?.Message ?? $"Error {(int)resp.StatusCode}"; return null; }
+            return body.Data ?? new();
+        }
+        catch (Exception ex) { _error = ex.Message; return null; }
+    }
+
+    private async Task ValidarAsync()
+    {
+        _cargando = true; _filas = null;
+        _filas = await LlamarAsync(true);
+        _cargando = false;
+    }
+
+    private async Task CopiarAsync()
+    {
+        _copiando = true;
+        var r = await LlamarAsync(false);
+        _copiando = false;
+        if (r is null) return;
+        Snackbar.Add($"Configuración copiada: {r.Count(f => f.TIPO == "FLUJO" && f.ACCION == "COPIAR")} flujo(s), {r.Count(f => f.TIPO == "DEPENDENCIA" && f.ACCION == "COPIAR")} dependencia(s).", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

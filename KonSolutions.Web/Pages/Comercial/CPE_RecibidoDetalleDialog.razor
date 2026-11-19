@@ -1,0 +1,167 @@
+@using KONSolutions.Shared.Models.Finanzas
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+@* El detalle de un comprobante recibido (solo lectura): la cabecera, sus líneas con el producto de la empresa que se les asignó, el XML original y el PDF. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6" data-titulo="detalle">@Resumen.DES_TIPO_COMPROBANTE @Resumen.NUM_COMPROBANTE</MudText></TitleContent>
+    <DialogContent>
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" data-estado="cargando" /> }
+        @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2">@_error</MudAlert> }
+        @{ var f = _ficha ?? Resumen; }
+        <MudGrid Spacing="2" Class="mb-2">
+            <MudItem xs="12" md="6">
+                <MudText Typo="Typo.subtitle2">Emisor</MudText>
+                <MudText>@(string.IsNullOrWhiteSpace(f.DES_ENTIDAD) ? f.DES_RAZON_SOCIAL_EMISOR : f.DES_ENTIDAD) <span class="mono" style="opacity:.6;">@f.NUM_RUC_EMISOR</span></MudText>
+                @if (f.COD_ENTIDAD is null) { <MudText Typo="Typo.caption" Color="Color.Warning">El RUC no está en el maestro de entidades.</MudText> }
+                <MudText Typo="Typo.caption" Style="opacity:.7;">Emisión @f.FEC_EMISION.ToString("dd/MM/yyyy")@(f.FEC_VENCIMIENTO is { } v ? $" · vence {v:dd/MM/yyyy}" : "") · @f.COD_MONEDA_SUNAT</MudText>
+                @if (!string.IsNullOrWhiteSpace(f.NUM_ORDEN_COMPRA_CITADA)) { <MudText Typo="Typo.caption" Style="opacity:.7;">Orden de compra citada: @f.NUM_ORDEN_COMPRA_CITADA</MudText> }
+                @if (!string.IsNullOrWhiteSpace(f.NUM_COMPROBANTE_REF)) { <MudText Typo="Typo.caption" Style="opacity:.7;">Documento que modifica: @f.NUM_COMPROBANTE_REF</MudText> }
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudText Typo="Typo.subtitle2">Estado</MudText>
+                <EstadoChip Estado="@($"{f.DES_ESTADO_USO}{(f.NUM_REGISTRO is { } n ? $" · registro de compras {n:0}" : "")}")" BackColor="@f.DES_BACKCOLOR_ESTADO" ForeColor="@f.DES_FORECOLOR_ESTADO" />
+                @if (!string.IsNullOrWhiteSpace(f.DES_ESTADO_SUNAT)) { <MudText Typo="Typo.caption" Style="opacity:.7;">SUNAT: @f.DES_ESTADO_SUNAT@(f.FEC_VALIDACION_SUNAT is { } fv ? $" ({fv:dd/MM/yyyy})" : "")</MudText> }
+                <MudText Typo="Typo.caption" Style="opacity:.7;">Archivo: @f.DES_NOMBRE_ARCHIVO@(f.FEC_REGISTRO is { } fr ? $" · recibido {fr:dd/MM/yyyy HH:mm}" : "")</MudText>
+            </MudItem>
+        </MudGrid>
+        @if (_ficha is not null)
+        {
+            <MudText Typo="Typo.caption" Class="mb-1 d-block" data-resumen="sunat" Style="opacity:.8;">SUNAT: @(string.IsNullOrWhiteSpace(_ficha.COD_ESTADO_SUNAT) ? "todavía sin validar" : $"{_ficha.DES_ESTADO_SUNAT} ({_ficha.COD_ESTADO_SUNAT}){(_ficha.FEC_VALIDACION_SUNAT is { } fv ? $" · {fv:dd/MM/yyyy HH:mm}" : "")}")</MudText>
+            <MudSimpleTable Dense="true" Bordered="true" Class="mb-3" data-tabla="totales">
+                <tbody>
+                    <tr><td>Gravado</td><td class="mono" style="text-align:right;">@Num(_ficha.VAL_GRAVADO)</td><td>Inafecto</td><td class="mono" style="text-align:right;">@Num(_ficha.VAL_INAFECTO)</td><td>Exonerado</td><td class="mono" style="text-align:right;">@Num(_ficha.VAL_EXONERADO)</td></tr>
+                    <tr><td>IGV</td><td class="mono" style="text-align:right;">@Num(_ficha.VAL_IGV)</td><td>Descuentos</td><td class="mono" style="text-align:right;">@Num(_ficha.VAL_DESCUENTO_GLOBAL)</td><td><b>Total</b></td><td class="mono" style="text-align:right;"><b>@Resumen.VAL_TOTAL_CON_SIGNO.ToString("N2")</b></td></tr>
+                </tbody>
+            </MudSimpleTable>
+            @if (!string.IsNullOrWhiteSpace(_ficha.DES_GUIAS_RELACIONADAS)) { <MudText Typo="Typo.caption" Class="mb-1" Style="opacity:.7;">Guías relacionadas: @_ficha.DES_GUIAS_RELACIONADAS</MudText> }
+        }
+        <MudText Typo="Typo.subtitle2" Class="mt-2">Líneas (@_lineas.Count)</MudText>
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div data-resizable-grid="cpe-recibido-lineas" style="position:relative;">
+            <MudDataGrid T="CpeRecibidoLinea" Items="_visibles" Dense="true" Hover="true" Striped="true" Height="280px" FixedHeader="true" Hideable="false" data-tabla="lineas">
+                <Columns>
+                    @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+                    {
+                        <TemplateColumn Sortable="false" Title="@c.Titulo" CellStyle="@c.Estilo">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenColumna == idx)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(idx))" />
+                                    <FiltroExcelColumna T="CpeRecibidoLinea" ItemsBase="@Base(idx)" ValorDe="@c.Valor"
+                                                        ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtro(idx, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @if (idx == ColProducto)
+                                {
+                                    @if (string.IsNullOrWhiteSpace(context.Item.COD_PRODUCTO)) { <span style="opacity:.55;">sin asignar</span> } else { <span>@context.Item.DES_PRODUCTO_EMPRESA</span> <span class="mono" style="opacity:.6;margin-left:6px;">@context.Item.COD_PRODUCTO</span> }
+                                }
+                                else if (c.Estilo is not null) { <span class="mono">@c.Valor(context.Item)</span> }
+                                else { @c.Valor(context.Item) }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    }
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin líneas.</MudText></NoRecordsContent>
+            </MudDataGrid>
+            </div>
+        </MudPaper>
+        <MudStack Row="true" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Code" OnClick="AlternarXmlAsync" data-accion="xml">@(_verXml ? "Ocultar el XML" : "Ver el XML original")</MudButton>
+            @if (!string.IsNullOrWhiteSpace(Resumen.DES_NOMBRE_ARCHIVO_PDF))
+            {
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.PictureAsPdf" OnClick="VerPdfAsync" data-accion="pdf">Ver el PDF</MudButton>
+            }
+        </MudStack>
+        @if (_verXml)
+        {
+            <pre style="max-height:300px;overflow:auto;font-size:.75rem;background:var(--mud-palette-background-gray,#f5f5f5);padding:8px;margin-top:8px;" data-xml="texto">@(_xml ?? "Cargando...")</pre>
+        }
+    </DialogContent>
+    <DialogActions><MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Close())" Style="@EstilosBoton.Cancelar" data-accion="cerrar">Cerrar</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public CpeRecibido Resumen { get; set; } = new();
+
+    private CpeRecibidoFicha? _ficha;
+
+    // ── Grilla estándar de las líneas: filtro tipo Excel por columna, orden y ancho ajustable ──
+    private sealed record Col(string Titulo, Func<CpeRecibidoLinea, string?> Valor, Func<CpeRecibidoLinea, IComparable?>? Clave = null, string? Estilo = null);
+    private const int ColProducto = 6;
+    private readonly Col[] _cols =
+    {
+        new("#",           x => x.NUM_ITEM.ToString(), x => x.NUM_ITEM, "text-align:right;"),
+        new("Descripción", x => x.DES_PRODUCTO),
+        new("Und.",        x => x.COD_UNIDAD_SUNAT, null, "white-space:nowrap;"),
+        new("Cantidad",    x => Num(x.CAN_PRODUCTO), x => x.CAN_PRODUCTO, "text-align:right;"),
+        new("V. unitario", x => Num(x.VAL_UNITARIO), x => x.VAL_UNITARIO, "text-align:right;"),
+        new("Importe",     x => Num(x.VAL_VENTA_LINEA), x => x.VAL_VENTA_LINEA, "text-align:right;"),
+        new("Producto de la empresa", x => string.IsNullOrWhiteSpace(x.COD_PRODUCTO) ? "sin asignar" : $"{x.DES_PRODUCTO_EMPRESA} {x.COD_PRODUCTO}"),
+        new("Lote interno",  x => x.NUM_LOTE_CONTROL, null, "white-space:nowrap;"),
+    };
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private List<CpeRecibidoLinea> Aplicar(int ex)
+    {
+        IEnumerable<CpeRecibidoLinea> q = _lineas;
+        foreach (var (c, v) in _filtros) { if (c == ex || v is null) continue; q = q.Where(x => v.Contains(_cols[c].Valor(x) ?? "")); }
+        return q.ToList();
+    }
+    private List<CpeRecibidoLinea> Base(int col) => Aplicar(col);
+    private List<CpeRecibidoLinea> _visibles
+    {
+        get
+        {
+            var l = Aplicar(-1);
+            if (_ordenColumna is not { } col) return l;
+            var c = _cols[col];
+            Func<CpeRecibidoLinea, object?> clave = x => c.Clave is not null ? c.Clave(x) : c.Valor(x);
+            return _ordenAscendente ? l.OrderBy(clave).ToList() : l.OrderByDescending(clave).ToList();
+        }
+    }
+    private void ToggleOrden(int columna) { if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente; else { _ordenColumna = columna; _ordenAscendente = true; } StateHasChanged(); }
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+
+    private List<CpeRecibidoLinea> _lineas = new();
+    private bool _cargando, _verXml;
+    private string? _error, _xml;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cargando = true;
+        try
+        {
+            var fichaT = Http.GetFromJsonAsync<ApiResponse<CpeRecibidoFicha>>(BandejaRutas.XmlRecibido(Resumen.NUM_CPE));
+            var lineasT = Http.GetFromJsonAsync<ApiResponse<List<CpeRecibidoLinea>>>(BandejaRutas.XmlRecibido(Resumen.NUM_CPE, "lineas"));
+            var ficha = await fichaT; var lineas = await lineasT;
+            _ficha = ficha?.Data; _lineas = lineas?.Data ?? new();
+            if (ficha is { Success: false }) _error = ficha.Message;
+        }
+        catch (Exception ex) { _error = "No se pudo leer el comprobante. Ver detalle en el log de errores."; await ErrorLog.LogAsync(ex, nameof(CPE_RecibidoDetalleDialog), nameof(OnInitializedAsync)); }
+        finally { _cargando = false; }
+    }
+
+    private async Task AlternarXmlAsync()
+    {
+        _verXml = !_verXml;
+        if (!_verXml || _xml is not null) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<CpeRecibidoXml>>(BandejaRutas.XmlRecibido(Resumen.NUM_CPE, "xml"));
+            _xml = r?.Data?.DES_XML ?? (r?.Message ?? "No se pudo leer el XML.");
+        }
+        catch (Exception ex) { _xml = "No se pudo leer el XML."; await ErrorLog.LogAsync(ex, nameof(CPE_RecibidoDetalleDialog), nameof(AlternarXmlAsync)); }
+    }
+
+    private Task VerPdfAsync()
+        => DialogService.ShowAsync<RecibidoPdfDialog>("", new DialogParameters { ["Url"] = BandejaRutas.XmlRecibido(Resumen.NUM_CPE, "pdf"), ["Titulo"] = $"PDF de {Resumen.NUM_COMPROBANTE}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private static string Num(decimal? v) => v is null ? "" : v.Value.ToString("N2");
+}

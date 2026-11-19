@@ -1,0 +1,17 @@
+@* Comparativo de compras como pantalla propia.
+
+   El contenido es el mismo componente que usa la pestaña dentro de Proformas y Órdenes
+   de Compra. Esta pantalla existe para cuando se le quiere dar su propia opción de
+   menú, separada del módulo de pedidos. *@
+<div class="d-flex align-center justify-space-between mb-3">
+    <TituloPagina Fallback="Comparativo de Compras" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                     Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="@(_ => Task.CompletedTask)" />
+</div>
+
+<ComparativoPanel />
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+}

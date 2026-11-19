@@ -1,0 +1,259 @@
+@* Alta / edición / consulta / baja de una purchase order del cliente.
+
+   El cliente no se elige acá: viene de la pantalla, que ya lo tiene seleccionado. Cambiarlo
+   desde el diálogo movería la orden de un cliente a otro, y eso no es una edición: es otra
+   orden. *@
+@using Modelo = KONSolutions.Shared.Models.Comercial.EntidadPurchaseOrder
+@using TemporadaModel = KONSolutions.Shared.Models.Comercial.EntidadesTemporadas
+@using ColeccionModel = KONSolutions.Shared.Models.Comercial.EntidadesTemporadasColecciones
+@using ComercialRoute = KONSolutions.Web.Services.ApiRoutes.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.NUM_PURCHASE_ORDER" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+
+            <MudText Typo="Typo.caption" Class="mono mb-3" Style="opacity:.6;display:block;">
+                Cliente: @DesEntidad
+            </MudText>
+
+            @* El número de PO es parte de la clave: se escribe al crear y después queda fijo. *@
+            <CampoTexto Tabla="COMERCIAL.ENTIDADES_PURCHARSE_ORDERS" Columna="NUM_PURCHASE_ORDER"
+                        @bind-Value="_model.NUM_PURCHASE_ORDER" Label="N° de purchase order"
+                        Disabled="@(_readonly || !_esNuevo)" Obligatorio="true" />
+
+            <MudGrid Spacing="2" Class="mb-0">
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="Disenos"
+                               TextFunc="@(d => d.Texto)" ValueFunc="@(d => d.Id)"
+                               Value="@_model.COD_DISENO"
+                               ValueChanged="@(v => _model.COD_DISENO = v)"
+                               Label="Diseño" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="COMERCIAL.ENTIDADES_PURCHARSE_ORDERS" Columna="DES_DISENO_ENTIDAD"
+                                @bind-Value="_model.DES_DISENO_ENTIDAD" Label="Diseño del cliente"
+                                Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            @* TEMPORADA Y COLECCIÓN.
+               El combo de colección depende del de temporada y arranca deshabilitado: la
+               colección no existe sin su temporada —su clave es (COD_ENTIDAD, NUM_TEMPORADA,
+               NUM_COLECCION)— así que elegirla sin temporada no tiene sentido. Es el mismo
+               encadenamiento de Grupo/Familia/Sub Familia. *@
+            <MudGrid Spacing="2" Class="mb-0">
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="TemporadaModel" Items="Temporadas"
+                               TextFunc="@(t => $"{t.NUM_TEMPORADA} - {t.DES_TEMPORADA}")"
+                               ValueFunc="@(t => t.NUM_TEMPORADA?.ToString() ?? "")"
+                               Value="@(_model.NUM_TEMPORADA?.ToString())"
+                               ValueChanged="OnTemporadaChanged"
+                               Label="Temporada" Disabled="@(_readonly || Temporadas.Count == 0)" />
+                    @* Un combo vacío no dice nada: parece que el dato no existe cuando lo que
+                       pasa es que este cliente todavía no tiene temporadas. Sin este aviso,
+                       la pantalla se limita a no grabar y nadie sabe por qué. *@
+                    @if (Temporadas.Count == 0)
+                    {
+                        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;display:block;margin-top:-8px;">
+                            Este cliente no tiene temporadas cargadas — se cargan en la pestaña
+                            "Temporadas y Colecciones".
+                        </MudText>
+                    }
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ColeccionModel" Items="_colecciones"
+                               TextFunc="@(c => $"{c.NUM_COLECCION} - {c.DES_COLECCION}")"
+                               ValueFunc="@(c => c.NUM_COLECCION.ToString())"
+                               Value="@(_model.NUM_COLECCION?.ToString())"
+                               ValueChanged="@(v => _model.NUM_COLECCION = int.TryParse(v, out var n) ? n : null)"
+                               Label="Colección"
+                               Disabled="@(_readonly || _model.NUM_TEMPORADA is null)" />
+                    @* Mismo criterio: distinguir "todavía no elegiste temporada" de "esa
+                       temporada no tiene colecciones" ahorra el rato de mirar un combo gris
+                       sin entender cuál de las dos cosas pasa. *@
+                    @if (_model.NUM_TEMPORADA is not null && _colecciones.Count == 0)
+                    {
+                        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;display:block;margin-top:-8px;">
+                            Esta temporada no tiene colecciones cargadas.
+                        </MudText>
+                    }
+                </MudItem>
+            </MudGrid>
+
+            @* Editable + Mask: la fecha se escribe o se elige del calendario, indistinto.
+               Y ReadOnly en vez de Disabled — es lo que usa el resto de la solución: deja el
+               campo legible en modo consulta en vez de apagarlo. *@
+            <MudDatePicker Date="_model.FEC_DISENO_ENTIDAD" DateChanged="@(d => _model.FEC_DISENO_ENTIDAD = d)"
+                           Label="Fecha del diseño" Variant="Variant.Outlined" Class="mb-3"
+                           DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                           ReadOnly="_readonly" />
+
+            <div class="d-flex flex-column gap-1 mb-3">
+                <MudSwitch T="bool" Value="@(_model.FLG_ITERAR_EMBALAJE ?? false)"
+                           ValueChanged="@((bool v) => _model.FLG_ITERAR_EMBALAJE = v)"
+                           Color="Color.Success" Size="Size.Small" Disabled="_readonly"
+                           Label="Itera el embalaje" />
+                <MudSwitch T="bool" Value="@(_model.FLG_PURCHASE_ORDER_GENERICA ?? false)"
+                           ValueChanged="@((bool v) => _model.FLG_PURCHASE_ORDER_GENERICA = v)"
+                           Color="Color.Success" Size="Size.Small" Disabled="_readonly"
+                           Label="Purchase order genérica" />
+            </div>
+
+            <EstadoCombo DesTabla="COMERCIAL.ENTIDADES_PURCHARSE_ORDERS" @bind-Value="_model.COD_ESTADO"
+                         CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                         Disabled="_readonly" Class="mb-3" />
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    [Parameter, EditorRequired] public decimal CodEntidad { get; set; }
+    [Parameter] public string DesEntidad { get; set; } = "";
+    /// <summary>Los diseños ya cargados por la pantalla: se pasan en vez de volver a pedirlos.</summary>
+    [Parameter] public List<ComboboxItem> Disenos { get; set; } = new();
+
+    /// <summary>Las temporadas del cliente, ya cargadas por el panel. Mismo criterio que los
+    /// diseños: el diálogo no vuelve a pedir lo que su anfitrión ya tiene.</summary>
+    [Parameter] public List<TemporadaModel> Temporadas { get; set; } = new();
+
+    /// <summary>Las colecciones SÍ se piden acá: dependen de la temporada elegida, que cambia
+    /// dentro del diálogo.</summary>
+    private List<ColeccionModel> _colecciones = new();
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        _model.COD_ENTIDAD = CodEntidad;
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        // Al editar una PO que ya tiene temporada, sus colecciones tienen que estar cargadas
+        // antes del primer dibujo: si no, el combo aparece vacío con un valor seleccionado que
+        // no encuentra, y se ve como si el dato se hubiera perdido.
+        if (_model.NUM_TEMPORADA is not null) await CargarColeccionesAsync();
+    }
+
+    /// <summary>Cambiar de temporada invalida la colección elegida: pertenecía a la anterior.
+    /// Se limpia antes de recargar, no después — dejarla un instante apuntando a una colección
+    /// de otra temporada es exactamente el estado que la FK rechaza.</summary>
+    private async Task OnTemporadaChanged(string? valor)
+    {
+        _model.NUM_TEMPORADA = int.TryParse(valor, out var n) ? n : null;
+        _model.NUM_COLECCION = null;
+        await CargarColeccionesAsync();
+    }
+
+    private async Task CargarColeccionesAsync()
+    {
+        if (_model.NUM_TEMPORADA is null) { _colecciones = new(); return; }
+
+        var url = $"{ComercialRoute.EntidadesTemporadasColecciones}"
+                + $"?codEntidad={CodEntidad.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                + $"&numTemporada={_model.NUM_TEMPORADA}";
+        _colecciones = await Http.SafeGetAsync<List<ColeccionModel>>(url) ?? new();
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_ENTIDAD                 = m.COD_ENTIDAD,
+            NUM_PURCHASE_ORDER          = m.NUM_PURCHASE_ORDER,
+            COD_DISENO                  = m.COD_DISENO,
+            DES_DISENO_ENTIDAD          = m.DES_DISENO_ENTIDAD,
+            FEC_DISENO_ENTIDAD          = m.FEC_DISENO_ENTIDAD,
+            FLG_ITERAR_EMBALAJE         = m.FLG_ITERAR_EMBALAJE,
+            FLG_PURCHASE_ORDER_GENERICA = m.FLG_PURCHASE_ORDER_GENERICA,
+            NUM_TEMPORADA               = m.NUM_TEMPORADA,
+            NUM_COLECCION               = m.NUM_COLECCION,
+            COD_TIPO_ESTADO             = m.COD_TIPO_ESTADO,
+            COD_ESTADO                  = m.COD_ESTADO,
+            COD_USUARIO_REGISTRO        = m.COD_USUARIO_REGISTRO,
+            COD_ESTACION_REGISTRO       = m.COD_ESTACION_REGISTRO,
+            FEC_REGISTRO                = m.FEC_REGISTRO,
+            COD_USUARIO_ACTUALIZACION   = m.COD_USUARIO_ACTUALIZACION,
+            COD_ESTACION_ACTUALIZACION  = m.COD_ESTACION_ACTUALIZACION,
+            FEC_ACTUALIZACION           = m.FEC_ACTUALIZACION
+        };
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre lo que la grilla
+    /// pueda tener desactualizado.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var url = $"{ApiRoutes.Comercial.EntidadesPurchaseOrdersById}"
+                + $"?codEntidad={CodEntidad.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                + $"&numPurchaseOrder={Uri.EscapeDataString(_model.NUM_PURCHASE_ORDER)}";
+        var fresco = await Http.SafeGetAsync<Modelo>(url);
+        if (fresco is not null) MapearDesdeModelo(fresco);
+        _model.COD_ENTIDAD = CodEntidad;
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        _model.COD_ENTIDAD = CodEntidad;
+        var ruta = ApiRoutes.Comercial.EntidadesPurchaseOrders;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var url = $"{ruta}?codEntidad={CodEntidad.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                    + $"&numPurchaseOrder={Uri.EscapeDataString(_model.NUM_PURCHASE_ORDER)}";
+            var rd = await Http.DeleteAsync(url);
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService,
+                    nameof(EntidadesPurchaseOrdersDialog), nameof(Submit), "No se pudo eliminar la purchase order");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP de alta rechaza la clave repetida.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creada." : "Modificada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(EntidadesPurchaseOrdersDialog), nameof(Submit));
+    }
+}

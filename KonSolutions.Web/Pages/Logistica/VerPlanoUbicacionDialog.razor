@@ -1,0 +1,145 @@
+@using AlmacenModel = KONSolutions.Shared.Models.Logistica.Almacenes
+@using CasilleroModel = KONSolutions.Shared.Models.Logistica.ContenedoresAlmacenajeCasilleros
+@using StockModel = KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionDetalle
+@using StockFiltro = KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionSearchDetailDto
+@using KONSolutions.Web.Pages.Zonificacion
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* Solo-lectura: reutiliza PlanoZonificacion.razor en su modo Embebido (rotar, acercar,
+   Planta/Volumen, todo lo interactivo sigue funcionando) en vez de reimplementar la cámara
+   isométrica aquí. Este diálogo se limita a resolver DÓNDE apunta la ubicación —sucursal,
+   piso, y si es un casillero, su rack y su celda exacta— y pasárselo ya armado. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Place" Color="Color.Primary" />
+            <span>@DES_ALMACEN — @DES_UBICACION_ALMACEN</span>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="width:100%;min-width:820px;height:70vh;">
+            @if (_cargando)
+            {
+                <div class="d-flex justify-center pa-8"><MudProgressCircular Indeterminate="true" /></div>
+            }
+            else if (_sinZonificacion)
+            {
+                <MudAlert Severity="Severity.Info" Class="ma-2">
+                    Este almacén no tiene un piso asignado (COD_ZONIFICACION vacío en Logística → Almacenes).
+                </MudAlert>
+            }
+            else
+            {
+                <PlanoZonificacion Embebido="true"
+                                    SucursalInicial="@_codSucursal" PisoInicial="@_codZonificacion"
+                                    EnfocarContenedor="@_casillero?.COD_CONTENEDOR"
+                                    ResaltarCasillero="@_resaltar"
+                                    ContenidoCasilleros="@_contenidoCasilleros" />
+                @if (_casillero is null && !string.IsNullOrWhiteSpace(COD_UBICACION_ALMACEN))
+                {
+                    <MudText Class="mono mt-2" Style="opacity:.55;font-size:.78rem;">
+                        Esta ubicación no está asignada a ningún casillero de rack: se muestra el piso completo,
+                        sin ningún mueble enfocado en particular.
+                    </MudText>
+                }
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton StartIcon="@Icons.Material.Filled.Close"
+                   OnClick="@(() => MudDialog.Close())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string COD_ALMACEN { get; set; } = "";
+    [Parameter] public string? DES_ALMACEN { get; set; }
+    [Parameter] public string? COD_UBICACION_ALMACEN { get; set; }
+    [Parameter] public string? DES_UBICACION_ALMACEN { get; set; }
+    /// <summary>No se usa para dibujar aquí — PlanoZonificacion ya trae su propia geometría
+    /// del rack —, pero se recibe igual porque StocksAlmacen.razor la pasa siempre.</summary>
+    [Parameter] public string? DES_POLIGONO { get; set; }
+
+    private bool _cargando = true, _sinZonificacion;
+    private string _codSucursal = "", _codZonificacion = "";
+    private CasilleroModel? _casillero;
+    private (string CodContenedor, int Fila, int Columna)? _resaltar;
+    private Dictionary<(int Fila, int Columna), List<CasilleroContenidoItem>> _contenidoCasilleros = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var almacen = await Http.SafeGetAsync<AlmacenModel>($"{ApiRoutes.Logistica.Almacenes}/{Uri.EscapeDataString(COD_ALMACEN)}");
+            if (almacen is null || string.IsNullOrWhiteSpace(almacen.COD_SUCURSAL) || string.IsNullOrWhiteSpace(almacen.COD_ZONIFICACION))
+            {
+                _sinZonificacion = true;
+                return;
+            }
+            _codSucursal = almacen.COD_SUCURSAL!;
+            _codZonificacion = almacen.COD_ZONIFICACION!;
+
+            if (!string.IsNullOrWhiteSpace(COD_UBICACION_ALMACEN))
+            {
+                _casillero = await Http.SafeGetAsync<CasilleroModel>(
+                    ApiRoutes.Logistica.ContenedoresCasillerosPorUbicacion(COD_ALMACEN, COD_UBICACION_ALMACEN));
+                if (_casillero is { COD_CONTENEDOR.Length: > 0, NUM_FILA: not null, NUM_COLUMNA: not null })
+                {
+                    _resaltar = (_casillero.COD_CONTENEDOR, _casillero.NUM_FILA.Value, _casillero.NUM_COLUMNA.Value);
+                    await CargarContenidoCasillerosAsync(_casillero.COD_CONTENEDOR);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(VerPlanoUbicacionDialog), nameof(OnInitializedAsync));
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Arma, celda por celda, qué mostrar en el globo al pasar el mouse. Dos viajes
+    /// nada más: los casilleros del rack (para saber qué ubicación cae en cada F·C) y las
+    /// existencias del almacén entero (para no pedirlas una por una — con 70 casilleros
+    /// serían 70 pedidos). El cruce entre ambos se hace aquí, en memoria.</summary>
+    private async Task CargarContenidoCasillerosAsync(string codContenedor)
+    {
+        var casilleros = await Http.SafeGetAsync<List<CasilleroModel>>(
+            ApiRoutes.Logistica.ContenedoresCasillerosPorContenedor(codContenedor)) ?? new();
+        if (casilleros.Count == 0) return;
+
+        var r = await Http.PostAsJsonAsync(ApiRoutes.Logistica.StocksAlmacenUbicacionSearchDetail,
+            new StockFiltro { COD_ALMACEN = COD_ALMACEN });
+        if (!r.IsSuccessStatusCode) return;
+        var cuerpo = await r.Content.ReadFromJsonAsync<ApiResponse<List<StockModel>>>();
+        var existencias = cuerpo?.Data ?? new();
+
+        var porUbicacion = existencias
+            .Where(e => !string.IsNullOrWhiteSpace(e.COD_UBICACION_ALMACEN))
+            .GroupBy(e => e.COD_UBICACION_ALMACEN!)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var cas in casilleros)
+        {
+            if (cas.NUM_FILA is null || cas.NUM_COLUMNA is null) continue;
+            if (string.IsNullOrWhiteSpace(cas.COD_UBICACION_ALMACEN)) continue;
+            if (!porUbicacion.TryGetValue(cas.COD_UBICACION_ALMACEN, out var filas)) continue;
+
+            _contenidoCasilleros[(cas.NUM_FILA.Value, cas.NUM_COLUMNA.Value)] = filas.Select(f => new CasilleroContenidoItem(
+                Producto: f.DES_PRODUCTO ?? f.COD_PRODUCTO ?? "",
+                CodigoProducto: f.COD_PRODUCTO ?? "",
+                UnidadMedida: f.COD_UNIDAD_MEDIDA ?? "",
+                Categoria: string.Join(" · ", new[] { f.DES_GRUPO_PRODUCTO, f.DES_FAMILIA_PRODUCTO, f.DES_SUB_FAMILIA_PRODUCTO }
+                    .Where(t => !string.IsNullOrWhiteSpace(t))),
+                Lote: f.NUM_LOTE_CONTROL_ENTIDAD ?? f.DES_LOTE_CONTROL ?? "",
+                LoteInterno: f.NUM_LOTE_CONTROL ?? "",
+                Proveedor: f.DES_NOMBRE_COMPLETO ?? "",
+                OrdenProduccion: (f.DES_ORDEN_PRODUCCION ?? "").Replace("\r", " ").Replace("\n", " ").Trim(),
+                Stock: $"{f.CAN_PRODUCTO:N2} {f.COD_UNIDAD_MEDIDA}".TrimEnd()
+            )).ToList();
+        }
+    }
+}

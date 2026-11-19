@@ -1,0 +1,702 @@
+@using ProductosModel = KONSolutions.Shared.Models.Estandar.Productos
+@using FamiliasProductoModel = KONSolutions.Shared.Models.Estandar.FamiliasProducto
+@using SubFamiliasProductoModel = KONSolutions.Shared.Models.Estandar.SubFamiliasProducto
+@using TiposProductoModel = KONSolutions.Shared.Models.Estandar.TiposProducto
+@using ProductosRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+@* ANCHO AL DOBLE. El diálogo se abre con MaxWidth.Small desde Productos.razor, que en
+   MudBlazor son 600px; el doble son 1200. Va como estilo en línea y no como clase porque
+   gana por especificidad al max-width que MudBlazor pone con .mud-dialog-width-sm, sin
+   tener que tocar la pantalla que lo abre ni el CSS global.
+
+   El min(...,96vw) es para que en una pantalla angosta el diálogo no se salga: por debajo
+   de 1250px de viewport manda el 96vw.
+
+   OJO con dialog-ancho-ampliado: esa clase está escrita en siete diálogos de la solución
+   y NO está definida en app.css. Hoy no hace nada. La dejo puesta para no cambiarle el
+   sentido a los otros seis de un plumazo, pero está anotado en el LEEME. *@
+<MudDialog Class="dialog-alto-ampliado dialog-ancho-ampliado" Style="max-width:min(1200px,96vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_PRODUCTO" />
+    </TitleContent>
+    <DialogContent>
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-3" @bind-ActivePanelIndex="_tabActiva">
+        <MudTabPanel Text="Información Básica">
+        <div style="height:calc(98vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+        <div @ref="_formRoot">
+        <EditForm EditContext="_editContext" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            @* DOS CAMPOS POR LÍNEA.
+               Con el diálogo a 1200px un campo por renglón desperdiciaba la mitad del ancho y
+               obligaba a scrollear de más. Cada campo va en su PROPIA celda (xs=12 sm=6): en
+               pantalla angosta xs=12 los devuelve a uno por línea, y la celda propia es lo que
+               hace que tomen la separación configurada — app.css anula el margen de los
+               controles que están dentro de una celda porque la separación la pone el padding
+               de la celda, uno por campo.
+
+               Los campos van sueltos dentro de un solo MudGrid en vez de agrupados de a dos en
+               grillas separadas, para que el "Código de producto" —que solo aparece al editar—
+               no deje un hueco al crear: la grilla reacomoda sola.
+
+               Grupo/Familia/Sub Familia solo se pueden elegir al crear — una vez guardado el
+               Producto quedan fijos (afectan la asignación de Especificaciones Técnicas por
+               Sub Familia, cambiar la clasificación después rompería esa relación). *@
+            <MudGrid>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_grupos"
+                               TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+                               Value="@_model.COD_GRUPO_PRODUCTO" ValueChanged="@(v => OnGrupoChanged(v))"
+                               Label="Grupo de Producto" Disabled="@(_readonly || !_esNuevo)" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_familias"
+                               TextFunc="@(f => $"{f.Id} - {f.Texto}")" ValueFunc="@(f => f.Id)"
+                               Value="@_model.COD_FAMILIA_PRODUCTO" ValueChanged="@(v => OnFamiliaChanged(v))"
+                               Label="Familia de Producto" Disabled="@(_readonly || !_esNuevo || string.IsNullOrEmpty(_model.COD_GRUPO_PRODUCTO))" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_subFamilias"
+                               TextFunc="@(s => $"{s.Id} - {s.Texto}")" ValueFunc="@(s => s.Id)"
+                               Value="@_model.COD_SUB_FAMILIA_PRODUCTO" ValueChanged="@(v => OnSubFamiliaChanged(v))"
+                               Label="Sub Familia de Producto" Disabled="@(_readonly || !_esNuevo || string.IsNullOrEmpty(_model.COD_FAMILIA_PRODUCTO))" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposProducto"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@_model.COD_TIPO_PRODUCTO" ValueChanged="@(v => OnTipoProductoChanged(v))"
+                               Label="Tipo de Producto" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+
+                @if (!_esNuevo)
+                {
+                    <MudItem xs="12" sm="6">
+                        <CampoTexto Tabla="ESTANDAR.PRODUCTOS" Columna="COD_PRODUCTO"
+                                    @bind-Value="_model.COD_PRODUCTO"
+                                    Disabled="true" />
+                    </MudItem>
+                }
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.PRODUCTOS" Columna="DES_PRODUCTO"
+                                @bind-Value="_model.DES_PRODUCTO"
+                                Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.PRODUCTOS" Columna="DES_DETALLADA"
+                                @bind-Value="_model.DES_DETALLADA"
+                                Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_unidadesMedida"
+                               TextFunc="@(u => $"{u.Id} - {u.Texto}")" ValueFunc="@(u => u.Id)"
+                               @bind-Value="_model.COD_UNIDAD_MEDIDA"
+                               Label="Unidad de Medida" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_unidadesMedida"
+                               TextFunc="@(u => $"{u.Id} - {u.Texto}")" ValueFunc="@(u => u.Id)"
+                               @bind-Value="_model.COD_UNIDAD_MEDIDA_SECUNDARIA"
+                               Label="Unidad de Medida Secundaria" Disabled="_readonly" />
+                </MudItem>
+                @* Misma lista que las otras dos unidades: sale del mismo combo de
+                   PROC_ESTANDAR_PRODUCTOS_LOAD_COMBOS, no hace falta pedir nada nuevo.
+
+                   Obligatoria, a diferencia de la secundaria. La columna en la base sigue
+                   admitiendo NULL —para no invalidar los productos que ya existen— así que
+                   quien exige el dato es la aplicación: este Obligatorio, que bloquea el
+                   submit vía EditContext, y el [Required] de los DTO. *@
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_unidadesMedida"
+                               TextFunc="@(u => $"{u.Id} - {u.Texto}")" ValueFunc="@(u => u.Id)"
+                               @bind-Value="_model.COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN"
+                               Label="Unidad de Medida de Despacho de Almacén" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposValorCalculo"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               @bind-Value="_model.COD_TIPO_VALOR_CALCULO"
+                               Label="Tipo de Valor de Cálculo" Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            @* ── Entidad Propietaria, sola y a todo lo ancho ─────────────────────────
+               Va arriba y ocupa la fila entera porque MANDA sobre lo que sigue: el combo de
+               Diseño se filtra por ella. Un campo del que dependen otros, puesto al lado de
+               uno de sus dependientes, se lee como si fueran hermanos.
+
+               Y SÍ se puede cambiar después de creado, a diferencia de Grupo/Familia/Sub
+               Familia y Diseño/Versión. La diferencia no es un capricho: esos otros definen
+               QUÉ ES el producto —de ellos se deriva el código y de ellos cuelgan las
+               especificaciones técnicas que hereda—, así que cambiarlos después vuelve
+               mentira el histórico. La entidad propietaria solo dice DE QUIÉN es el
+               desarrollo, y eso sí cambia en la vida real.
+
+               El grabado ya estaba listo: el diálogo manda COD_ENTIDAD_PROPIETARIA en el
+               mismo DTO al crear y al editar, y el UPDATE de PROC_ESTANDAR_PRODUCTOS_INSERT
+               ya la asigna. *@
+            <MudGrid>
+                <MudItem xs="12">
+                    <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                               TextFunc="@(e => $"{e.Id} - {e.Texto}")" ValueFunc="@(e => e.Id)"
+                               Value="@(_model.COD_ENTIDAD_PROPIETARIA?.ToString())"
+                               ValueChanged="@(v => OnEntidadPropietariaChanged(v))"
+                               Label="Entidad Propietaria" Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            @* ── Diseño y Versión ────────────────────────────────────────────────────
+               Diseño depende de la Entidad Propietaria de arriba: el combo muestra los
+               diseños de esa entidad más los genéricos (ver DisenosVisibles).
+
+               Siguen bloqueados en edición, por lo dicho arriba: de ellos depende la
+               identidad del producto. *@
+            <MudGrid>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="DisenosVisibles"
+                               TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)"
+                               @bind-Value="_model.COD_DISENO"
+                               Label="Diseño" Disabled="@(_readonly || !_esNuevo)" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_VERSION" Label="Versión del Diseño"
+                                      Variant="Variant.Outlined" Margin="Margin.Normal" Class="mb-3" Disabled="@(_readonly || !_esNuevo)" />
+                </MudItem>
+            </MudGrid>
+
+            @* ── CUBSO y Partida Arancelaria, en su propia fila debajo ───────────────
+               Van aparte de Diseño/Versión a propósito: son clasificaciones EXTERNAS
+               —SUNAT, aduanas—, no parte de la identidad del producto. Por eso tampoco se
+               bloquean en edición: se corrigen o se completan después sin consecuencias. *@
+            <MudGrid>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_cubso"
+                               TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)"
+                               @bind-Value="_model.COD_CUBSO"
+                               Label="Código UNSPSC (CUBSO)" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.PRODUCTOS" Columna="COD_PARTIDA_ARANCELARIA"
+                                @bind-Value="_model.COD_PARTIDA_ARANCELARIA"
+                                Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            @* ── Fraccionamiento ────────────────────────────────────────────────────
+               No es un dato administrativo como los de arriba: cambia cómo se RESERVA el
+               producto, así que va con su propia explicación a la vista. Quien marca esto
+               tiene que saber qué desencadena.
+
+               Lo lee MAKERESERVA: con el interruptor puesto, la reserva se lleva la
+               ubicación entera aunque el requerimiento pida menos. *@
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudSwitch T="bool" @bind-Value="_model.FLG_INDIVISIBLE"
+                               Color="Color.Primary" Disabled="_readonly"
+                               Label="No se puede fraccionar (rollo, caja, contenedor)" />
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;color:var(--ink);">
+                        Al reservar, se toma la ubicación completa aunque el requerimiento pida
+                        menos: el bulto sale entero del almacén y lo que sobra ya no queda
+                        disponible para otro. Sin marcar, se reserva sólo lo pedido.
+                    </MudText>
+                </MudItem>
+            </MudGrid>
+
+            @* El Estado va en su propia celda, no suelto.
+               Suelto quedaba pegado a Partida Arancelaria: en esta app la separación entre
+               campos NO la ponen los controles —app.css les anula el margen— sino el padding
+               de la celda que los contiene, que es padding-top de (espV/2 + alto de label*0.6)
+               y padding-bottom de espV/2. Un control fuera de toda grilla no recibe nada de
+               eso, y el mb-3 que traía no ayudaba porque el hueco que faltaba era ARRIBA.
+
+               Es el mismo caso que corregimos en EspecificacionesTecnicasDialog. *@
+            <MudGrid>
+                <MudItem xs="12">
+                    <EstadoCombo DesTabla="ESTANDAR.PRODUCTOS" @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _codTipoEstado = v ?? 0)" Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+        </EditForm>
+        </div>
+        </div>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Especificaciones Técnicas">
+            @if (_esNuevo)
+            {
+                <div style="height:calc(98vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+                <MudText Class="pa-6 mono" Style="opacity:.5;">Guarda el producto primero para poder asignar sus Especificaciones Técnicas.</MudText>
+                </div>
+            }
+            else
+            {
+                @* OnEstadoCambiado NO es decorativo: sin él el botón "Guardar Especificaciones"
+                   se queda deshabilitado para siempre. El @ref se completa después del render y
+                   la carga del panel es async, así que cuando el panel ya tiene datos el que se
+                   vuelve a dibujar es el panel, no este diálogo — y el botón sigue evaluado
+                   contra un panel nulo o vacío. Este aviso es lo que despierta al diálogo. *@
+                @* CodEntidadPropietaria: con esto las especificaciones marcadas "Depende de
+                   Entidad" ofrecen los ítems de ESA entidad y no la carta genérica. Si se
+                   cambia el propietario con el diálogo abierto, el panel se entera por el
+                   parámetro y vuelve a pedir las listas. *@
+                <EspecificacionesTecnicasPanel @ref="_especPanel" CodProducto="@_model.COD_PRODUCTO" ReadOnly="_readonly"
+                                                CodEntidadPropietaria="@_model.COD_ENTIDAD_PROPIETARIA"
+                                                OnGuardado="RecargarDesdeShowbyidAsync"
+                                                OnEstadoCambiado="StateHasChanged" />
+            }
+        </MudTabPanel>
+        </MudTabs>
+    </DialogContent>
+    <DialogActions>
+        @if (!_esNuevo)
+        {
+            <div class="d-flex align-center gap-1 mr-auto">
+                <MudTooltip Text="Ficha Técnica (PDF)">
+                    <MudIconButton Icon="@Icons.Material.Filled.Assignment" OnClick="AbrirFichaTecnica" Style="@($"{EstilosBoton.Confirmar}border-radius:6px;")" />
+                </MudTooltip>
+                <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                FecRegistro="@Item?.FEC_REGISTRO"
+                                CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+            </div>
+        }
+        @* Botones configurados con FLG_DIALOG para esta opción, a la izquierda de Cancelar y
+           separados por una línea, como en RequerimientoDocumento. Sólo sobre un registro que
+           ya existe; su estado decide si cada uno está habilitado. *@
+        @if (!_esNuevo && !string.IsNullOrWhiteSpace(CodAplicacion))
+        {
+            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                             Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                             CodTipoEstado="@_model.COD_TIPO_ESTADO" CodEstadoActual="@_model.COD_ESTADO" />
+            <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+        }
+        @if (!(Modo == CrudModo.Read && _tabActiva == 0))
+        {
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        }
+        @if (_tabActiva == 0)
+        {
+            @if (Modo == CrudModo.Read)
+            {
+                @* Consulta: solo "Regresar" (antes salia "Modificar" y, al pulsarlo, guardaba). *@
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => MudDialog.Cancel())" Style="@EstilosBoton.Confirmar">Regresar</MudButton>
+            }
+            else
+            {
+                @* El texto, el icono y el color dependen del modo, igual que CrudDialogActions: Eliminar sale en rojo. *@
+                <MudButton Variant="Variant.Filled" Color="@(Modo == CrudModo.Delete ? Color.Error : Color.Primary)" Disabled="_saving" OnClick="IntentarSubmit"
+                           StartIcon="@(Modo == CrudModo.Delete ? Icons.Material.Filled.DeleteForever : (_esNuevo ? Icons.Material.Filled.NoteAdd : Icons.Material.Filled.Save))"
+                           Style="@(Modo == CrudModo.Delete ? EstilosBoton.Eliminar : EstilosBoton.Confirmar)">
+                    @(_saving ? (Modo == CrudModo.Delete ? "Eliminando..." : "Guardando...") : (Modo == CrudModo.Delete ? "Eliminar" : (_esNuevo ? "Crear" : "Modificar")))
+                </MudButton>
+            }
+        }
+        else
+        {
+            <MudButton Variant="Variant.Filled"
+                       Disabled="@(_readonly || _esNuevo || _especPanel is null || _especPanel.Guardando || !_especPanel.TieneEspecificaciones)"
+                       OnClick="@(() => _especPanel!.GuardarAsync())" Style="@EstilosBoton.Confirmar">
+                @(_especPanel is not null && _especPanel.Guardando ? "Guardando..." : "Guardar Especificaciones")
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public ProductosModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre). Con ella el pie muestra los botones
+    // marcados como Diálogo.
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    // Los botones de diálogo se conectan acá, por su código. Mientras uno no tenga su acción,
+    // tocarlo avisa en vez de no hacer nada (mismo criterio que RequerimientoDocumento).
+    private Task OnAccionDialog(BotonTreeviewItem b) => AvisarBotonSinConectar(b);
+
+    private async Task AvisarBotonSinConectar(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre {_model.COD_PRODUCTO}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(ProductosDialog), "Acción pendiente");
+    }
+
+    private ProductosModel _model = new();
+    private EditContext _editContext = default!;
+    private ElementReference _formRoot;
+    private int _tabActiva;
+
+
+    private async Task OnInvalidSubmit(EditContext ctx) =>
+        await JS.InvokeVoidAsync("validationFocus.focusFirstInvalid", _formRoot);
+
+    // Los botones ahora viven en DialogActions (fijos, fuera del EditForm) — no hay un
+    // <button type="submit"> dentro del form que dispare OnValidSubmit solo. Se valida el
+    // EditContext a mano y recién ahí se llama a Submit()/OnInvalidSubmit().
+    private async Task IntentarSubmit()
+    {
+        if (_editContext.Validate()) await Submit();
+        else await OnInvalidSubmit(_editContext);
+    }
+
+    private bool _esNuevo, _saving;
+
+    private EspecificacionesTecnicasPanel? _especPanel;
+
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _grupos           = new();
+    private List<ComboboxItem> _familias         = new();
+    private List<ComboboxItem> _subFamilias      = new();
+    private List<ComboboxItem> _tiposProducto    = new();
+    private List<ComboboxItem> _unidadesMedida   = new();
+    private List<ComboboxItem> _tiposValorCalculo= new();
+    private List<ComboboxItem> _disenos          = new();
+
+    /// <summary>Los diseños con su entidad, para poder filtrarlos.
+    ///
+    /// El loadcombos devuelve ComboboxItem (id + texto) y ahí no viene COD_ENTIDAD, así que
+    /// no alcanza para filtrar. Se trae aparte el maestro completo desde
+    /// GET ingenieria/disenos, que sí lo trae. Es UNA llamada más al abrir el diálogo, y
+    /// evita tener que tocar el API o el SP del loadcombos.
+    ///
+    /// Si la llamada falla, esta lista queda vacía y DisenosVisibles devuelve el combo
+    /// completo: ante la duda, mostrar de más y no dejar al usuario sin opciones.</summary>
+    private List<KONSolutions.Shared.Models.Ingenieria.Disenos> _disenosConEntidad = new();
+    private List<ComboboxItem> _entidades        = new();
+    private List<ComboboxItem> _cubso            = new();
+    private List<EstadoItem>   _estados          = new();
+    private int                _codTipoEstado;
+
+    // Grupos/Familias completos (no solo Id/Texto) — necesarios para recargar las
+    // cascadas Familia/SubFamilia al editar un producto ya existente.
+    private List<FamiliasProductoModel> _familiasCompletas = new();
+    // Sub Familias completas — se usa para heredar COD_TIPO_PRODUCTO de la Sub Familia
+    // elegida al crear un Producto nuevo.
+    private List<SubFamiliasProductoModel> _subFamiliasCompletas = new();
+    // Tipos de Producto completos — se usa para heredar su Estado Inicial (COD_ESTADO_INICIAL)
+    // al crear un Producto nuevo, ya sea al elegir el Tipo de Producto directamente o al
+    // heredarlo en cadena desde la Sub Familia.
+    private List<TiposProductoModel> _tiposProductoCompletos = new();
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        // Mapeo inicial desde el Item que pasó la grilla — se usa como fallback mientras
+        // se resuelve el viaje a SHOWBYID (abajo, en OnInitializedAsync) o si ese viaje
+        // falla; una vez que responde, MapearDesdeModelo() pisa estos valores con los
+        // frescos de la base de datos.
+        if (Item is not null) MapearDesdeModelo(Item);
+        _editContext = new EditContext(_model);
+    }
+
+    /// <summary>Copia los campos editables del modelo (Item de la grilla, o la respuesta
+    /// fresca de SHOWBYID) hacia _model.</summary>
+    private void MapearDesdeModelo(ProductosModel m)
+    {
+        _model.COD_PRODUCTO                 = m.COD_PRODUCTO;
+        _model.DES_PRODUCTO                 = m.DES_PRODUCTO;
+        _model.DES_DETALLADA                = m.DES_DETALLADA;
+        _model.COD_ENTIDAD_PROPIETARIA       = m.COD_ENTIDAD_PROPIETARIA;
+        _model.COD_DISENO                   = m.COD_DISENO;
+        _model.NUM_VERSION                  = m.NUM_VERSION;
+        _model.COD_UNIDAD_MEDIDA            = m.COD_UNIDAD_MEDIDA?.Trim();
+        _model.COD_UNIDAD_MEDIDA_SECUNDARIA = m.COD_UNIDAD_MEDIDA_SECUNDARIA?.Trim();
+        _model.COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN = m.COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN?.Trim();
+        _model.COD_GRUPO_PRODUCTO           = m.COD_GRUPO_PRODUCTO?.Trim();
+        _model.COD_FAMILIA_PRODUCTO         = m.COD_FAMILIA_PRODUCTO?.Trim();
+        _model.COD_SUB_FAMILIA_PRODUCTO     = m.COD_SUB_FAMILIA_PRODUCTO?.Trim();
+        _model.COD_PARTIDA_ARANCELARIA      = m.COD_PARTIDA_ARANCELARIA;
+        _model.COD_TIPO_VALOR_CALCULO       = m.COD_TIPO_VALOR_CALCULO?.Trim();
+        _model.COD_TIPO_PRODUCTO            = m.COD_TIPO_PRODUCTO?.Trim();
+        _model.COD_CUBSO                    = m.COD_CUBSO?.Trim();
+        _model.FLG_INDIVISIBLE              = m.FLG_INDIVISIBLE;
+        _model.COD_TIPO_ESTADO              = m.COD_TIPO_ESTADO;
+        _model.COD_ESTADO                   = m.COD_ESTADO;
+    }
+
+    /// <summary>Trae el Producto fresco desde PROC_ESTANDAR_PRODUCTOS_SHOWBYID — se usa al
+    /// abrir el diálogo (Modificar/Eliminar/Ver, nunca Crear) para no mostrar datos
+    /// desactualizados de la grilla (ej. DES_DETALLADA recién recalculada por
+    /// PROC_ESTANDAR_PRODUCTOS_DESCRIPCION_DETALLE_UPDATE), y otra vez después de guardar
+    /// Especificaciones Técnicas, para reflejar esa misma descripción recalculada sin
+    /// tener que cerrar y reabrir el diálogo.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<ProductosModel>($"{ProductosRoute.Productos}/{Uri.EscapeDataString(_model.COD_PRODUCTO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    /// <summary>Abre la Ficha Técnica (PDF) como MudDialog — NO navega de ruta (eso perdía la
+    /// sesión al abrir una pestaña nueva porque el JWT vive en sessionStorage, y además volver
+    /// re-montaba MainLayout recargando menú/configuración). Queda dentro del mismo diálogo
+    /// de Producto, sin tocar el shell de la app.</summary>
+    private async Task AbrirFichaTecnica()
+    {
+        var parametros = new DialogParameters { ["CodProducto"] = _model.COD_PRODUCTO };
+        await DialogService.ShowAsync<FichaTecnicaProductoDialog>("Ficha Técnica",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        // Un solo viaje: PROC_ESTANDAR_PRODUCTOS_LOAD_COMBOS invoca en cadena los 7
+        // SHOWCOMBOX (Grupos, Unidades de Medida, Tipos de Producto, Diseños, Entidades,
+        // Cubso, Estados) — la API ya resuelve el mapeo de los que no vienen aliasados
+        // como Id/Texto (ver ProductosRepository.LoadcombosAsync).
+        var tLoadcombos       = Http.SafeGetAsync<ProductosLoadCombosResult>(ProductosRoute.ProductosLoadcombos);
+        var tTiposValorCalculo= SafeGetCombobox(KONSolutions.Web.Services.ApiRoutes.Comercial.TiposValorCalculoCombobox);
+        var tFamilias         = string.IsNullOrEmpty(_model.COD_GRUPO_PRODUCTO) ? Task.FromResult<List<FamiliasProductoModel>?>(null) : CargarFamilias(_model.COD_GRUPO_PRODUCTO!);
+        var tSubFamilias      = (string.IsNullOrEmpty(_model.COD_GRUPO_PRODUCTO) || string.IsNullOrEmpty(_model.COD_FAMILIA_PRODUCTO))
+                                    ? Task.FromResult<List<SubFamiliasProductoModel>?>(null)
+                                    : CargarSubFamilias(_model.COD_GRUPO_PRODUCTO!, _model.COD_FAMILIA_PRODUCTO!);
+        var tTiposProducto    = Http.SafeGetAsync<List<TiposProductoModel>>(ProductosRoute.TiposProducto);
+        // El maestro de diseños, para saber a qué entidad pertenece cada uno. Va en el mismo
+        // Task.WhenAll que el resto, así no agrega espera: se pide en paralelo, no en fila.
+        var tDisenos          = Http.SafeGetAsync<List<KONSolutions.Shared.Models.Ingenieria.Disenos>>(
+                                    KONSolutions.Web.Services.ApiRoutes.Ingenieria.Disenos);
+
+        await Task.WhenAll(tLoadcombos, tTiposValorCalculo, tFamilias, tSubFamilias, tTiposProducto, tDisenos);
+        _tiposProductoCompletos = (await tTiposProducto) ?? new();
+        _disenosConEntidad      = (await tDisenos) ?? new();
+
+        var lc = await tLoadcombos;
+        if (lc is not null)
+        {
+            _codTipoEstado  = lc.CodTipoEstado;
+            _grupos         = lc.Grupos;
+            _unidadesMedida = lc.UnidadesMedida;
+            _tiposProducto  = lc.TiposProducto;
+            _disenos        = lc.Disenos;
+            _entidades      = lc.Entidades;
+            _cubso          = lc.Cubso;
+            _estados        = lc.Estados;
+            if (_esNuevo && _model.COD_ESTADO is null && _estados.Any())
+            {
+                var def = _estados.FirstOrDefault(e => e.EsDefault) ?? _estados.First();
+                _model.COD_ESTADO      = def.CodEstado;
+                _model.COD_TIPO_ESTADO = _codTipoEstado;
+            }
+        }
+        _tiposValorCalculo = await tTiposValorCalculo;
+
+        _familiasCompletas = (await tFamilias) ?? new();
+        _familias    = _familiasCompletas.Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO }).ToList();
+        _subFamiliasCompletas = (await tSubFamilias) ?? new();
+        _subFamilias = _subFamiliasCompletas.Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = s.DES_SUB_FAMILIA_PRODUCTO }).ToList();
+
+        // Al abrir "Nuevo" ya con una Sub Familia fijada por contexto, hereda su Tipo de
+        // Producto, CUBSO, Tipo de Valor de Cálculo, Unidad de Medida y Unidad de Medida
+        // Secundaria — todos los combos siguen editables, solo se precarga el valor.
+        if (_esNuevo && !string.IsNullOrEmpty(_model.COD_SUB_FAMILIA_PRODUCTO))
+        {
+            var subFamiliaPadre = _subFamiliasCompletas.FirstOrDefault(s => s.COD_SUB_FAMILIA_PRODUCTO.Trim() == _model.COD_SUB_FAMILIA_PRODUCTO);
+            if (subFamiliaPadre is not null)
+            {
+                _model.COD_TIPO_PRODUCTO            = subFamiliaPadre.COD_TIPO_PRODUCTO?.Trim();
+                _model.COD_CUBSO                     = subFamiliaPadre.COD_CUBSO?.Trim();
+                _model.COD_TIPO_VALOR_CALCULO       = subFamiliaPadre.COD_TIPO_VALOR_CALCULO?.Trim();
+                _model.COD_UNIDAD_MEDIDA             = subFamiliaPadre.COD_UNIDAD_MEDIDA?.Trim();
+                _model.COD_UNIDAD_MEDIDA_SECUNDARIA = subFamiliaPadre.COD_UNIDAD_MEDIDA_SECUNDARIA?.Trim();
+                HeredarEstadoDeTipoProducto();
+            }
+        }
+        // La carga de Especificaciones Técnicas la dispara el propio EspecificacionesTecnicasPanel
+        // (OnParametersSetAsync) apenas se renderiza con CodProducto — no hace falta pedirla aquí.
+    }
+
+    // Al crear un Producto nuevo, hereda el Estado Inicial configurado en el Tipo de
+    // Producto (COD_ESTADO_INICIAL) — solo si ese estado existe en la lista de Estados de
+    // Productos, para no dejar un valor que no aparezca en el combo. El usuario sigue
+    // pudiendo cambiarlo después, es solo el valor sugerido.
+    private void HeredarEstadoDeTipoProducto()
+    {
+        if (!_esNuevo || string.IsNullOrEmpty(_model.COD_TIPO_PRODUCTO)) return;
+        var tipoProducto = _tiposProductoCompletos.FirstOrDefault(t => t.COD_TIPO_PRODUCTO.Trim() == _model.COD_TIPO_PRODUCTO);
+        if (tipoProducto?.COD_ESTADO_INICIAL is null) return;
+        var estadoInicial = _estados.FirstOrDefault(e => e.CodEstado == tipoProducto.COD_ESTADO_INICIAL.Value);
+        if (estadoInicial is not null)
+        {
+            _model.COD_ESTADO      = estadoInicial.CodEstado;
+            _model.COD_TIPO_ESTADO = _codTipoEstado;
+        }
+    }
+    private async Task<List<ComboboxItem>> SafeGetCombobox(string url) =>
+        (await Http.SafeGetAsync<List<ComboboxItem>>(url)) ?? new();
+
+    private Task<List<FamiliasProductoModel>?> CargarFamilias(string codGrupoProducto) =>
+        Http.SafeGetAsync<List<FamiliasProductoModel>>($"{ProductosRoute.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(codGrupoProducto)}");
+
+    private Task<List<SubFamiliasProductoModel>?> CargarSubFamilias(string codGrupoProducto, string codFamiliaProducto) =>
+        Http.SafeGetAsync<List<SubFamiliasProductoModel>>(
+            $"{ProductosRoute.SubFamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(codGrupoProducto)}&codFamiliaProducto={Uri.EscapeDataString(codFamiliaProducto)}");
+
+    /// <summary>Los diseños que se ofrecen, según la Entidad Propietaria elegida.
+    ///
+    /// LA REGLA: los de esa entidad MÁS los genéricos (los que no tienen entidad). Un diseño
+    /// sin dueño sirve para cualquiera; uno de otro cliente, no.
+    ///
+    /// SIN ENTIDAD ELEGIDA se muestran todos, no ninguno. Filtrar a cero cuando el usuario
+    /// todavía no eligió nada lo dejaría mirando un combo vacío sin entender por qué; y en
+    /// edición, un producto viejo sin propietario cargado perdería su propio diseño de vista.
+    ///
+    /// Se filtra sobre la lista del loadcombos, no sobre el maestro, para que el texto que se
+    /// ve sea exactamente el mismo de siempre.</summary>
+    private List<ComboboxItem> DisenosVisibles
+    {
+        get
+        {
+            if (_model.COD_ENTIDAD_PROPIETARIA is null || _disenosConEntidad.Count == 0)
+                return _disenos;
+
+            var permitidos = _disenosConEntidad
+                .Where(d => d.COD_ENTIDAD is null || d.COD_ENTIDAD == _model.COD_ENTIDAD_PROPIETARIA)
+                .Select(d => d.COD_DISENO.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            return _disenos.Where(d => permitidos.Contains(d.Id.Trim())).ToList();
+        }
+    }
+
+    /// <summary>Al cambiar el propietario, el diseño elegido puede dejar de corresponder.
+    ///
+    /// En ese caso se limpia —junto con la versión, que sin diseño no significa nada— y se
+    /// AVISA. Limpiarlo en silencio sería peor que no filtrar: el usuario grabaría un producto
+    /// sin diseño sin haberse enterado.
+    ///
+    /// En edición esto casi no se dispara: Diseño y Versión están bloqueados, así que lo que
+    /// hay quedó fijo desde el alta. Igual se contempla, porque el propietario SÍ se puede
+    /// cambiar y el caso existe.</summary>
+    private void OnEntidadPropietariaChanged(string? valor)
+    {
+        _model.COD_ENTIDAD_PROPIETARIA = decimal.TryParse(valor, out var d) ? d : null;
+
+        // Copia local y no _model.COD_DISENO directo: la propiedad es string? y, aunque el
+        // guardia de arriba la descarta, el analizador de nulos no lo arrastra hasta el lambda.
+        var actual = _model.COD_DISENO;
+        if (string.IsNullOrEmpty(actual)) return;
+
+        var sigueValiendo = DisenosVisibles.Any(x => string.Equals(x.Id.Trim(), actual.Trim(),
+                                                                  StringComparison.OrdinalIgnoreCase));
+        if (sigueValiendo) return;
+
+        var quedaba = actual;
+        _model.COD_DISENO  = "";
+        _model.NUM_VERSION = null;
+        Snackbar.Add($"El diseño {quedaba} no pertenece a la entidad elegida. Se quitó del producto.",
+                     Severity.Warning);
+    }
+
+    private async Task OnGrupoChanged(string? val)
+    {
+        _model.COD_GRUPO_PRODUCTO       = val;
+        _model.COD_FAMILIA_PRODUCTO     = null;
+        _model.COD_SUB_FAMILIA_PRODUCTO = null;
+        _familiasCompletas = string.IsNullOrEmpty(val) ? new() : (await CargarFamilias(val!)) ?? new();
+        _familias    = _familiasCompletas.Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO }).ToList();
+        _subFamilias = new();
+    }
+
+    private async Task OnFamiliaChanged(string? val)
+    {
+        _model.COD_FAMILIA_PRODUCTO     = val;
+        _model.COD_SUB_FAMILIA_PRODUCTO = null;
+        _model.COD_TIPO_PRODUCTO        = null;
+        _model.COD_CUBSO                = null;
+        _model.COD_TIPO_VALOR_CALCULO   = null;
+        _model.COD_UNIDAD_MEDIDA        = null;
+        _model.COD_UNIDAD_MEDIDA_SECUNDARIA = null;
+        _subFamiliasCompletas = (string.IsNullOrEmpty(val) || string.IsNullOrEmpty(_model.COD_GRUPO_PRODUCTO))
+            ? new() : (await CargarSubFamilias(_model.COD_GRUPO_PRODUCTO!, val!)) ?? new();
+        _subFamilias = _subFamiliasCompletas.Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = s.DES_SUB_FAMILIA_PRODUCTO }).ToList();
+    }
+
+    // Al elegir/cambiar la Sub Familia (combo editable), hereda su Tipo de Producto, CUBSO,
+    // Tipo de Valor de Cálculo, Unidad de Medida y Unidad de Medida Secundaria — el usuario
+    // puede seguir cambiándolos después, es solo el valor sugerido.
+    //
+    // LA UNIDAD DE DESPACHO DE ALMACÉN NO SE HEREDA ACÁ, NI EN OnFamiliaChanged:
+    // pisarla o borrarla al cambiar de familia le haría perder al usuario un valor que eligió él.
+    // (Ojo: SUB_FAMILIAS_PRODUCTO SÍ tiene la columna COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN; este
+    // comentario decía que no. Si se quiere heredar como valor sugerido, sumarla a estas dos
+    // listas.) La base valida la unidad de despacho contra la unidad del producto (script 36).
+    private void OnSubFamiliaChanged(string? val)
+    {
+        _model.COD_SUB_FAMILIA_PRODUCTO = val;
+        var subFamiliaPadre = _subFamiliasCompletas.FirstOrDefault(s => s.COD_SUB_FAMILIA_PRODUCTO.Trim() == val);
+        _model.COD_TIPO_PRODUCTO            = subFamiliaPadre?.COD_TIPO_PRODUCTO?.Trim();
+        _model.COD_CUBSO                     = subFamiliaPadre?.COD_CUBSO?.Trim();
+        _model.COD_TIPO_VALOR_CALCULO       = subFamiliaPadre?.COD_TIPO_VALOR_CALCULO?.Trim();
+        _model.COD_UNIDAD_MEDIDA             = subFamiliaPadre?.COD_UNIDAD_MEDIDA?.Trim();
+        _model.COD_UNIDAD_MEDIDA_SECUNDARIA = subFamiliaPadre?.COD_UNIDAD_MEDIDA_SECUNDARIA?.Trim();
+        HeredarEstadoDeTipoProducto();
+    }
+
+    // Al elegir/cambiar el Tipo de Producto directamente (combo editable), hereda su Estado
+    // Inicial — el usuario puede seguir cambiándolo después, es solo el valor sugerido.
+    private void OnTipoProductoChanged(string? val)
+    {
+        _model.COD_TIPO_PRODUCTO = val;
+        HeredarEstadoDeTipoProducto();
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ProductosRoute.Productos;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_PRODUCTO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(ProductosDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+        _model.COD_TIPO_ESTADO = _codTipoEstado;
+        // Nuevo: el SP arma el código internamente, se manda vacío (el parámetro no
+        // admite NULL, pero su valor real se ignora al crear).
+        // Los códigos opcionales (FK contra otras tablas) deben ir en NULL cuando no se
+        // eligió nada — mandarlos como "" viola la FK (error 547) porque "" no es un
+        // código válido ni NULL.
+        static string? NullSiVacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+        var dto = new
+        {
+            COD_PRODUCTO = _esNuevo ? "" : _model.COD_PRODUCTO,
+            _model.DES_PRODUCTO, _model.DES_DETALLADA, _model.COD_ENTIDAD_PROPIETARIA,
+            COD_DISENO = NullSiVacio(_model.COD_DISENO), _model.NUM_VERSION, _model.COD_UNIDAD_MEDIDA,
+            COD_UNIDAD_MEDIDA_SECUNDARIA = NullSiVacio(_model.COD_UNIDAD_MEDIDA_SECUNDARIA),
+            COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN = NullSiVacio(_model.COD_UNIDAD_MEDIDA_DESPACHO_ALMACEN),
+            _model.COD_GRUPO_PRODUCTO, _model.COD_FAMILIA_PRODUCTO, _model.COD_SUB_FAMILIA_PRODUCTO,
+            COD_PARTIDA_ARANCELARIA = NullSiVacio(_model.COD_PARTIDA_ARANCELARIA),
+            COD_TIPO_VALOR_CALCULO = NullSiVacio(_model.COD_TIPO_VALOR_CALCULO),
+            _model.COD_TIPO_PRODUCTO,
+            COD_CUBSO = NullSiVacio(_model.COD_CUBSO),
+            _model.FLG_INDIVISIBLE,
+            _model.COD_TIPO_ESTADO, _model.COD_ESTADO
+        };
+        // GuardarAsync y no PostAsJsonAsync: PROC_ESTANDAR_PRODUCTOS_INSERT rechaza una
+        // clave que ya existe, así que mientras esto mandó todo por POST, modificar un
+        // producto devolvía "Ya existe un registro con esa clave". El helper elige el verbo
+        // según la intención, que es lo único que esta pantalla sabe y la API no.
+        var resp = await Http.GuardarAsync(ruta, dto, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductosDialog), nameof(Submit));
+    }
+
+}

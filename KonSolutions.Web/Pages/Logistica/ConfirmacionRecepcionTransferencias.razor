@@ -1,0 +1,734 @@
+@page "/logistica/confirmacion-recepcion-transferencias"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject MenuService MenuService
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<PageTitle>Confirmación de Recepción de Transferencias · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* CONFIRMACIÓN DE RECEPCIÓN DE TRANSFERENCIAS — el almacén destino recibe (o rechaza) lo que le enviaron.
+
+   Lista las salidas cuyo tipo es no positivo, de transferencia y con confirmación de recepción, que
+   están en el estado con alias ENV y van a un almacén asignado al rol activo
+   (PROC_LOGISTICA_MOVIMIENTOS_ALMACEN_SHOWPORRECIBIR).
+
+   Quien recibe revisa cada línea, la marca como conforme y elige en qué ubicación del almacén
+   destino entra. Marcar no graba nada. Los dos botones salen de la opción (permisos del rol y
+   colores de Configuración General):
+     CONFIRMAR RECEPCIÓN    se enciende con todas las líneas conformes y con ubicación. Crea el
+                            ingreso en el destino con el tipo sincronizado y pasa la salida y el
+                            ingreso a CONFIRMADO (PROC_..._CONFIRMAR_RECEPCION → PROC_..._ACEPTAR).
+     RECHAZAR TRANSFERENCIA siempre disponible. Pide el motivo y la observación, devuelve el stock
+                            al origen con un ingreso por anulación de salida (tipo positivo y de
+                            anulación) y pasa la salida y ese ingreso a RECHAZADO
+                            (PROC_..._RECHAZAR_RECEPCION → PROC_..._RECHAZAR).
+
+   LECTURA DE ETIQUETAS AL RECIBIR. Si el tipo de ingreso que se generará usa lectura (Tipos de Movimiento: O optativa o R
+   obligatoria), aparece el panel «Lectura de etiquetas al recibir»: quien recibe lee las etiquetas RFID, cada una se revisa contra
+   la salida (no graba nada: el ingreso todavía no existe) y marca su línea; una línea completa se marca sola como conforme. Con R no
+   se puede confirmar hasta completar todas las líneas de productos RFID; con O la lectura es libre. Al confirmar, las etiquetas se
+   graban en el ingreso dentro de la misma transacción. Si el tipo es N, o si la base no tiene el script 05, la pantalla es la de
+   siempre. *@
+<div class="documento-logistica">
+
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Confirmación de Recepción de Transferencias" CodAplicacion="@_codAp" CodOpcionAplicacion="@_codOp" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · salidas por transferencia ENVIADAS a los almacenes de tu rol, pendientes de recibir
+            </MudText>
+        </div>
+    </div>
+
+    @* ── Filtros ── *@
+    <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+        <div class="d-flex align-center gap-3" style="flex-wrap:wrap;">
+            <div style="flex:1 1 280px;min-width:0;max-width:420px;">
+                <AriaCombo TItem="ComboboxItem" Items="_almacenesCombo"
+                           TextFunc="@(t => t.Id == Todos ? t.Texto : $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                           Value="@_codAlmacen" ValueChanged="OnAlmacenChanged"
+                           Label="Almacén destino (los de tu rol)" Disabled="@(_cargando || _grabando)" Class="" />
+            </div>
+            <div style="flex:1 1 280px;min-width:0;max-width:420px;">
+                <MudTextField T="string" @bind-Value="_buscar" Label="Buscar" Variant="Variant.Outlined" Immediate="true"
+                              Placeholder="N° de salida, almacén origen, tipo, documento..."
+                              Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
+            </div>
+            <MudChip T="string" Size="Size.Small" Style="background:var(--grilla-cab-fondo,#163a5f);color:var(--grilla-cab-texto,#ffd54f);font-weight:700;">
+                @($"{_pendientes.Count} pendiente{(_pendientes.Count == 1 ? "" : "s")}")
+            </MudChip>
+            <MudSpacer />
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Refresh"
+                       Disabled="@(_cargando || _grabando)" OnClick="Recargar">Actualizar</MudButton>
+        </div>
+        @if (_avisoConfiguracion is { } aviso)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">@aviso</MudAlert>
+        }
+    </MudPaper>
+
+    <div class="crt-columnas">
+        @* ══════════════════════ 1. LAS SALIDAS POR RECIBIR ══════════════════════ *@
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);border-radius:8px;overflow:hidden;min-width:0;">
+            <div class="pa-2 px-3 d-flex align-center gap-2 crt-cab">
+                <span class="crt-num">1</span> Transferencias por recibir
+            </div>
+            @if (_cargando)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            else if (Filtradas.Count == 0)
+            {
+                <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">
+                    @(_pendientes.Count == 0 ? "No hay transferencias por recibir en los almacenes de tu rol." : "Ninguna coincide con la búsqueda.")
+                </MudText>
+            }
+            else
+            {
+                <div style="overflow:auto;max-height:64vh;">
+                    <table class="tabla-simple-editable crt-tabla" style="width:100%;font-size:.8rem;">
+                        <thead style="position:sticky;top:0;z-index:1;">
+                            <tr>
+                                <th style="width:80px;">N° salida</th>
+                                <th style="width:90px;">Fecha</th>
+                                <th>Desde → hacia</th>
+                                <th style="width:60px;text-align:right;">Líneas</th>
+                                <th style="width:110px;">Enviado por</th>
+                                <th style="width:120px;">Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in Filtradas)
+                            {
+                                var s = p;
+                                var elegida = _sel?.NUM_MOVIMIENTO_ALMACEN == s.NUM_MOVIMIENTO_ALMACEN;
+                                <tr class="@(elegida ? "crt-elegida" : "")" style="cursor:pointer;" title="@s.DES_OBSERVACION"
+                                    @onclick="@(() => Elegir(s))">
+                                    <td class="mono" style="font-weight:700;">@s.NUM_MOVIMIENTO_ALMACEN</td>
+                                    <td class="mono">@s.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy")</td>
+                                    <td>
+                                        <div>@s.COD_ALMACEN_ORIGEN @s.DES_ALMACEN_ORIGEN</div>
+                                        <div style="font-size:.72rem;opacity:.65;">→ @s.COD_ALMACEN_DESTINO @s.DES_ALMACEN_DESTINO</div>
+                                    </td>
+                                    <td class="mono" style="text-align:right;">@s.CAN_LINEAS</td>
+                                    <td class="mono" style="font-size:.74rem;">@s.COD_USUARIO_ENVIO</td>
+                                    <td>
+                                        @if (!string.IsNullOrWhiteSpace(s.DES_ESTADO))
+                                        {
+                                            <EstadoChip Estado="@s.DES_ESTADO" BackColor="@s.DES_BACKCOLOR" ForeColor="@s.DES_FORECOLOR" />
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            <MudText Typo="Typo.caption" Class="pa-2 px-3 d-block" Style="opacity:.6;border-top:1px solid var(--line);">
+                Salidas de tipo no positivo, de transferencia y con confirmación de recepción, en estado enviado (alias ENV), con almacén destino asignado a tu rol @MenuService.RolActivo.
+            </MudText>
+        </MudPaper>
+
+        @* ══════════════════════ 2. LA SALIDA ELEGIDA ══════════════════════ *@
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);border-radius:8px;overflow:hidden;min-width:0;">
+            @if (_sel is not { } sel)
+            {
+                <div class="pa-2 px-3 d-flex align-center gap-2 crt-cab">
+                    <span class="crt-num">2</span> Detalle de la salida
+                </div>
+                <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">Elige una salida de la lista para revisar sus líneas.</MudText>
+            }
+            else
+            {
+                <div class="pa-2 px-3 d-flex align-center gap-2 crt-cab">
+                    <span class="crt-num">2</span> @($"Salida N° {sel.NUM_MOVIMIENTO_ALMACEN} · {sel.DES_TIPO_MOVIMIENTO}")
+                </div>
+                <div class="pa-3">
+                    <div class="crt-datos mb-3">
+                        <div><div class="crt-rotulo">Desde</div><div>@sel.COD_ALMACEN_ORIGEN @sel.DES_ALMACEN_ORIGEN</div></div>
+                        <div><div class="crt-rotulo">Hacia</div><div>@sel.COD_ALMACEN_DESTINO @sel.DES_ALMACEN_DESTINO</div></div>
+                        <div><div class="crt-rotulo">Documento</div><div>@Documento(sel)</div></div>
+                        <div>
+                            <div class="crt-rotulo">Ingreso que se generará</div>
+                            <div>@($"{sel.COD_TIPO_MOVIMIENTO_SINCRONIZADO} {sel.DES_TIPO_MOVIMIENTO_SINCRONIZADO}".Trim() is { Length: > 0 } t ? t : "—")</div>
+                        </div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(sel.DES_OBSERVACION))
+                    {
+                        <MudText Typo="Typo.body2" Class="mb-2" Style="opacity:.8;">Observación: @sel.DES_OBSERVACION</MudText>
+                    }
+                    @if (!sel.FLG_TIPO_INGRESO_HABILITADO)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                            @($"Tu rol {MenuService.RolActivo} no tiene el tipo de ingreso {sel.COD_TIPO_MOVIMIENTO_SINCRONIZADO} en el almacén {sel.COD_ALMACEN_DESTINO}: no puedes confirmar esta salida (sí rechazarla). Asígnalo en Seguridad → Roles → {MenuService.RolActivo} → pestaña Almacenes → {sel.COD_ALMACEN_DESTINO} → tipos de movimiento.")
+                        </MudAlert>
+                    }
+
+                    @if (_cargandoDetalle)
+                    {
+                        <MudProgressLinear Indeterminate="true" />
+                    }
+                    else if (_lineas.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Style="opacity:.6;">La salida no tiene líneas.</MudText>
+                    }
+                    else
+                    {
+                        @if (HayLectura)
+                        {
+                            <RecepcionLecturaPanel @key="sel.NUM_MOVIMIENTO_ALMACEN" NumSalida="@(sel.NUM_MOVIMIENTO_ALMACEN ?? 0)" Requisito="@_requisito"
+                                                   Leidas="_leidas" Disabled="@(_grabando || !sel.FLG_TIPO_INGRESO_HABILITADO)" OnCambio="OnLecturaCambio" />
+                        }
+                        <div style="overflow:auto;max-height:46vh;">
+                            <table class="tabla-simple-editable" style="width:100%;font-size:.8rem;">
+                                <thead style="position:sticky;top:0;z-index:1;">
+                                    <tr>
+                                        <th style="width:70px;text-align:center;">Conforme</th>
+                                        <th style="width:45px;">Sec.</th>
+                                        <th>Producto</th>
+                                        <th style="width:150px;">Lote / OP</th>
+                                        <th style="width:130px;text-align:right;">Cantidad</th>
+                                        @if (HayLectura)
+                                        {
+                                            <th style="width:110px;text-align:center;">Leído</th>
+                                        }
+                                        <th style="width:150px;">Salió de</th>
+                                        <th style="width:260px;">Ubicación de ingreso (destino)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var linea in _lineas)
+                                    {
+                                        var l = linea;
+                                        <tr class="@(l.Conforme ? "crt-conforme" : "")">
+                                            <td style="text-align:center;" title="@(Bloqueada(l) ? "Con lectura obligatoria, esta línea queda conforme al leer todas sus etiquetas." : null)">
+                                                <MudCheckBox T="bool" Value="@l.Conforme" ValueChanged="@(v => { l.Conforme = v; l.ConformePorLectura = false; })"
+                                                             Color="Color.Success" Disabled="@(_grabando || Bloqueada(l))" Dense="true" />
+                                            </td>
+                                            <td class="mono">@l.L.NUM_SECUENCIA</td>
+                                            <td>
+                                                <div class="mono" style="font-size:.7rem;opacity:.6;">@l.L.COD_PRODUCTO</div>
+                                                <div>@l.L.DES_PRODUCTO</div>
+                                            </td>
+                                            <td class="mono" style="font-size:.72rem;">@LoteOrden(l.L)</td>
+                                            <td class="mono" style="text-align:right;">
+                                                @Num(l.L.CAN_PRODUCTO) @l.L.COD_UNIDAD_MEDIDA
+                                                @if ((l.L.CAN_PRODUCTO_SECUNDARIO ?? 0) != 0)
+                                                {
+                                                    <div style="font-size:.68rem;opacity:.6;">@Num(l.L.CAN_PRODUCTO_SECUNDARIO) @l.L.COD_UNIDAD_MEDIDA_SECUNDARIO</div>
+                                                }
+                                            </td>
+                                            @if (HayLectura)
+                                            {
+                                                <td style="text-align:center;">
+                                                    @if (UsaRfid(l))
+                                                    {
+                                                        @* Un clic abre las etiquetas que leyó la salida en esta línea y cuáles se leyeron al recibir. *@
+                                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" data-lectura="@l.L.NUM_SECUENCIA"
+                                                                 Icon="@Icons.Material.Filled.Visibility" Style="cursor:pointer;"
+                                                                 title="@($"Ver las etiquetas de esta línea: {l.Lectura?.CAN_ETIQUETAS_SALIDA ?? 0} en la salida y las que leíste al recibir")"
+                                                                 OnClick="@(() => VerEtiquetasAsync(l))"
+                                                                 Color="@(Completa(l) ? Color.Success : LecturaObligatoria ? Color.Warning : Color.Default)">
+                                                            @($"{Num(Leido(l))} de {Num(l.L.CAN_PRODUCTO)}")
+                                                        </MudChip>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span style="opacity:.5;" title="Este producto no se lee por RFID: se marca conforme a mano.">—</span>
+                                                    }
+                                                </td>
+                                            }
+                                            <td>
+                                                <div class="mono" style="font-size:.7rem;opacity:.6;">@l.L.COD_UBICACION_ORIGEN</div>
+                                                <div style="font-size:.74rem;">@l.L.DES_UBICACION_ORIGEN</div>
+                                            </td>
+                                            <td>
+                                                <AriaCombo TItem="ComboboxItem" Items="_ubicacionesDestino"
+                                                           TextFunc="@(u => $"{u.Id} - {u.Texto}")" ValueFunc="@(u => u.Id)"
+                                                           Value="@l.Ubicacion" ValueChanged="@(v => l.Ubicacion = v)" AutoSeleccionarUnico="true"
+                                                           Label="" Disabled="@(_grabando || _ubicacionesDestino.Count == 0)" Class="" />
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="d-flex align-center gap-2 mt-2" style="flex-wrap:wrap;">
+                            <MudButton Variant="Variant.Filled" Size="Size.Small" Style="@EstilosBoton.Confirmar"
+                                       StartIcon="@(TodasConformes ? Icons.Material.Filled.CheckBoxOutlineBlank : Icons.Material.Filled.CheckBox)"
+                                       Disabled="_grabando" OnClick="MarcarTodas">
+                                @(TodasConformes ? "Desmarcar todas" : "Marcar todas")
+                            </MudButton>
+                            <div style="flex:0 1 280px;min-width:200px;">
+                                <AriaCombo TItem="ComboboxItem" Items="_ubicacionesDestino"
+                                           TextFunc="@(u => $"{u.Id} - {u.Texto}")" ValueFunc="@(u => u.Id)"
+                                           Value="@_ubicacionTodas" ValueChanged="@(v => _ubicacionTodas = v)"
+                                           Label="Ubicación para todas" Disabled="@(_grabando || _ubicacionesDestino.Count == 0)" Class="" />
+                            </div>
+                            <MudButton Variant="Variant.Filled" Size="Size.Small" Style="@EstilosBoton.Confirmar"
+                                       StartIcon="@Icons.Material.Filled.PlaylistAddCheck"
+                                       Disabled="@(_grabando || string.IsNullOrWhiteSpace(_ubicacionTodas))" OnClick="PonerUbicacionEnTodas">
+                                Poner esta ubicación en todas
+                            </MudButton>
+                            <MudText Typo="Typo.caption" Style="opacity:.65;">
+                                La ubicación de ingreso es obligatoria: el tipo pide confirmación, así que al enviar no se eligió.
+                            </MudText>
+                        </div>
+                        @if (_ubicacionesDestino.Count == 0)
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+                                @($"El almacén {sel.COD_ALMACEN_DESTINO} no tiene ubicaciones: créalas en Almacenes antes de confirmar.")
+                            </MudAlert>
+                        }
+                    }
+                </div>
+
+                @* ── Pie: avance y los botones de la opción ── *@
+                <div class="pa-3 d-flex align-center gap-3" style="border-top:1px solid var(--line);flex-wrap:wrap;">
+                    <div style="flex:1 1 220px;min-width:180px;">
+                        <MudText Typo="Typo.body2" Style="font-weight:700;">@($"{Conformes} de {_lineas.Count} líneas conformes")</MudText>
+                        <MudProgressLinear Color="Color.Success" Value="@(_lineas.Count == 0 ? 0 : 100.0 * Conformes / _lineas.Count)" Rounded="true" Size="Size.Medium" />
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_codAp) && !string.IsNullOrWhiteSpace(_codOp))
+                    {
+                        <AccionesBotones CodAplicacion="@_codAp" CodOpcionAplicacion="@_codOp"
+                                         Zona="AccionesBotones.ZonaBotones.Dialog" TodasLasZonas="true"
+                                         Filtro="@(b => EsBotonConfirmar(b) || EsBotonRechazar(b))"
+                                         MotivoDeshabilitar="MotivoBotonApagado"
+                                         CodTipoEstado="@sel.COD_TIPO_ESTADO" CodEstadoActual="@sel.COD_ESTADO"
+                                         OnAccion="OnAccion" />
+                    }
+                </div>
+                @if (_sinBotones)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mx-3 mb-3">
+                        @($"La opción no tiene los botones CONFIRMAR RECEPCIÓN y RECHAZAR TRANSFERENCIA, o tu rol {MenuService.RolActivo} no los tiene habilitados. Agrégalos en Opciones de Aplicaciones (con método Confirmar y Rechazar, o con esos nombres) y habilítalos en el rol.")
+                    </MudAlert>
+                }
+                <MudText Typo="Typo.caption" Class="px-3 pb-2 d-block" Style="opacity:.6;text-align:right;">
+                    Marcar las líneas y leer las etiquetas no graba nada: se graba todo junto al confirmar o al rechazar.
+                </MudText>
+            }
+        </MudPaper>
+    </div>
+</div>
+
+<style>
+    .crt-columnas { display:grid; grid-template-columns:minmax(0,5fr) minmax(0,8fr); gap:16px; align-items:start; }
+    @@media (max-width: 1100px) { .crt-columnas { grid-template-columns:minmax(0,1fr); } }
+    .crt-cab { background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:800; }
+    .crt-num { display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
+               background:var(--grilla-cab-texto,#ffd54f);color:var(--grilla-cab-fondo,#163a5f);font-size:.75rem; }
+    .crt-tabla tbody tr.crt-elegida > td { background:rgba(21,101,192,.10); }
+    .tabla-simple-editable tbody tr.crt-conforme > td { background:rgba(46,125,50,.07); }
+    .crt-datos { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; font-size:.85rem; }
+    .crt-rotulo { font-size:.68rem; font-weight:700; text-transform:uppercase; opacity:.6; }
+</style>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Una línea en revisión: lo que trae la salida, si se marcó conforme y dónde entra.</summary>
+    private sealed class LineaVm
+    {
+        public RecepcionLinea L = new();
+        public bool Conforme;
+        /// <summary>Se marcó conforme sola, porque la lectura la completó (y se desmarca sola si se quita una lectura).</summary>
+        public bool ConformePorLectura;
+        public string? Ubicacion;
+        /// <summary>Si su producto se lee por RFID, lo enviado y lo etiquetado en la salida (PROC_..._RECEPCION_LECTURA_CONTEXTO).</summary>
+        public RecepcionLecturaLinea? Lectura;
+    }
+
+    /// <summary>Valor del combo de almacén para "todos los de mi rol".</summary>
+    private const string Todos = "*";
+    private const string Formulario = "Logistica/ConfirmacionRecepcionTransferencias.razor";
+
+    private string _codAp = "", _codOp = "";
+    private List<ComboboxItem> _almacenesCombo = new();
+    private string? _codAlmacen = Todos;
+    private string? _buscar;
+    private List<RecepcionPendiente> _pendientes = new();
+    private RecepcionPendiente? _sel;
+    private List<LineaVm> _lineas = new();
+    private List<ComboboxItem> _ubicacionesDestino = new();
+    private readonly Dictionary<string, List<ComboboxItem>> _ubicacionesPorAlmacen = new();
+    private string? _ubicacionTodas;
+    private string? _avisoConfiguracion;
+    private bool _cargando, _cargandoDetalle, _grabando, _sinBotones;
+    /// <summary>Requisito de lectura del tipo de ingreso que se generará: N no usa, O optativa, R obligatoria.</summary>
+    private string _requisito = "N";
+    /// <summary>Las etiquetas RFID leídas al recibir; se graban al confirmar.</summary>
+    private List<RecepcionLecturaPanel.EtiquetaLeida> _leidas = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "ConfirmacionRecepcionTransferencias");
+        // Los códigos de la opción: los que manda el menú al abrir la pestaña y, si se entró por la
+        // ruta, los que corresponden al formulario.
+        _codAp = CodAplicacion;
+        _codOp = CodOpcionAplicacion;
+        if ((string.IsNullOrWhiteSpace(_codAp) || string.IsNullOrWhiteSpace(_codOp))
+            && MenuService.BuscarCodigosPorFormulario(Formulario) is { } cod)
+            (_codAp, _codOp) = cod;
+        if (!string.IsNullOrWhiteSpace(_codAp) && !string.IsNullOrWhiteSpace(_codOp))
+        {
+            await MenuService.AsegurarBotonesFrescosAsync(_codAp, _codOp);
+            _sinBotones = !MenuService.GetBotonesPorOpcion(_codAp, _codOp).Any(b => EsBotonConfirmar(b) || EsBotonRechazar(b));
+        }
+        else _sinBotones = true;
+
+        var rol = MenuService.RolActivo;
+        if (string.IsNullOrWhiteSpace(rol))
+        {
+            _avisoConfiguracion = "No hay un rol activo: elige tu rol en la barra superior.";
+            return;
+        }
+        var almacenes = (await LeerAsync<List<ComboboxItem>>($"{ApiRoutes.Seguridad.RolesAlmacenes}/combobox/{Uri.EscapeDataString(rol)}")).Data ?? new();
+        _almacenesCombo = new List<ComboboxItem> { new() { Id = Todos, Texto = $"Todos los almacenes de tu rol ({almacenes.Count})" } };
+        _almacenesCombo.AddRange(almacenes);
+        if (almacenes.Count == 0)
+            _avisoConfiguracion = $"Tu rol {rol} no tiene almacenes asignados (Seguridad → Roles → {rol} → pestaña Almacenes).";
+        await Recargar();
+    }
+
+    // ── La lista ─────────────────────────────────────────────────────────────────
+    private async Task OnAlmacenChanged(string? v)
+    {
+        _codAlmacen = string.IsNullOrWhiteSpace(v) ? Todos : v;
+        await Recargar();
+    }
+
+    private async Task Recargar()
+    {
+        var rol = MenuService.RolActivo;
+        if (string.IsNullOrWhiteSpace(rol)) return;
+        _cargando = true;
+        try
+        {
+            var num = _sel?.NUM_MOVIMIENTO_ALMACEN;
+            _pendientes = (await LeerAsync<List<RecepcionPendiente>>(
+                ApiRoutes.Logistica.ConfirmacionRecepcionPendientes(rol, _codAlmacen == Todos ? null : _codAlmacen))).Data ?? new();
+            // La salida elegida sigue elegida si todavía está pendiente, con las marcas y ubicaciones
+            // que ya tenía: ACTUALIZAR trae salidas nuevas, no borra la revisión en curso (las
+            // líneas de una salida ENVIADA no cambian: el flujo no deja modificarla).
+            var sigue = _pendientes.FirstOrDefault(p => p.NUM_MOVIMIENTO_ALMACEN == num);
+            if (sigue is null) { _sel = null; _lineas = new(); }
+            else _sel = sigue;
+        }
+        finally { _cargando = false; }
+    }
+
+    private List<RecepcionPendiente> Filtradas
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_buscar)) return _pendientes;
+            var q = _buscar.Trim();
+            return _pendientes.Where(p =>
+                   Contiene(p.NUM_MOVIMIENTO_ALMACEN?.ToString(), q)
+                || Contiene(p.COD_ALMACEN_ORIGEN, q) || Contiene(p.DES_ALMACEN_ORIGEN, q)
+                || Contiene(p.COD_ALMACEN_DESTINO, q) || Contiene(p.DES_ALMACEN_DESTINO, q)
+                || Contiene(p.COD_TIPO_MOVIMIENTO, q) || Contiene(p.DES_TIPO_MOVIMIENTO, q)
+                || Contiene(p.NUM_COMPROBANTE_PAGO, q) || Contiene(p.COD_USUARIO_ENVIO, q)
+                || Contiene(p.DES_OBSERVACION, q)).ToList();
+        }
+    }
+
+    private static bool Contiene(string? texto, string buscado)
+        => texto is not null && texto.Contains(buscado, StringComparison.OrdinalIgnoreCase);
+
+    // ── La salida elegida ────────────────────────────────────────────────────────
+    /// <summary>Al cambiar de salida, las marcas se pierden: no se graban, son la revisión de
+    /// quien recibe.</summary>
+    private async Task Elegir(RecepcionPendiente s)
+    {
+        if (_grabando) return;
+        // Volver a tocar la salida que ya se está revisando no borra lo marcado.
+        if (_sel?.NUM_MOVIMIENTO_ALMACEN == s.NUM_MOVIMIENTO_ALMACEN && !_cargandoDetalle && _lineas.Count > 0) return;
+        var eleccion = ++_eleccion;
+        _sel = s;
+        _lineas = new();
+        _ubicacionTodas = null;
+        _leidas = new();
+        _requisito = "N";
+        _cargandoDetalle = true;
+        StateHasChanged();
+        try
+        {
+            var detalle = LeerAsync<List<RecepcionLinea>>(ApiRoutes.Logistica.ConfirmacionRecepcionDetalle(s.NUM_MOVIMIENTO_ALMACEN ?? 0));
+            // La lectura es opcional: si la API no la tiene (la base sin el script 05) o falla, la pantalla sigue como siempre.
+            var lectura = Http.SafeGetAsync<List<RecepcionLecturaLinea>>(ApiRoutes.Logistica.ConfirmacionRecepcionLecturaContexto(s.NUM_MOVIMIENTO_ALMACEN ?? 0));
+            var ubicaciones = await UbicacionesDeAsync(s.COD_ALMACEN_DESTINO);
+            var lineas = (await detalle).Data ?? new();
+            var contexto = (await lectura) ?? new();
+            // Mientras esto cargaba se eligió otra salida: este resultado ya no sirve.
+            if (eleccion != _eleccion) return;
+            _ubicacionesDestino = ubicaciones;
+            _requisito = contexto.Select(c => c.COD_REQUISITO_LECTURA?.Trim().ToUpperInvariant()).FirstOrDefault(r => !string.IsNullOrEmpty(r)) ?? "N";
+            _lineas = lineas.Select(l => new LineaVm
+            {
+                L = l,
+                Lectura = contexto.FirstOrDefault(c => c.NUM_SECUENCIA == l.NUM_SECUENCIA),
+                // La ubicación destino que ya trae la línea, si existe en el almacén destino.
+                Ubicacion = ubicaciones.Any(u => u.Id == l.COD_UBICACION_DESTINO) ? l.COD_UBICACION_DESTINO : null
+            }).ToList();
+        }
+        finally { if (eleccion == _eleccion) _cargandoDetalle = false; }
+    }
+
+    /// <summary>Cuenta las elecciones de salida, para descartar la respuesta de una elección
+    /// anterior que llega tarde.</summary>
+    private int _eleccion;
+
+    private async Task<List<ComboboxItem>> UbicacionesDeAsync(string? codAlmacen)
+    {
+        if (string.IsNullOrWhiteSpace(codAlmacen)) return new();
+        if (_ubicacionesPorAlmacen.TryGetValue(codAlmacen, out var ya)) return ya;
+        var lista = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.AlmacenesUbicacionesCombobox(codAlmacen)) ?? new();
+        _ubicacionesPorAlmacen[codAlmacen] = lista;
+        return lista;
+    }
+
+    private int Conformes => _lineas.Count(l => l.Conforme);
+    private bool TodasConformes => _lineas.Count > 0 && _lineas.All(l => l.Conforme);
+    private int SinUbicacion => _lineas.Count(l => string.IsNullOrWhiteSpace(l.Ubicacion));
+
+    // ── Lectura de etiquetas al recibir ──────────────────────────────────────────
+    /// <summary>El panel se ofrece si el tipo de ingreso usa lectura y la salida tiene al menos una línea de un producto RFID.</summary>
+    private bool HayLectura => _requisito is "O" or "R" && _lineas.Any(UsaRfid);
+    private bool LecturaObligatoria => _requisito == "R";
+    private static bool UsaRfid(LineaVm l) => l.Lectura?.FLG_RFID == true;
+    private decimal Leido(LineaVm l) => _leidas.Where(e => e.Linea == l.L.NUM_SECUENCIA).Sum(e => e.Cantidad);
+    private bool Completa(LineaVm l) => UsaRfid(l) && (l.L.CAN_PRODUCTO ?? 0) > 0 && Leido(l) >= (l.L.CAN_PRODUCTO ?? 0);
+    /// <summary>Con lectura obligatoria, el «conforme» de una línea RFID lo da la lectura: no se marca a mano.</summary>
+    private bool Bloqueada(LineaVm l) => LecturaObligatoria && UsaRfid(l);
+
+    /// <summary>Tras cada cambio en las etiquetas leídas: la línea que quedó completa se marca conforme sola; si se quitó una lectura y
+    /// ya no está completa, se desmarca (solo si se había marcado sola, o con lectura obligatoria).</summary>
+    private Task OnLecturaCambio()
+    {
+        foreach (var l in _lineas.Where(UsaRfid))
+        {
+            if (Completa(l)) { l.Conforme = true; l.ConformePorLectura = true; }
+            else if (l.ConformePorLectura || LecturaObligatoria) { l.Conforme = false; l.ConformePorLectura = false; }
+        }
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>El chip «Leído» de una línea: las etiquetas que la salida leyó en ella y cuáles se leyeron al recibir (solo consulta).</summary>
+    private async Task VerEtiquetasAsync(LineaVm l)
+    {
+        if (_sel?.NUM_MOVIMIENTO_ALMACEN is not { } salida) return;
+        await DialogService.ShowAsync<MovimientoEtiquetasDialog>("",
+            new DialogParameters
+            {
+                ["NumMovimiento"] = salida,
+                ["Linea"]         = new MovimientosAlmacenDetalle
+                {
+                    NUM_MOVIMIENTO_ALMACEN = salida, NUM_SECUENCIA = l.L.NUM_SECUENCIA, COD_PRODUCTO = l.L.COD_PRODUCTO,
+                    DES_PRODUCTO = l.L.DES_PRODUCTO, CAN_PRODUCTO = l.L.CAN_PRODUCTO, COD_UNIDAD_MEDIDA = l.L.COD_UNIDAD_MEDIDA
+                },
+                ["Recibidas"]     = _leidas,
+                ["Requisito"]     = _requisito
+            },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = true });
+    }
+
+    private void MarcarTodas()
+    {
+        var marcar = !TodasConformes;
+        // Las líneas cuyo conforme lo da la lectura obligatoria no se tocan a mano.
+        foreach (var l in _lineas.Where(l => !Bloqueada(l))) { l.Conforme = marcar; l.ConformePorLectura = false; }
+    }
+
+    private void PonerUbicacionEnTodas()
+    {
+        if (string.IsNullOrWhiteSpace(_ubicacionTodas)) return;
+        foreach (var l in _lineas) l.Ubicacion = _ubicacionTodas;
+    }
+
+    // ── Los botones de la opción ─────────────────────────────────────────────────
+    /// <summary>Reconoce CONFIRMAR RECEPCIÓN: primero por DES_METODO ("Confirmar") y, como
+    /// respaldo, por el nombre, alias o tooltip — mismo criterio que TRANSFERIR en Movimientos de
+    /// Almacén. No por COD_BOTON_OPCION: ese código cambia de una opción a otra.</summary>
+    public static bool EsBotonConfirmar(BotonTreeviewItem b)
+    {
+        if (string.Equals(b.DES_METODO?.Trim(), "Confirmar", StringComparison.OrdinalIgnoreCase)) return true;
+        if (EsBotonRechazar(b)) return false;
+        return NombreDe(b).Contains("CONFIRM");
+    }
+
+    /// <summary>Reconoce RECHAZAR TRANSFERENCIA: DES_METODO "Rechazar" o el nombre.</summary>
+    public static bool EsBotonRechazar(BotonTreeviewItem b)
+    {
+        if (string.Equals(b.DES_METODO?.Trim(), "Rechazar", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(b.DES_METODO?.Trim(), "Confirmar", StringComparison.OrdinalIgnoreCase)) return false;
+        return NombreDe(b).Contains("RECHAZ");
+    }
+
+    private static string NombreDe(BotonTreeviewItem b)
+        => ((b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+
+    /// <summary>Por qué un botón está apagado (va al tooltip), o null si se puede usar. CONFIRMAR
+    /// se enciende con todas las líneas conformes y con ubicación; RECHAZAR, siempre.</summary>
+    private string? MotivoBotonApagado(BotonTreeviewItem b)
+    {
+        if (_grabando) return "Grabando...";
+        if (_sel is null || _cargandoDetalle) return "Elige una salida.";
+        return EsBotonConfirmar(b) ? MotivoNoConfirmar() : null;
+    }
+
+    private string? MotivoNoConfirmar()
+    {
+        if (_sel is null) return "Elige una salida.";
+        if (!_sel.FLG_TIPO_INGRESO_HABILITADO)
+            return $"Tu rol no tiene el tipo de ingreso {_sel.COD_TIPO_MOVIMIENTO_SINCRONIZADO} en el almacén {_sel.COD_ALMACEN_DESTINO}.";
+        if (_lineas.Count == 0) return "La salida no tiene líneas.";
+        if (LecturaObligatoria && _lineas.Where(l => UsaRfid(l) && !Completa(l)).ToList() is { Count: > 0 } faltan)
+            return "Faltan lecturas: " + string.Join("; ", faltan.Take(3).Select(l => $"línea {l.L.NUM_SECUENCIA} ({Num(Leido(l))} de {Num(l.L.CAN_PRODUCTO)} {l.L.COD_UNIDAD_MEDIDA})"))
+                 + (faltan.Count > 3 ? $" y {faltan.Count - 3} más" : "") + ".";
+        if (!TodasConformes) return $"Marca todas las líneas como conformes ({Conformes} de {_lineas.Count}).";
+        if (SinUbicacion > 0) return $"Falta la ubicación de ingreso en {SinUbicacion} línea(s).";
+        return null;
+    }
+
+    private Task OnAccion(BotonTreeviewItem b)
+        => EsBotonConfirmar(b) ? ConfirmarAsync()
+         : EsBotonRechazar(b) ? RechazarAsync()
+         : Task.CompletedTask;
+
+    private async Task ConfirmarAsync()
+    {
+        if (_sel is not { } sel || _grabando) return;
+        // El botón ya viene apagado si falta algo; esto es por si el estado cambió entre el
+        // dibujo y el clic.
+        if (MotivoNoConfirmar() is { } motivo) { Snackbar.Add(motivo, Severity.Warning); return; }
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Confirmar recepción",
+            new DialogParameters
+            {
+                ["Titulo"] = "Confirmar recepción",
+                ["IconoTitulo"] = Icons.Material.Filled.CheckCircle,
+                ["Mensaje"] = $"¿Confirmar la recepción de la salida N° {sel.NUM_MOVIMIENTO_ALMACEN}? Se crea el ingreso en el almacén {sel.COD_ALMACEN_DESTINO} {sel.DES_ALMACEN_DESTINO} con sus {_lineas.Count} línea(s){(_leidas.Count > 0 ? $" y {_leidas.Count} etiqueta(s) leída(s)" : "")}, y la salida y el ingreso pasan a CONFIRMADO.",
+                ["TextoConfirmar"] = "Confirmar recepción",
+                ["IconoConfirmar"] = Icons.Material.Filled.CheckCircle
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        _grabando = true;
+        try
+        {
+            var dto = new RecepcionConfirmarDto
+            {
+                NUM_MOVIMIENTO_ALMACEN = sel.NUM_MOVIMIENTO_ALMACEN,
+                COD_ROL_USUARIO        = MenuService.RolActivo,
+                Lineas = _lineas.Select(l => new RecepcionConfirmarLinea
+                {
+                    NUM_SECUENCIA         = l.L.NUM_SECUENCIA,
+                    COD_UBICACION_DESTINO = l.Ubicacion
+                }).ToList(),
+                Etiquetas = _leidas.Select(e => new RecepcionConfirmarEtiqueta
+                {
+                    NUM_SECUENCIA    = e.Linea,
+                    COD_STICKER_RFID = e.Etiqueta,
+                    CAN_PRODUCTO     = e.Cantidad,
+                    FLG_FORZAR       = e.Forzada
+                }).ToList()
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.ConfirmacionRecepcionConfirmar, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ConfirmacionRecepcionTransferencias), nameof(ConfirmarAsync), "No se pudo confirmar la recepción");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RecepcionResultado>>();
+            Snackbar.Add($"Recepción confirmada: salida N° {sel.NUM_MOVIMIENTO_ALMACEN} e ingreso N° {r?.Data?.NUM_MOVIMIENTO_ALMACEN} en el almacén {sel.COD_ALMACEN_DESTINO}.", Severity.Success);
+            _sel = null;
+            _lineas = new();
+            _leidas = new();
+            _requisito = "N";
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfirmacionRecepcionTransferencias), nameof(ConfirmarAsync));
+            Snackbar.Add("No se pudo confirmar la recepción. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally { _grabando = false; }
+        await Recargar();
+    }
+
+    private async Task RechazarAsync()
+    {
+        if (_sel is not { } sel || _grabando) return;
+        var dlg = await DialogService.ShowAsync<RechazarTransferenciaDialog>("Rechazar transferencia",
+            new DialogParameters
+            {
+                ["Salida"] = sel,
+                ["CodRol"] = MenuService.RolActivo ?? ""
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var res = await dlg.Result;
+        if (res is not { Canceled: false }) return;
+        _leidas = new();
+        Snackbar.Add($"Transferencia rechazada: la salida N° {sel.NUM_MOVIMIENTO_ALMACEN} pasó a RECHAZADO y el stock volvió al almacén {sel.COD_ALMACEN_ORIGEN} con el ingreso por anulación N° {res.Data}.", Severity.Success);
+        _sel = null;
+        _lineas = new();
+        await Recargar();
+    }
+
+    // ── Llamadas a la API ────────────────────────────────────────────────────────
+    /// <summary>GET que devuelve ApiResponse. A diferencia de SafeGetAsync, no se traga el error:
+    /// si la API responde con error, muestra su mensaje; si la llamada misma falla, lo deja en el log.</summary>
+    private async Task<(T? Data, string? Error)> LeerAsync<T>(string url) where T : class
+    {
+        try
+        {
+            var r = await Http.GetAsync(url);
+            ApiResponse<T>? cuerpo = null;
+            // Un 401/403/404 puede venir sin cuerpo JSON: entonces se informa el código HTTP.
+            try { cuerpo = await r.Content.ReadFromJsonAsync<ApiResponse<T>>(); }
+            catch (System.Text.Json.JsonException) { }
+            if (cuerpo is { Success: true }) return (cuerpo.Data, null);
+            var msg = !string.IsNullOrWhiteSpace(cuerpo?.Message) ? cuerpo!.Message
+                    : r.IsSuccessStatusCode ? "La API no devolvió datos."
+                    : $"La API respondió {(int)r.StatusCode} ({r.ReasonPhrase}).";
+            Snackbar.Add(msg, Severity.Warning);
+            return (null, msg);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ConfirmacionRecepcionTransferencias), nameof(LeerAsync), url);
+            Snackbar.Add("No se pudo consultar. Ver detalle en el log de errores.", Severity.Error);
+            return (null, ex.Message);
+        }
+    }
+
+    // ── Presentación ─────────────────────────────────────────────────────────────
+    private static string Num(decimal? v) => (v ?? 0).ToString("N2");
+
+    private static string Documento(RecepcionPendiente s)
+    {
+        var doc = $"{s.DES_TIPO_COMPROBANTE_PAGO ?? s.COD_TIPO_COMPROBANTE_PAGO} {s.NUM_COMPROBANTE_PAGO}".Trim();
+        return string.IsNullOrWhiteSpace(doc) ? "—" : doc;
+    }
+
+    /// <summary>"Lote 00000 · OP 12-1-1 (TEJ)"; sin orden de producción, sólo el lote.</summary>
+    private static string LoteOrden(RecepcionLinea l)
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(l.NUM_LOTE_CONTROL)) partes.Add($"Lote {l.NUM_LOTE_CONTROL}");
+        if (l.NUM_ORDEN_PRODUCCION is > 0) partes.Add($"OP {l.NUM_ORDEN_PRODUCCION}-{l.NUM_ORDEN_PRODUCCION_ITEM}-{l.NUM_ORDEN_PRODUCCION_UNIDAD}{(string.IsNullOrWhiteSpace(l.COD_PROCESO) ? "" : $" ({l.COD_PROCESO})")}");
+        return partes.Count == 0 ? "—" : string.Join(" · ", partes);
+    }
+}

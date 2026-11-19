@@ -1,0 +1,70 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nueva memoria" : $"Memoria {Item.NUM_SECUENCIA}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_texto" Label="Memoria (descripción detallada)" Variant="Variant.Outlined" Lines="6" Required="true" />
+            </MudItem>
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="_eventos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_evento" ValueChanged="@(v => _evento = v)" Label="Evento (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fases" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteMemoria? Item { get; set; }
+    [Parameter] public List<ExpedienteMemoria> Notas { get; set; } = new();
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ExpedienteEvento> Eventos { get; set; } = new();
+    /// <summary>Evento con el que arranca una memoria nueva (cuando se abre desde la fila de un evento).</summary>
+    [Parameter] public int? EventoInicial { get; set; }
+
+    private List<ComboboxItem> _fases = new();
+    private string _texto = "";
+    private string? _fase, _tarea, _evento;
+    private List<ComboboxItem> _eventos = new();
+    private bool _guardando;
+
+    private List<ComboboxItem> TareasDeFase => Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override void OnInitialized()
+    {
+        _fases = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        _eventos = Eventos.Select(e => new ComboboxItem { Id = e.NUM_SECUENCIA.ToString(), Texto = $"{e.NUM_SECUENCIA} — {e.DES_EVENTO} ({e.FEC_HORA_INICIO:dd/MM/yyyy HH:mm})" }).ToList();
+        if (Item is null) { _evento = EventoInicial?.ToString(); return; }
+        _evento = Item.NUM_SECUENCIA_EVENTO?.ToString();
+        _texto = Item.DES_MEMORIA ?? ""; _fase = Item.COD_FASE?.ToString(); _tarea = Item.COD_TAREA?.ToString();
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_texto)) { Snackbar.Add("Escribe la memoria.", Severity.Warning); return; }
+        var esNueva = Item is null;
+        var sec = esNueva ? (Notas.Count == 0 ? 1 : Notas.Max(n => n.NUM_SECUENCIA) + 1) : Item!.NUM_SECUENCIA;
+        var cuerpo = new { NUM_PROYECTO = NumProyecto, NUM_SECUENCIA = sec, COD_FASE = int.TryParse(_fase, out var f) ? (int?)f : null, COD_TAREA = int.TryParse(_tarea, out var t) ? (int?)t : null, NUM_SECUENCIA_EVENTO = int.TryParse(_evento, out var ev) ? (int?)ev : null, DES_MEMORIA = _texto.Trim() };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Memoria, cuerpo, esNueva);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar la memoria.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

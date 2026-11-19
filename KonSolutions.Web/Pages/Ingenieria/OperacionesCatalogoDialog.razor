@@ -1,0 +1,105 @@
+@* Alta, cambio, consulta y baja de una fila de los catalogos de operaciones (categoria, tipo de maquina, metodo de tiempo, distribucion de linea). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudText data-zona="confirmar">¿Eliminar <b>@_m.COD · @_m.DES</b>? Si está en uso, el sistema no lo permitirá.</MudText>
+        }
+        else
+        {
+            <MudTextField T="string" @bind-Value="_m.COD" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="@(Clave == "categorias" || Clave == "distribuciones" ? 3 : 5)" Class="mb-2" data-campo="cod" />
+            <MudTextField T="string" @bind-Value="_m.DES" Label="Descripción" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="50" Class="mb-2" data-campo="des" />
+            @if (Clave == "categorias")
+            {
+                <MudTextField T="string" @bind-Value="_m.DES_DETALLE" Label="Criterio" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mb-2" data-campo="criterio" />
+                <MudNumericField T="int?" @bind-Value="_m.NUM_ORDEN" Label="Orden de presentación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mb-2" data-campo="orden" />
+            }
+            @if (Clave == "maquinas")
+            {
+                <MudSwitch T="bool" Value="_m.FLG_1 == true" ValueChanged="@(v => _m.FLG_1 = v)" Label="Requiere máquina (desmarcado = trabajo manual)" Color="Color.Primary" Disabled="_soloLectura" data-campo="requiere-maquina" />
+            }
+            @if (Clave == "distribuciones")
+            {
+                <MudSelect T="string" @bind-Value="_m.COD_REGLA" Label="Regla de ciclo" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mb-2" data-campo="regla">
+                    <MudSelectItem T="string" Value="@("MAX_PUESTO")">MAX_PUESTO · el ciclo lo marca el puesto más lento</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("SUMA_OPERARIOS")">SUMA_OPERARIOS · ΣSAM entre los operarios del equipo</MudSelectItem>
+                </MudSelect>
+                <MudSwitch T="bool" Value="_m.FLG_1 == true" ValueChanged="@(v => _m.FLG_1 = v)" Label="Flujo de pieza en pieza (unitario)" Color="Color.Primary" Disabled="_soloLectura" data-campo="flujo" />
+                <MudSwitch T="bool" Value="_m.FLG_2 == true" ValueChanged="@(v => _m.FLG_2 = v)" Label="Exige precedencias entre operaciones" Color="Color.Primary" Disabled="_soloLectura" data-campo="precedencias" />
+            }
+            @if (!_nuevo)
+            {
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" data-campo="estado">
+                    <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
+                    <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
+                </MudSelect>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura && Modo != CrudModo.Delete ? "Cerrar" : "Cancelar")</MudButton>
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudButton Color="Color.Error" Variant="Variant.Filled" Disabled="_guardando" OnClick="Eliminar" data-accion="confirmar-eliminar">Eliminar</MudButton>
+        }
+        else if (!_soloLectura)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public CatalogoOperacionItem? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    /// <summary>categorias, maquinas, metodos o distribuciones.</summary>
+    [Parameter] public string Clave { get; set; } = "categorias";
+    [Parameter] public string Ruta { get; set; } = "";
+
+    private CatalogoOperacionItem _m = new();
+    private bool _nuevo, _guardando;
+    private short _estado;
+    private string _error = "";
+    private bool _soloLectura => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override void OnInitialized()
+    {
+        _nuevo = Modo == CrudModo.Create;
+        _m = Item is null ? new CatalogoOperacionItem { COD_REGLA = Clave == "distribuciones" ? "MAX_PUESTO" : null, FLG_1 = Clave == "maquinas" }
+            : new CatalogoOperacionItem
+            {
+                COD = Item.COD, DES = Item.DES, DES_DETALLE = Item.DES_DETALLE, NUM_ORDEN = Item.NUM_ORDEN, FLG_1 = Item.FLG_1, FLG_2 = Item.FLG_2, COD_REGLA = Item.COD_REGLA,
+                COD_TIPO_ESTADO = Item.COD_TIPO_ESTADO, COD_ESTADO = Item.COD_ESTADO
+            };
+        _estado = _m.COD_ESTADO ?? 0;
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_m.COD) || string.IsNullOrWhiteSpace(_m.DES)) { _error = "El código y la descripción son obligatorios."; return; }
+        _guardando = true;
+        var r = await ProyectoApi.GuardarAsync(Http, Ruta, _m, _nuevo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add(_nuevo ? "Creado." : "Modificado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+
+    private async Task Eliminar()
+    {
+        _error = "";
+        _guardando = true;
+        var r = await ProyectoApi.DeleteAsync(Http, $"{Ruta}/{Uri.EscapeDataString(_m.COD)}");
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo eliminar."; return; }
+        Snackbar.Add("Eliminado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

@@ -1,0 +1,217 @@
+@* Alta o modificacion de un insumo de un componente, en secciones: Producto, Cantidad y merma, Precio y Enlace.
+   El total se calcula igual que en la base: consumo x (1 + merma%) x precio. Un insumo ENLAZADO a un diseno y version
+   (tela acabada -> tela cruda -> algodon...) toma su costo de la estructura de esa version y no lleva precio. *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Ingenieria
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@using DisenoModel = KONSolutions.Shared.Models.Ingenieria.Disenos
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(760px,96vw);">
+    <TitleContent><MudText Typo="Typo.h6">@(NumSecuencia is null ? "Nuevo insumo" : "Modificar insumo") · componente @CodComponente</MudText></TitleContent>
+    <DialogContent>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-1" Style="opacity:.7;">1 · Producto</MudText>
+            <MudGrid Spacing="2" Class="mb-1" data-panel="clasificacion">
+                <MudItem xs="12" sm="4"><AriaCombo TItem="ComboboxItem" Items="_grupos" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" Value="@_g" ValueChanged="OnGrupoChanged" Label="Grupo" Class="mb-0" Disabled="@(NumSecuencia is not null)" /></MudItem>
+                <MudItem xs="12" sm="4"><AriaCombo TItem="ComboboxItem" Items="_familias" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" Value="@_f" ValueChanged="OnFamiliaChanged" Label="Familia" Class="mb-0" Disabled="@(NumSecuencia is not null || string.IsNullOrEmpty(_g))" /></MudItem>
+                <MudItem xs="12" sm="4"><AriaCombo TItem="ComboboxItem" Items="_subFamilias" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" Value="@_s" ValueChanged="OnSubFamiliaChanged" Label="Sub familia" Class="mb-0" Disabled="@(NumSecuencia is not null || string.IsNullOrEmpty(_f))" /></MudItem>
+            </MudGrid>
+            <AriaCombo TItem="ProductoModel" Items="_productos" TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")" ValueFunc="@(x => x.COD_PRODUCTO)"
+                       Value="@_prod" ValueChanged="OnProductoChanged" SearchFunc="BuscarAsync" MinCharacters="2" Disabled="@(NumSecuencia is not null)"
+                       TextoInicial="@TextoInicial" Label="Producto (insumo o subensamble)" Class="mb-0" />
+        </MudPaper>
+
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">2 · Cantidad y merma</MudText>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_consumo" Label="Consumo" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="consumo" /></MudItem>
+                <MudItem xs="12" sm="2"><MudTextField T="string" Value="@(_actual?.COD_UNIDAD_MEDIDA ?? "")" Label="Unidad" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                <MudItem xs="12" sm="4"><AriaCombo TItem="ComboboxItem" Items="_mermas" TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)" @bind-Value="_tipoMerma" Label="Tipo de merma" Class="mb-0" /></MudItem>
+                <MudItem xs="12" sm="2"><MudNumericField T="decimal" @bind-Value="_merma" Label="Merma %" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="merma" /></MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">3 · Precio</MudText>
+            <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                <MudItem xs="12" sm="3"><AriaCombo TItem="ComboboxItem" Items="_monedas" TextFunc="@(m => m.Id)" ValueFunc="@(m => m.Id)" @bind-Value="_moneda" Label="Moneda" Class="mb-0" /></MudItem>
+                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_precio" Label="Precio unitario" Min="0" HideSpinButtons="true" Disabled="Enlazado" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="precio" /></MudItem>
+                <MudItem xs="12" sm="5"><MudText Typo="Typo.subtitle1" Align="Align.Right" data-total="1">Total estimado: <b>@Total.ToString("N4")</b></MudText></MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <div class="d-flex align-center">
+                <MudText Typo="Typo.overline" Class="mb-1" Style="opacity:.7;">4 · Enlace con otro diseño (subensamble)</MudText>
+                <MudSpacer />
+                @if (Enlazado) { <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="QuitarEnlace" data-accion="quitar-enlace">Quitar enlace</MudButton> }
+            </div>
+            <MudText Style="opacity:.7;font-size:.8rem;" Class="mb-2">Si este insumo se fabrica con otro diseño (p. ej. tela acabada → tela cruda → algodón), elige el diseño y la versión: su estructura se expande dentro de la de este diseño y su costo se suma.</MudText>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="7"><AriaCombo TItem="ComboboxItem" Items="_disenosVista" TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)" Value="@_enlD" ValueChanged="OnEnlaceDisenoChanged" Label="Diseño enlazado" Class="mb-0" /></MudItem>
+                <MudItem xs="12" sm="5"><AriaCombo TItem="DisenoVersion" Items="_versiones" TextFunc="@(v => $"v{v.NUM_VERSION} - {v.DES_VERSION}")" ValueFunc="@(v => v.NUM_VERSION?.ToString() ?? "")" @bind-Value="_enlV" Label="Versión" Disabled="@string.IsNullOrEmpty(_enlD)" Class="mb-0" /></MudItem>
+            </MudGrid>
+            @if (Enlazado) { <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2" data-ensamble="1">Enlazado con el diseño @_enlD, versión @_enlV: su costo sale de esa estructura.</MudAlert> }
+        </MudPaper>
+
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex justify-end gap-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_guardando || string.IsNullOrEmpty(_prod) || _consumo <= 0 || (!string.IsNullOrEmpty(_enlD) && string.IsNullOrEmpty(_enlV)))" OnClick="GuardarAsync" data-accion="guardar">
+                @(_guardando ? "Guardando..." : "Guardar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    [Parameter] public string CodSector { get; set; } = "";
+    [Parameter] public string CodComponente { get; set; } = "";
+    /// <summary>Insumo a modificar (null = nuevo).</summary>
+    [Parameter] public DisenosEstructuraNodo? Nodo { get; set; }
+
+    private int? NumSecuencia => Nodo?.NUM_SECUENCIA;
+    private List<ProductoModel> _productos = new();
+    private List<ComboboxItem> _mermas = new(), _monedas = new(), _disenos = new();
+    private List<DisenoVersion> _versiones = new();
+    // Grupo > Familia > Sub familia: filtran la busqueda de producto y la lista de disenos a enlazar; al elegir un producto se rellenan.
+    private List<ComboboxItem> _grupos = new(), _familias = new(), _subFamilias = new(), _disenosVista = new();
+    private List<DisenoModel> _todosDisenos = new();
+    private string _g = "", _f = "", _s = "";
+    private ProductoModel? _actual;
+    private string? _prod, _tipoMerma, _moneda = "PEN", _enlD, _enlV;
+    private decimal _consumo, _merma, _precio;
+    private string _error = ""; private bool _guardando;
+
+    private string FiltroClasificacion =>
+        (_g == "" ? "" : $"&COD_GRUPO_PRODUCTO={Uri.EscapeDataString(_g)}") + (_f == "" ? "" : $"&COD_FAMILIA_PRODUCTO={Uri.EscapeDataString(_f)}") + (_s == "" ? "" : $"&COD_SUB_FAMILIA_PRODUCTO={Uri.EscapeDataString(_s)}");
+
+    private bool Enlazado => !string.IsNullOrEmpty(_enlD);
+    private decimal Total => _consumo * (1 + _merma / 100m) * _precio;
+    private string? TextoInicial => Nodo is null ? null : $"{Nodo.COD_PRODUCTO_COMPONENTE} — {Nodo.DESCRIPCION}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var tM = Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.TiposMermaCombobox);
+        var tMon = Http.SafeGetAsync<List<ComboboxItem>>(KONSolutions.Web.Services.ApiRoutes.Estandar.MonedasCombobox);
+        var tD = Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.DisenosCombobox);
+        var tG = Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.GruposProductoCombobox);
+        var tTodos = Http.SafeGetAsync<List<DisenoModel>>(IngenieriaRoute.Disenos);
+        await Task.WhenAll(tM, tMon, tD, tG, tTodos);
+        _mermas = tM.Result ?? new(); _monedas = tMon.Result ?? new(); _disenos = tD.Result ?? new();
+        _grupos = tG.Result ?? new(); _todosDisenos = tTodos.Result ?? new();
+        AplicarFiltroDisenos();
+        if (Nodo is not null)
+        {
+            _prod = Nodo.COD_PRODUCTO_COMPONENTE; _consumo = Nodo.CAN_CONSUMO ?? 0; _merma = Nodo.TAS_MERMA ?? 0;
+            _tipoMerma = Nodo.COD_TIPO_MERMA; _moneda = Nodo.COD_MONEDA ?? "PEN"; _precio = Nodo.PRE_UNITARIO ?? 0;
+            _actual = new ProductoModel { COD_PRODUCTO = _prod ?? "", COD_UNIDAD_MEDIDA = Nodo.COD_UNIDAD_MEDIDA };
+            if (Nodo.FLG_ENSAMBLE && !string.IsNullOrEmpty(Nodo.COD_DISENO_ENSAMBLE))
+            {
+                _enlD = Nodo.COD_DISENO_ENSAMBLE; await CargarVersionesAsync(); _enlV = Nodo.NUM_VERSION_ENSAMBLE?.ToString();
+            }
+        }
+    }
+
+    private async Task CargarVersionesAsync()
+    {
+        _versiones = new();
+        if (string.IsNullOrEmpty(_enlD)) return;
+        _versiones = await Http.SafeGetAsync<List<DisenoVersion>>($"{IngenieriaRoute.DisenosVersion}?codDiseno={Uri.EscapeDataString(_enlD)}") ?? new();
+    }
+
+    // Disenos que se ofrecen para enlazar: los de la clasificacion elegida (si hay); sin filtro, todos.
+    private void AplicarFiltroDisenos()
+    {
+        if (_todosDisenos.Count == 0 || (_g == "" && _f == "" && _s == "")) { _disenosVista = _disenos; return; }
+        _disenosVista = _todosDisenos
+            .Where(d => (_g == "" || d.COD_GRUPO_PRODUCTO?.Trim() == _g) && (_f == "" || d.COD_FAMILIA_PRODUCTO?.Trim() == _f) && (_s == "" || d.COD_SUB_FAMILIA_PRODUCTO?.Trim() == _s))
+            .Select(d => new ComboboxItem { Id = d.COD_DISENO, Texto = d.DES_DISENO }).ToList();
+        // el diseno ya enlazado se conserva en la lista aunque no cumpla el filtro
+        if (!string.IsNullOrEmpty(_enlD) && _disenosVista.All(x => x.Id != _enlD)) { var ya = _disenos.FirstOrDefault(x => x.Id == _enlD); if (ya is not null) _disenosVista.Insert(0, ya); }
+    }
+
+    private async Task CargarFamiliasAsync() =>
+        _familias = string.IsNullOrEmpty(_g) ? new() : await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.FamiliasProductoPorGrupo(_g)) ?? new();
+    private async Task CargarSubFamiliasAsync() =>
+        _subFamilias = string.IsNullOrEmpty(_g) || string.IsNullOrEmpty(_f) ? new() : await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.SubFamiliasProductoPorFamilia(_g, _f)) ?? new();
+
+    private async Task OnGrupoChanged(string? v)
+    {
+        _g = (v ?? "").Trim(); _f = ""; _s = ""; _subFamilias = new();
+        await CargarFamiliasAsync(); AplicarFiltroDisenos();
+    }
+
+    private async Task OnFamiliaChanged(string? v)
+    {
+        _f = (v ?? "").Trim(); _s = "";
+        await CargarSubFamiliasAsync(); AplicarFiltroDisenos();
+    }
+
+    private Task OnSubFamiliaChanged(string? v) { _s = (v ?? "").Trim(); AplicarFiltroDisenos(); return Task.CompletedTask; }
+
+    private async Task<IEnumerable<ProductoModel>> BuscarAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>($"{KONSolutions.Web.Services.ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto)}{FiltroClasificacion}", ct);
+            var lista = r?.Data ?? new();
+            _productos = _productos.Where(p => lista.All(l => l.COD_PRODUCTO != p.COD_PRODUCTO)).Concat(lista).ToList();
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ProductoModel>(); }
+        catch { return Enumerable.Empty<ProductoModel>(); }
+    }
+
+    // Al elegir un producto que ya tiene diseno y version asociados, se propone ese enlace (se puede cambiar).
+    private async Task OnProductoChanged(string? v)
+    {
+        _prod = v;
+        _actual = _productos.FirstOrDefault(p => p.COD_PRODUCTO == v);
+        // la clasificacion del producto elegido rellena Grupo / Familia / Sub familia
+        if (_actual is { COD_GRUPO_PRODUCTO: not null } a && (a.COD_GRUPO_PRODUCTO.Trim() != _g || (a.COD_FAMILIA_PRODUCTO ?? "").Trim() != _f || (a.COD_SUB_FAMILIA_PRODUCTO ?? "").Trim() != _s))
+        {
+            _g = a.COD_GRUPO_PRODUCTO.Trim(); _f = (a.COD_FAMILIA_PRODUCTO ?? "").Trim(); _s = (a.COD_SUB_FAMILIA_PRODUCTO ?? "").Trim();
+            await CargarFamiliasAsync(); await CargarSubFamiliasAsync();
+        }
+        if (_actual is { COD_DISENO: not null, NUM_VERSION: not null })
+        {
+            _enlD = _actual.COD_DISENO; await CargarVersionesAsync(); _enlV = _actual.NUM_VERSION?.ToString(); _precio = 0;
+        }
+        AplicarFiltroDisenos();
+    }
+
+    private async Task OnEnlaceDisenoChanged(string? cod)
+    {
+        _enlD = string.IsNullOrEmpty(cod) ? null : cod; _enlV = null;
+        await CargarVersionesAsync();
+        if (_versiones.Count == 1) _enlV = _versiones[0].NUM_VERSION?.ToString();
+        if (Enlazado) _precio = 0;
+    }
+
+    private void QuitarEnlace() { _enlD = null; _enlV = null; _versiones = new(); }
+
+    private async Task GuardarAsync()
+    {
+        _guardando = true; _error = "";
+        var r = await Http.PostAsync<DisenosEstructuraInsumoResultado>(IngenieriaRoute.DisenosEstructuraInsumo, new DisenosEstructuraInsumoDto
+        {
+            COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia,
+            COD_PRODUCTO_COMPONENTE = _prod!, CAN_CONSUMO = _consumo, COD_TIPO_MERMA = string.IsNullOrEmpty(_tipoMerma) ? null : _tipoMerma, TAS_MERMA = _merma,
+            COD_MONEDA = _moneda, PRE_UNITARIO = Enlazado ? 0 : _precio,
+            COD_DISENO_ENLACE = Enlazado ? _enlD : null, NUM_VERSION_ENLACE = Enlazado && int.TryParse(_enlV, out var nv) ? nv : null
+        });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje; return; }
+        Snackbar.Add("Insumo guardado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

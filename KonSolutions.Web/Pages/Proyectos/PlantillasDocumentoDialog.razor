@@ -1,0 +1,124 @@
+@using Modelo = KONSolutions.Shared.Models.Proyectos.PlantillaDocumento
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Reportes
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_PLANTILLA_DOCUMENTO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="3">
+                    <CampoTexto Tabla="PROYECTOS.PLANTILLAS_DOCUMENTO" Columna="COD_PLANTILLA_DOCUMENTO"
+                                @bind-Value="_model.COD_PLANTILLA_DOCUMENTO" Disabled="@(!_esNuevo || _readonly)" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="9">
+                    <CampoTexto Tabla="PROYECTOS.PLANTILLAS_DOCUMENTO" Columna="DES_PLANTILLA_DOCUMENTO"
+                                @bind-Value="_model.DES_PLANTILLA_DOCUMENTO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tipos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_model.COD_TIPO_DOCUMENTO_COMPROMISO" Label="Tipo de documento de compromiso" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_disenos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_diseno" ValueChanged="@(v => { _diseno = v; _model.NUM_DISENO = int.TryParse(v, out var n) ? n : null; })" Label="Diseño del reporteador" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12">
+                    <CampoDocumentoTexto @bind-Value="_model.DES_CONTENIDO" Label="Texto de la plantilla" Lineas="16" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSwitch T="bool" @bind-Value="_model.FLG_REQUIERE_APROBACION" Label="Pide aprobación" Color="Color.Primary" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSwitch T="bool" @bind-Value="_model.FLG_HABILITADO" Label="Habilitada" Color="Color.Primary" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudNumericField T="byte?" @bind-Value="_model.NUM_ORDEN_PRESENTACION" Label="Orden" Variant="Variant.Outlined" Min="0" Max="255" Disabled="_readonly" />
+                </MudItem>
+                @if (!_esNuevo && Item is not null)
+                {
+                    <MudItem xs="12"><MudText Typo="Typo.caption" Style="opacity:.7;">Versión @Item.NUM_VERSION · si cambias el texto, la versión sube; los documentos ya creados conservan su propio texto.</MudText></MudItem>
+                }
+            </MudGrid>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private PlantillaDocumentoDto _model = new();
+    private List<ComboboxItem> _tipos = new(), _disenos = new();
+    private string? _diseno;
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null)
+            _model = new PlantillaDocumentoDto
+            {
+                COD_PLANTILLA_DOCUMENTO = Item.COD_PLANTILLA_DOCUMENTO, DES_PLANTILLA_DOCUMENTO = Item.DES_PLANTILLA_DOCUMENTO, COD_TIPO_DOCUMENTO_COMPROMISO = Item.COD_TIPO_DOCUMENTO_COMPROMISO,
+                NUM_DISENO = Item.NUM_DISENO, DES_CONTENIDO = Item.DES_CONTENIDO, FLG_REQUIERE_APROBACION = Item.FLG_REQUIERE_APROBACION, FLG_HABILITADO = Item.FLG_HABILITADO, NUM_ORDEN_PRESENTACION = Item.NUM_ORDEN_PRESENTACION
+            };
+        _diseno = _model.NUM_DISENO?.ToString();
+        _tipos = await Http.SafeGetAsync<List<ComboboxItem>>($"{ApiRoutes.Proyectos.Expediente}/compromisos-tipos") ?? new();
+        // los diseños del reporteador (solo los libres o de ficha tienen sentido aqui: el que el usuario elija; se listan todos los habilitados)
+        var dis = await Http.SafeGetAsync<List<ReporteDiseno>>(ApiRoutes.Reportes.Disenos) ?? new();
+        _disenos = dis.Where(d => d.FLG_HABILITADO).OrderBy(d => d.DES_DISENO).Select(d => new ComboboxItem { Id = (d.NUM_DISENO ?? 0).ToString(), Texto = d.DES_DISENO ?? "" }).ToList();
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Proyectos.PlantillasDocumento;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_PLANTILLA_DOCUMENTO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(PlantillasDocumentoDialog), nameof(Submit), "No se pudo eliminar la plantilla");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creada." : "Modificada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PlantillasDocumentoDialog), nameof(Submit));
+    }
+}

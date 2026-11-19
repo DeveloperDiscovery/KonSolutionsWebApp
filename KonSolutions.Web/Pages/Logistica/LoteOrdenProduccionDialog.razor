@@ -1,0 +1,214 @@
+@* Lote, proceso y orden de producción de UNA línea del movimiento, en un solo diálogo.
+
+   Eran dos columnas de la grilla —un combo de lote y una celda que abría otro diálogo— y
+   entre las dos se llevaban el ancho que necesitan las cantidades y la ubicación. Acá los
+   cinco datos tienen aire, y la grilla muestra una sola celda con el resumen.
+
+   Los cinco NO son iguales, y el diálogo lo refleja:
+
+     · El LOTE se elige. Lo asigna quien recibe, no quien compra, así que la línea casi
+       siempre llega sin él.
+     · Proceso, orden, ítem y unidad se HEREDAN de la línea de la orden de compra. Van
+       bloqueados: cambiarlos acá haría que el movimiento reciba contra una orden distinta
+       de la que la compra dice, y no habría nada que avisara de la diferencia.
+
+   Trabaja sobre una COPIA del lote: mientras no se toque Grabar, la fila no se entera.
+   Cancelar la deja como estaba. *@
+
+@using KONSolutions.Shared.Common
+@using KONSolutions.Web.Pages.Comercial
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(560px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Lote y orden de producción</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-4" Style="opacity:.75;">
+            Ítem @NumSecuencia@(string.IsNullOrWhiteSpace(DesProducto) ? "" : $" · {DesProducto}")
+        </MudText>
+        @if (!string.IsNullOrWhiteSpace(EtiquetaLeida))
+        {
+            @* Abierto desde la grilla de Lecturas: lo que se ve es lo que dice ESA etiqueta. *@
+            <MudText Typo="Typo.caption" Class="mb-4 d-block mono" Style="opacity:.65;margin-top:-12px;" title="@EtiquetaLeida">
+                Etiqueta @(EtiquetaLeida!.Length <= 30 ? EtiquetaLeida : "…" + EtiquetaLeida[^28..])
+            </MudText>
+        }
+
+        <div style="display:flex;align-items:flex-start;gap:8px;">
+            <AriaCombo TItem="ComboboxItem" Items="Lotes"
+                       TextFunc="@(t => Etiqueta(t))" ValueFunc="@(t => t.Id)"
+                       Value="@_numLote" ValueChanged="@(v => _numLote = string.IsNullOrWhiteSpace(v) ? null : v)"
+                       Label="Lote de control" Disabled="SoloLectura" Class="mb-4" Style="flex:1 1 auto;min-width:0;" />
+            @* Crear el lote desde acá mismo evita mandar a quien recibe a otra pantalla y
+               volver, perdiendo lo que ya eligió en el diálogo. Sólo aparece cuando el lote SÍ
+               se puede elegir (no en solo-lectura) y cuando hay a nombre de quién crearlo.
+               Estilo Confirmar (crear/guardar) y no botón de ícono suelto: mismo formato de
+               Configuración General que usan Grabar/Cancelar acá abajo. *@
+            @if (!SoloLectura)
+            {
+                <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" Class="mt-1"
+                           StartIcon="@Icons.Material.Filled.Add" Size="Size.Small"
+                           Disabled="@(CodEntidad is null)"
+                           Title="@(CodEntidad is null ? "Falta la entidad para crear un lote" : "Crear un lote nuevo para esta entidad")"
+                           OnClick="CrearLoteAsync">Nuevo lote</MudButton>
+            }
+        </div>
+
+        @* Los cuatro de producción, bloqueados y con el motivo escrito. Un campo gris sin
+           explicación se lee como un error de la pantalla. *@
+        <MudText Typo="Typo.overline" Style="opacity:.6;">Orden de producción</MudText>
+        <MudText Typo="Typo.caption" Class="mb-2 d-block" Style="opacity:.6;">
+            @if (string.IsNullOrWhiteSpace(EtiquetaLeida))
+            {
+                <text>Viene de la línea de la orden de compra y no se edita acá: cambiarlo haría que el
+                movimiento reciba contra una orden distinta de la que la compra dice.</text>
+            }
+            else
+            {
+                <text>Es lo que dice la etiqueta (o su registro en Objetos RFID). Lo que la etiqueta no trae se
+                completa con los valores por omisión de Configuración General al leerla.</text>
+            }
+        </MudText>
+
+        <MudGrid Spacing="2" Class="mb-2">
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" Label="Proceso" Variant="Variant.Outlined"
+                              Value="@TextoProceso" Disabled="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" Label="Orden de producción" Variant="Variant.Outlined"
+                              Value="@TextoOrden" Disabled="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" Label="Ítem de orden" Variant="Variant.Outlined"
+                              Value="@(NumItem?.ToString() ?? "—")" Disabled="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" Label="Unidad mínima" Variant="Variant.Outlined"
+                              Value="@(NumUnidad?.ToString() ?? "—")" Disabled="true" />
+            </MudItem>
+        </MudGrid>
+
+        @if (string.IsNullOrWhiteSpace(CodProceso))
+        {
+            @* Sin orden NO es un error: una compra que no es de consumo de producción no
+               lleva ninguno de los cuatro. Se dice, para que nadie crea que falta cargar
+               algo o que la pantalla no los trajo. *@
+            <MudAlert Severity="Severity.Info" Dense="true">
+                @if (string.IsNullOrWhiteSpace(EtiquetaLeida))
+                {
+                    <text>Esta línea no viene de una orden de producción. Es lo normal en una compra de
+                    reposición; los cuatro campos quedan vacíos a propósito.</text>
+                }
+                else
+                {
+                    <text>Esta etiqueta no trae proceso ni orden de producción: los cuatro campos quedan vacíos a propósito.</text>
+                }
+            </MudAlert>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        @if (!SoloLectura)
+        {
+            <MudButton OnClick="@(() => _numLote = null)" Variant="Variant.Text"
+                       Disabled="@(string.IsNullOrWhiteSpace(_numLote))">Quitar lote</MudButton>
+        }
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        @if (!SoloLectura)
+        {
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar"
+                       OnClick="Grabar">Grabar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>Los lotes que se pueden elegir. Los arma el panel y se pasan por parámetro:
+    /// son los mismos para todas las líneas, así que pedirlos acá sería una llamada por cada
+    /// vez que se abre el diálogo.</summary>
+    [Parameter] public List<ComboboxItem> Lotes { get; set; } = new();
+
+    [Parameter] public string? NumLoteControl { get; set; }
+
+    [Parameter] public string? CodProceso { get; set; }
+    [Parameter] public string? DesProceso { get; set; }
+    [Parameter] public int?    NumOrden   { get; set; }
+    [Parameter] public string? DesOrden   { get; set; }
+    [Parameter] public short?  NumItem    { get; set; }
+    [Parameter] public byte?   NumUnidad  { get; set; }
+
+    [Parameter] public int?    NumSecuencia { get; set; }
+    [Parameter] public string? DesProducto  { get; set; }
+
+    [Parameter] public bool SoloLectura { get; set; }
+
+    /// <summary>La etiqueta cuya clave se está mirando, cuando el diálogo se abre desde la grilla de Lecturas (siempre en solo lectura).
+    /// Cambia los textos explicativos: acá el lote y la orden no vienen de una orden de compra sino de la etiqueta.</summary>
+    [Parameter] public string? EtiquetaLeida { get; set; }
+
+    /// <summary>Entidad a nombre de la cual se crea el lote nuevo. La pasa quien abre el
+    /// diálogo (el panel conoce la entidad del movimiento; este diálogo no la tiene por su
+    /// cuenta). Sin ella el botón "+" queda apagado: un lote no puede crearse sin saber de
+    /// quién es.</summary>
+    [Parameter] public decimal? CodEntidad { get; set; }
+
+    /// <summary>Sólo para mostrar de quién es el lote que se va a crear. Si no llega, el
+    /// diálogo de alta muestra el código.</summary>
+    [Parameter] public string? DesEntidad { get; set; }
+
+    private string? _numLote;
+
+    protected override void OnInitialized() => _numLote = NumLoteControl;
+
+    private static string Etiqueta(ComboboxItem t)
+        => string.IsNullOrWhiteSpace(t.Texto) ? (t.Id ?? "") : t.Texto;
+
+    /// <summary>Abre el alta rápida de lote (el mismo diálogo que usa Pedido Comercial), lo
+    /// agrega a la lista de este diálogo y lo deja elegido — sin cerrar este diálogo ni perder
+    /// la orden de producción que ya se estaba mirando.</summary>
+    private async Task CrearLoteAsync()
+    {
+        if (CodEntidad is null) return;
+
+        var parametros = new DialogParameters
+        {
+            ["CodEntidad"] = CodEntidad.Value,
+            ["DesEntidad"] = DesEntidad
+        };
+
+        var dlg = await DialogService.ShowAsync<LoteRapidoDialog>("Nuevo lote de control",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+
+        if ((await dlg.Result) is not { Canceled: false, Data: LoteRapidoDialog.Creado creado }) return;
+
+        if (!Lotes.Any(x => string.Equals(x.Id, creado.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase)))
+            Lotes.Insert(0, new ComboboxItem { Id = creado.NUM_LOTE_CONTROL, Texto = creado.DES_LOTE_CONTROL ?? creado.NUM_LOTE_CONTROL });
+
+        _numLote = creado.NUM_LOTE_CONTROL;
+    }
+
+    /// <summary>"código — descripción", o lo que haya. El guion largo marca que el dato está
+    /// vacío a propósito y no que la pantalla no lo trajo.</summary>
+    private string TextoProceso
+        => string.IsNullOrWhiteSpace(CodProceso) ? "—"
+         : string.IsNullOrWhiteSpace(DesProceso) ? CodProceso!
+         : $"{CodProceso} — {DesProceso}";
+
+    /// <summary>El cero NO se esconde: cero es un número de orden real en esta base, y
+    /// tratarlo como "sin orden" haría que esa orden no se viera nunca. Sin orden es NULL.</summary>
+    private string TextoOrden
+        => NumOrden is null ? "—"
+         : string.IsNullOrWhiteSpace(DesOrden) ? NumOrden.Value.ToString()
+         : $"{NumOrden} — {DesOrden}";
+
+    /// <summary>Devuelve SÓLO el lote: es lo único que el diálogo puede cambiar. Que no
+    /// devuelva los otros cuatro es la garantía de que no los toca.</summary>
+    private void Grabar() => MudDialog.Close(DialogResult.Ok(_numLote ?? ""));
+}

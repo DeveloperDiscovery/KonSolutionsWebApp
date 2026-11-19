@@ -1,0 +1,164 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Las líneas de las órdenes asociadas al comprobante, para pasarlas de una vez al detalle de la factura. Cada línea que se marca se graba como una línea del comprobante vinculada a su línea de la orden
+   (producto, unidad del proveedor y precio de la orden); la cantidad propuesta es lo que falta facturar y se ajusta a lo que dice la factura. Las que ya están en el comprobante no se vuelven a traer.
+   Después se completa o se corrige cada línea con «Modificar»; el total del documento se calcula solo. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Traer líneas de las órdenes</MudText></TitleContent>
+    <DialogContent>
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3" data-aviso="traer">
+            Marca las líneas que llegaron en la factura. En bienes la cantidad es la de la guía de remisión (lo recibido en almacén menos lo ya facturado) y no se puede cambiar; en servicios es lo que falta de la orden y la ajustas a la factura. Las que ya están en el comprobante no se vuelven a traer.
+        </MudAlert>
+        @if (!_cargado)
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;" data-vacio="traer">Cargando…</MudText>
+        }
+        else if (_filas.Count == 0)
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.6;" data-vacio="traer">Las órdenes asociadas no tienen líneas para traer.</MudText>
+        }
+        else
+        {
+            <div style="max-height:420px;overflow:auto;">
+                <MudSimpleTable Dense="true" Hover="true" Bordered="true" FixedHeader="true">
+                    <thead>
+                        <tr>
+                            <th style="width:48px;"><MudCheckBox T="bool" Value="_todas" ValueChanged="MarcarTodas" Dense="true" Disabled="@(_filas.All(f => f.YaEsta || f.SinCantidad))" data-accion="marcar-todas" /></th>
+                            <th>Orden</th><th>Línea</th><th>Producto</th>
+                            <th style="text-align:right;">Pedida</th><th style="text-align:right;">Recibida (guía)</th><th style="text-align:right;">Facturada</th><th style="text-align:right;">Falta</th>
+                            <th>Unidad</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Desc. %</th><th style="width:150px;text-align:right;">Cantidad a facturar</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var f in _filas)
+                        {
+                            var l = f.L;
+                            <tr data-linea="@($"{l.NUM_PEDIDO_COMERCIAL:0}-{l.NUM_SECUENCIA}")" data-ya-esta="@(f.YaEsta ? "1" : null)" style="@(f.YaEsta ? "opacity:.55;" : "")">
+                                <td><MudCheckBox T="bool" @bind-Value="f.Marcada" Dense="true" Disabled="@(f.YaEsta || f.SinCantidad)" data-accion="marcar" /></td>
+                                <td class="mono">@l.NUM_PEDIDO_COMERCIAL.ToString("0")</td>
+                                <td class="mono">@l.NUM_SECUENCIA</td>
+                                <td>@l.COD_PRODUCTO @l.DES_PRODUCTO @if (f.YaEsta) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-1">ya está en el comprobante</MudChip> }</td>
+                                <td class="mono" style="text-align:right;">@l.CAN_ORDEN?.ToString("0.######")</td>
+                                <td class="mono" style="text-align:right;" data-celda="guia">@(l.FLG_POR_GUIA ? l.CAN_GUIA?.ToString("0.######") : "—")</td>
+                                <td class="mono" style="text-align:right;">@l.CAN_FACTURADA?.ToString("0.######")</td>
+                                <td class="mono" style="text-align:right;">@l.CAN_PENDIENTE?.ToString("0.######")</td>
+                                <td>@l.COD_UNIDAD_MEDIDA</td>
+                                <td class="mono" style="text-align:right;">@l.PRE_UNITARIO?.ToString("0.00####")</td>
+                                <td class="mono" style="text-align:right;" data-celda="descuento">@l.TAS_DESCUENTO?.ToString(Decimales.FormatoPorcentual)</td>
+                                @if (l.FLG_POR_GUIA)
+                                {
+                                    @* Comprobante de bienes: la cantidad es la de la guía y no se edita. Sin nada recibido por facturar no hay qué traer. *@
+                                    <td class="mono" style="text-align:right;font-weight:600;" data-celda="cantidad">@(f.Cantidad?.ToString("0.######") ?? "0")@if (!f.YaEsta && l.CAN_POR_FACTURAR is not > 0) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-1">sin guía por facturar</MudChip> }</td>
+                                }
+                                else
+                                {
+                                    <td><MudNumericField T="decimal?" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="f.Cantidad" Immediate="true" Min="0" Disabled="@(f.YaEsta || !f.Marcada)" data-campo="cantidad" /></td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+        }
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_saving" data-accion="cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Agregar" Disabled="@(_saving || Marcadas == 0)" data-accion="agregar">
+                @(Marcadas > 0 ? $"Agregar {Marcadas} línea{(Marcadas == 1 ? "" : "s")}" : "Agregar")
+            </MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public decimal NumRegistro { get; set; }
+    /// <summary>Las líneas que el comprobante ya tiene: las que ya están vinculadas a una línea de la orden no se vuelven a traer.</summary>
+    [Parameter] public List<RegistroCompraLinea> LineasActuales { get; set; } = new();
+
+    private sealed class Fila
+    {
+        public RegistroCompraPedidoLinea L { get; init; } = default!;
+        public bool YaEsta { get; init; }
+        public bool Marcada { get; set; }
+        public decimal? Cantidad { get; set; }
+        /// <summary>Comprobante de bienes y nada recibido por facturar en esa línea: no se puede traer.</summary>
+        public bool SinCantidad => L.FLG_POR_GUIA && L.CAN_POR_FACTURAR is not > 0;
+    }
+
+    private List<Fila> _filas = new();
+    private bool _cargado, _saving, _todas;
+    private int Marcadas => _filas.Count(f => f.Marcada && !f.YaEsta);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraPedidoLinea>>>($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/pedidos/lineas");
+            _filas = (r?.Data ?? new()).Select(l =>
+            {
+                var ya = LineasActuales.Any(x => x.NUM_PEDIDO_COMERCIAL == l.NUM_PEDIDO_COMERCIAL && x.NUM_SECUENCIA_PEDIDO_COMERCIAL == l.NUM_SECUENCIA
+                                              && string.Equals(x.COD_CLASE_OPERACION_PEDIDO, l.COD_CLASE_OPERACION, StringComparison.OrdinalIgnoreCase)
+                                              && string.Equals(x.COD_TIPO_OPERACION_PEDIDO, l.COD_TIPO_OPERACION, StringComparison.OrdinalIgnoreCase));
+                // Bienes: la cantidad es la de la guía (lo recibido menos lo ya facturado) y no se edita; sin nada por facturar la línea no se puede traer.
+                // Servicios: lo que falta facturar de la orden (si ya no falta nada, la cantidad de la orden), editable. Se marcan todas las que se pueden traer.
+                if (l.FLG_POR_GUIA)
+                    return new Fila { L = l, YaEsta = ya, Marcada = !ya && l.CAN_POR_FACTURAR > 0, Cantidad = l.CAN_POR_FACTURAR > 0 ? l.CAN_POR_FACTURAR : null };
+                var cantidad = l.CAN_PENDIENTE > 0 ? l.CAN_PENDIENTE : l.CAN_ORDEN;
+                return new Fila { L = l, YaEsta = ya, Marcada = !ya && l.CAN_PENDIENTE > 0, Cantidad = cantidad };
+            }).ToList();
+            _todas = _filas.Any(f => !f.YaEsta && !f.SinCantidad) && _filas.Where(f => !f.YaEsta && !f.SinCantidad).All(f => f.Marcada);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraTraerLineasDialog), nameof(OnInitializedAsync)); }
+        _cargado = true;
+    }
+
+    private void MarcarTodas(bool v)
+    {
+        _todas = v;
+        foreach (var f in _filas.Where(f => !f.YaEsta && !f.SinCantidad)) f.Marcada = v;
+    }
+
+    private async Task Agregar()
+    {
+        var elegidas = _filas.Where(f => f.Marcada && !f.YaEsta).ToList();
+        if (elegidas.Count == 0) return;
+        if (elegidas.Any(f => f.Cantidad is null or <= 0))
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("La cantidad de cada línea marcada tiene que ser mayor que cero.", DialogService, nameof(RegistroCompraTraerLineasDialog));
+            return;
+        }
+        _saving = true;
+        var agregadas = 0;
+        try
+        {
+            foreach (var f in elegidas)
+            {
+                var l = f.L;
+                var dto = new RegistroCompraLineaDto
+                {
+                    COD_PRODUCTO = l.COD_PRODUCTO, CAN_PRODUCTO = f.Cantidad, COD_UNIDAD_MEDIDA = l.COD_UNIDAD_MEDIDA, PRE_UNITARIO = l.PRE_UNITARIO,
+                    COD_TIPO_DESCUENTO = l.COD_TIPO_DESCUENTO, TAS_DESCUENTO = l.TAS_DESCUENTO,       // el descuento de la línea de la orden
+                    COD_CLASE_OPERACION_PEDIDO = l.COD_CLASE_OPERACION, COD_TIPO_OPERACION_PEDIDO = l.COD_TIPO_OPERACION,
+                    NUM_PEDIDO_COMERCIAL = l.NUM_PEDIDO_COMERCIAL, NUM_SECUENCIA_PEDIDO_COMERCIAL = l.NUM_SECUENCIA
+                };
+                var resp = await Http.PostAsJsonAsync($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/lineas", dto);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var donde = agregadas == 0 ? "" : $" (antes se agregaron {agregadas})";
+                    await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraTraerLineasDialog), nameof(Agregar), $"No se pudo agregar la línea {l.NUM_SECUENCIA} de la orden {l.NUM_PEDIDO_COMERCIAL:0}{donde}");
+                    break;
+                }
+                agregadas++;
+            }
+        }
+        finally { _saving = false; }
+        // Si alguna se alcanzó a agregar, se cierra para que el documento vuelva a leer sus líneas (aunque otra haya fallado).
+        if (agregadas > 0) MudDialog.Close(DialogResult.Ok(agregadas));
+    }
+}

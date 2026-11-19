@@ -1,0 +1,149 @@
+@* Editor de UNA celda de la matriz: el control que corresponde al tipo de la
+   especificación, sin etiqueta —el encabezado de la fila y el de la columna ya dicen
+   qué es— y sin margen propio, porque acá la separación la da el padding de la celda
+   de la tabla y no la grilla de formulario.
+
+   Está en un componente aparte y no repetido dentro de la celda por dos motivos: la
+   matriz se dibuja en dos orientaciones y el editor tiene que ser idéntico en las dos,
+   y así el switch de tipos queda en un solo lugar el día que se agregue un tipo nuevo.
+
+   NO decide nada: recibe la celda ya resuelta y avisa cuando la tocaron. Quién es
+   "no aplica", qué está sucio y qué se graba lo decide la pantalla. *@
+@using ItemModel = KONSolutions.Shared.Models.Comercial.EspecificacionesItemsTecnicosComboDependiente
+@using System.Globalization
+
+@if (Celda.NoAplica)
+{
+    <div class="celda-na" title="La especificación está asignada a la sub familia, pero no a este producto">no aplica</div>
+}
+else
+{
+    <div class="@(Sucia ? "celda-sucia" : "")">
+        @switch (Espec.Tipo)
+        {
+            case TipoEspecMatriz.Lista:
+                <AriaCombo TItem="ItemModel" Items="@Items"
+                           TextFunc="@(i => i.DES_ITEM_TECNICO ?? i.COD_ITEM_TECNICO.ToString())"
+                           ValueFunc="@(i => i.COD_ITEM_TECNICO.ToString())"
+                           Value="@Celda.CodItem"
+                           ValueChanged="@(v => Aplicar(c => c.CodItem = v))"
+                           Label="" Class="mb-0">
+                    <OptionTemplate Context="it">
+                        <div class="d-flex align-center gap-2">
+                            @if (!string.IsNullOrEmpty(it.DES_COLOR))
+                            {
+                                <div class="muestra-color" style="background:@it.DES_COLOR;"></div>
+                            }
+                            <span>@(it.DES_ITEM_TECNICO ?? it.COD_ITEM_TECNICO.ToString())</span>
+                        </div>
+                    </OptionTemplate>
+                </AriaCombo>
+                break;
+
+            @* Con rango el valor son dos números, no uno. Van juntos en la misma celda
+               porque son un solo dato: un "entre 30 y 35" partido en dos columnas se
+               lee peor y se edita peor. *@
+            case TipoEspecMatriz.Entero when Espec.FlgRange:
+            case TipoEspecMatriz.Numerico when Espec.FlgRange:
+                <div class="d-flex gap-1">
+                    <MudNumericField T="decimal?" Value="Celda.Minimo" Placeholder="Mín"
+                                     ValueChanged="@((decimal? v) => Aplicar(c => c.Minimo = v))"
+                                     Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                     Format="@Formato" Culture="@CultureInfo.CurrentCulture"
+                                     Disabled="Disabled" />
+                    <MudNumericField T="decimal?" Value="Celda.Maximo" Placeholder="Máx"
+                                     ValueChanged="@((decimal? v) => Aplicar(c => c.Maximo = v))"
+                                     Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                     Format="@Formato" Culture="@CultureInfo.CurrentCulture"
+                                     Disabled="Disabled" />
+                </div>
+                break;
+
+            @* Entero y numérico se guardan como texto en VAL_ESPECIFICACION_TENICA —así lo
+               hace también la Ficha Técnica— así que el campo es de texto alineado a la
+               derecha. Un MudNumericField reformatearía el valor al abrir la pantalla y
+               marcaría como modificadas celdas que nadie tocó. *@
+            case TipoEspecMatriz.Entero:
+            case TipoEspecMatriz.Numerico:
+                <MudTextField T="string" Value="Celda.Texto"
+                              ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
+                              Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0 celda-num"
+                              Disabled="Disabled" />
+                break;
+
+            case TipoEspecMatriz.Logico:
+                <MudSwitch T="bool" Value="@(Celda.Logico ?? false)" Color="Color.Success" Size="Size.Small"
+                           ValueChanged="@((bool v) => Aplicar(c => c.Logico = v))"
+                           Disabled="Disabled" />
+                break;
+
+            @* Editable + Mask: la fecha se escribe o se elige del calendario, indistinto.
+               Es lo que se usa en el resto de la solución. *@
+            case TipoEspecMatriz.Fecha:
+            case TipoEspecMatriz.FechaHora:
+                <MudDatePicker Date="Celda.Fecha"
+                               DateChanged="@((DateTime? v) => Aplicar(c => c.Fecha = v))"
+                               Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                               DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                               ReadOnly="Disabled" />
+                break;
+
+            case TipoEspecMatriz.Hora:
+                <MudTimePicker Time="Celda.Hora"
+                               TimeChanged="@((TimeSpan? v) => Aplicar(c => c.Hora = v))"
+                               Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                               Editable="true" ReadOnly="Disabled" />
+                break;
+
+            @* El color se guarda como texto, igual que en la Ficha Técnica. La muestra al
+               costado es para poder leer la columna de un vistazo: el código hexadecimal
+               solo no dice de qué color se trata. *@
+            case TipoEspecMatriz.Color:
+                <div class="d-flex align-center gap-2">
+                    <div class="muestra-color grande" style="background:@(string.IsNullOrWhiteSpace(Celda.Texto) ? "transparent" : Celda.Texto);"></div>
+                    <MudTextField T="string" Value="Celda.Texto"
+                                  ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
+                                  Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                  Disabled="Disabled" />
+                </div>
+                break;
+
+            default:
+                <MudTextField T="string" Value="Celda.Texto"
+                              ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
+                              Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                              Disabled="Disabled" />
+                break;
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public EspecMatriz Espec { get; set; } = default!;
+    [Parameter, EditorRequired] public CeldaMatriz Celda { get; set; } = default!;
+
+    /// <summary>Ítems de la lista. La pantalla los resuelve y los cachea: acá solo se
+    /// muestran. Para una lista dependiente sin padre elegido llega vacía, que es lo
+    /// correcto — no hay nada que ofrecer todavía.</summary>
+    [Parameter] public List<ItemModel> Items { get; set; } = new();
+
+    /// <summary>Modificada y todavía sin grabar. Solo pinta el borde.</summary>
+    [Parameter] public bool Sucia { get; set; }
+
+    [Parameter] public bool Disabled { get; set; }
+
+    /// <summary>Se dispara después de tocar la celda. La pantalla la marca como sucia y,
+    /// si la celda es padre de otra, invalida las hijas de ese producto.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private string Formato => $"N{Math.Min(Espec.CanDecimal ?? 2, 6)}";
+
+    /// <summary>La celda es un objeto por referencia, compartido con el diccionario de la
+    /// pantalla: se modifica acá y del otro lado ya está actualizada. Después se avisa,
+    /// para que la pantalla haga lo suyo.</summary>
+    private async Task Aplicar(Action<CeldaMatriz> cambio)
+    {
+        cambio(Celda);
+        if (OnCambio.HasDelegate) await OnCambio.InvokeAsync();
+    }
+}

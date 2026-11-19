@@ -1,0 +1,119 @@
+@using KONSolutions.Shared.Models.Estandar
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_DOCUMENTO_IDENTIDAD" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+            <CampoTexto Tabla="ESTANDAR.TIPOS_DOCUMENTO_IDENTIDAD" Columna="DES_TIPO_DOCUMENTO_IDENTIDAD"
+                        @bind-Value="_model.DES_TIPO_DOCUMENTO_IDENTIDAD"
+                        Disabled="_readonly" Obligatorio="true" />
+            @* El código del catálogo 06 de SUNAT: con él se traduce el tipo propio (por ejemplo, el brevete, que en
+               SUNAT no tiene código) al que piden la guía y los comprobantes. *@
+            <CampoTexto Tabla="ESTANDAR.TIPOS_DOCUMENTO_IDENTIDAD" Columna="COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT"
+                        @bind-Value="_model.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT" OnBlur="NormalizarCodigoSunat"
+                        Disabled="_readonly" />
+            @if (_errorSunat is not null)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Error" Class="mb-2">@_errorSunat</MudText>
+            }
+            <MudNumericField T="int?" @bind-Value="_model.VAL_LONGITUD" Label="Longitud"
+                             Variant="Variant.Outlined" Margin="Margin.Dense" Min="1"
+                             ReadOnly="_readonly" Class="mb-3" />
+            <div class="my-3">
+                <ImagePicker Image="_model.IMG_ICONO" ImageChanged="@(v => _model.IMG_ICONO = v)"
+                             Label="Ícono" ReadOnly="_readonly" RemoveBackground="true" />
+            </div>
+            <CrudDialogActions Modo="Modo" Saving="_saving"
+                               OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TiposDocumentoIdentidad? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TiposDocumentoIdentidad _model = new();
+    private bool _esNuevo, _saving;
+    private string? _errorSunat;
+
+    /// <summary>Al salir del campo: sin espacios y en mayúsculas, como lo escribe el catálogo 06 (A, B, C...).
+    /// Vacío queda vacío.</summary>
+    private void NormalizarCodigoSunat()
+    {
+        var v = _model.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT?.Trim().ToUpperInvariant();
+        _model.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT = string.IsNullOrEmpty(v) ? null : v;
+        if (_errorSunat is not null && CodigoSunatValido(_model.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT)) _errorSunat = null;
+    }
+
+    private static bool CodigoSunatValido(string? v)
+        => v is null || ((v.Length is 1 or 2) && v.All(char.IsAsciiLetterOrDigit));
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+    }
+
+    private void MapearDesdeModelo(TiposDocumentoIdentidad m) =>
+        _model = new TiposDocumentoIdentidad
+        {
+            COD_TIPO_DOCUMENTO_IDENTIDAD = m.COD_TIPO_DOCUMENTO_IDENTIDAD,
+            DES_TIPO_DOCUMENTO_IDENTIDAD = m.DES_TIPO_DOCUMENTO_IDENTIDAD,
+            COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT = m.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT,
+            VAL_LONGITUD = m.VAL_LONGITUD,
+            IMG_ICONO = m.IMG_ICONO
+        };
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<TiposDocumentoIdentidad>($"{ApiRoutes.Estandar.TiposDocumentoIdentidad}/{_model.COD_TIPO_DOCUMENTO_IDENTIDAD}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+    private async Task Submit()
+    {
+        _saving = true;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Estandar.TiposDocumentoIdentidad}/{_model.COD_TIPO_DOCUMENTO_IDENTIDAD}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TipoDocumentoIdentidadDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+        // Optativo, pero si viene son uno o dos caracteres: la API rechaza otra cosa, y aquí el aviso queda
+        // bajo el campo en vez de llegar como error del servidor.
+        NormalizarCodigoSunat();
+        if (!CodigoSunatValido(_model.COD_TIPO_DOCUMENTO_IDENTIDAD_SUNAT))
+        {
+            _saving = false;
+            _errorSunat = "Uno o dos caracteres, letras o números (por ejemplo, 1 o 6), o déjalo vacío.";
+            return;
+        }
+        _errorSunat = null;
+        var resp = _esNuevo
+            ? await Http.PostAsJsonAsync(ApiRoutes.Estandar.TiposDocumentoIdentidad, _model)
+            : await Http.PutAsJsonAsync($"{ApiRoutes.Estandar.TiposDocumentoIdentidad}/{_model.COD_TIPO_DOCUMENTO_IDENTIDAD}", _model);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TipoDocumentoIdentidadDialog), nameof(Submit));
+    }
+}

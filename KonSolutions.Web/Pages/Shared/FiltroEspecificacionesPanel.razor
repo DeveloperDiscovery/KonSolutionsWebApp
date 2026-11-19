@@ -1,0 +1,360 @@
+@using ArbolModel = KONSolutions.Shared.Models.Estandar.ProductoEspecificacionArbol
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   PANEL DE FILTRO POR ESPECIFICACIONES TÉCNICAS
+
+   Árbol de especificaciones con checks. Cada especificación cuelga sus ítems, y
+   marcar ítems acota la lista de productos.
+
+   LA REGLA, confirmada:
+       O  dentro de una misma especificación   (CREMA o AZUL MARINO)
+       Y  entre especificaciones distintas     (ese color Y talla M)
+
+   El panel NO filtra: no conoce la grilla ni sabe qué se hace con lo marcado.
+   Solo avisa por FiltroChanged con la cadena 'esp:tipo:valor' que entiende el SP.
+   Por eso puede colgarse mañana de la Matriz o del Pedido sin tocarlo.
+
+   DOS CLASES DE NODO, que se dibujan igual y viajan distinto:
+       I  ítem de una lista o color   -> se filtra por COD_ITEM_TECNICO
+       V  valor de una numérica o lógica -> se filtra por su texto ("50", "Sí")
+
+   QUÉ ENTRA Y QUÉ NO lo decide el SP, no este archivo: listas, colores, lógicos y
+   numéricos. Texto libre, fecha y hora quedan afuera — ahí cada producto tiene un
+   valor distinto y el árbol tendría un nodo por producto.
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+<div class="filtro-esp">
+    <div class="filtro-esp-cab">
+        <MudIcon Icon="@Icons.Material.Filled.FilterAlt" Size="Size.Small" />
+        <span class="tit">Especificaciones</span>
+        @if (_marcados.Count > 0)
+        {
+            <span class="cnt">@_marcados.Count activo(s)</span>
+            <MudTooltip Text="Quitar todos los filtros de especificación">
+                <MudIconButton Icon="@Icons.Material.Filled.Backspace" Size="Size.Small"
+                               OnClick="LimpiarTodo" />
+            </MudTooltip>
+        }
+        else if (_especs.Count > 0)
+        {
+            <span class="cnt">@_especs.Count especificación(es)</span>
+        }
+    </div>
+
+    @if (_cargando)
+    {
+        <div class="pa-4"><MudProgressLinear Indeterminate="true" Color="Color.Primary" /></div>
+    }
+    else if (_especs.Count == 0)
+    {
+        @* Sin datos NO es un error: significa que ningún producto de esta clasificación
+           tiene especificaciones de lista o color cargadas. Decirlo evita que parezca
+           que el panel se rompió. *@
+        <div class="filtro-esp-vacio">
+            Los productos de esta clasificación no tienen especificaciones
+            registradas que sirvan como filtro.
+        </div>
+    }
+    else
+    {
+        <div class="filtro-esp-buscador">
+            <BarraBusqueda @bind-Value="_busqueda" OnSearch="@(() => Task.CompletedTask)"
+                           Placeholder="Buscar especificación o valor..." DebounceInterval="250"
+                           MaxWidth="100%" Class="mt-0" />
+        </div>
+
+        @* data-resizable-grid: lo toma gridAutoAlto.js y lo estira hasta el borde superior
+           de la barra de estado, exactamente igual que a la grilla de al lado. Asi los dos
+           terminan en la MISMA linea y el panel deja de tener un alto propio que no tenia
+           nada que ver con el de la grilla.
+
+           data-default-height NO se pone a proposito: ese atributo es el que le dice al
+           script "no me estires". *@
+        <div class="filtro-esp-arbol" data-resizable-grid="filtro-especificaciones">
+            @foreach (var esp in EspecsVisibles)
+            {
+                var items    = ItemsVisibles(esp);
+                var marcados = items.Count(i => EstaMarcado(esp.Codigo, i));
+                var abierta  = _abiertas.Contains(esp.Codigo);
+
+                <div class="nodo-esp" @onclick="@(() => Alternar(esp.Codigo))">
+                    <MudIcon Icon="@(abierta ? Icons.Material.Filled.ArrowDropDown : Icons.Material.Filled.ArrowRight)"
+                             Size="Size.Small" Class="caret" />
+                    @* El check del padre es tri-estado: marca y desmarca todos sus ítems, y
+                       muestra el guion cuando hay algunos sí y otros no. El stopPropagation
+                       evita que al tocarlo se pliegue la rama. *@
+                    <div @onclick:stopPropagation="true">
+                        <MudCheckBox T="bool?" Value="@EstadoDe(esp, items, marcados)"
+                                     ValueChanged="@((bool? v) => MarcarTodos(esp, items, v))"
+                                     Color="Color.Primary" Size="Size.Small" Dense="true" TriState="true" />
+                    </div>
+                    <span class="des">@esp.Descripcion</span>
+                    <span class="n">@marcados/@items.Count</span>
+                </div>
+
+                @if (abierta)
+                {
+                    @foreach (var it in items)
+                    {
+                        var marcado = EstaMarcado(esp.Codigo, it);
+                        <div class="nodo-item @(marcado ? "sel" : "")"
+                             @onclick="@(() => Marcar(esp.Codigo, it, !marcado))">
+                            <div @onclick:stopPropagation="true">
+                                <MudCheckBox T="bool" Value="@marcado"
+                                             ValueChanged="@((bool v) => Marcar(esp.Codigo, it, v))"
+                                             Color="Color.Primary" Size="Size.Small" Dense="true" />
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(it.Color))
+                            {
+                                <span class="muestra" style="background:@it.Color;"></span>
+                            }
+                            <span class="des">@it.Descripcion</span>
+                            <span class="n">@it.CanProductos</span>
+                        </div>
+                    }
+                }
+            }
+
+            @if (!EspecsVisibles.Any())
+            {
+                <div class="filtro-esp-vacio">Nada coincide con “@_busqueda”.</div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>Clasificación vigente en la pantalla. El árbol se recorta con ella: viendo
+    /// prendas no tiene sentido ofrecer MATERIALES DE LA CAJA.</summary>
+    [Parameter] public string? CodGrupo      { get; set; }
+    [Parameter] public string? CodFamilia    { get; set; }
+    [Parameter] public string? CodSubFamilia { get; set; }
+
+    /// <summary>Ofrecer solo lo que tiene existencias: stock, reservado, en tránsito,
+    /// inmovilizado o disponible.
+    ///
+    /// En false —lo normal— el árbol sale del maestro de productos. Consultas de Stock lo
+    /// pone en true: ahí ofrecer un color que existe en el catálogo pero que hoy no tiene
+    /// ni una unidad es ofrecer un filtro que deja la grilla vacía.</summary>
+    [Parameter] public bool SoloConExistencias { get; set; }
+
+    /// <summary>Avisa con la cadena 'esp:tipo:valor;...' lista para el SP. Cadena vacía
+    /// significa "sin filtros", no "sin resultados".</summary>
+    [Parameter] public EventCallback<string> FiltroChanged { get; set; }
+
+    private sealed class ItemNodo
+    {
+        /// <summary>'I' = item de lista o color, se filtra por COD_ITEM_TECNICO.
+        /// 'V' = valor de una numerica o logica, se filtra por su texto.
+        /// Los dos se dibujan igual; lo unico que cambia es como viajan al SP.</summary>
+        public string Tipo          { get; init; } = "I";
+        public string Clave         { get; init; } = "";   // el item o el valor, ya como texto
+        public string Descripcion   { get; init; } = "";
+        public string? Color        { get; init; }
+        public int    CanProductos  { get; init; }
+        public int?   Orden         { get; init; }
+    }
+
+    private sealed class EspecNodo
+    {
+        public string Codigo      { get; init; } = "";
+        public string Descripcion { get; init; } = "";
+        public int?   Orden       { get; init; }
+        public List<ItemNodo> Items { get; } = new();
+    }
+
+    private List<EspecNodo> _especs = new();
+    private readonly HashSet<string> _abiertas = new();
+
+    /// <summary>Lo marcado, como (especificación, ítem). Es la única fuente de verdad:
+    /// los checks de la pantalla se dibujan a partir de esto, no al revés.</summary>
+    private readonly HashSet<(string Esp, string Tipo, string Clave)> _marcados = new();
+
+    private bool _cargando;
+    private string _busqueda = "";
+
+    /// <summary>La clasificación con la que se armó el árbol que está en pantalla. Sirve
+    /// para no recargar cuando el padre vuelve a renderizar sin haber cambiado nada.</summary>
+    /// SoloConExistencias entra en la comparación aunque hoy sea fijo por pantalla: si
+    /// mañana se vuelve un switch, el árbol se recarga solo y no hay que acordarse de esto.
+    private (string? G, string? F, string? SF, bool Stk) _cargadoCon = (" ", null, null, false);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var actual = (CodGrupo, CodFamilia, CodSubFamilia, SoloConExistencias);
+        if (actual == _cargadoCon) return;
+        _cargadoCon = actual;
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true;
+        StateHasChanged();
+        try
+        {
+            var url = EstandarRoute.ProductosEspecificacionesArbol + Query();
+            var filas = await Http.SafeGetAsync<List<ArbolModel>>(url) ?? new();
+
+            // El SP devuelve plano —una fila por (especificación, ítem)— y acá se agrupa.
+            // Así el SP hace UNA consulta en vez de dos, y el orden ya viene resuelto.
+            var mapa = new Dictionary<string, EspecNodo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in filas)
+            {
+                var cod = f.COD_ESPECIFICACION_TECNICA.Trim();
+
+                if (!mapa.TryGetValue(cod, out var esp))
+                {
+                    esp = new EspecNodo
+                    {
+                        Codigo      = cod,
+                        Descripcion = f.DES_ESPECIFICACION_TECNICA ?? cod,
+                        Orden       = f.NUM_ORDEN_ESPECIFICACION
+                    };
+                    mapa[cod] = esp;
+                }
+
+                var tipo  = string.IsNullOrEmpty(f.TIPO_NODO) ? "I" : f.TIPO_NODO;
+                var clave = tipo == "I" ? (f.COD_ITEM_TECNICO?.ToString() ?? "") : (f.DES_VALOR ?? "");
+                if (clave.Length == 0) continue;
+
+                esp.Items.Add(new ItemNodo
+                {
+                    Tipo         = tipo,
+                    Clave        = clave,
+                    Descripcion  = f.DES_VALOR ?? clave,
+                    Color        = f.DES_COLOR,
+                    CanProductos = f.CAN_PRODUCTOS,
+                    Orden        = f.NUM_ORDEN_ITEM
+                });
+            }
+
+            _especs = mapa.Values
+                .OrderBy(e => e.Orden ?? int.MaxValue)
+                .ThenBy(e => e.Descripcion)
+                .ToList();
+
+            // Las ramas arrancan abiertas: un árbol todo cerrado obliga a un clic extra
+            // para ver lo único que el panel tiene para ofrecer.
+            _abiertas.Clear();
+            foreach (var e in _especs) _abiertas.Add(e.Codigo);
+
+            // Lo marcado se limpia al cambiar de clasificación: un ítem de otra familia
+            // dejaría la grilla vacía sin que se vea por qué.
+            if (_marcados.Count > 0)
+            {
+                _marcados.Clear();
+                await FiltroChanged.InvokeAsync("");
+            }
+        }
+        catch (Exception ex)
+        {
+            _especs = new();
+            await ErrorLog.LogAsync(ex, nameof(FiltroEspecificacionesPanel), nameof(CargarAsync));
+        }
+        finally { _cargando = false; }
+    }
+
+    private string Query()
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrEmpty(CodGrupo))      partes.Add($"COD_GRUPO_PRODUCTO={Uri.EscapeDataString(CodGrupo)}");
+        if (!string.IsNullOrEmpty(CodFamilia))    partes.Add($"COD_FAMILIA_PRODUCTO={Uri.EscapeDataString(CodFamilia)}");
+        if (!string.IsNullOrEmpty(CodSubFamilia)) partes.Add($"COD_SUB_FAMILIA_PRODUCTO={Uri.EscapeDataString(CodSubFamilia)}");
+        // Solo se manda cuando es true: así la URL de Productos queda idéntica a la de antes
+        // y el SP aplica su valor por omisión.
+        if (SoloConExistencias)                   partes.Add("SOLO_CON_EXISTENCIAS=true");
+        return partes.Count == 0 ? "" : "?" + string.Join("&", partes);
+    }
+
+    // ── Búsqueda dentro del panel ──────────────────────────────────────────
+    private static string Normaliza(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var d = s.Trim().ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(d.Length);
+        foreach (var c in d)
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)
+                != System.Globalization.UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        return sb.ToString();
+    }
+
+    /// <summary>Una especificación se ve si coincide ella o alguno de sus ítems. Si coincide
+    /// sólo un ítem, se muestra la especificación con ese ítem: esconder al padre dejaría el
+    /// valor encontrado fuera de alcance.</summary>
+    private IEnumerable<EspecNodo> EspecsVisibles
+    {
+        get
+        {
+            var q = Normaliza(_busqueda);
+            if (q.Length == 0) return _especs;
+            return _especs.Where(e => Normaliza(e.Descripcion).Contains(q)
+                                   || e.Items.Any(i => Normaliza(i.Descripcion).Contains(q)));
+        }
+    }
+
+    private List<ItemNodo> ItemsVisibles(EspecNodo esp)
+    {
+        var q = Normaliza(_busqueda);
+        if (q.Length == 0 || Normaliza(esp.Descripcion).Contains(q)) return esp.Items;
+        return esp.Items.Where(i => Normaliza(i.Descripcion).Contains(q)).ToList();
+    }
+
+    // ── Estado de los checks ───────────────────────────────────────────────
+    private bool EstaMarcado(string esp, ItemNodo it) => _marcados.Contains((esp, it.Tipo, it.Clave));
+
+    /// <summary>null es el guion del tri-estado: hay algunos marcados y otros no.</summary>
+    private static bool? EstadoDe(EspecNodo esp, List<ItemNodo> items, int marcados)
+        => marcados == 0 ? false : (marcados == items.Count ? true : null);
+
+    private void Alternar(string cod)
+    {
+        if (!_abiertas.Remove(cod)) _abiertas.Add(cod);
+    }
+
+    private async Task Marcar(string esp, ItemNodo it, bool valor)
+    {
+        if (valor) _marcados.Add((esp, it.Tipo, it.Clave));
+        else       _marcados.Remove((esp, it.Tipo, it.Clave));
+        await Avisar();
+    }
+
+    private async Task MarcarTodos(EspecNodo esp, List<ItemNodo> items, bool? valor)
+    {
+        // El tri-estado devuelve null al pasar por el guion; ahí se toma como "desmarcar
+        // todo", que es lo que espera quien lo pulsa para limpiar la rama.
+        var encender = valor == true;
+        foreach (var i in items)
+        {
+            if (encender) _marcados.Add((esp.Codigo, i.Tipo, i.Clave));
+            else          _marcados.Remove((esp.Codigo, i.Tipo, i.Clave));
+        }
+        await Avisar();
+    }
+
+    private async Task LimpiarTodo()
+    {
+        if (_marcados.Count == 0) return;
+        _marcados.Clear();
+        await Avisar();
+    }
+
+    /// <summary>Arma la cadena que entiende el SP y avisa al padre. El orden es estable
+    /// —especificación y después ítem— para que dos selecciones iguales produzcan la misma
+    /// cadena: si no, cualquier caché por URL fallaría sin motivo.</summary>
+    private async Task Avisar()
+    {
+        // Formato 'especificacion:tipo:valor'. El tipo distingue un item de lista de un
+        // valor numerico o logico, que el SP resuelve por caminos distintos.
+        var cadena = string.Join(";", _marcados
+            .OrderBy(m => m.Esp, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(m => m.Tipo, StringComparer.Ordinal)
+            .ThenBy(m => m.Clave, StringComparer.OrdinalIgnoreCase)
+            .Select(m => $"{m.Esp}:{m.Tipo}:{m.Clave}"));
+        await FiltroChanged.InvokeAsync(cadena);
+    }
+}

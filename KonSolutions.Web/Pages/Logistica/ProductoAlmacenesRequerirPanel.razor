@@ -1,0 +1,209 @@
+@* Pestaña "A Requerir": lo que quedó pendiente de pedir de un producto
+   (PROC_LOGISTICA_PRODUCTOS_ALMACENES_REQUERIR — mismas columnas que el Showall, pero solo
+   las filas con CAN_STOCK_REQUERIR > 0).
+
+   Es de SOLO LECTURA, a diferencia de las otras dos pestañas: acá no se configura nada, se
+   mira el resultado de los procesos de reposición. Por eso no hay combos, ni botón de
+   agregar, ni tilde de grabar — y por eso tampoco reusé ProductoAlmacenesPanel con un flag:
+   ese componente es una grilla de edición y esto es un listado, comparten los datos pero no
+   el propósito. *@
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<div class="pa-2" style="background:var(--grilla-fila-par, rgba(0,0,0,.02));">
+    <div class="d-flex align-center justify-space-between gap-3 mb-2">
+        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;white-space:nowrap;">
+            @Visibles.Count@(_filas.Count != Visibles.Count ? $" de {_filas.Count}" : "") línea(s) con cantidad pendiente de pedir
+        </MudText>
+        <MudTooltip Text="Volver a consultar">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                           Disabled="_cargando" OnClick="RecargarAsync" />
+        </MudTooltip>
+    </div>
+
+    @if (_cargando)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mb-2" />
+    }
+    else if (Visibles.Count == 0)
+    {
+        <MudText Typo="Typo.caption" Style="opacity:.5;">
+            @(_filas.Count == 0 ? "No hay nada pendiente de pedir." : "Ninguna línea coincide con la búsqueda.")
+        </MudText>
+    }
+    else
+    {
+        <div style="overflow-x:auto;">
+        <table class="tabla-simple-editable" style="width:100%;min-width:1420px;">
+            <thead>
+                <tr>
+                    <th style="width:300px;">Producto</th>
+                    <th style="width:240px;">Almacén</th>
+                    <th style="width:130px;text-align:right;">Stock mínimo</th>
+                    <th style="width:130px;text-align:right;">Stock máximo</th>
+                    <th style="width:110px;text-align:right;">Lead time (días)</th>
+                    <th style="width:130px;text-align:right;">Consumo diario</th>
+                    <th style="width:140px;text-align:right;">Cant. a requerir</th>
+                    <th style="width:130px;text-align:right;">N° Requerimiento</th>
+                    <th style="width:110px;text-align:center;">Req. automático</th>
+                    <th style="width:150px;">Estado</th>
+                    <th style="width:56px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in Visibles)
+                {
+                    <tr>
+                        <td>@f.COD_PRODUCTO@(string.IsNullOrWhiteSpace(f.DES_PRODUCTO) ? "" : $" — {f.DES_PRODUCTO}")</td>
+                        <td>@f.COD_ALMACEN@(string.IsNullOrWhiteSpace(f.DES_ALMACEN) ? "" : $" — {f.DES_ALMACEN}")</td>
+                        <td style="text-align:right;" class="mono">@f.CAN_STOCK_MINIMO?.ToString("N4")</td>
+                        <td style="text-align:right;" class="mono">@f.CAN_STOCK_MAXIMO?.ToString("N4")</td>
+                        <td style="text-align:right;" class="mono">@f.CAN_LEAD_TIME_DIAS</td>
+                        <td style="text-align:right;" class="mono">@f.CAN_CONUSMO_DIARIO?.ToString("N4")</td>
+                        @* La cantidad a requerir es el dato por el que existe esta pestaña,
+                           así que va destacada — el resto es contexto para entenderla. *@
+                        <td style="text-align:right;font-weight:700;" class="mono">@f.CAN_STOCK_REQUERIR?.ToString("N4")</td>
+                        <td style="text-align:right;" class="mono">
+                            @if (f.NUM_REQUERIMIENTO_STOCK is int nreq && nreq > 0)
+                            {
+                                @nreq
+                            }
+                            else
+                            {
+                                <span style="opacity:.45;">pendiente</span>
+                            }
+                        </td>
+                        <td style="text-align:center;">
+                            @if (f.FLG_REQUERIMIENTO_AUTOMATICO == true)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success" />
+                            }
+                        </td>
+                        <td>
+                            @* Estado del requerimiento, con los colores configurados en BD. *@
+                            <EstadoChip Estado="@f.DES_ESTADO" BackColor="@f.DES_BACKCOLOR" ForeColor="@f.DES_FORECOLOR" />
+                        </td>
+                        <td style="text-align:center;">
+                            @* El botón sale de la configuración de la opción (ícono, color y
+                               tooltip de BD), no de un ícono elegido acá. *@
+                            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                             Zona="@AccionesBotones.ZonaBotones.Grilla"
+                                             Filtro="@(b => !_revirtiendo && EsRevertir(b) && f.NUM_REQUERIMIENTO_STOCK is int n && n > 0)"
+                                             OnAccion="@(b => RevertirAsync(f))" />
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    }
+</div>
+
+@code {
+    private List<ProductoAlmacen> _filas = new();
+    private bool _cargando = true;
+    private bool _revirtiendo;
+    /// <summary>Texto de búsqueda. Vive en la PANTALLA y no acá: la cabecera de la pestaña
+    /// se ve siempre, mientras que este panel recién se monta cuando hay algo elegido — con
+    /// el buscador adentro, en las pestañas editables no aparecía hasta elegir producto o
+    /// almacén, que es justo cuando uno quiere buscar.</summary>
+    [Parameter] public string Busqueda { get; set; } = "";
+
+    /// <summary>Códigos de la opción de menú, para que el botón de la fila salga de la
+    /// configuración en BD y no de un ícono elegido a mano acá.</summary>
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private static string TextoBoton(BotonTreeviewItem b)
+        => ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+
+    /// <summary>Se reconoce por nombre y no por el verbo HTTP: los cuatro procesos son POST.</summary>
+    private static bool EsRevertir(BotonTreeviewItem b)
+    { var n = TextoBoton(b); return n.Contains("REVERTIR") || n.Contains("REVERSION") || n.Contains("REVERSIÓN"); }
+
+    /// <summary>Filtro en memoria y no contra el servidor: el SP no recibe criterios de
+    /// búsqueda, así que ir al servidor por cada tecla traería siempre lo mismo. Se busca
+    /// sobre lo que ya está en pantalla, que es lo que el usuario está mirando.</summary>
+    private List<ProductoAlmacen> Visibles
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Busqueda)) return _filas;
+            var t = Busqueda.Trim();
+            return _filas.Where(f =>
+                   (f.COD_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                || (f.DES_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                || (f.COD_ALMACEN  ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                || (f.DES_ALMACEN  ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CargarAsync();
+        _cargando = false;
+    }
+
+    private async Task CargarAsync()
+    {
+        // Sin parámetros: el SP devuelve TODO lo pendiente, de cualquier producto y almacén.
+        try { _filas = await Http.SafeGetAsync<List<ProductoAlmacen>>(ApiRoutes.Logistica.ProductosAlmacenesRequerir) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ProductoAlmacenesRequerirPanel), nameof(CargarAsync));
+            _filas = new();
+        }
+    }
+
+    /// <summary>La llama la pantalla después de ejecutar un proceso de reposición: esta
+    /// pestaña muestra justamente lo que esos procesos calculan, así que sin releer seguiría
+    /// mostrando el estado anterior.</summary>
+    public async Task RecargarAsync()
+    {
+        _cargando = true;
+        StateHasChanged();
+        await CargarAsync();
+        _cargando = false;
+        StateHasChanged();
+    }
+
+    /// <summary>Botón "Revertir": anula el requerimiento generado. El SP revierte TODOS los
+    /// generados en la misma corrida que el número recibido, no solo esta línea — por eso el
+    /// cartel lo dice antes de ejecutar.</summary>
+    private async Task RevertirAsync(ProductoAlmacen f)
+    {
+        if (f.NUM_REQUERIMIENTO_STOCK is not int num || num <= 0) return;
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            $"Se va a anular el requerimiento N° {num} y todos los generados en la misma corrida. ¿Continuar?",
+            yesText: "Revertir", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        // Mientras corre, el botón de revertir desaparece de todas las filas (ver el Filtro de
+        // AccionesBotones): la reversión afecta a varios requerimientos a la vez, así que un
+        // segundo clic sobre otra fila estaría trabajando sobre datos que ya cambiaron.
+        _revirtiendo = true;
+        StateHasChanged();
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.ProductosAlmacenesReversion}?numRequerimientoStock={num}";
+            var resp = await Http.PostAsync(url, null);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Requerimiento revertido.", Severity.Success);
+                await CargarAsync();
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductoAlmacenesRequerirPanel), nameof(RevertirAsync), "No se pudo revertir el requerimiento");
+        }
+        finally { _revirtiendo = false; }
+    }
+
+    /// <summary>Los N° de requerimiento distintos que están A LA VISTA (respetando el filtro
+    /// de búsqueda). Lo usa la pantalla cuando "Revertir" se dispara desde la cabecera: el SP
+    /// recibe un número por vez, así que hay que saber cuáles hay para recorrerlos.</summary>
+    public IReadOnlyCollection<int> RequerimientosVisibles
+        => Visibles.Where(f => f.NUM_REQUERIMIENTO_STOCK is int n && n > 0).Select(f => f.NUM_REQUERIMIENTO_STOCK!.Value).Distinct().ToList();
+}

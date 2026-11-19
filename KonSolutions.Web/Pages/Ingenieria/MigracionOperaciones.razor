@@ -1,0 +1,216 @@
+@* Migracion asistida de las operaciones de las rutas existentes al catalogo (script SQL 128, API ingenieria/operaciones-migracion). Las filas de operacion de las rutas de antes solo dicen
+   "tipo de operacion, en este proceso y subproceso": se agrupan asi y, para cada grupo, se elige usar una operacion que ya esta en el catalogo o crear una nueva. No inventa tiempos
+   (las operaciones nuevas nacen sin tiempo) y se salta las rutas que usa una version de diseno bloqueada. Todo se puede deshacer. *@
+@page "/ingenieria/migracion-operaciones"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+
+<PageTitle>Migración de operaciones · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Migración de operaciones</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">Rutas existentes → catálogo de operaciones · @_visibles.Count de @_filas.Count grupos</MudText>
+    </div>
+    <MudTextField T="string" @bind-Value="_ruta" Label="Solo la ruta (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:220px;" Clearable="true" OnBlur="Cargar" data-campo="ruta" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Cargar" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.MoveUp" Disabled="@(_ocupado || _marcadas.Count == 0)" OnClick="Migrar" data-accion="migrar">Migrar @_marcadas.Count marcados</MudButton>
+        <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Undo" Disabled="@(_ocupado || (_resumen?.CAN_MIGRADAS ?? 0) == 0)" OnClick="Deshacer" data-accion="deshacer">Deshacer lo migrado</MudButton>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+@if (!string.IsNullOrEmpty(_aviso)) { <MudAlert Severity="Severity.Success" Dense="true" Class="mb-2" data-aviso="resultado">@_aviso</MudAlert> }
+
+@if (_resumen is not null)
+{
+    <div class="d-flex flex-wrap gap-3 mb-3" data-zona="resumen">
+        <div class="mg-kpi" data-kpi="pendientes"><span>Filas por migrar</span><b>@_resumen.CAN_PENDIENTES</b><small>en @_resumen.CAN_RUTAS_PENDIENTES rutas</small></div>
+        <div class="mg-kpi" data-kpi="bloqueadas"><span>Bloqueadas</span><b>@_resumen.CAN_BLOQUEADAS</b><small>versión de diseño bloqueada</small></div>
+        <div class="mg-kpi" data-kpi="migradas"><span>Ya migradas</span><b>@_resumen.CAN_MIGRADAS</b><small>se pueden deshacer</small></div>
+        <div class="mg-kpi" data-kpi="creadas"><span>Operaciones creadas</span><b>@_resumen.CAN_OPERACIONES_CREADAS</b><small>sin tiempo: asígnaselo en Operaciones</small></div>
+    </div>
+}
+
+<div class="d-flex flex-wrap gap-2 align-center mb-2" data-zona="filtros">
+    <MudTextField T="string" @bind-Value="_buscar" Label="Buscar" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" Style="max-width:260px;" data-filtro="buscar" />
+    <MudSelect T="string" @bind-Value="_fProceso" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" Style="max-width:210px;" data-filtro="proceso">
+        @foreach (var p in _filas.GroupBy(f => f.G.COD_PROCESO).Select(g => g.First().G).OrderBy(g => g.DES_PROCESO)) { <MudSelectItem T="string" Value="@p.COD_PROCESO">@p.DES_PROCESO</MudSelectItem> }
+    </MudSelect>
+    <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="MarcarConCoincidencia" data-accion="marcar-coincidencia">Marcar los que ya tienen operación</MudButton>
+    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="MarcarTodos" data-accion="marcar-todos">Marcar todos</MudButton>
+    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="QuitarMarcas" data-accion="quitar-marcas">Quitar marcas</MudButton>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="migracion-operaciones" style="position:relative;">
+    <div class="mud-table-container" style="height:100%;overflow:auto;">
+    <table class="of-tabla" data-tabla="grupos">
+        <thead><tr><th></th><th><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Proceso · subproceso" OnCambio="Refrescar" /></th><th><EncabezadoOF G="_g" Items="_fuente" Col="1" Texto="Tipo de operación" OnCambio="Refrescar" /></th><th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Filas" OnCambio="Refrescar" /></th><th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="Bloq." OnCambio="Refrescar" /></th><th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Rutas" OnCambio="Refrescar" /></th><th><EncabezadoOF G="_g" Items="_fuente" Col="5" Texto="Lead time (antiguo)" OnCambio="Refrescar" /></th><th><EncabezadoOF G="_g" Items="_fuente" Col="6" Texto="Qué hacer" OnCambio="Refrescar" /></th><th><EncabezadoOF G="_g" Items="_fuente" Col="7" Texto="Nombre de la operación nueva" OnCambio="Refrescar" /></th></tr></thead>
+        <tbody>
+            @foreach (var f in _visibles)
+            {
+                var g = f.G;
+                <tr data-grupo="@f.Clave" class="@(g.CAN_FILAS == 0 ? "mg-bloq" : "")">
+                    <td><MudCheckBox T="bool" Value="f.Marca" ValueChanged="@(v => Marcar(f, v))" Disabled="@(g.CAN_FILAS == 0 || _ocupado)" Dense="true" data-campo="marca" /></td>
+                    <td>@g.DES_PROCESO @if (!string.IsNullOrEmpty(g.DES_SUB_PROCESO)) { <span style="opacity:.6;"> · @g.DES_SUB_PROCESO</span> }</td>
+                    <td>@g.DES_TIPO_OPERACION_PRODUCCION <span class="mono" style="opacity:.5;">@g.COD_TIPO_OPERACION_PRODUCCION</span></td>
+                    <td class="n mono">@g.CAN_FILAS</td>
+                    <td class="n mono">@if (g.CAN_FILAS_BLOQUEADAS > 0) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" title="Filas de rutas con una versión de diseño bloqueada: no se migran">@g.CAN_FILAS_BLOQUEADAS</MudChip> } else { <span>0</span> }</td>
+                    <td class="n mono">@g.CAN_RUTAS</td>
+                    <td class="mono" style="font-size:.78rem;">@LeadTime(g)</td>
+                    <td style="min-width:260px;">
+                        <MudSelect T="string" Value="f.Accion" ValueChanged="@(v => { f.Accion = v ?? "NUEVA"; })" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(g.CAN_FILAS == 0)" data-campo="accion">
+                            <MudSelectItem T="string" Value="@("NUEVA")">Crear una operación nueva</MudSelectItem>
+                            @if (!string.IsNullOrEmpty(g.COD_OPERACION_SUGERIDA)) { <MudSelectItem T="string" Value="@("EXISTENTE")">Usar @g.COD_OPERACION_SUGERIDA · @g.DES_OPERACION_SUGERIDA@(g.CAN_COINCIDENCIAS > 1 ? $" (hay {g.CAN_COINCIDENCIAS})" : "")</MudSelectItem> }
+                        </MudSelect>
+                    </td>
+                    <td style="min-width:240px;">
+                        @if (f.Accion == "NUEVA") { <MudTextField T="string" @bind-Value="f.Des" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Disabled="@(g.CAN_FILAS == 0)" data-campo="nombre" /> }
+                    </td>
+                </tr>
+            }
+            @if (_visibles.Count == 0) { <tr><td colspan="9" style="opacity:.55;padding:16px;">@(_filas.Count == 0 ? "No hay filas de operación sin catálogo: todo está migrado." : "Ningún grupo coincide con el filtro.")</td></tr> }
+        </tbody>
+    </table>
+    </div>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+<style>
+    .of-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .of-tabla th, .of-tabla td { padding: 3px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .of-tabla th { position: sticky; top: 0; background: var(--mud-palette-surface, #fff); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .85; white-space: nowrap; }
+    .of-tabla .n { text-align: right; white-space: nowrap; }
+    .mg-bloq td { opacity: .55; }
+    .mg-kpi { display: flex; flex-direction: column; min-width: 150px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; }
+    .mg-kpi span { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .65; }
+    .mg-kpi b { font-size: 1.3rem; font-family: var(--mono, monospace); }
+    .mg-kpi small { font-size: .7rem; opacity: .6; }
+</style>
+
+@code {
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private readonly GridOF<Fila> _g = new();
+    private void Refrescar() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public MigracionOperaciones()
+    {
+        _g.Add(f => f.G.DES_PROCESO + (string.IsNullOrEmpty(f.G.DES_SUB_PROCESO) ? "" : " · " + f.G.DES_SUB_PROCESO));
+        _g.Add(f => f.G.DES_TIPO_OPERACION_PRODUCCION);
+        _g.Add(f => f.G.CAN_FILAS.ToString(), f => f.G.CAN_FILAS);
+        _g.Add(f => f.G.CAN_FILAS_BLOQUEADAS.ToString(), f => f.G.CAN_FILAS_BLOQUEADAS);
+        _g.Add(f => f.G.CAN_RUTAS.ToString(), f => f.G.CAN_RUTAS);
+        _g.Add(f => LeadTime(f.G), f => f.G.VAL_LEAD_TIME_MIN);
+        _g.Add(f => f.Accion == "NUEVA" ? "Crear una operación nueva" : "Usar una existente");
+        _g.Add(f => f.Accion == "NUEVA" ? f.Des : "");
+    }
+
+    private sealed class Fila
+    {
+        public MigracionGrupo G = new();
+        public bool Marca;
+        public string Accion = "NUEVA";
+        public string? Des;
+        public string Clave => $"{G.COD_PROCESO}|{G.COD_SUB_PROCESO}|{G.COD_TIPO_OPERACION_PRODUCCION}";
+    }
+
+    private MigracionResumen? _resumen;
+    private List<Fila> _filas = new();
+    private string _buscar = "", _error = "", _aviso = "", _ruta = "";
+    private string? _fProceso;
+    private bool _ocupado;
+
+    private List<Fila> _visibles => _g.Visibles(_fuente);
+    private List<Fila> _fuente => _filas.Where(f => (string.IsNullOrEmpty(_fProceso) || f.G.COD_PROCESO == _fProceso)
+        && (string.IsNullOrWhiteSpace(_buscar) || new[] { f.G.DES_PROCESO, f.G.DES_SUB_PROCESO, f.G.DES_TIPO_OPERACION_PRODUCCION, f.G.COD_TIPO_OPERACION_PRODUCCION, f.G.DES_OPERACION_SUGERIDA }
+            .Any(x => x?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false))).ToList();
+    private List<Fila> _marcadas => _filas.Where(f => f.Marca && f.G.CAN_FILAS > 0).ToList();
+
+    private static string LeadTime(MigracionGrupo g) => g.VAL_LEAD_TIME_MIN is null ? "—" :
+        (g.VAL_LEAD_TIME_MIN == g.VAL_LEAD_TIME_MAX ? OperacionesApi.Min(g.VAL_LEAD_TIME_MIN) : OperacionesApi.Min(g.VAL_LEAD_TIME_MIN) + " a " + OperacionesApi.Min(g.VAL_LEAD_TIME_MAX)) + " " + g.COD_UNIDAD_MEDIDA_TIEMPO;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Migración de operaciones");
+        await Cargar();
+    }
+
+    private string? RutaOpc => string.IsNullOrWhiteSpace(_ruta) ? null : _ruta.Trim();
+
+    private async Task Cargar()
+    {
+        var q = RutaOpc is null ? "" : "?ruta=" + Uri.EscapeDataString(RutaOpc);
+        var s = await OperacionesApi.LeerAsync<MigracionResumen>(Http, IngRoute.OperacionesMigracionResumen);
+        var p = await OperacionesApi.LeerAsync<List<MigracionGrupo>>(Http, IngRoute.OperacionesMigracionPropuesta + q);
+        _error = !s.Ok ? (s.Mensaje ?? "No se pudo leer el resumen.") : !p.Ok ? (p.Mensaje ?? "No se pudo leer la propuesta.") : "";
+        _resumen = s.Data;
+        var marcas = _filas.Where(f => f.Marca).Select(f => f.Clave).ToHashSet();
+        _filas = (p.Data ?? new()).Select(g => new Fila
+        {
+            G = g, Accion = !string.IsNullOrEmpty(g.COD_OPERACION_SUGERIDA) ? "EXISTENTE" : "NUEVA", Des = g.DES_OPERACION_NUEVA,
+        }).ToList();
+        foreach (var f in _filas) f.Marca = marcas.Contains(f.Clave) && f.G.CAN_FILAS > 0;
+        StateHasChanged();
+    }
+
+    private void Marcar(Fila f, bool v) => f.Marca = v;
+    private void MarcarTodos() { foreach (var f in _visibles.Where(f => f.G.CAN_FILAS > 0)) f.Marca = true; }
+    private void MarcarConCoincidencia() { foreach (var f in _visibles.Where(f => f.G.CAN_FILAS > 0 && !string.IsNullOrEmpty(f.G.COD_OPERACION_SUGERIDA))) f.Marca = true; }
+    private void QuitarMarcas() { foreach (var f in _filas) f.Marca = false; }
+
+    private async Task Migrar()
+    {
+        _error = ""; _aviso = "";
+        var m = _marcadas;
+        var filas = m.Sum(f => f.G.CAN_FILAS);
+        var nuevas = m.Count(f => f.Accion == "NUEVA");
+        var ok = await DialogService.ShowMessageBox("Migrar operaciones",
+            $"Se enlazarán {filas} filas de rutas con operaciones del catálogo ({m.Count} grupos: {m.Count - nuevas} con una operación que ya existe y {nuevas} operaciones nuevas, sin tiempo). Después puedes deshacerlo. ¿Continuar?", yesText: "Migrar", cancelText: "Cancelar");
+        if (ok != true) return;
+        _ocupado = true;
+        var dto = new MigracionAplicarDto
+        {
+            COD_RUTA_PRODUCCION = RutaOpc,
+            Grupos = m.Select(f => new MigracionGrupoDecision
+            {
+                COD_PROCESO = f.G.COD_PROCESO, COD_SUB_PROCESO = f.G.COD_SUB_PROCESO, COD_TIPO_OPERACION_PRODUCCION = f.G.COD_TIPO_OPERACION_PRODUCCION, ACCION = f.Accion,
+                COD_OPERACION = f.Accion == "EXISTENTE" ? f.G.COD_OPERACION_SUGERIDA : null, DES_OPERACION = f.Accion == "NUEVA" ? f.Des : null
+            }).ToList()
+        };
+        var r = await OperacionesApi.EnviarAsync<MigracionResultado>(Http, HttpMethod.Post, IngRoute.OperacionesMigracion, dto);
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo migrar."; return; }
+        _aviso = $"Migradas {r.Data?.CAN_FILAS_MIGRADAS} filas; {r.Data?.CAN_OPERACIONES_CREADAS} operaciones creadas; {r.Data?.CAN_FILAS_BLOQUEADAS} filas saltadas por versión de diseño bloqueada.";
+        Snackbar.Add("Migración aplicada.", Severity.Success);
+        await Cargar();
+    }
+
+    private async Task Deshacer()
+    {
+        _error = ""; _aviso = "";
+        var ok = await DialogService.ShowMessageBox("Deshacer la migración",
+            "Se sueltan las filas migradas (las que siguen como se migraron, sin tiempo propio) y se borran las operaciones creadas que nadie más use. ¿Continuar?", yesText: "Deshacer", cancelText: "Cancelar");
+        if (ok != true) return;
+        _ocupado = true;
+        var q = RutaOpc is null ? "" : "?ruta=" + Uri.EscapeDataString(RutaOpc);
+        var r = await OperacionesApi.EnviarAsync<MigracionDeshacerResultado>(Http, HttpMethod.Delete, IngRoute.OperacionesMigracion + q);
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo deshacer."; return; }
+        _aviso = $"Deshechas {r.Data?.CAN_FILAS_DESHECHAS} filas; {r.Data?.CAN_FILAS_OMITIDAS} omitidas (con tiempo propio o en una versión bloqueada); {r.Data?.CAN_OPERACIONES_BORRADAS} operaciones borradas.";
+        Snackbar.Add("Migración deshecha.", Severity.Success);
+        await Cargar();
+    }
+}

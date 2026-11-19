@@ -1,0 +1,99 @@
+@* Agrega a la ruta (script SQL 122) un proceso, un subproceso o una operacion del catalogo. Una operacion compuesta se expande en filas hijas, cada hoja con el SAM
+   de la version de tiempo que rige en la fecha indicada. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (Modo == "proceso")
+        {
+            <MudSelect T="string" @bind-Value="_cod" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="proceso">
+                @foreach (var p in Lista("procesos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+            </MudSelect>
+        }
+        else if (Modo == "subproceso")
+        {
+            <MudText Typo="Typo.caption" Class="mb-1">Dentro del proceso <b>@Padre?.DES_PROCESO</b></MudText>
+            <MudSelect T="string" @bind-Value="_cod" Label="Subproceso" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="subproceso">
+                @foreach (var p in Lista("subprocesos").Where(s => s.DES_DETALLE == Padre?.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+            </MudSelect>
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Class="mb-1">Dentro de <b>@(Padre?.DES_SUB_PROCESO ?? Padre?.DES_OPERACION ?? Padre?.DES_PROCESO)</b></MudText>
+            <MudAutocomplete T="Operacion" @bind-Value="_op" SearchFunc="Buscar" ToStringFunc="@(o => o is null ? "" : o.COD_OPERACION + " · " + o.DES_OPERACION + (o.FLG_COMPUESTA ? " (compuesta)" : ""))" Label="Operación del catálogo" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" ResetValueOnEmptyText="true" MaxItems="300" data-campo="operacion" />
+            <div class="d-flex gap-3 mt-2">
+                <MudNumericField T="decimal" @bind-Value="_frecuencia" Label="Veces por unidad" Min="0.001m" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="frecuencia" />
+                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="fecha" />
+            </div>
+            @if (_op is { FLG_COMPUESTA: true }) { <MudText Typo="Typo.caption" Style="opacity:.7;">Es una operación compuesta: se agregan ella y todos sus componentes.</MudText> }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="agregar">Agregar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RutaTiempoResumen? Ruta { get; set; }
+    /// <summary>proceso, subproceso u operacion.</summary>
+    [Parameter] public string Modo { get; set; } = "operacion";
+    [Parameter] public RutaNodo? Padre { get; set; }
+    [Parameter] public DateTime? Fecha { get; set; }
+
+    private Dictionary<string, List<CatalogoOperacionItem>> _combos = new();
+    private List<Operacion> _catalogo = new();
+    private string? _cod;
+    private Operacion? _op;
+    private decimal _frecuencia = 1;
+    private DateTime? _fecha;
+    private bool _guardando;
+    private string _error = "";
+
+    private List<CatalogoOperacionItem> Lista(string k) => _combos.GetValueOrDefault(k) ?? new();
+    private Task<IEnumerable<Operacion>> Buscar(string? t, CancellationToken ct) =>
+        Task.FromResult(_catalogo.Where(o => string.IsNullOrWhiteSpace(t) || o.DES_OPERACION.Contains(t, StringComparison.OrdinalIgnoreCase) || o.COD_OPERACION.Contains(t, StringComparison.OrdinalIgnoreCase)).OrderBy(o => o.COD_OPERACION).Take(300));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fecha = Fecha ?? DateTime.Today;
+        if (Modo == "operacion") _catalogo = (await OperacionesApi.LeerAsync<List<Operacion>>(Http, IngRoute.Operaciones)).Data ?? new();
+        else _combos = (await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.OperacionesCombos)).Data ?? new();
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (Ruta is null) return;
+        _guardando = true;
+        (bool Ok, string? Mensaje) r;
+        if (Modo == "proceso")
+        {
+            if (string.IsNullOrEmpty(_cod)) { _error = "Elige el proceso."; _guardando = false; return; }
+            var x = await OperacionesApi.EnviarAsync<int>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/procesos", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, COD_PROCESO = _cod });
+            r = (x.Ok, x.Mensaje);
+        }
+        else if (Modo == "subproceso")
+        {
+            if (string.IsNullOrEmpty(_cod) || Padre is null) { _error = "Elige el subproceso."; _guardando = false; return; }
+            var x = await OperacionesApi.EnviarAsync<int>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/subprocesos", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_PADRE = Padre.NUM_ESTRUCTURA_RUTA_PROCESO, COD_SUB_PROCESO = _cod });
+            r = (x.Ok, x.Mensaje);
+        }
+        else
+        {
+            if (_op is null || Padre is null) { _error = "Elige la operación."; _guardando = false; return; }
+            var x = await OperacionesApi.EnviarAsync<RutaOperacionAgregarResultado>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/operaciones",
+                new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_PADRE = Padre.NUM_ESTRUCTURA_RUTA_PROCESO, COD_OPERACION = _op.COD_OPERACION, VAL_FRECUENCIA = _frecuencia, FECHA = _fecha });
+            r = (x.Ok, x.Mensaje);
+            if (x.Ok) Snackbar.Add($"Se agregaron {x.Data?.CAN_FILAS} fila(s).", Severity.Success);
+        }
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo agregar."; return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

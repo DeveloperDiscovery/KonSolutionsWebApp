@@ -1,0 +1,9 @@
+NO REEMPLACES ApiRoutes.cs. Agrega SOLO esto dentro de "public static class Logistica"
+(por ejemplo, junto a las rutas de Requerimientos), y borra la constante anterior
+MovimientosAlmacenRequerimientoDisponibles si la agregaste con la entrega anterior:
+
+        // Cobertura de UN requerimiento contra el stock del almacén, dentro de un movimiento.
+        // POST: el procedimiento reescribe el stock seleccionado del movimiento. Devuelve
+        // { Lineas, Stock } en un solo objeto. criterio: MAYOR | MENOR | LOTE.
+        public static string MovimientosAlmacenRequerimientosCobertura(int numMovimiento, int numRequerimiento, string criterio) =>
+            $"{Prefix}/logistica/movimientos-almacen/{numMovimiento}/requerimientos/disponibles/{numRequerimiento}/cobertura?criterio={Uri.EscapeDataString(criterio)}";

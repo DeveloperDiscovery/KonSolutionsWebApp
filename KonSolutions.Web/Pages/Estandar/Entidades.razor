@@ -1,0 +1,447 @@
+@page "/estandar/entidades"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Estandar
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Entidades · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Entidades" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema ESTANDAR · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Filtrar" MaxWidth="719px" Class="grid-header-search" />
+    @* Tipos de Entidad: menú desplegable tipo galería (multi-selección). Antes era una fila
+       de chips, pero con ~20 tipos ocupaba dos líneas completas del encabezado; ahora es un
+       solo botón que abre la galería. Siempre visible y editable — al entrar desde una
+       opción con Parámetro (ej. Clientes, Proveedores) llega con los tipos correspondientes
+       ya tildados (ver AplicarPreseleccionDesdeOpcionAsync), pero el usuario puede seguir
+       ajustando la selección libremente. *@
+    @if (_tiposEntidad.Count > 0)
+    {
+        <MudMenu Dense="true" ActivationEvent="@MouseEvent.LeftClick"
+                 AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft">
+            <ActivatorContent>
+                <MudButton Variant="@(_tiposSeleccionados.Count > 0 ? Variant.Filled : Variant.Outlined)"
+                           Color="@(_tiposSeleccionados.Count > 0 ? Color.Primary : Color.Default)"
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.FilterList"
+                           EndIcon="@Icons.Material.Filled.ArrowDropDown"
+                           Style="white-space:nowrap;">
+                    @(_tiposSeleccionados.Count == 0
+                        ? "Tipos de entidad"
+                        : $"Tipos de entidad ({_tiposSeleccionados.Count})")
+                </MudButton>
+            </ActivatorContent>
+            <ChildContent>
+                @* El panel no usa MudMenuItem: cada ítem cerraría el menú al hacer clic, y aquí
+                   la gracia es marcar varios tipos seguidos sin reabrirlo cada vez. *@
+                <div class="tipos-entidad-galeria" @onclick:stopPropagation="true">
+                    <div class="teg-cabecera">
+                        <span class="teg-titulo">Filtrar por tipo de entidad</span>
+                        @if (_tiposSeleccionados.Count > 0)
+                        {
+                            @* Mismo ícono que el botón estándar de limpiar filtros de las
+                               grillas (GridClearFiltersButton), y el mismo color forzado:
+                               Color.Default de MudBlazor queda casi invisible sobre el tema
+                               oscuro de la app. *@
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Default"
+                                       StartIcon="@Icons.Material.Filled.FilterAltOff"
+                                       Style="color:var(--boton-backcolor,var(--ink));"
+                                       OnClick="LimpiarTiposEntidad">Quitar filtro</MudButton>
+                        }
+                    </div>
+                    <div class="teg-grid">
+                        @foreach (var t in _tiposEntidad)
+                        {
+                            var activo = _tiposSeleccionados.Contains(t.Id);
+                            var habilitado = _tiposHabilitados is null || _tiposHabilitados.Contains(t.Id);
+                            @* El switch va dentro del div clickeable y sin su propio handler:
+                               si además manejara el clic, cada toque contaría dos veces y el
+                               filtro se encendería y apagaría en el mismo gesto. Cuando la
+                               opción trae Parámetro con tipos específicos, los tipos que NO
+                               están en esa lista quedan deshabilitados (no clickeables) — el
+                               usuario puede prender/apagar solo entre los tipos habilitados. *@
+                            <div class="teg-item @(activo ? "teg-item-activo" : "") @(habilitado ? "" : "teg-item-disabled")"
+                                 title="@t.Texto"
+                                 @onclick="@(async () => { if (habilitado) await ToggleTipoEntidad(t.Id); })">
+                                <MudSwitch T="bool" Value="activo" ReadOnly="true" Disabled="@(!habilitado)"
+                                           Color="Color.Primary" Size="Size.Small" Class="teg-switch" />
+                                <span class="teg-texto">@t.Texto</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </ChildContent>
+        </MudMenu>
+    }
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f=>f.Value is not null))" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <GridPrintButton Titulo="Entidades"
+            Headers="@(new List<string>{"Código","Nombre Completo","Comercial","Doc. Identidad","País"})"
+            Rows="@(_items.Select(x=>new List<string>{x.COD_ENTIDAD?.ToString()??"",x.DES_NOMBRE_COMPLETO,x.DES_COMERCIAL,x.NUM_DOCUMENTO_IDENTIDAD,x.DES_PAIS}).ToList())" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="entidades" style="position:relative;">
+    <MudDataGrid T="Entidad" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Title="Logo" Sortable="false" Width="56" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><GridImage Image="context.Item.IMG_LOGO" /></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Código" Width="80">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="COD_ENTIDAD" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(0)" ValorDe="@(x=>x.COD_ENTIDAD?.ToString()??"")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>Filtro(0,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.COD_ENTIDAD</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Nombre completo" Width="@Limites.ColWidth("ESTANDAR.ENTIDADES","DES_NOMBRE_COMPLETO",160,400)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_NOMBRE_COMPLETO" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(1)" ValorDe="@(x=>x.DES_NOMBRE_COMPLETO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_NOMBRE_COMPLETO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Comercial" Width="@Limites.ColWidth("ESTANDAR.ENTIDADES","DES_COMERCIAL",140,320)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_COMERCIAL" Activo="@(_ordenColumna == 2)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(2))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(2)" ValorDe="@(x=>x.DES_COMERCIAL)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v=>Filtro(2,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_COMERCIAL</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Doc. Identidad" Width="130">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="NUM_DOCUMENTO_IDENTIDAD" Activo="@(_ordenColumna == 3)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(3))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(3)" ValorDe="@(x=>x.NUM_DOCUMENTO_IDENTIDAD)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v=>Filtro(3,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>
+                    @if (!string.IsNullOrEmpty(context.Item.DES_TIPO_DOCUMENTO_IDENTIDAD))
+                    {
+                        <MudChip T="string" Size="Size.Small" Class="mr-1" Style="height:18px;font-size:.7rem;">@context.Item.DES_TIPO_DOCUMENTO_IDENTIDAD</MudChip>
+                    }
+                    <span class="mono">@context.Item.NUM_DOCUMENTO_IDENTIDAD</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="País" Width="120">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_PAIS" Activo="@(_ordenColumna == 4)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(4))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(4)" ValorDe="@(x=>x.DES_PAIS)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v=>Filtro(4,v))" />
+                    </div>
+                </HeaderTemplate>
+                @* Antes se ocultaba cuando FLG_DOMICILIADO era true (se asumía siempre el mismo
+                   país de Configuración General) — pero ahora el país es editable aunque esté
+                   domiciliado, así que puede variar por registro y hay que mostrarlo siempre. *@
+                <CellTemplate>@context.Item.DES_PAIS</CellTemplate>
+            </TemplateColumn>
+            @* Nombre de la entidad dependencia (COD_ENTIDAD_DEPENDENCIA) — habilitado por el
+               fix de alias _DEPENDENCIA en SHOWALL/SHOWBYID/SEARCH (ver Entidades.cs API). *@
+            <TemplateColumn Sortable="false" Title="Dependencia" Width="@Limites.ColWidth("ESTANDAR.ENTIDADES","DES_ENTIDAD_DEPENDENCIA",140,320)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ENTIDAD_DEPENDENCIA" Activo="@(_ordenColumna == 6)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(6))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(6)" ValorDe="@(x=>x.DES_ENTIDAD_DEPENDENCIA)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v=>Filtro(6,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_ENTIDAD_DEPENDENCIA</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="110">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ESTADO" Activo="@(_ordenColumna == 5)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(5))" />
+                        <FiltroExcelColumna T="Entidad" ItemsBase="@Base(5)" ValorDe="@(x=>x.DES_ESTADO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v=>Filtro(5,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>
+                    @if (!string.IsNullOrEmpty(context.Item.DES_ESTADO))
+                    {
+                        <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                    BackColor="@context.Item.DES_BACKCOLOR"
+                                    ForeColor="@context.Item.DES_FORECOLOR" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))"
+                                     CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Entidad" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // Reutilización de esta MISMA grilla apuntando el Formulario de otra opción de menú aquí
+    // (ej. "Catálogo de Clientes" o "Catálogo de Proveedores", ambas con DES_FORMULARIO =
+    // "Estandar/Entidades.razor") — la pantalla es SIEMPRE la genérica, no hay páginas
+    // dedicadas por catálogo. Lo único que cambia es qué tipos de entidad vienen
+    // PRESELECCIONADOS (tildados) en el filtro de "Tipos de entidad" al abrir, según el
+    // DES_PARAMETRO de la opción — el usuario puede seguir destildando/tildando libremente
+    // después, esto NO bloquea ni oculta el selector.
+
+    /// <summary>
+    /// null = todos los tipos son clickeables (Parámetro en blanco). Con Parámetro cargado,
+    /// solo los tipos de esta lista son clickeables — el resto queda deshabilitado (no se
+    /// puede prender ni apagar), para que la pantalla no se pueda "escapar" del conjunto de
+    /// tipos que le corresponde a esa opción (ej. Proveedores no puede tildar "Clientes").
+    /// </summary>
+    private HashSet<string>? _tiposHabilitados;
+
+    /// <summary>
+    /// Lee el DES_PARAMETRO de la opción (CodAplicacion/CodOpcionAplicacion, ya pasados por
+    /// el llamador igual que a TituloPagina/AccionesBotones) y preselecciona los tipos de
+    /// entidad correspondientes en _tiposSeleccionados, dejando además solo ESOS tipos
+    /// habilitados para tildar/destildar (ver _tiposHabilitados). Formato ÚNICO para uno o
+    /// varios tipos — el MISMO que ya espera @DES_TIPOS_ENTIDAD en el SP (código + guion
+    /// bajo), ej. "CLI_" (Clientes) o "TEJ_PRV_THI_..._" (Proveedores). Parámetro en blanco
+    /// (pantalla genérica sin restricción, ej. "Entidades" a secas): se preseleccionan TODOS
+    /// los tipos existentes y quedan todos habilitados para editar. Debe llamarse DESPUÉS de
+    /// CargarTiposEntidadAsync (necesita el catálogo completo para el caso "todos").
+    /// </summary>
+    private async Task AplicarPreseleccionDesdeOpcionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion)) return;
+        try
+        {
+            var url = $"{ApiRoutes.Seguridad.AplicacionesOpciones}/{Uri.EscapeDataString(CodAplicacion)}/{Uri.EscapeDataString(CodOpcionAplicacion)}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Seguridad.AplicacionesOpcionesFormDto>>(url);
+            var parametro = r?.Data?.DES_PARAMETRO;
+
+            if (string.IsNullOrWhiteSpace(parametro))
+            {
+                // Parámetro en blanco: pantalla sin tipo específico → todos tildados y editables.
+                foreach (var t in _tiposEntidad) _tiposSeleccionados.Add(t.Id);
+                _tiposHabilitados = null;
+                return;
+            }
+
+            _tiposHabilitados = new HashSet<string>();
+            foreach (var c in parametro.Split('_', StringSplitOptions.RemoveEmptyEntries))
+            {
+                _tiposSeleccionados.Add(c);
+                _tiposHabilitados.Add(c);
+            }
+        }
+        catch { /* sin parámetro accesible, queda sin preselección (todo destildado, todo editable) */ }
+    }
+
+    private List<Entidad> _items = new();
+    private string _search = "";
+
+    // Chips de Tipo de Entidad (multi-selección): catálogo real de ESTANDAR.TIPOS_ENTIDADES
+    // (PROC_ESTANDAR_TIPOS_ENTIDADES_SHOWCOMBOX) — nunca hardcodeado, para no adivinar códigos.
+    private List<KONSolutions.Shared.Common.ComboboxItem> _tiposEntidad = new();
+    private readonly HashSet<string> _tiposSeleccionados = new();
+
+    /// <summary>Arma 'CLI_PRV_' (cada código + guion bajo) tal como lo espera
+    /// @DES_TIPOS_ENTIDAD en PROC_ESTANDAR_ENTIDADES_SHOWALL/_SEARCH. Null = sin filtro.</summary>
+    private string? DesTiposEntidadFiltro =>
+        _tiposSeleccionados.Count == 0 ? null : string.Concat(_tiposSeleccionados.Select(c => c + "_"));
+
+    private async Task ToggleTipoEntidad(string codTipoEntidad)
+    {
+        if (!_tiposSeleccionados.Remove(codTipoEntidad)) _tiposSeleccionados.Add(codTipoEntidad);
+        await Load();
+    }
+
+    private async Task LimpiarTiposEntidad()
+    {
+        if (_tiposSeleccionados.Count == 0) return;
+        _tiposSeleccionados.Clear();
+        await Load();
+    }
+
+    private async Task CargarTiposEntidadAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<KONSolutions.Shared.Common.ComboboxItem>>>(
+                ApiRoutes.Estandar.TiposEntidadesCombobox);
+            _tiposEntidad = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(Entidades), nameof(CargarTiposEntidadAsync)); }
+    }
+    private readonly Dictionary<int,HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private List<Entidad> Ordenar(List<Entidad> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_ENTIDAD).ToList() : items.OrderByDescending(x => x.COD_ENTIDAD).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_NOMBRE_COMPLETO).ToList() : items.OrderByDescending(x => x.DES_NOMBRE_COMPLETO).ToList(),
+        2 => _ordenAscendente ? items.OrderBy(x => x.DES_COMERCIAL).ToList() : items.OrderByDescending(x => x.DES_COMERCIAL).ToList(),
+        3 => _ordenAscendente ? items.OrderBy(x => x.NUM_DOCUMENTO_IDENTIDAD).ToList() : items.OrderByDescending(x => x.NUM_DOCUMENTO_IDENTIDAD).ToList(),
+        4 => _ordenAscendente ? items.OrderBy(x => x.DES_PAIS).ToList() : items.OrderByDescending(x => x.DES_PAIS).ToList(),
+        5 => _ordenAscendente ? items.OrderBy(x => x.DES_ESTADO).ToList() : items.OrderByDescending(x => x.DES_ESTADO).ToList(),
+        6 => _ordenAscendente ? items.OrderBy(x => x.DES_ENTIDAD_DEPENDENCIA).ToList() : items.OrderByDescending(x => x.DES_ENTIDAD_DEPENDENCIA).ToList(),
+        _ => items
+    };
+    private List<Entidad> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<Entidad> Base(int col) => Aplicar(_items, col);
+
+    private List<Entidad> Aplicar(List<Entidad> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<Entidad> q = src;
+        foreach (var (c,v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.COD_ENTIDAD?.ToString() ?? "")),
+                1 => q.Where(x => v.Contains(x.DES_NOMBRE_COMPLETO)),
+                2 => q.Where(x => v.Contains(x.DES_COMERCIAL)),
+                3 => q.Where(x => v.Contains(x.NUM_DOCUMENTO_IDENTIDAD)),
+                4 => q.Where(x => v.Contains(x.DES_PAIS)),
+                5 => q.Where(x => v.Contains(x.DES_ESTADO ?? "")),
+                6 => q.Where(x => v.Contains(x.DES_ENTIDAD_DEPENDENCIA)),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros() { foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null; StateHasChanged(); }
+    private async Task Filtrar() => _items = string.IsNullOrWhiteSpace(_search)
+        ? await Fetch() : await FetchSearch(_search);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ESTANDAR", "Entidades");
+
+        await CargarTiposEntidadAsync();
+        await AplicarPreseleccionDesdeOpcionAsync();
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("ESTANDAR.ENTIDADES", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load() { _items = string.IsNullOrWhiteSpace(_search) ? await Fetch() : await FetchSearch(_search); }
+    private async Task<List<Entidad>> Fetch()
+    {
+        try
+        {
+            string url = !string.IsNullOrWhiteSpace(DesTiposEntidadFiltro)
+                ? $"{ApiRoutes.Estandar.Entidades}?desTiposEntidad={Uri.EscapeDataString(DesTiposEntidadFiltro)}"
+                : ApiRoutes.Estandar.Entidades;
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Entidad>>>(url);
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Entidades), nameof(Fetch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Entidades));
+            return new();
+        }
+    }
+    private async Task<List<Entidad>> FetchSearch(string s)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.Entidades}/search?search={Uri.EscapeDataString(s)}";
+            if (!string.IsNullOrWhiteSpace(DesTiposEntidadFiltro)) url += $"&desTiposEntidad={Uri.EscapeDataString(DesTiposEntidadFiltro)}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Entidad>>>(url);
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Entidades), nameof(FetchSearch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Entidades));
+            return new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b) { if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create); return Task.CompletedTask; }
+    private Task OnAccionGrilla(Entidad item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Entidad? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nueva entidad",
+            CrudModo.Read   => $"Ver · {item?.DES_NOMBRE_COMPLETO}",
+            CrudModo.Delete => $"Eliminar · {item?.DES_NOMBRE_COMPLETO}",
+            _               => $"Editar · {item?.DES_NOMBRE_COMPLETO}"
+        };
+        // MaxWidth.False: el ancho real lo controla el Style del MudDialog (min(1328px,95vw)) —
+        // con MaxWidth.Medium la clase de MudBlazor le imponía su propio max-width y ganaba
+        // sobre el width del Style, por eso el diálogo nunca se veía más ancho.
+        var dlg = await DialogService.ShowAsync<EntidadesDialog>(titulo,
+            new DialogParameters
+            {
+                ["Item"] = item, ["Modo"] = modo,
+                ["CodAplicacion"] = CodAplicacion,
+                ["CodOpcionAplicacion"] = CodOpcionAplicacion
+            },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("ESTANDAR.ENTIDADES", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

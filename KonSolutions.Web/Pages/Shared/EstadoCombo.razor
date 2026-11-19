@@ -1,0 +1,202 @@
+@*
+    EstadoCombo.razor
+    --------------------------------------------------------------------------
+    Combo de estado reutilizable. Por defecto carga los estados de una tabla a
+    través del endpoint genérico "estados-por-tabla" (resuelve el COD_TIPO_ESTADO
+    de la tabla vía ESTANDAR.TABLAS_TIPOS_ESTADO):
+      GET /seguridad/estados-por-tabla?desTabla={DesTabla}
+    Uso:
+      <EstadoCombo DesTabla="SEGURIDAD.PERFILES_USUARIO"
+                   @bind-Value="_model.COD_ESTADO"
+                   CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                   Disabled="_readonly" />
+
+    Alternativa: si el COD_TIPO_ESTADO no es fijo por tabla sino que depende de
+    otro campo del propio documento (ej. RequerimientoDocumento: cada Tipo de
+    Requerimiento trae su propio COD_TIPO_ESTADO), se pasa CodTipoEstado directo
+    y se IGNORA DesTabla — los estados salen de ESTANDAR.ESTADOS por tipo
+    (GET estandar/estados/por-tipo/{codTipoEstado}), sin pasar por
+    ESTANDAR.TABLAS_TIPOS_ESTADO. Si el valor cambia después del primer render
+    (el usuario elige otro Tipo de Requerimiento), la lista se recarga y la
+    selección anterior se limpia, porque un Estado del tipo viejo no
+    necesariamente existe en el tipo nuevo:
+      <EstadoCombo CodTipoEstado="@CodTipoEstadoDelTipo"
+                   @bind-Value="_model.COD_ESTADO"
+                   CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                   Disabled="_readonly" />
+*@
+@inject HttpClient Http
+@inject KONSolutions.Web.Services.EstadoService EstadoSvc
+
+@if (_cargando)
+{
+    <MudSkeleton SkeletonType="SkeletonType.Rectangle" Height="56px" Class="@Class" Style="border-radius:4px;" />
+}
+else
+{
+    <div class="estado-combo-wrap @(!string.IsNullOrEmpty(_colorActual) ? "estado-combo-con-punto" : "")">
+        @if (!string.IsNullOrEmpty(_colorActual))
+        {
+            <div class="estado-combo-dot" style="background:@_colorActual;"></div>
+        }
+        <AriaCombo TItem="EstadoItem" Items="_estados"
+                   TextFunc="@(e => e.DesEstado)" ValueFunc="@(e => e.CodEstado.ToString())"
+                   Value="@(Value?.ToString())" ValueChanged="OnChangedStr"
+                   Label="Estado" Disabled="Disabled" Class="@Class">
+            <OptionTemplate Context="e">
+                <div class="d-flex align-center gap-2">
+                    @if (!string.IsNullOrEmpty(e.BackColor))
+                    {
+                        <div style="width:10px;height:10px;border-radius:50%;
+                                    background:@e.BackColor;flex-shrink:0;"></div>
+                    }
+                    <span>@e.DesEstado</span>
+                </div>
+            </OptionTemplate>
+        </AriaCombo>
+    </div>
+
+    @if (!_estados.Any() && !string.IsNullOrWhiteSpace(_diagnostico))
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-1 mb-2" Style="font-size:.75rem;">
+            Sin estados disponibles para "@DesTabla". @_diagnostico
+        </MudAlert>
+    }
+}
+
+@code {
+    [Parameter] public string DesTabla { get; set; } = "";
+    [Parameter] public int? CodTipoEstado { get; set; }
+    [Parameter] public int? Value { get; set; }
+    [Parameter] public EventCallback<int?> ValueChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string Class { get; set; } = "mb-3";
+    [Parameter] public EventCallback<int?> CodTipoEstadoChanged { get; set; }
+
+    private List<EstadoItem> _estados = new();
+    private string _diagnostico = "";
+    private bool _cargando = true;
+    private int? _codTipoEstado;
+    /// <summary>Último valor de CodTipoEstado ya cargado — detecta cambios entre renders
+    /// (ej. el usuario elige otro Tipo de Requerimiento) para saber cuándo recargar.</summary>
+    private int? _codTipoEstadoParamCargado;
+    private bool _primeraCarga = true;
+
+    private class EstadosDiag
+    {
+        public string DesTabla { get; set; } = "";
+        public int? CodTipoEstado { get; set; }
+        public int Cantidad { get; set; }
+        public string Paso { get; set; } = "";
+        public List<ComboboxItem> Estados { get; set; } = new();
+        public List<EstadoItem> EstadosDetalle { get; set; } = new();
+    }
+
+    /// <summary>Color del estado actualmente seleccionado, para el punto que se ve sobre el
+    /// combo cerrado (la lista desplegada ya lo muestra por cada opción vía OptionTemplate).</summary>
+    private string? _colorActual;
+    private void ActualizarColorActual()
+        => _colorActual = _estados.FirstOrDefault(e => e.CodEstado == Value)?.BackColor;
+
+    protected override void OnParametersSet() => ActualizarColorActual();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _codTipoEstadoParamCargado = CodTipoEstado;
+        await CargarEstadosAsync();
+        _primeraCarga = false;
+    }
+
+    /// <summary>Modo CodTipoEstado: si ese valor cambia después del primer render (ej. el
+    /// usuario elige otro Tipo de Requerimiento), hay que recargar los estados de ese tipo
+    /// nuevo — el modo DesTabla no cambia nunca en la vida del componente, así que no aplica.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_primeraCarga) return;
+        if (CodTipoEstado != _codTipoEstadoParamCargado)
+        {
+            _codTipoEstadoParamCargado = CodTipoEstado;
+            await CargarEstadosAsync();
+        }
+    }
+
+    private async Task CargarEstadosAsync()
+    {
+        _cargando = true;
+        try
+        {
+            if (CodTipoEstado.HasValue)
+            {
+                // Estados por tipo directo — sin pasar por ESTANDAR.TABLAS_TIPOS_ESTADO.
+                var lista = await EstadoSvc.GetByTipoAsync(CodTipoEstado.Value);
+                _estados = lista.Select(e => new EstadoItem
+                {
+                    CodEstado = e.COD_ESTADO ?? 0,
+                    DesEstado = e.DES_ESTADO ?? "",
+                    BackColor = e.DES_BACKCOLOR ?? "",
+                    ForeColor = e.DES_FORECOLOR ?? "",
+                    EsDefault = e.FLG_DEFAULT
+                }).ToList();
+                _codTipoEstado = CodTipoEstado;
+                _diagnostico = "";
+            }
+            else if (!string.IsNullOrWhiteSpace(DesTabla))
+            {
+                var r = await Http.GetFromJsonAsync<ApiResponse<EstadosDiag>>(
+                    $"{ApiRoutes.Seguridad.EstadosPorTabla}?desTabla={Uri.EscapeDataString(DesTabla)}");
+
+                if (r?.Data is not null)
+                {
+                    _estados = r.Data.EstadosDetalle?.Count > 0
+                        ? r.Data.EstadosDetalle
+                        : (r.Data.Estados ?? new()).Select(c => new EstadoItem
+                          {
+                              CodEstado = int.TryParse(c.Id, out var n) ? n : 0,
+                              DesEstado = c.Texto
+                          }).ToList();
+
+                    _diagnostico  = r.Data.Paso ?? "";
+                    _codTipoEstado = r.Data.CodTipoEstado;
+                }
+            }
+            else
+            {
+                // Ni CodTipoEstado ni DesTabla: nada que cargar todavía (ej. RequerimientoDocumento
+                // antes de elegir un Tipo de Requerimiento).
+                _estados = new();
+                _codTipoEstado = null;
+            }
+
+            if (CodTipoEstadoChanged.HasDelegate)
+                await CodTipoEstadoChanged.InvokeAsync(_codTipoEstado);
+        }
+        catch (Exception ex) { _diagnostico = $"Error de red: {ex.Message}"; }
+        finally { _cargando = false; }
+
+        // El estado elegido bajo un tipo anterior no necesariamente existe en el tipo nuevo:
+        // se limpia la selección salvo en la primera carga (ahí Value puede venir de la base).
+        // (Si el estado vigente existe en la lista nueva, se conserva: al abrir un registro el
+        // tipo llega DESPUÉS del primer render y antes se perdía el estado grabado.)
+        if (!_primeraCarga && !(Value is int actual && _estados.Any(e => e.CodEstado == actual)))
+        {
+            Value = null;
+            await ValueChanged.InvokeAsync(null);
+        }
+
+        // Ceder control al padre para que termine su init, luego auto-seleccionar default solo si sigue en null
+        await Task.Yield();
+        if (Value is null && _estados.Any())
+        {
+            var def = _estados.FirstOrDefault(e => e.EsDefault) ?? _estados.First();
+            await ValueChanged.InvokeAsync(def.CodEstado);
+        }
+        ActualizarColorActual();
+    }
+
+    private async Task OnChangedStr(string? v)
+    {
+        Value = int.TryParse(v, out var n) ? n : null;
+        ActualizarColorActual();
+        await ValueChanged.InvokeAsync(Value);
+    }
+}

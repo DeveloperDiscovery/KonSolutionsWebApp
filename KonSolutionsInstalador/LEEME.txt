@@ -1,0 +1,39 @@
+INSTALADOR DE LA WEB (servicio de Windows KonSolutionsWeb)
+(proyecto KonSolutionsInstalador, dentro de la carpeta KonSolutionsWebApp)
+===========================================================
+
+QUE ES
+  La web (KonSolutions.Web) es Blazor WebAssembly: son archivos estaticos que el navegador descarga y ejecuta. Sin IIS hace falta algo que los sirva. Este paquete trae:
+    - KonSolutions.WebHost: un servidor minimo (ASP.NET Core / Kestrel) que sirve el sitio, entrega los .br/.gz que ya genera la publicacion (el .wasm baja de ~10 MB a ~3 MB), devuelve index.html en las
+      rutas de la aplicacion (se puede refrescar el navegador en cualquier pantalla) y corre como servicio de Windows.
+    - Instalador (este .exe, pide permisos de administrador): copia el servidor y el sitio, escribe la direccion de la API, el puerto y el certificado, abre el firewall, lo inicia y verifica que carga y que la API acepta a esta web.
+
+COMO GENERARLO (una vez, en una maquina con el SDK de .NET 9)
+  PowerShell:   cd KonSolutionsWebApp\KonSolutionsInstalador ; .\publicar.ps1 -Salida C:\temp\KonSolutionsWebInstalacion
+  Sale una carpeta con  Instalador.exe  y las subcarpetas  Host\  (el servidor) y  Sitio\  (la aplicacion publicada). Copia la carpeta COMPLETA al servidor.
+
+COMO USARLO (en el servidor)
+  1) Instala PRIMERO la API (su instalador) o ten su direccion a mano.
+  2) Clic derecho en Instalador.exe > Ejecutar como administrador. Elige 1) Instalar o actualizar y contesta (Enter acepta lo que sale entre corchetes):
+       - Carpeta de instalacion              C:\KonSolutions\Web
+       - HTTPS                               si (recomendado) y el certificado de la maquina (o un .pfx). Puerto 443 (HTTPS) / 80 (HTTP). Si IIS u otro servidor web usa ese puerto, el instalador lo dice: usa otro (por ejemplo 8443).
+       - Direccion de la API                 tal como la ve el NAVEGADOR de los usuarios (no localhost si abren desde otra PC), por ejemplo https://servidor:5001/ . Se escribe en sitio\appsettings.json (ApiBaseUrl).
+       - Direccion de la web                 con la que los usuarios la abriran, por ejemplo https://sistema.empresa.com . Solo sirve para comprobar CORS.
+       - Cuenta del servicio                 vacio = LocalSystem (la web solo sirve archivos).
+  3) Comprueba antes de instalar: la API responde desde este servidor y ACEPTA llamadas desde la direccion de la web (CORS; si no, dice que agregues esa direccion en el instalador de la API), la web por HTTPS no apunta
+     a una API por HTTP (el navegador lo bloquea), el certificado existe y el puerto esta libre.
+  4) Instala (el sitio anterior se reemplaza completo: los archivos con hash de versiones viejas no deben quedar), crea el servicio (inicio automatico retrasado, reinicio ante fallas), abre el firewall y lo inicia.
+  5) Verifica: /health, que la pagina principal es la de Blazor, que una ruta de la aplicacion (/comercial/pedidos) devuelve la pagina principal y que sitio\appsettings.json apunta a la API.
+
+  ACTUALIZAR: vuelve a correr el instalador con la version nueva. Reemplaza el sitio, conserva appsettings.Production.json (puerto y certificado) y vuelve a escribir la direccion de la API.
+  DESINSTALAR: opcion 2.
+
+INSTALACION DESATENDIDA
+  Instalador.exe --instalar --destino C:\KonSolutions\Web --puerto 443 --certificado "sistema.empresa.com" --api https://servidor:5001/ --direccion https://sistema.empresa.com
+  (o --pfx C:\cert.pfx --clave-pfx ...  |  --http ; opcional --cuenta ... --clave-cuenta ... --sin-firewall --sin-iniciar)
+  Instalador.exe --desinstalar [--borrar-archivos --destino C:\KonSolutions\Web]      Instalador.exe --estado
+
+QUE SE PROBO Y QUE NO
+  Probado (en Linux): el servidor sirve la pagina principal, devuelve index.html en las rutas de la aplicacion, entrega .br o .gz segun lo que el navegador acepte (con Content-Type y Content-Encoding correctos, y application/wasm),
+  no cachea index.html ni los .json, responde 404 a un .js que falta y a intentos de salir de la carpeta (..), y /health.
+  NO probado (aqui no hay Windows): crear/iniciar/eliminar el servicio con sc.exe, la regla de firewall con netsh, los certificados del almacen de Windows, HTTPS real y el .exe publicado. Si algo falla, copiame el mensaje en rojo.

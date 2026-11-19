@@ -1,0 +1,31 @@
+@using Modelo = KONSolutions.Shared.Models.Proyectos.Proyectos
+@* El expediente de un proyecto en una ventana a pantalla completa: se abre desde el portafolio y desde «Mis tareas». *@
+<MudDialog>
+    <DialogContent>
+        @if (_item is not null)
+        {
+            <ProyectoDocumento Item="_item" Modo="CrudModo.Update" OnCerrar="Cerrar" CodAplicacion="" CodOpcionAplicacion="" />
+        }
+        else
+        {
+            <MudText Class="pa-6 mono" Style="opacity:.6;">@(_error ?? "Cargando el proyecto...")</MudText>
+        }
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Inject] private HttpClient Http { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+
+    private Modelo? _item;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _item = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Proyectos.ProyectosDoc}/{NumProyecto}");
+        if (_item is null) _error = "No se pudo leer el proyecto.";
+    }
+
+    private void Cerrar(bool huboCambios) => MudDialog.Close(huboCambios ? DialogResult.Ok(true) : DialogResult.Cancel());
+}

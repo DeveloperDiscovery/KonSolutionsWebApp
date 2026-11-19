@@ -1,0 +1,149 @@
+@* Matrices de operaciones (script SQL 130, API ingenieria/matrices): arboles de operaciones modelo, validos para cualquier producto, que luego se asignan a una version de diseno
+   como copia editable. Aqui se crean, se arma su arbol (mismo editor que Rutas con tiempos), se duplican y se ligan a una sub familia. *@
+@page "/ingenieria/matrices"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+
+<PageTitle>Matrices de operaciones · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Matrices de operaciones</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">@(_sel is null ? "Elige una matriz" : $"{_sel.COD_RUTA_PRODUCCION} · {_sel.DES_RUTA_PRODUCCION}")</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_buscar" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar matriz..." DebounceInterval="300" MaxWidth="420px" Class="grid-header-search" />
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="Nueva" data-accion="nueva">Nueva</MudButton>
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Edit" OnClick="Editar" Disabled="@(_sel is null)" data-accion="editar">Editar</MudButton>
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="Duplicar" Disabled="@(_sel is null)" data-accion="duplicar">Duplicar</MudButton>
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="Eliminar" Disabled="@(_sel is null)" data-accion="eliminar">Eliminar</MudButton>
+    <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+    <GridRefreshButton OnRefresh="Cargar" />
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<div class="rt-layout">
+    <MudPaper Elevation="0" Class="rt-lista" Style="border:1px solid var(--line);" data-zona="lista">
+        <div data-resizable-grid="matrices-lista" style="position:relative;">
+        <div class="mud-table-container" style="height:100%;overflow:auto;">
+        <table class="rt-tabla" data-tabla="matrices">
+            <thead><tr>
+                <th><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Matriz" OnCambio="CambioGrilla" /></th>
+                <th><EncabezadoOF G="_g" Items="_fuente" Col="1" Texto="Sub familia" OnCambio="CambioGrilla" /></th>
+                <th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Elementos" OnCambio="CambioGrilla" /></th>
+                <th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="SAM total" OnCambio="CambioGrilla" /></th>
+                <th class="n"><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Copias" OnCambio="CambioGrilla" /></th>
+            </tr></thead>
+            <tbody>
+                @foreach (var m in _visibles)
+                {
+                    <tr class="@(_sel?.COD_RUTA_PRODUCCION == m.COD_RUTA_PRODUCCION ? "rt-sel" : "")" @onclick="@(() => Elegir(m))" data-matriz="@m.COD_RUTA_PRODUCCION" style="cursor:pointer;">
+                        <td>@m.DES_RUTA_PRODUCCION <span class="mono" style="opacity:.5;">@m.COD_RUTA_PRODUCCION</span></td>
+                        <td>@(m.DES_SUB_FAMILIA_PRODUCTO ?? "Cualquier producto")</td>
+                        <td class="n mono">@m.CAN_ELEMENTOS</td>
+                        <td class="n mono">@(m.CAN_HOJAS_CATALOGO == 0 ? "—" : OperacionesApi.Min(m.VAL_SAM_TOTAL))@if (m.CAN_HOJAS_SIN_TIEMPO > 0) { <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Size="Size.Small" Color="Color.Warning" title="@($"{m.CAN_HOJAS_SIN_TIEMPO} hojas sin tiempo")" /> }</td>
+                        <td class="n mono">@m.CAN_COPIAS</td>
+                    </tr>
+                }
+                @if (_visibles.Count == 0) { <tr><td colspan="5" style="opacity:.6;" data-vacio="1">@(_matrices.Count == 0 ? "Todavía no hay matrices. Crea una con «Nueva», o guarda la ruta de una versión de diseño como matriz." : "Ninguna matriz coincide con la búsqueda o los filtros.")</td></tr> }
+            </tbody>
+        </table>
+        </div>
+        <div class="grid-resize-handle"></div>
+        </div>
+    </MudPaper>
+
+    <RutaArbolEditor Ruta="_rutaSel" OnCambio="Cargar" TextoVacio="Elige una matriz de la lista, o crea una nueva, para armar su árbol de operaciones." EtiquetaTotal="MINUTOS ESTÁNDAR POR UNIDAD" />
+</div>
+
+@code {
+    private readonly GridOF<MatrizResumen> _g = new();
+    private void CambioGrilla() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public Matrices()
+    {
+        _g.Add(m => (m.DES_RUTA_PRODUCCION ?? "") + " " + m.COD_RUTA_PRODUCCION);
+        _g.Add(m => m.DES_SUB_FAMILIA_PRODUCTO ?? "Cualquier producto");
+        _g.Add(m => m.CAN_ELEMENTOS.ToString(), m => m.CAN_ELEMENTOS);
+        _g.Add(m => m.CAN_HOJAS_CATALOGO == 0 ? "—" : OperacionesApi.Min(m.VAL_SAM_TOTAL), m => m.VAL_SAM_TOTAL);
+        _g.Add(m => m.CAN_COPIAS.ToString(), m => m.CAN_COPIAS);
+    }
+
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<MatrizResumen> _matrices = new();
+    private MatrizResumen? _sel;
+    private RutaTiempoResumen? _rutaSel;
+    private string _buscar = "", _error = "";
+
+    private List<MatrizResumen> _fuente => _matrices.Where(m => string.IsNullOrWhiteSpace(_buscar)
+        || (m.DES_RUTA_PRODUCCION?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false) || m.COD_RUTA_PRODUCCION.Contains(_buscar, StringComparison.OrdinalIgnoreCase)
+        || (m.DES_SUB_FAMILIA_PRODUCTO?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+    private List<MatrizResumen> _visibles => _g.Visibles(_fuente);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Matrices");
+        await Cargar();
+    }
+
+    private static RutaTiempoResumen? Ruta(MatrizResumen? m) => m is null ? null : new RutaTiempoResumen
+    {
+        COD_RUTA_PRODUCCION = m.COD_RUTA_PRODUCCION, DES_RUTA_PRODUCCION = m.DES_RUTA_PRODUCCION, COD_TIPO_RUTA_PRODUCCION = m.COD_TIPO_RUTA_PRODUCCION,
+        CAN_HOJAS_CATALOGO = m.CAN_HOJAS_CATALOGO, CAN_HOJAS_SIN_TIEMPO = m.CAN_HOJAS_SIN_TIEMPO, VAL_SAM_TOTAL = m.VAL_SAM_TOTAL
+    };
+
+    private async Task Cargar(string? elegir = null)
+    {
+        var r = await OperacionesApi.LeerAsync<List<MatrizResumen>>(Http, IngRoute.Matrices);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudieron leer las matrices.";
+        _matrices = r.Data ?? new();
+        var cod = elegir ?? _sel?.COD_RUTA_PRODUCCION;
+        _sel = cod is null ? null : _matrices.FirstOrDefault(x => x.COD_RUTA_PRODUCCION == cod);
+        // el editor solo vuelve a leer el arbol si cambia el codigo; si es la misma matriz se le pasa la fila nueva (nombre y totales al dia)
+        _rutaSel = Ruta(_sel);
+        StateHasChanged();
+    }
+
+    private Task Cargar() => Cargar(null);
+    private void Elegir(MatrizResumen m) { _sel = m; _rutaSel = Ruta(m); }
+
+    private async Task<(bool Ok, string? Cod)> Dialogo<T>(string titulo, DialogParameters p) where T : Microsoft.AspNetCore.Components.IComponent
+    {
+        var dlg = await DialogService.ShowAsync<T>(titulo, p, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var r = await dlg.Result;
+        return r is { Canceled: false } ? (true, r.Data as string) : (false, null);
+    }
+
+    private async Task Nueva() { var (ok, cod) = await Dialogo<MatrizDialog>("Nueva matriz", new()); if (ok) await Cargar(cod); }
+    private async Task Editar() { if (_sel is null) return; var (ok, cod) = await Dialogo<MatrizDialog>("Cambiar matriz", new() { ["Matriz"] = _sel }); if (ok) await Cargar(cod); }
+
+    private async Task Duplicar()
+    {
+        if (_sel is null) return;
+        var r = await OperacionesApi.EnviarAsync<MatrizAsignarResultado>(Http, HttpMethod.Post, IngRoute.MatricesDuplicar, new MatrizDuplicarDto { COD_RUTA_PRODUCCION = _sel.COD_RUTA_PRODUCCION });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo duplicar."; return; }
+        Snackbar.Add($"Matriz duplicada ({r.Data?.ELEMENTOS_COPIADOS} elementos).", Severity.Success);
+        await Cargar(r.Data?.COD_RUTA_PRODUCCION);
+    }
+
+    private async Task Eliminar()
+    {
+        if (_sel is null) return;
+        var ok = await DialogService.ShowMessageBox("Eliminar matriz",
+            $"¿Eliminar la matriz «{_sel.DES_RUTA_PRODUCCION}»? Las copias que ya se asignaron a versiones de diseño no se tocan.", yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var r = await OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Delete, IngRoute.Matriz(_sel.COD_RUTA_PRODUCCION));
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo eliminar."; return; }
+        Snackbar.Add("Matriz eliminada.", Severity.Success);
+        _sel = null; _rutaSel = null;
+        await Cargar();
+    }
+}

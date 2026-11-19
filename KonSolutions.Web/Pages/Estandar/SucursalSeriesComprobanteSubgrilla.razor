@@ -1,0 +1,177 @@
+@* SUBGRILLA: las series de UN tipo de comprobante de UNA sucursal
+   (ESTANDAR.SUCURSALES_SERIE_COMPROBANTE).
+
+   Cuelga de la grilla de Tipos de Comprobante, que a su vez cuelga de Sucursales. Es el
+   tercer nivel: sucursal → tipo de comprobante → serie.
+
+   Por qué una subgrilla y no otra pestaña: una serie no significa nada sin su tipo de
+   comprobante. Verla al lado del tipo que se acaba de elegir dice de quién es; en una
+   pestaña aparte habría que volver a elegirlo. *@
+@using SerieModel = KONSolutions.Shared.Models.Estandar.SucursalesSerieComprobante
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+<div class="d-flex align-center justify-space-between pa-2" style="border-bottom:1px solid var(--line);">
+    <div>
+        <MudText Typo="Typo.subtitle2">Series</MudText>
+        <MudText Class="mono" Style="opacity:.5;font-size:.74rem;color:var(--subtitulo-color,#6b6358);">
+            @if (Hay) { <text>@CodTipoComprobantePago · @DesTipoComprobantePago · @_items.Count series</text> }
+            else { <text>Selecciona un tipo de comprobante arriba</text> }
+        </MudText>
+    </div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                   Disabled="@(!Hay)" Size="Size.Small"
+                   OnClick="@(() => Abrir(null, CrudModo.Create))">Agregar serie</MudButton>
+    </div>
+</div>
+
+@if (!Hay)
+{
+    <MudText Class="pa-4 mono" Style="opacity:.4;">
+        Selecciona un tipo de comprobante para ver sus series.
+    </MudText>
+}
+else if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else
+{
+    @* data-default-height: esta grilla NO se estira hasta el pie de la página. En un
+       maestro/detalle el que se estira es uno solo, y acá el de arriba es el que manda. *@
+    <div data-resizable-grid="sucursal-series-comprobante" data-default-height="220" style="position:relative;">
+    <MudDataGrid T="SerieModel" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Serie" Width="120" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                @* Con tres dígitos, que es como se imprime en el comprobante. *@
+                <CellTemplate Context="fila"><span class="mono">@(fila.Item.NUM_SERIE_COMPROBANTE?.ToString("D3"))</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Último correlativo" Width="170" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate Context="fila"><span class="mono">@(fila.Item.NUM_ULTIMO_CORRELATIVO?.ToString("N0"))</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Próximo número">
+                @* El que va a salir en el documento siguiente. Se muestra armado porque es lo
+                   que el usuario reconoce: el número suelto no le dice nada. *@
+                <CellTemplate Context="fila"><span class="mono" style="opacity:.75;">@Proximo(fila.Item)</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="130">
+                <CellTemplate Context="fila">
+                    @{ var s = fila.Item; }
+                    <div class="d-flex align-center gap-1">
+                        <span title="Modificar" style="display:inline-flex;align-items:center;">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                           OnClick="@(() => Abrir(s, CrudModo.Update))" />
+                        </span>
+                        <span title="Eliminar" style="display:inline-flex;align-items:center;">
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => Abrir(s, CrudModo.Delete))" />
+                        </span>
+                        <span title="Consultar" style="display:inline-flex;align-items:center;">
+                            <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Color="Color.Info"
+                                           OnClick="@(() => Abrir(s, CrudModo.Read))" />
+                        </span>
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Este tipo de comprobante no tiene series en esta sucursal.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="SerieModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+}
+
+@code {
+    [Parameter] public string CodSucursal { get; set; } = "";
+    [Parameter] public string DesSucursal { get; set; } = "";
+    [Parameter] public string CodTipoComprobantePago { get; set; } = "";
+    [Parameter] public string DesTipoComprobantePago { get; set; } = "";
+
+    /// <summary>El prefijo y las longitudes del tipo, para mostrar el próximo número armado.
+    /// Los pasa el padre, que ya los tiene: pedirlos de nuevo acá sería una llamada por cada
+    /// cambio de fila.</summary>
+    [Parameter] public string? PrefijoSunat { get; set; }
+    [Parameter] public string? Prefijo { get; set; }
+    [Parameter] public int? LongitudSerie { get; set; }
+    [Parameter] public int? LongitudNumero { get; set; }
+
+    private List<SerieModel> _items = new();
+    private bool _loading;
+    private string _clavecargada = "";
+
+    private bool Hay => !string.IsNullOrWhiteSpace(CodSucursal) && !string.IsNullOrWhiteSpace(CodTipoComprobantePago);
+    private string Clave => $"{CodSucursal}|{CodTipoComprobantePago}";
+
+    /// <summary>Cómo va a salir el próximo documento de esta serie. Usa la MISMA regla que
+    /// arma el número en el resto de la aplicación (NumeroComprobante), así que lo que se ve
+    /// acá es exactamente lo que se va a imprimir.</summary>
+    private string Proximo(SerieModel s)
+    {
+        if (s.NUM_SERIE_COMPROBANTE is null) return "";
+        var siguiente = (s.NUM_ULTIMO_CORRELATIVO ?? 0) + 1;
+        var r = NumeroComprobante.Normalizar(
+            $"{s.NUM_SERIE_COMPROBANTE}-{siguiente}",
+            NumeroComprobante.PrefijoDe(PrefijoSunat, Prefijo),
+            LongitudSerie, LongitudNumero);
+        return r.Ok ? r.Valor : "";
+    }
+
+    // Recarga sola cuando el padre cambia de sucursal o de tipo. Se compara contra la última
+    // clave cargada para no repetir la llamada en cada render.
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Clave != _clavecargada)
+        {
+            _clavecargada = Clave;
+            await Load();
+        }
+    }
+
+    public async Task Load()
+    {
+        if (!Hay) { _items = new(); return; }
+        _loading = true;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<SerieModel>>>(
+                ApiRoutes.Estandar.SucursalesSerieComprobanteDe(CodSucursal, CodTipoComprobantePago));
+            _items = (r?.Data ?? new()).OrderBy(x => x.NUM_SERIE_COMPROBANTE).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(SucursalSeriesComprobanteSubgrilla), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudieron cargar las series. Ver detalle en el log de errores.", DialogService, nameof(SucursalSeriesComprobanteSubgrilla));
+            _items = new();
+        }
+        _loading = false;
+    }
+
+    private async Task Abrir(SerieModel? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Agregar serie",
+            CrudModo.Delete => $"Eliminar · Serie {item?.NUM_SERIE_COMPROBANTE:D3}",
+            CrudModo.Read   => $"Consultar · Serie {item?.NUM_SERIE_COMPROBANTE:D3}",
+            _               => $"Editar · Serie {item?.NUM_SERIE_COMPROBANTE:D3}"
+        };
+        var dlg = await DialogService.ShowAsync<SucursalSerieComprobanteDialog>(titulo,
+            new DialogParameters
+            {
+                ["Item"]                   = item,
+                ["Modo"]                   = modo,
+                ["CodSucursal"]            = CodSucursal,
+                ["DesSucursal"]            = DesSucursal,
+                ["CodTipoComprobantePago"] = CodTipoComprobantePago,
+                ["DesTipoComprobantePago"] = DesTipoComprobantePago
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+}

@@ -1,0 +1,1040 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.ReservasStock
+@using Item = KONSolutions.Shared.Models.Logistica.ReservasStockDetalle
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@using StockUbicacion = KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionDetalle
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+
+<div class="documento-logistica">
+        @* El EditForm nombra su contexto. Sin esto choca con el "context" de cada CellTemplate
+           de la grilla de items y Razor no sabe a cual se refiere. *@
+        <EditForm Context="formulario" Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+
+            @* ── Cabecera ───────────────────────────────────────────────────────
+               Los datos de la reserva a la izquierda y la observación como panel alto a
+               la derecha: es texto libre y suele ser largo, así que tiene su propio
+               espacio en vez de una ranura de dos renglones entre los demás campos. *@
+            @* Dos filas exteriores en vez de una: la observación solo tiene que igualar el
+               alto de "Fecha" + "Requerimiento de origen", no el de las cuatro filas de la
+               izquierda — por eso el bloque de abajo (Descripción + Estado) quedó afuera,
+               como una fila propia, en vez de adentro de esta misma grilla. *@
+            <MudGrid Spacing="2" Style="align-items:stretch;">
+
+                <MudItem xs="12" md="7">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="6" md="4">
+                            @* Lo asigna la base al grabar: nunca es editable. *@
+                            <MudTextField T="string" Value="@(_esNuevo ? "(automático)" : _model.NUM_RESERVA_STOCK?.ToString())"
+                                          Label="N° reserva" Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="8">
+                            <MudDatePicker @bind-Date="_model.FEC_RESERVA_STOCK" Label="Fecha"
+                                           Variant="Variant.Outlined" DateFormat="dd/MM/yyyy"
+                                           Disabled="_readonly" Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="5">
+                            <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       @bind-Value="_model.COD_TIPO_RESERVA"
+                                       Label="Tipo de reserva" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="7">
+                            @* La reserva nace de un requerimiento. Es opcional: se puede reservar
+                               stock sin documento previo. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_requerimientos"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_REQUERIMIENTO_STOCK?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_REQUERIMIENTO_STOCK = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Requerimiento de origen" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        @* Sólo lectura a propósito: la pone el proceso que atiende la reserva,
+                           no este formulario — ver LEEME de la entrega de FEC_ATENCION. *@
+                        <MudItem xs="6" md="4">
+                            <MudTextField T="string" Value="@(_model.FEC_ATENCION.HasValue ? _model.FEC_ATENCION.Value.ToString("dd/MM/yyyy") : "—")"
+                                          Label="Fecha de atención" Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="8">
+                            @* Opcional: el proyecto al que pertenece. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_proyectos"
+                                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_PROYECTO?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_PROYECTO = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Proyecto (opcional)" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                    </MudGrid>
+                </MudItem>
+
+                @* Columna estirada al alto de "Fecha" + "Requerimiento de origen" (ver el
+                   Style del MudGrid de arriba); el flex column reparte ese alto entre el
+                   textarea, sin calcular en píxeles a qué fila llega. *@
+                <MudItem xs="12" md="5" Style="display:flex;flex-direction:column;">
+                    @* Margin="Margin.None": el default de CampoTexto es Margin.Normal, que le
+                       agrega margen arriba/abajo que "Fecha"/"Requerimiento de origen" no
+                       tienen — dentro del alto ya repartido por flex-grow-1, ese margen extra
+                       empujaba el borde superior hacia abajo y comía espacio del borde inferior
+                       por los dos lados a la vez. *@
+                    <CampoTexto Tabla="LOGISTICA.RESERVAS_STOCK" Columna="DES_OBSERVACION"
+                                @bind-Value="_model.DES_OBSERVACION" Lines="4" Disabled="_readonly"
+                                Margin="Margin.None"
+                                Class="mb-3 flex-grow-1 campo-texto-alto-completo" />
+                </MudItem>
+            </MudGrid>
+
+            @* Descripción y Estado van uno al lado del otro, alineados en la misma fila. *@
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="9">
+                    <CampoTexto Tabla="LOGISTICA.RESERVAS_STOCK" Columna="DES_RESERVA_STOCK"
+                                @bind-Value="_model.DES_RESERVA_STOCK"
+                                Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <EstadoCombo DesTabla="LOGISTICA.RESERVAS_STOCK"
+                                 @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            @* Grabar ya no cierra: deja la cabecera grabada y el foco en el detalle. Del
+               documento se sale con Cerrar. Va acá, debajo de Estado, porque son los
+               botones que graban la CABECERA — no algo del detalle de más abajo. *@
+            <div class="d-flex align-center gap-2 mt-4">
+                <MudSpacer />
+                @* Botones configurados con FLG_DIALOG. Mismo lugar que en PedidoComercialDocumento:
+                   a la izquierda de Cerrar y Grabar, separados por una línea. Sólo con la
+                   cabecera ya grabada porque actúan sobre un documento que existe. *@
+                @if (_cabeceraGrabada && !string.IsNullOrWhiteSpace(CodAplicacion))
+                {
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                                     CodTipoEstado="@_model.COD_TIPO_ESTADO" CodEstadoActual="@_model.COD_ESTADO" />
+                    <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+                }
+                <MudButton StartIcon="@Icons.Material.Filled.Close"
+                           OnClick="Cerrar" Disabled="_saving" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+                @if (!_readonly)
+                {
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Save" Disabled="_saving">
+                        @(Modo == CrudModo.Delete ? "Eliminar" : _cabeceraGrabada ? "Guardar cambios" : "Grabar cabecera")
+                    </MudButton>
+                }
+            </div>
+
+            @* ── Detalle ───────────────────────────────────────────────────────
+               Vive en su propio marco y no se habilita hasta que la cabecera esté grabada:
+               los ítems se insertan contra el número de requerimiento, que lo genera la base
+               recién al grabar. *@
+            <MudPaper Elevation="0" Class="mt-4 pa-3" Style="border:1px solid var(--line);">
+                <div class="d-flex align-center gap-2 mb-2">
+                    <MudText Typo="Typo.subtitle2">Ítems de la reserva</MudText>
+                    @if (!_cabeceraGrabada)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text"
+                                 Icon="@Icons.Material.Filled.Lock">Graba la cabecera para cargar ítems</MudChip>
+                    }
+                    <MudSpacer />
+                    <GridClearFiltersButton OnClear="LimpiarFiltrosDetalle" HasFilters="@(_filtrosDetalle.Any(f => f.Value is not null))" />
+                    @if (!_readonly && _cabeceraGrabada)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarItem">Agregar ítem</MudButton>
+                    }
+                </div>
+
+            <div class="@(_cabeceraGrabada ? "" : "detalle-bloqueado")" data-resizable-grid="reserva-detalle" style="position:relative;">
+                <MudDataGrid T="Item" Items="@BaseDetalle(-1)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="_readonly" EditMode="DataGridEditMode.Cell"
+                             CommittedItemChanges="@(async (Item it) => await GuardarItem(it, avisar: false))"
+                             Height="460px" FixedHeader="true">
+                    <Columns>
+                        <TemplateColumn Sortable="false" Editable="false" Width="45px" CellStyle="text-align:right;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetalle == 0)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(0))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(0)" ValorDe="@(x => x.NUM_SECUENCIA?.ToString() ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetalle(0, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.NUM_SECUENCIA</span></CellTemplate>
+                        </TemplateColumn>
+
+                        @* Con edición por celda la grilla renderiza EditTemplate, no CellTemplate:
+                           el combo tiene que estar en los dos, o al entrar a la celda aparece el
+                           editor de texto por defecto en vez del combo. *@
+                        <TemplateColumn Sortable="false" Width="380px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetalle == 1)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(1))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(1)" ValorDe="@(x => x.COD_PRODUCTO ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetalle(1, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <span class="mono" style="opacity:.65;">@it.COD_PRODUCTO</span>
+                                <span class="ml-1">@it.DES_PRODUCTO</span>
+                            </CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <AriaCombo TItem="ProductoModel" Items="_productos"
+                                           TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")"
+                                           ValueFunc="@(x => x.COD_PRODUCTO)"
+                                           Value="@it.COD_PRODUCTO"
+                                           ValueChanged="@(async v => await AsignarProducto(it, v))"
+                                           Disabled="_readonly" Class="" />
+                            </EditTemplate>
+                        </TemplateColumn>
+
+                        @* Almacén, ubicación, lote y orden de producción salen DEL STOCK del
+                           producto, no de los maestros completos, y en cascada: cada combo ofrece
+                           sólo lo que sigue siendo posible después de lo ya elegido.
+
+                           El motivo es el mismo de MAKERESERVA: no se puede reservar de un
+                           almacén, una ubicación o una orden donde no hay existencia. Ofrecer
+                           sólo lo reservable evita el problema en el origen, en vez de dejar que
+                           la reserva salga corta y nadie entienda por qué.
+
+                           Es una sola llamada por producto (el SEARCHDETAIL que esta pantalla ya
+                           hacía): los cuatro combos salen de esas mismas filas, sin un viaje por
+                           combo. *@
+                        <TemplateColumn Sortable="false" Width="200px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Almacén" Activo="@(_ordenColDetalle == 2)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(2))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(2)" ValorDe="@(x => x.COD_ALMACEN ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetalle(2, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                <span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_ALMACEN) ? "—" : $"{context.Item.COD_ALMACEN} — {context.Item.DES_ALMACEN}")</span>
+                            </CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <AriaCombo TItem="ComboboxItem" Items="@AlmacenesDe(it)"
+                                           TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                           Value="@it.COD_ALMACEN"
+                                           ValueChanged="@(v => AsignarAlmacen(it, v))"
+                                           Disabled="@(_readonly || string.IsNullOrWhiteSpace(it.COD_PRODUCTO))" Class="" />
+                            </EditTemplate>
+                        </TemplateColumn>
+
+                        @* La ubicación cuelga del almacén: hasta que no haya almacén elegido no
+                           hay de dónde sacarla, y ofrecerla suelta dejaría elegir una ubicación
+                           de otro almacén. Por eso el combo queda deshabilitado hasta entonces. *@
+                        <TemplateColumn Sortable="false" Width="200px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Ubicación" Activo="@(_ordenColDetalle == 3)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(3))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(3)" ValorDe="@(x => x.COD_UBICACION_ALMACEN ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetalle(3, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                <span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_UBICACION_ALMACEN) ? "—" : $"{context.Item.COD_UBICACION_ALMACEN} — {context.Item.DES_UBICACION_ALMACEN}")</span>
+                            </CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <AriaCombo TItem="ComboboxItem" Items="@UbicacionesDe(it)"
+                                           TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                           Value="@it.COD_UBICACION_ALMACEN"
+                                           ValueChanged="@(v => AsignarUbicacion(it, v))"
+                                           Disabled="@(_readonly || string.IsNullOrWhiteSpace(it.COD_ALMACEN))" Class="" />
+                            </EditTemplate>
+                        </TemplateColumn>
+
+                        @* Proceso y orden en UNA sola celda, igual que en Requerimientos: son
+                           cuatro campos (proceso, orden, ítem y unidad) que por separado no
+                           significan nada y ocuparían cuatro columnas en una grilla que ya está
+                           cargada. El detalle se elige en un diálogo con Grabar y Cancelar.
+
+                           Editable="false": la celda no entra en edición, se abre el diálogo con
+                           un clic. *@
+                        <TemplateColumn Sortable="false" Editable="false" Width="320px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Lote / Proceso / Orden" Activo="@(_ordenColDetalle == 4)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(4))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(4)" ValorDe="@(x => ResumenLoteOrden(x))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetalle(4, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <div @onclick="@(() => AbrirOrdenProduccionAsync(it))"
+                                     title="@(_readonly ? "Ver lote, proceso y orden de producción" : "Clic para elegir lote, proceso y orden de producción")"
+                                     style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;">
+                                    <span class="mono">@ResumenLoteOrden(it)</span>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIcon Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Style="opacity:.35;" />
+                                    }
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* La unidad la define la ubicación de stock elegida: se completa sola y no
+                           se edita, para que no pueda quedar en desacuerdo con lo que hay ahí. *@
+                        <TemplateColumn Sortable="false" Editable="false" Width="60px" CellStyle="text-align:center;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-center gap-1">
+                                    <EncabezadoOrdenable Texto="U.M." Activo="@(_ordenColDetalle == 5)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(5))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(5)" ValorDe="@(x => x.COD_UNIDAD_MEDIDA ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetalle(5, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_UNIDAD_MEDIDA) ? "—" : context.Item.COD_UNIDAD_MEDIDA)</span></CellTemplate>
+                        </TemplateColumn>
+
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO" Sortable="false"
+                                        Width="100px" CellStyle="text-align:right;"
+                                        HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cantidad" Activo="@(_ordenColDetalle == 6)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(6))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(6)" ValorDe="@(x => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetalle(6, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+
+                        <TemplateColumn Sortable="false" Editable="false" Width="100px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="U.M. sec." Activo="@(_ordenColDetalle == 7)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(7))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(7)" ValorDe="@(x => x.DES_UNIDAD_MEDIDA_SECUNDARIA ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetalle(7, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@(context.Item.DES_UNIDAD_MEDIDA_SECUNDARIA ?? "—")</span></CellTemplate>
+                        </TemplateColumn>
+
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO_SECUNDARIA" Sortable="false"
+                                        Width="100px" CellStyle="text-align:right;"
+                                        HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cant. sec." Activo="@(_ordenColDetalle == 8)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(8))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(8)" ValorDe="@(x => x.CAN_PRODUCTO_SECUNDARIA?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(8)" ValoresActivosChanged="@(v => FiltroDetalle(8, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+
+                        @* Atendida y reservada las llenan los procesos de atención y de reserva.
+                           Editarlas desde aquí desincronizaría el saldo sin que nadie lo note. *@
+                        <TemplateColumn Sortable="false" Editable="false" CellStyle="text-align:right;" HeaderStyle="text-align:right;" Width="100px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Atendida" Activo="@(_ordenColDetalle == 9)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(9))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(9)" ValorDe="@(x => x.CAN_PRODUCTO_ATENDIDA?.ToString("N6") ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(9)" ValoresActivosChanged="@(v => FiltroDetalle(9, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.CAN_PRODUCTO_ATENDIDA?.ToString("N6")</span></CellTemplate>
+                        </TemplateColumn>
+
+                        @* La grilla ya graba la fila al salir de la celda, pero eso no se ve.
+                           El botón lo hace explícito y da el aviso de guardado. *@
+                        <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                            <CellTemplate>
+                                @if (!_readonly)
+                                {
+                                    var it = context.Item;
+                                    <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                   Color="Color.Primary" OnClick="@(() => GuardarItemConAviso(it))" Title="Grabar ítem" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                   Color="Color.Error" OnClick="@(() => QuitarItem(it))" Title="Quitar ítem" />
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin ítems.</MudText></NoRecordsContent>
+                </MudDataGrid>
+
+                <div class="d-flex align-center gap-4 mt-2 mono" style="font-size:.82rem;opacity:.7;">
+                    <span>Ítems <b>@_items.Count</b></span>
+                    <span>Cantidad total <b>@_items.Sum(x => x.CAN_PRODUCTO ?? 0).ToString("N6")</b></span>
+                </div>
+                @* Arrastrar el borde inferior cambia el alto; doble clic vuelve al original. *@
+                <div class="grid-resize-handle"></div>
+            </div>
+            </MudPaper>
+
+        </EditForm>
+</div>
+
+@code {
+    /// <summary>Avisa a la pantalla que el documento terminó. El bool dice si hubo cambios,
+    /// para que el listado sepa si tiene que recargarse.</summary>
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    /// <summary>Códigos de la opción, para resolver los botones marcados con FLG_DIALOG.
+    /// Los pasa la pantalla de lista, que es la que los recibe del menú.</summary>
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Qué hacer con un botón del pie. Por ahora sólo deja el rastro en el log: el
+    /// flag define DÓNDE se muestra el botón, no qué hace, y cada acción concreta se conecta
+    /// acá cuando esté definida.</summary>
+    private async Task OnAccionDialog(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre la reserva {_model.NUM_RESERVA_STOCK}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(ReservaDocumento), "Acción pendiente");
+    }
+
+    private Modelo _model = new();
+    private List<Item> _items = new();
+
+    private List<ComboboxItem> _tipos = new(), _requerimientos = new(), _proyectos = new();
+    private List<ProductoModel> _productos = new();
+
+    // ── Filtro de columna, estilo Excel, para la grilla de ítems ──────────────────────────
+    private readonly Dictionary<int, HashSet<string>?> _filtrosDetalle = new();
+
+    private List<Item> BaseDetalle(int col) => AplicarFiltrosDetalle(OrdenarDetalle(_items), col);
+
+    private string ValorDetalle(Item x, int col) => col switch
+    {
+        0 => x.NUM_SECUENCIA?.ToString() ?? "",
+        1 => x.COD_PRODUCTO ?? "",
+        2 => x.COD_ALMACEN ?? "",
+        3 => x.COD_UBICACION_ALMACEN ?? "",
+        4 => ResumenLoteOrden(x),
+        5 => x.COD_UNIDAD_MEDIDA ?? "",
+        6 => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+        7 => x.DES_UNIDAD_MEDIDA_SECUNDARIA ?? "",
+        8 => x.CAN_PRODUCTO_SECUNDARIA?.ToString(Decimales.FormatoCantidad) ?? "",
+        9 => x.CAN_PRODUCTO_ATENDIDA?.ToString("N6") ?? "",
+        _ => ""
+    };
+
+    private int? _ordenColDetalle;
+    private bool _ordenAscDetalle = true;
+    private void ToggleOrdenDetalle(int col) { if (_ordenColDetalle == col) _ordenAscDetalle = !_ordenAscDetalle; else { _ordenColDetalle = col; _ordenAscDetalle = true; } }
+    private List<Item> OrdenarDetalle(List<Item> items) => _ordenColDetalle is not { } col ? items : _ordenAscDetalle ? items.OrderBy(x => ValorDetalle(x, col)).ToList() : items.OrderByDescending(x => ValorDetalle(x, col)).ToList();
+
+    private List<Item> AplicarFiltrosDetalle(List<Item> src, int ex)
+    {
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosDetalle) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<Item> q = src;
+        foreach (var (c, v) in _filtrosDetalle)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorDetalle(x, c)));
+        }
+        return q.ToList();
+    }
+
+    private void FiltroDetalle(int c, HashSet<string>? v) { _filtrosDetalle[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosDetalle() { foreach (var k in _filtrosDetalle.Keys.ToList()) _filtrosDetalle[k] = null; StateHasChanged(); }
+
+    /// <summary>Existencias por producto (PROC_LOGISTICA_STOCKS_ALMACEN_UBICACION_SEARCHDETAIL,
+    /// filtrado solo por COD_PRODUCTO), cacheadas para no volver a pedirlas si el usuario elige
+    /// el mismo producto en más de un ítem.</summary>
+    private readonly Dictionary<string, List<StockUbicacion>> _stockPorProducto = new();
+
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    /// <summary>La cabecera existe en la base y tiene número, así que el detalle ya puede
+    /// colgarse de ella. Es lo único que habilita la grilla de ítems.</summary>
+    private bool _cabeceraGrabada => _model.NUM_RESERVA_STOCK is not null;
+
+    /// <summary>Se grabó algo en esta sesión del diálogo. Decide si al cerrar hay que refrescar
+    /// el listado o alcanza con descartar.</summary>
+    private bool _huboCambios;
+
+    /// <summary>Secuencias que todavía no existen en la base: deciden POST contra PUT al grabar
+    /// cada fila.</summary>
+    private readonly HashSet<int> _itemsNuevos = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+
+        var combos = new List<Task> { CargarTipos(), CargarRequerimientos(), CargarProductos(), CargarProyectos() };
+        await Task.WhenAll(combos);
+
+        if (_esNuevo)
+        {
+            _model = new Modelo { FEC_RESERVA_STOCK = DateTime.Today };
+            return;
+        }
+
+        if (Item is not null)
+        {
+            _model = Item;
+            await RecargarCabeceraAsync();
+            await CargarDetalleAsync(Item.NUM_RESERVA_STOCK);
+        }
+    }
+
+    private async Task CargarTipos()
+        => _tipos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.TiposReservaStockCombobox)) ?? new();
+    private async Task CargarProyectos()
+        => _proyectos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.ProyectosDocCombobox)) ?? new();
+    private async Task CargarRequerimientos()
+        => _requerimientos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.RequerimientosStockCombobox)) ?? new();
+    private async Task CargarProductos()
+        => _productos = (await Http.SafeGetAsync<List<ProductoModel>>(ApiRoutes.Estandar.Productos)) ?? new();
+
+    /// <summary>Al elegir el producto se limpia la ubicación de stock que tuviera elegida —ya no
+    /// aplica, es de otro producto— y se trae de una vez la lista de existencias para que el
+    /// combo de "Ubicación de stock" no tenga que esperar a que el usuario abra ese otro combo.</summary>
+    private async Task AsignarProducto(Item it, string? cod)
+    {
+        it.COD_PRODUCTO = cod ?? "";
+        LimpiarStock(it);
+        if (!string.IsNullOrWhiteSpace(cod)) await CargarStockDe(cod!);
+    }
+
+    /// <summary>Trae PROC_LOGISTICA_STOCKS_ALMACEN_UBICACION_SEARCHDETAIL filtrado solo por
+    /// COD_PRODUCTO — el resto de los filtros del SP no aplican aquí, son para la pantalla de
+    /// consulta de existencias.</summary>
+    private async Task CargarStockDe(string codProducto)
+    {
+        if (_stockPorProducto.ContainsKey(codProducto)) return;
+        try
+        {
+            var dto = new KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionSearchDetailDto { COD_PRODUCTO = codProducto };
+            var r = await Http.PostAsJsonAsync(ApiRoutes.Logistica.StocksAlmacenUbicacionSearchDetail, dto);
+            var body = r.IsSuccessStatusCode
+                ? await r.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<StockUbicacion>>>()
+                : null;
+            _stockPorProducto[codProducto] = body?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ReservaDocumento), nameof(CargarStockDe));
+            _stockPorProducto[codProducto] = new();
+        }
+    }
+
+    private List<StockUbicacion> StockDe(string? codProducto)
+        => string.IsNullOrWhiteSpace(codProducto) ? new() :
+           _stockPorProducto.TryGetValue(codProducto, out var l) ? l : new();
+
+    /// <summary>Las filas de stock que siguen en pie para este ítem: las de su producto, con
+    /// disponible, y que no contradicen lo que la fila YA eligió.
+    ///
+    /// Se excluye a sí mismo el campo que se está por desplegar (<paramref name="excepto"/>); si
+    /// no, un combo sólo se ofrecería a sí mismo y no se podría cambiar de opinión.
+    ///
+    /// CAN_DISPONIBLE > 0 y no "existe la fila": una ubicación con todo reservado o en tránsito
+    /// figura en el stock, pero no hay nada ahí para reservar.</summary>
+    private IEnumerable<StockUbicacion> Elegibles(Item it, string excepto = "")
+    {
+        var filas = StockDe(it.COD_PRODUCTO).Where(x => (x.CAN_DISPONIBLE ?? 0) > 0);
+
+        if (excepto != "almacen" && !string.IsNullOrWhiteSpace(it.COD_ALMACEN))
+            filas = filas.Where(x => x.COD_ALMACEN == it.COD_ALMACEN);
+
+        if (excepto != "ubicacion" && !string.IsNullOrWhiteSpace(it.COD_UBICACION_ALMACEN))
+            filas = filas.Where(x => x.COD_UBICACION_ALMACEN == it.COD_UBICACION_ALMACEN);
+
+        if (excepto != "lote" && !string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL))
+            filas = filas.Where(x => x.NUM_LOTE_CONTROL == it.NUM_LOTE_CONTROL);
+
+        if (excepto != "produccion" && !string.IsNullOrWhiteSpace(it.COD_PROCESO))
+        {
+            filas = filas.Where(x => x.COD_PROCESO == it.COD_PROCESO);
+            if (it.NUM_ORDEN_PRODUCCION        is { } o) filas = filas.Where(x => x.NUM_ORDEN_PRODUCCION        == o);
+            if (it.NUM_ORDEN_PRODUCCION_ITEM   is { } i) filas = filas.Where(x => x.NUM_ORDEN_PRODUCCION_ITEM   == i);
+            if (it.NUM_ORDEN_PRODUCCION_UNIDAD is { } u) filas = filas.Where(x => x.NUM_ORDEN_PRODUCCION_UNIDAD == u);
+        }
+        return filas;
+    }
+
+    private List<ComboboxItem> AlmacenesDe(Item it)
+        => Elegibles(it, excepto: "almacen")
+            .Where(x => !string.IsNullOrWhiteSpace(x.COD_ALMACEN))
+            .GroupBy(x => x.COD_ALMACEN!)
+            .Select(g => new ComboboxItem { Id = g.Key, Texto = g.First().DES_ALMACEN ?? "" })
+            .OrderBy(c => c.Id)
+            .ToList();
+
+    private List<ComboboxItem> UbicacionesDe(Item it)
+        => Elegibles(it, excepto: "ubicacion")
+            .Where(x => !string.IsNullOrWhiteSpace(x.COD_UBICACION_ALMACEN))
+            .GroupBy(x => x.COD_UBICACION_ALMACEN!)
+            .Select(g => new ComboboxItem { Id = g.Key, Texto = g.First().DES_UBICACION_ALMACEN ?? "" })
+            .OrderBy(c => c.Id)
+            .ToList();
+
+    private List<ComboboxItem> LotesDe(Item it)
+        => Elegibles(it, excepto: "lote")
+            .Where(x => !string.IsNullOrWhiteSpace(x.NUM_LOTE_CONTROL))
+            .GroupBy(x => x.NUM_LOTE_CONTROL!)
+            .Select(g => new ComboboxItem { Id = g.Key, Texto = g.First().DES_LOTE_CONTROL ?? "" })
+            .OrderBy(c => c.Id)
+            .ToList();
+
+    /// <summary>Cambiar el almacén invalida la ubicación: es de otro almacén. El lote y la orden
+    /// se conservan y los resuelve <see cref="Completar"/> si dejaron de ser posibles.</summary>
+    private void AsignarAlmacen(Item it, string? cod)
+    {
+        it.COD_ALMACEN = Vacio(cod);
+        it.DES_ALMACEN = AlmacenesDe(it).FirstOrDefault(x => x.Id == it.COD_ALMACEN)?.Texto;
+        it.COD_UBICACION_ALMACEN = null; it.DES_UBICACION_ALMACEN = null;
+        Completar(it);
+    }
+
+    private void AsignarUbicacion(Item it, string? cod)
+    {
+        it.COD_UBICACION_ALMACEN = Vacio(cod);
+        it.DES_UBICACION_ALMACEN = UbicacionesDe(it).FirstOrDefault(x => x.Id == it.COD_UBICACION_ALMACEN)?.Texto;
+        Completar(it);
+    }
+
+    private void AsignarLote(Item it, string? cod)
+    {
+        it.NUM_LOTE_CONTROL = Vacio(cod);
+        Completar(it);
+    }
+
+    /// <summary>Completa lo que ya quedó determinado por lo elegido.
+    ///
+    /// Cuando las filas que siguen en pie coinciden en un dato —o quedó una sola—, ese dato no es
+    /// una elección: es una consecuencia. La unidad de medida sale de ahí y nunca se edita a
+    /// mano, para que no pueda quedar en desacuerdo con lo que hay en esa ubicación. Lo mismo
+    /// con el lote entidad y la descripción de la orden, que son sólo para mostrar.
+    ///
+    /// Si lo elegido dejó a la fila sin ninguna existencia posible, se limpia lo que dependía de
+    /// ella en vez de dejar valores de una combinación que ya no existe.</summary>
+    private void Completar(Item it)
+    {
+        var filas = Elegibles(it).ToList();
+        if (filas.Count == 0)
+        {
+            it.COD_UNIDAD_MEDIDA = null; it.DES_UNIDAD_MEDIDA = null;
+            it.COD_UNIDAD_MEDIDA_SECUNDARIA = null; it.DES_UNIDAD_MEDIDA_SECUNDARIA = null;
+            it.NUM_LOTE_CONTROL_ENTIDAD = null; it.DES_ORDEN_PRODUCCION = null;
+            return;
+        }
+
+        var primera = filas[0];
+
+        if (filas.All(x => x.COD_UNIDAD_MEDIDA == primera.COD_UNIDAD_MEDIDA))
+        {
+            it.COD_UNIDAD_MEDIDA            = Vacio(primera.COD_UNIDAD_MEDIDA);
+            it.DES_UNIDAD_MEDIDA            = it.COD_UNIDAD_MEDIDA is null ? null : primera.DES_UNIDAD_MEDIDA;
+            // Código y descripción van EN PAR: sin código no hay unidad, por más que la fila
+            // de stock traiga un nombre. Asignar la descripción sola dejaba la grilla mostrando
+            // "UNIDAD" en U.M. sec. mientras en la base quedaba NULL — la pantalla decía una
+            // cosa y el dato era otra, y lo grabado era lo correcto.
+            it.COD_UNIDAD_MEDIDA_SECUNDARIA = Vacio(primera.COD_UNIDAD_MEDIDA_SECUNDARIO);
+            it.DES_UNIDAD_MEDIDA_SECUNDARIA = it.COD_UNIDAD_MEDIDA_SECUNDARIA is null
+                ? null : primera.DES_UNIDAD_MEDIDA_SECUNDARIO;
+        }
+
+        it.NUM_LOTE_CONTROL_ENTIDAD = filas.All(x => x.NUM_LOTE_CONTROL_ENTIDAD == primera.NUM_LOTE_CONTROL_ENTIDAD)
+            ? primera.NUM_LOTE_CONTROL_ENTIDAD : null;
+
+        it.DES_ORDEN_PRODUCCION = filas.All(x => x.DES_ORDEN_PRODUCCION == primera.DES_ORDEN_PRODUCCION)
+            ? primera.DES_ORDEN_PRODUCCION : null;
+    }
+
+    /// <summary>Deja el ítem sin nada de lo que dependía del producto anterior.</summary>
+    private static void LimpiarStock(Item it)
+    {
+        it.COD_ALMACEN = null; it.DES_ALMACEN = null;
+        it.COD_UBICACION_ALMACEN = null; it.DES_UBICACION_ALMACEN = null;
+        it.NUM_LOTE_CONTROL = null; it.NUM_LOTE_CONTROL_ENTIDAD = null;
+        it.COD_UNIDAD_MEDIDA = null; it.DES_UNIDAD_MEDIDA = null;
+        it.COD_UNIDAD_MEDIDA_SECUNDARIA = null; it.DES_UNIDAD_MEDIDA_SECUNDARIA = null;
+        it.COD_PROCESO = null; it.DES_ORDEN_PRODUCCION = null;
+        it.NUM_ORDEN_PRODUCCION = null; it.NUM_ORDEN_PRODUCCION_ITEM = null; it.NUM_ORDEN_PRODUCCION_UNIDAD = null;
+    }
+
+    /// <summary>Lo que muestra la celda de proceso/orden: "PROCESO · 12-3-1", o un guión cuando
+    /// la fila no viene de una orden de producción. Sin orden NO es un dato faltante — es stock
+    /// genérico, y la mayoría de los ítems son así.</summary>
+    /// <summary>Lo que se lee en la celda combinada: el lote primero —es lo que más se busca
+    /// al revisar una línea— y detrás el proceso y la orden.</summary>
+    private static string ResumenLoteOrden(Item it)
+    {
+        var orden = ResumenOrdenProduccion(it);
+        // La DESCRIPCIÓN del lote, no el número interno: es lo que la persona reconoce (el
+        // código con el que lo identifica), y el SP ya la trae en DES_LOTE_CONTROL. El número
+        // queda de respaldo sólo si el lote no tiene descripción cargada.
+        var lote  = string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL) ? null
+                  : string.IsNullOrWhiteSpace(it.DES_LOTE_CONTROL) ? it.NUM_LOTE_CONTROL
+                  : it.DES_LOTE_CONTROL;
+
+        if (lote is null)  return orden;
+        if (orden == "—")  return lote;
+        return $"{lote} · {orden}";
+    }
+
+    private static string ResumenOrdenProduccion(Item it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_PROCESO) && it.NUM_ORDEN_PRODUCCION is null or 0) return "—";
+
+        var partes = new List<string>();
+        if (it.NUM_ORDEN_PRODUCCION        is > 0) partes.Add(it.NUM_ORDEN_PRODUCCION!.Value.ToString());
+        if (it.NUM_ORDEN_PRODUCCION_ITEM   is > 0) partes.Add(it.NUM_ORDEN_PRODUCCION_ITEM!.Value.ToString());
+        if (it.NUM_ORDEN_PRODUCCION_UNIDAD is > 0) partes.Add(it.NUM_ORDEN_PRODUCCION_UNIDAD!.Value.ToString());
+
+        var numeros = string.Join("-", partes);
+        if (string.IsNullOrWhiteSpace(it.COD_PROCESO)) return numeros;
+        return string.IsNullOrWhiteSpace(numeros) ? it.COD_PROCESO! : $"{it.COD_PROCESO} · {numeros}";
+    }
+
+    /// <summary>El mismo diálogo que usa Requerimientos. Recibe el stock POR PARÁMETRO —esta
+    /// pantalla ya lo tiene cargado—, así que arma su cascada sin una sola llamada HTTP.
+    ///
+    /// Se le pasa el stock ya acotado por el almacén, la ubicación y el lote que la fila eligió:
+    /// si el ítem sale de una ubicación puntual, no tiene sentido ofrecerle órdenes que sólo
+    /// existen en otra.</summary>
+    private async Task AbrirOrdenProduccionAsync(Item it)
+    {
+        var parametros = new DialogParameters
+        {
+            ["Stock"]                 = Elegibles(it, excepto: "produccion").ToList(),
+            ["Procesos"]              = new List<ComboboxItem>(),
+            // Lote y lote de la entidad entran al mismo diálogo. El de la entidad va sólo
+            // para mirar: lo trae la ficha del lote y acá no hay nada que decidir sobre él.
+            ["Lotes"]                 = LotesDe(it),
+            ["NumLoteControl"]        = it.NUM_LOTE_CONTROL,
+            ["NumLoteControlEntidad"] = it.NUM_LOTE_CONTROL_ENTIDAD,
+            ["CodProceso"]   = it.COD_PROCESO,
+            ["NumOrden"]     = it.NUM_ORDEN_PRODUCCION,
+            ["NumItem"]      = it.NUM_ORDEN_PRODUCCION_ITEM,
+            ["NumUnidad"]    = it.NUM_ORDEN_PRODUCCION_UNIDAD,
+            ["NumSecuencia"] = it.NUM_SECUENCIA,
+            ["DesProducto"]  = it.DES_PRODUCTO,
+            ["SoloLectura"]  = _readonly
+        };
+
+        var dlg = await DialogService.ShowAsync<OrdenProduccionDialog>("Proceso y orden de producción",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+
+        if ((await dlg.Result) is not { Canceled: false, Data: OrdenProduccionDialog.Seleccion sel }) return;
+
+        // Por AsignarLote y no por asignación directa: ese método además llama a Completar,
+        // que rearma la unidad y los disponibles para la combinación nueva. Salteárselo
+        // dejaría la fila con el lote cambiado y las cantidades del lote anterior.
+        if (!string.Equals(it.NUM_LOTE_CONTROL, sel.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase))
+            AsignarLote(it, sel.NUM_LOTE_CONTROL);
+
+        it.COD_PROCESO                 = sel.COD_PROCESO;
+        it.NUM_ORDEN_PRODUCCION        = sel.NUM_ORDEN_PRODUCCION;
+        it.NUM_ORDEN_PRODUCCION_ITEM   = sel.NUM_ORDEN_PRODUCCION_ITEM;
+        it.NUM_ORDEN_PRODUCCION_UNIDAD = sel.NUM_ORDEN_PRODUCCION_UNIDAD;
+        Completar(it);
+
+        // Se graba la fila, igual que cuando se confirma cualquier otra celda de la grilla
+        // (CommittedItemChanges). Si no, el botón diría "Grabar" y no grabaría nada.
+        if (await GuardarItem(it))
+        {
+            Snackbar.Add($"Ítem {it.NUM_SECUENCIA}: proceso y orden de producción grabados.", Severity.Success);
+            _huboCambios = true;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Relee la cabecera del SHOWBYID y refresca lo que depende de ella.
+    ///
+    /// Se llama al ABRIR (la fila que trae la grilla es el snapshot de la última carga del
+    /// listado) y al GRABAR (el procedimiento puede cambiar datos que la pantalla no escribió
+    /// —el Estado es el caso típico—, y el documento se quedaba mostrando el valor viejo hasta
+    /// cerrarlo y volver a abrirlo).
+    ///
+    /// Si la lectura falla se deja lo que ya estaba, para no vaciar la pantalla.</summary>
+    private async Task RecargarCabeceraAsync()
+    {
+        if (_model.NUM_RESERVA_STOCK is not { } num) return;
+        var fresco = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Logistica.ReservasStock}/{num}");
+        if (fresco is null) return;
+        _model = fresco;
+    }
+
+    private async Task CargarDetalleAsync(int? num)
+    {
+        if (num is null) return;
+        var r = await Http.SafeGetAsync<List<Item>>($"{ApiRoutes.Logistica.ReservasStockDetallePorDoc}/{num}");
+        _items = r ?? new();
+
+        AsegurarProductosDelDetalle();
+
+        // Sin esto, el combo de "Ubicación de stock" de una fila ya grabada aparece vacío hasta
+        // que alguien vuelve a tocar el producto: la carga de existencias hoy solo se dispara
+        // desde AsignarProducto, y en un ítem existente ese evento no vuelve a ocurrir.
+        var productos = _items.Select(i => i.COD_PRODUCTO).Where(c => !string.IsNullOrWhiteSpace(c)).Distinct();
+        await Task.WhenAll(productos.Select(CargarStockDe));
+    }
+
+    /// <summary>El combo de Producto resuelve el código contra _productos, que es el maestro.
+    /// Si el maestro no tiene esa fila —producto dado de baja, catálogo filtrado, o la lista
+    /// que simplemente no cargó— el combo se queda en blanco aunque el ítem tenga su producto
+    /// perfectamente grabado.
+    ///
+    /// No hace falta que sea así: PROC_LOGISTICA_RESERVAS_STOCK_DETALLE_SHOWALL ya devuelve
+    /// COD_PRODUCTO y DES_PRODUCTO por su JOIN contra ESTANDAR.PRODUCTOS. La fila se basta
+    /// sola para mostrarse; el maestro solo hace falta para ELEGIR otro producto.
+    ///
+    /// Es el mismo criterio que esta pantalla ya usa con el stock por ubicación: se completa
+    /// el combo con lo que el documento trae, en vez de exigirle al maestro que lo contenga.</summary>
+    private void AsegurarProductosDelDetalle()
+    {
+        var conocidos = _productos.Select(p => p.COD_PRODUCTO).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var it in _items)
+        {
+            if (string.IsNullOrWhiteSpace(it.COD_PRODUCTO)) continue;
+            if (!conocidos.Add(it.COD_PRODUCTO)) continue;
+
+            _productos.Add(new ProductoModel
+            {
+                COD_PRODUCTO  = it.COD_PRODUCTO,
+                // Si el SP no trajera descripción, el código solo es mejor que una fila vacía.
+                DES_PRODUCTO  = string.IsNullOrWhiteSpace(it.DES_PRODUCTO) ? it.COD_PRODUCTO : it.DES_PRODUCTO!,
+                DES_DETALLADA = it.DES_DETALLADA ?? ""
+            });
+        }
+    }
+
+
+    /// <summary>La secuencia es parte de la clave primaria: la asigna la pantalla como el
+    /// máximo + 1. Dejarla a mano solo produce choques al grabar.</summary>
+    private void AgregarItem()
+    {
+        var sig = (_items.Count == 0 ? 0 : _items.Max(x => x.NUM_SECUENCIA ?? 0)) + 1;
+        _items.Add(new Item { NUM_RESERVA_STOCK = _model.NUM_RESERVA_STOCK, NUM_SECUENCIA = sig, CAN_PRODUCTO = 0 });
+        _itemsNuevos.Add(sig);
+    }
+
+    /// <summary>Quitar una fila la borra en la base en el momento: el detalle ya no se
+    /// sincroniza al final, cada fila se graba sola.</summary>
+    private async Task QuitarItem(Item it)
+    {
+        var sec = it.NUM_SECUENCIA ?? 0;
+        if (!_itemsNuevos.Contains(sec))
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Logistica.ReservasStockDetalle}/{_model.NUM_RESERVA_STOCK}/{sec}");
+            if (!rd.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService,
+                    nameof(ReservaDocumento), nameof(QuitarItem), $"No se pudo eliminar el ítem {sec}");
+                return;
+            }
+            _huboCambios = true;
+        }
+        _itemsNuevos.Remove(sec);
+        _items.Remove(it);
+    }
+
+    /// <summary>Graba la fila que se acaba de editar en la grilla. Sin producto no se manda
+    /// nada: la fila recién agregada todavía está vacía y el SP la rechazaría.</summary>
+    /// <summary>Lo que dispara el botón. Igual que el guardado automático, pero avisa —y
+    /// explica por qué no graba si todavía falta el producto.</summary>
+    private async Task GuardarItemConAviso(Item it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_PRODUCTO))
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("Elige el producto antes de grabar el ítem.", DialogService, nameof(ReservaDocumento));
+            return;
+        }
+        if (await GuardarItem(it)) Snackbar.Add($"Ítem {it.NUM_SECUENCIA} grabado.", Severity.Success);
+    }
+
+    /// <summary>Cadena vacía y "sin valor" son cosas distintas para la base: los códigos
+    /// viajan a claves foráneas, y "" no existe en ningún maestro.</summary>
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+
+
+    /// <summary>Completa lote, proceso y orden con los valores por defecto de Configuración
+    /// General (pestaña Almacenes) cuando la línea no los trae.
+    ///
+    /// Se aplica AL GRABAR y no al cargar la fila, a propósito: en pantalla el usuario tiene
+    /// que seguir viendo "—" cuando no eligió nada, no un valor que él no puso. Lo que se
+    /// evita es el NULL EN LA BASE, que es donde molesta — esas columnas se comparan contra
+    /// el stock, y una comparación contra NULL no matchea ninguna fila.
+    ///
+    /// El proceso y sus tres números van EN BLOQUE: una orden sin su proceso no identifica
+    /// nada, así que o se completa la cadena entera o no se toca. El lote es independiente.
+    ///
+    /// Si la configuración no tiene valor, no se inventa ninguno: la columna queda como
+    /// estaba. La pantalla no fuerza nada que el administrador no haya definido.</summary>
+    private void AplicarValoresPorDefecto(Item it)
+    {
+        var cfg = ConfigSvc.Current;
+
+        if (string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL) && !string.IsNullOrWhiteSpace(cfg.LoteControlDefault))
+            it.NUM_LOTE_CONTROL = cfg.LoteControlDefault;
+
+        var sinProduccion = string.IsNullOrWhiteSpace(it.COD_PROCESO) && it.NUM_ORDEN_PRODUCCION is null or 0;
+        if (sinProduccion && !string.IsNullOrWhiteSpace(cfg.ProcesoDefault))
+        {
+            it.COD_PROCESO                 = cfg.ProcesoDefault;
+            it.NUM_ORDEN_PRODUCCION        = cfg.OrdenProduccionDefault;
+            it.NUM_ORDEN_PRODUCCION_ITEM   = cfg.OrdenProduccionItemDefault;
+            it.NUM_ORDEN_PRODUCCION_UNIDAD = cfg.OrdenProduccionUnidadDefault;
+        }
+    }
+
+
+    /// <summary>Los cinco datos que un ítem tiene que consignar sí o sí: lote, proceso, orden,
+    /// ítem de orden y unidad mínima.
+    ///
+    /// Antes eran opcionales, y el resultado era lo que venimos viendo: columnas en NULL que
+    /// después no comparan contra el stock. Ahora la fila no se graba sin ellos.
+    ///
+    /// Se valida DESPUÉS de aplicar los valores por defecto: si la configuración los tiene
+    /// cargados, el usuario no ve este mensaje nunca — el ítem ya salió completo de ahí. El
+    /// mensaje aparece cuando faltan las dos cosas, la elección y el valor por defecto, que
+    /// es exactamente el caso que hay que frenar.
+    ///
+    /// Devuelve qué falta, en el orden de la cascada, para poder decirlo con nombre y no con
+    /// un "faltan datos" que obliga a adivinar.</summary>
+    private static List<string> DatosQueFaltan(Item it)
+    {
+        var faltan = new List<string>();
+        if (string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL))   faltan.Add("lote");
+        if (string.IsNullOrWhiteSpace(it.COD_PROCESO))        faltan.Add("proceso");
+        if (it.NUM_ORDEN_PRODUCCION        is null) faltan.Add("orden de producción");
+        if (it.NUM_ORDEN_PRODUCCION_ITEM   is null) faltan.Add("ítem de orden");
+        if (it.NUM_ORDEN_PRODUCCION_UNIDAD is null) faltan.Add("unidad mínima");
+        return faltan;
+    }
+
+    /// <param name="avisar">Falso cuando el intento de grabar viene de la grilla al confirmar
+    /// UNA celda. Ahí la fila está a medio llenar por definición —recién se completó un campo
+    /// de cinco— y avisar de lo que falta en cada celda sería un cartel por tecla. Se guarda
+    /// si está completa y, si no, se espera en silencio.
+    ///
+    /// Verdadero cuando el usuario pidió grabar de forma explícita (el botón de la fila, o el
+    /// diálogo de proceso/orden): ahí sí corresponde decirle por qué no se grabó.</param>
+    private async Task<bool> GuardarItem(Item it, bool avisar = true)
+    {
+        if (_readonly || string.IsNullOrWhiteSpace(it.COD_PRODUCTO)) return false;
+
+        it.NUM_RESERVA_STOCK = _model.NUM_RESERVA_STOCK;
+        AplicarValoresPorDefecto(it);
+
+        var faltan = DatosQueFaltan(it);
+        if (faltan.Count > 0)
+        {
+            if (avisar)
+                Snackbar.Add($"Ítem {it.NUM_SECUENCIA}: falta {string.Join(", ", faltan)}.", Severity.Warning);
+            return false;
+        }
+
+        var sec = it.NUM_SECUENCIA ?? 0;
+        var esNuevo = _itemsNuevos.Contains(sec);
+
+        var r = await Http.GuardarAsync(ApiRoutes.Logistica.ReservasStockDetalle, it, esNuevo);
+        if (!r.IsSuccessStatusCode)
+        {
+            await ErrorDialogHelper.MostrarAsync(r, ErrorLog, DialogService,
+                nameof(ReservaDocumento), nameof(GuardarItem), $"No se pudo grabar el ítem {sec}");
+            return false;
+        }
+        _itemsNuevos.Remove(sec);
+        _huboCambios = true;
+        return true;
+    }
+
+
+    private async Task Cerrar()
+    {
+        // El bool le dice al listado si tiene que recargarse o si alcanza con volver.
+        await OnCerrar.InvokeAsync(_huboCambios);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta    = ApiRoutes.Logistica.ReservasStock;
+        var rutaDet = ApiRoutes.Logistica.ReservasStockDetalle;
+
+        try
+        {
+            // ── Eliminar ────────────────────────────────────────────────────────
+            // Los ítems primero: la cabecera tiene la FK y el motor rechazaría el orden inverso.
+            if (Modo == CrudModo.Delete)
+            {
+                foreach (var it in _items.ToList())
+                    await Http.DeleteAsync($"{rutaDet}/{_model.NUM_RESERVA_STOCK}/{it.NUM_SECUENCIA}");
+
+                var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_RESERVA_STOCK}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Reserva eliminada.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(ReservaDocumento), nameof(Submit), "No se pudo eliminar la reserva");
+                return;
+            }
+
+            // ── Cabecera ────────────────────────────────────────────────────────
+            // Grabar NO cierra el diálogo: al crear, es justo lo que habilita el detalle, y
+            // cerrar en ese momento obligaría a volver a abrir el documento para cargar ítems.
+            var esAlta = !_cabeceraGrabada;
+            var resp = await Http.GuardarAsync(ruta, _model, esAlta);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ReservaDocumento), nameof(Submit));
+                return;
+            }
+
+            _huboCambios = true;
+
+            if (esAlta)
+            {
+                // El número lo genera la base y vuelve en Codigo. Sin él la cabecera quedó
+                // grabada pero el detalle no tiene de dónde colgarse, así que se avisa en vez
+                // de habilitar una grilla que fallaría en cada fila.
+                var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+                if (int.TryParse(cuerpo?.Data?.Codigo, out var generado))
+                {
+                    _model.NUM_RESERVA_STOCK = generado;
+                    _esNuevo = false;
+                    Snackbar.Add($"Reserva N° {generado} creada. Ya puedes cargar los ítems.", Severity.Success);
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAvisoAsync("La reserva se creó, pero la base no devolvió su número: reabre el documento para cargarle ítems.", DialogService, nameof(ReservaDocumento));
+                }
+            }
+            else
+            {
+                Snackbar.Add("Reserva actualizada.", Severity.Success);
+            }
+
+            // El SP puede haber movido el Estado (y cualquier otro campo que la pantalla no
+            // escribe): se relee para que lo que se ve sea lo que quedó en la base.
+            await RecargarCabeceraAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ReservaDocumento), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(ReservaDocumento));
+        }
+        finally { _saving = false; }
+    }
+}

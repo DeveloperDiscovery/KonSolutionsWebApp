@@ -1,0 +1,302 @@
+@page "/comercial/cpe-recibidos"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Finanzas
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+@*
+    Bandeja de XML recibidos (FINANZAS.CPE_RECIBIDOS): los comprobantes de los proveedores (facturas, boletas, notas de crédito y de débito) que cargó el servicio de XML, ya sea que llegaron por el correo
+    o que alguien dejó los archivos en la carpeta de Compras. Es de CONSULTA: se ve qué entró, de quién, por cuánto, en qué estado está (pendiente, ya usado en un registro de compras, o descartado),
+    el detalle de sus líneas, el XML original y el PDF. Se puede descartar un comprobante pendiente (o devolverlo a pendiente). Generar el registro de compras se sigue haciendo desde el Registro de Compras
+    («Traer de XML recibidos»). Permiso propio: COMERCIAL.XML_RECIBIDOS (API api/v1/comercial/xml-recibidos).
+*@
+
+<PageTitle>Bandeja de XML recibidos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto" style="flex-wrap:wrap;">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Bandeja de XML recibidos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);" data-resumen="cabecera">Schema FINANZAS · @_items.Count comprobante@(_items.Count == 1 ? "" : "s")</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_texto" OnSearch="CargarAsync" MaxWidth="460px" Class="grid-header-search" />
+    <MudSelect T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Estado" Style="min-width:170px;max-width:200px;" Value="_estado"
+               ValueChanged="@(v => { _estado = v ?? ""; return CargarAsync(); })" data-campo="estado">
+        <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+        <MudSelectItem T="string" Value="@("PEN")">Pendientes</MudSelectItem>
+        <MudSelectItem T="string" Value="@("USA")">Ya usados</MudSelectItem>
+        <MudSelectItem T="string" Value="@("DES")">Descartados</MudSelectItem>
+    </MudSelect>
+    <MudDatePicker Label="Emitidos desde" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" Date="_desde" DateChanged="@(d => { _desde = d; return CargarAsync(); })" Clearable="true" data-campo="desde" />
+    <MudDatePicker Label="hasta" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" Date="_hasta" DateChanged="@(d => { _hasta = d; return CargarAsync(); })" Clearable="true" data-campo="hasta" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
+    <GridRefreshButton OnRefresh="CargarAsync" />
+    @* Los botones de la cabecera salen de la configuración de la opción en Seguridad (por rol): Imprimir, Exportar, Completar datos, Validar con SUNAT *@
+    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+</div>
+
+@if (_cargando || _completando) { <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" data-estado="cargando" /> }
+@if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-aviso="error">@_error</MudAlert> }
+
+<MudStack Row="true" Spacing="2" Class="mb-2" Style="flex-wrap:wrap;" data-resumen="estados">
+    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" data-chip="pendientes">Pendientes: @_items.Count(x => x.COD_ESTADO_USO == "PEN")</MudChip>
+    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined" data-chip="usados">Ya usados: @_items.Count(x => x.COD_ESTADO_USO == "USA")</MudChip>
+    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined" data-chip="descartados">Descartados: @_items.Count(x => x.COD_ESTADO_USO == "DES")</MudChip>
+    @if (_items.Any(x => x.NUM_LINEAS_SIN_PRODUCTO > 0 && x.COD_ESTADO_USO == "PEN"))
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined" data-chip="sin-producto">Con líneas sin producto: @_items.Count(x => x.NUM_LINEAS_SIN_PRODUCTO > 0 && x.COD_ESTADO_USO == "PEN")</MudChip>
+    }
+</MudStack>
+
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        <div data-resizable-grid="bandeja-xml-recibidos" style="position:relative;">
+        <MudDataGrid T="CpeRecibido" Items="_visibles" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica" data-grid="bandeja-xml">
+            <Columns>
+                @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+                {
+                    <TemplateColumn Sortable="false" Title="@c.Titulo" CellStyle="@c.Estilo">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1">
+                                <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenColumna == idx)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(idx))" />
+                                <FiltroExcelColumna T="CpeRecibido" ItemsBase="@Base(idx)" ValorDe="@c.Valor"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtro(idx, v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>
+                            @if (idx == 2) { <span class="mono">@c.Valor(context.Item)</span> }
+                            else if (idx == 3)
+                            {
+                                @(string.IsNullOrWhiteSpace(context.Item.DES_ENTIDAD) ? context.Item.DES_RAZON_SOCIAL_EMISOR : context.Item.DES_ENTIDAD)
+                                <span class="mono" style="opacity:.6;"> @context.Item.NUM_RUC_EMISOR</span>
+                                @if (context.Item.COD_ENTIDAD is null) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text" Class="ml-1" title="El RUC no está en el maestro de entidades: hay que registrar al proveedor antes de generar el registro de compras.">sin registrar</MudChip> }
+                            }
+                            else if (idx == 5) { <span class="mono" style="display:block;text-align:right;">@c.Valor(context.Item)</span> }
+                            else if (idx == 6) { <span class="mono">@context.Item.NUM_LINEAS</span>@if (context.Item.NUM_LINEAS_SIN_PRODUCTO > 0) { <span class="mono" style="opacity:.65;"> (@context.Item.NUM_LINEAS_SIN_PRODUCTO sin producto)</span> } }
+                            else if (idx == 7) { <EstadoChip Estado="@c.Valor(context.Item)" BackColor="@context.Item.DES_BACKCOLOR_ESTADO" ForeColor="@context.Item.DES_FORECOLOR_ESTADO" /> }
+                            else if (idx == 8) { <span class="mono">@c.Valor(context.Item)</span> }
+                            else if (idx == 9) { <MudTooltip Text="@TooltipSunat(context.Item)"><EstadoChip Estado="@c.Valor(context.Item)" BackColor="@ColorSunat(context.Item, true)" ForeColor="@ColorSunat(context.Item, false)" /></MudTooltip> }
+                            else { @c.Valor(context.Item) }
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+                <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                    <CellTemplate>
+                        <MudTooltip Text="Ver el detalle, el XML y el PDF"><MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" OnClick="@(() => VerAsync(context.Item))" data-accion="ver" /></MudTooltip>
+                        @if (!string.IsNullOrWhiteSpace(context.Item.DES_NOMBRE_ARCHIVO_PDF))
+                        {
+                            <MudTooltip Text="Ver el PDF"><MudIconButton Icon="@Icons.Material.Filled.PictureAsPdf" Size="Size.Small" OnClick="@(() => VerPdfAsync(context.Item))" data-accion="pdf" /></MudTooltip>
+                        }
+                        @{ var item = context.Item; }
+                        @* @key: los botones de la fila dependen del estado del documento (descartar o devolver a pendiente, completar solo si está pendiente) y el componente guarda sus botones. *@
+                        <AccionesBotones @key="@($"{item.NUM_CPE}|{item.COD_ESTADO_USO}")" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" TodasLasZonas="true" Filtro="@(b => BotonAplica(item, b))" OnAccion="@(b => OnAccionGrilla(item, b))" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="bandeja">@(_cargando ? "Buscando..." : "No hay comprobantes recibidos con ese filtro. El servicio de XML los carga desde el correo o desde la carpeta de Compras.")</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="CpeRecibido" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+        </div>
+    </MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // ── Grilla estándar: filtros tipo Excel por columna, orden, ancho ajustable (en el navegador) y alto hasta el tope ──
+    private sealed record Col(string Titulo, Func<CpeRecibido, string?> Valor, Func<CpeRecibido, IComparable?>? Clave = null, string? Estilo = null);
+
+    private readonly Col[] _cols =
+    {
+        new("Emisión",   x => x.FEC_EMISION.ToString("dd/MM/yyyy"), x => x.FEC_EMISION),
+        new("Tipo",      x => x.DES_TIPO_COMPROBANTE),
+        new("Número",    x => x.NUM_COMPROBANTE),
+        new("Proveedor", x => $"{(string.IsNullOrWhiteSpace(x.DES_ENTIDAD) ? x.DES_RAZON_SOCIAL_EMISOR : x.DES_ENTIDAD)} {x.NUM_RUC_EMISOR}".Trim()),
+        new("Moneda",    x => x.COD_MONEDA_SUNAT),
+        new("Total",     x => x.VAL_TOTAL_CON_SIGNO.ToString("N2"), x => x.VAL_TOTAL_CON_SIGNO, "text-align:right;"),
+        new("Líneas",    x => x.NUM_LINEAS.ToString(), x => x.NUM_LINEAS),
+        new("Estado",    x => $"{x.DES_ESTADO_USO}{(x.NUM_REGISTRO is { } n ? $" · registro {n:0}" : "")}", x => x.COD_ESTADO_USO),
+        new("Recibido",  x => x.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm"), x => x.FEC_REGISTRO),
+        new("SUNAT",     x => TextoSunat(x), x => x.COD_ESTADO_VALIDACION),
+    };
+
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private bool HayFiltros => _filtros.Any(f => f.Value is not null) || !string.IsNullOrWhiteSpace(_texto) || _estado != "" || _desde is not null || _hasta is not null;
+
+    private List<CpeRecibido> Aplicar(int ex)
+    {
+        IEnumerable<CpeRecibido> q = _items;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(_cols[c].Valor(x) ?? ""));
+        }
+        return q.ToList();
+    }
+    private List<CpeRecibido> Base(int col) => Aplicar(col);
+    private List<CpeRecibido> _visibles => Ordenar(Aplicar(-1));
+
+    private List<CpeRecibido> Ordenar(List<CpeRecibido> items)
+    {
+        if (_ordenColumna is not { } col) return items;
+        var c = _cols[col];
+        Func<CpeRecibido, object?> clave = x => c.Clave is not null ? c.Clave(x) : c.Valor(x);
+        return _ordenAscendente ? items.OrderBy(clave).ToList() : items.OrderByDescending(clave).ToList();
+    }
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente; else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private async Task LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _texto = ""; _estado = ""; _desde = null; _hasta = null;
+        await CargarAsync();
+    }
+
+    private List<CpeRecibido> _items = new();
+    private string _texto = "", _estado = "";
+    private DateTime? _desde, _hasta;
+    private bool _cargando, _completando;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("COMERCIAL", "CPE_Recibidos");
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = null; StateHasChanged();
+        try
+        {
+            var url = BandejaRutas.Consulta(BandejaRutas.XmlRecibidos, _texto, _estado, _desde, _hasta);
+            var resp = await Http.GetAsync(url);
+            if (!resp.IsSuccessStatusCode && resp.Content.Headers.ContentLength is null or 0)
+            {
+                _items = new();
+                _error = resp.StatusCode is System.Net.HttpStatusCode.Unauthorized ? "La sesión venció o no se reconoció: vuelve a iniciar sesión."
+                       : resp.StatusCode is System.Net.HttpStatusCode.Forbidden ? "No tienes permiso para ver esta bandeja (pídelo en Seguridad > Roles)."
+                       : $"No se pudo leer la bandeja (HTTP {(int)resp.StatusCode}).";
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<CpeRecibido>>>();
+            if (r is { Success: true }) _items = r.Data ?? new();
+            else { _items = new(); _error = string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo leer la bandeja." : r!.Message; }
+        }
+        catch (Exception ex)
+        {
+            _items = new(); _error = "No se pudo leer la bandeja. Ver detalle en el log de errores.";
+            await ErrorLog.LogAsync(ex, nameof(CPE_Recibidos), nameof(CargarAsync));
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>«Completar datos»: sin número, con todos los pendientes; con número, solo ese documento.</summary>
+    private async Task CompletarAsync(decimal? num)
+    {
+        _completando = true; StateHasChanged();
+        try
+        {
+            var resp = await Http.PostAsync(BandejaRutas.CompletarDatos(BandejaRutas.XmlRecibidos, num), null);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RecibidoCompletarResult>>();
+            if (r is { Success: true }) { Snackbar.Add(string.IsNullOrWhiteSpace(r.Message) ? "Datos completados." : r.Message, Severity.Success); await CargarAsync(); }
+            else Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? $"No se pudo completar (HTTP {(int)resp.StatusCode})." : r!.Message, Severity.Warning);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(CPE_Recibidos), nameof(CompletarAsync)); Snackbar.Add("No se pudo completar los datos. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _completando = false; }
+    }
+
+    /// <summary>«Validar con SUNAT»: sin número, los comprobantes sin resultado (o con la consulta fallida); con número, solo ese.</summary>
+    private async Task ValidarSunatAsync(decimal? num)
+    {
+        _completando = true; StateHasChanged();
+        try
+        {
+            var resp = await Http.PostAsync(BandejaRutas.ValidarSunat(num), null);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RecibidoSunatResult>>();
+            if (r is { Success: true }) { Snackbar.Add(r.Message ?? "Listo.", r.Data is { NUM_SIN_CONSULTAR: > 0 } ? Severity.Warning : Severity.Success); await CargarAsync(); }
+            else Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? $"No se pudo validar (HTTP {(int)resp.StatusCode})." : r!.Message, Severity.Warning);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(CPE_Recibidos), nameof(ValidarSunatAsync)); Snackbar.Add("No se pudo validar con SUNAT. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _completando = false; }
+    }
+
+    // ── Botones configurados en Seguridad (Opciones de Aplicaciones > Botones) ──
+    /// <summary>El método del botón; si el botón se creó a mano sin método, se toma de su nombre («Validar con SUNAT» = VALIDARSUNAT, «Completar datos» = COMPLETARDATOS).</summary>
+    private static string Metodo(BotonTreeviewItem b)
+    {
+        var m = (b.DES_METODO ?? "").Trim().ToUpperInvariant();
+        if (m != "") return m;
+        var n = new string(((b.DES_BOTON_OPCION ?? "").Trim().ToUpperInvariant()).Normalize(System.Text.NormalizationForm.FormD).Where(char.IsLetter).ToArray());
+        return n switch { "VALIDARCONSUNAT" or "VALIDARSUNAT" => "VALIDARSUNAT", "COMPLETARDATOS" => "COMPLETARDATOS", "DESCARTAR" => "DESCARTAR", _ => n };
+    }
+
+    /// <summary>Los botones de la fila: Descartar sirve para pendientes (descartar) y descartados (devolver a pendiente); Completar datos, solo para pendientes (y validar con SUNAT, cualquiera). Los de consulta sin método propio ya los cubren el ojo y el PDF.</summary>
+    private static bool BotonAplica(CpeRecibido item, BotonTreeviewItem b) => Metodo(b) switch
+    {
+        "DESCARTAR" => item.COD_ESTADO_USO is "PEN" or "DES",
+        "COMPLETARDATOS" => item.COD_ESTADO_USO == "PEN",
+        "VALIDARSUNAT" => true,
+        _ => false
+    };
+
+    private Task OnAccionHeader(BotonTreeviewItem b) => Despacha(b, null);
+    private Task OnAccionGrilla(CpeRecibido item, BotonTreeviewItem b) => Despacha(b, item);
+
+    private async Task Despacha(BotonTreeviewItem b, CpeRecibido? item)
+    {
+        switch (Metodo(b))
+        {
+            case "COMPLETARDATOS": await CompletarAsync(item?.NUM_CPE); break;
+            case "VALIDARSUNAT": await ValidarSunatAsync(item?.NUM_CPE); break;
+            case "DESCARTAR": if (item is not null) await DescartarAsync(item, item.COD_ESTADO_USO == "PEN"); break;
+            default:
+                // Imprimir y Exportar: los atiende el reporteador cuando el botón tiene un diseño asignado (Reportes > Asignación a botones); sin diseño, no hay nada que ejecutar
+                Snackbar.Add($"El botón «{b.DES_BOTON_OPCION}» no tiene una acción ni un reporte asignado en esta pantalla. Asígnale un diseño en Reportes > Asignación a botones.", Severity.Info);
+                break;
+        }
+    }
+
+    private Task VerAsync(CpeRecibido x)
+        => DialogService.ShowAsync<CPE_RecibidoDetalleDialog>("", new DialogParameters { ["Resumen"] = x }, new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+
+    private Task VerPdfAsync(CpeRecibido x)
+        => DialogService.ShowAsync<RecibidoPdfDialog>("", new DialogParameters { ["Url"] = BandejaRutas.XmlRecibido(x.NUM_CPE, "pdf"), ["Titulo"] = $"PDF de {x.NUM_COMPROBANTE}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private async Task DescartarAsync(CpeRecibido x, bool descartar)
+    {
+        var pregunta = descartar ? $"¿Descartar {x.DES_TIPO_COMPROBANTE} {x.NUM_COMPROBANTE}? Dejará de ofrecerse en «Traer de XML recibidos»; se puede devolver a pendiente." : $"¿Devolver {x.NUM_COMPROBANTE} a pendiente?";
+        var ok = await DialogService.ShowMessageBox(descartar ? "Descartar comprobante" : "Devolver a pendiente", pregunta, yesText: descartar ? "Descartar" : "Devolver", cancelText: "Cancelar");
+        if (ok != true) return;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(BandejaRutas.XmlRecibido(x.NUM_CPE, "descartar"), new RecibidoDescartarDto { FLG_DESCARTAR = descartar });
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<bool>>();
+            if (r is { Success: true }) { Snackbar.Add(descartar ? "Comprobante descartado." : "Comprobante devuelto a pendiente.", Severity.Success); await CargarAsync(); }
+            else Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo cambiar el estado." : r!.Message, Severity.Warning);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(CPE_Recibidos), nameof(DescartarAsync)); Snackbar.Add("No se pudo cambiar el estado. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    // La validación con SUNAT la hace el servicio al cargar el XML. 0001: SUNAT lo tiene como aceptado; ERR: no se pudo consultar (se reintenta solo); sin valor: todavía no se valida.
+    // El estado sale del estándar (ESTANDAR.ESTADOS, tipo «Validación SUNAT»): descripción y colores vienen de la base. El código y el texto crudo de SUNAT van en el tooltip.
+    private static string TextoSunat(CpeRecibido x) => string.IsNullOrWhiteSpace(x.DES_ESTADO_VALIDACION) ? "Sin validar" : x.DES_ESTADO_VALIDACION;
+    private static string TooltipSunat(CpeRecibido x) => string.IsNullOrWhiteSpace(x.COD_ESTADO_SUNAT) ? "Todavía no se validó con SUNAT: lo hace el servicio al cargar el XML, o con el botón «Validar con SUNAT»."
+        : $"{x.COD_ESTADO_SUNAT}: {x.DES_ESTADO_SUNAT}{(x.FEC_VALIDACION_SUNAT is { } f ? $" ({f:dd/MM/yyyy HH:mm})" : "")}";
+    private static string ColorSunat(CpeRecibido x, bool fondo) => (fondo ? x.DES_BACKCOLOR_VALIDACION : x.DES_FORECOLOR_VALIDACION) ?? (fondo ? "#e0e0e0" : "#616161");
+
+    private static Color ColorEstado(string? e) => e switch { "PEN" => Color.Warning, "USA" => Color.Success, _ => Color.Default };
+}

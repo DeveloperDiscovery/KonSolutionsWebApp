@@ -1,0 +1,124 @@
+@page "/proyectos/proyectos-unidades-medida"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Proyectos.ProyectosUnidadMedidaTarea
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+<PageTitle>Unidades de medida de tareas · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Unidades de medida de tareas" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema PROYECTOS · @_visibles.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar unidad..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="proyectos-unidades-medida-tareas" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false" Width="110px"><CellTemplate><span class="mono">@context.Item.COD_UNIDAD_MEDIDA_TAREAS</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate>@context.Item.DES_UNIDAD_MEDIDA_TAREAS</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+
+    private List<Modelo> _visibles => string.IsNullOrWhiteSpace(_search) ? _items
+        : _items.Where(x => $"{x.COD_UNIDAD_MEDIDA_TAREAS} {x.DES_UNIDAD_MEDIDA_TAREAS}".Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("PROYECTOS", "ProyectosUnidadesMedida");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("PROYECTOS.PROYECTOS_UNIDADES_MEDIDA_TAREAS", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(ApiRoutes.Proyectos.UnidadesMedida);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ProyectosUnidadesMedida), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(ProyectosUnidadesMedida));
+            _items = new();
+        }
+    }
+
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nueva unidad",
+            CrudModo.Delete => $"Eliminar · {item?.DES_UNIDAD_MEDIDA_TAREAS}",
+            _               => $"Editar · {item?.DES_UNIDAD_MEDIDA_TAREAS}"
+        };
+        var dlg = await DialogService.ShowAsync<ProyectosUnidadesMedidaDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("PROYECTOS.PROYECTOS_UNIDADES_MEDIDA_TAREAS", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

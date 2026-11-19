@@ -1,0 +1,184 @@
+@page "/proyectos/portafolio-proyectos"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Portafolio de proyectos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Portafolio de proyectos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema PROYECTOS · @_items.Count proyectos</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="CargarAsync" Placeholder="Buscar por número, proyecto o responsable..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="CargarAsync" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<div class="dash">
+    <div class="dash-kpis">
+        <DashKpi Titulo="En curso" Icono="@Icons.Material.Filled.PlayCircleOutline" Valor="@_items.Count(i => i.COD_SITUACION == "CUR").ToString()" Sub="@($"{_items.Count} proyectos en total")" />
+        <DashKpi Titulo="Atrasados" Icono="@Icons.Material.Filled.ErrorOutline" Valor="@_items.Count(i => i.COD_SITUACION == "ATR").ToString()" Tono="@(_items.Any(i => i.COD_SITUACION == "ATR") ? "bad" : "ok")" Sub="plazo vencido sin terminar" />
+        <DashKpi Titulo="Terminados" Icono="@Icons.Material.Filled.CheckCircleOutline" Valor="@_items.Count(i => i.COD_SITUACION == "TER").ToString()" Tono="ok" />
+        <DashKpi Titulo="Presupuesto" Icono="@Icons.Material.Filled.AccountBalanceWallet" Valor="@Pres.ToString("N0")" Sub="suma de los proyectos" />
+        <DashKpi Titulo="Costo real" Icono="@Icons.Material.Filled.Paid" Valor="@Costo.ToString("N0")" Tono="@TonoCosto" Progreso="@PctCosto" Sub="@(Pres > 0 ? $"{PctCosto:0}% del presupuesto" : "sin presupuesto")" />
+        <DashKpi Titulo="Riesgos altos abiertos" Icono="@Icons.Material.Filled.Warning" Valor="@_items.Sum(i => i.NUM_RIESGOS_ALTOS).ToString()" Tono="@(_items.Sum(i => i.NUM_RIESGOS_ALTOS) > 0 ? "bad" : "ok")" />
+    </div>
+
+    <div class="dash-tools">
+        <MudToggleGroup T="string" @bind-Value="_vista" Color="Color.Primary" Size="Size.Small" SelectionMode="SelectionMode.SingleSelection" CheckMark="false">
+            <MudToggleItem Value="@("T")" Text="Tarjetas" />
+            <MudToggleItem Value="@("G")" Text="Tabla" />
+        </MudToggleGroup>
+        <div class="sp"></div>
+        <div style="min-width:220px;">
+            <MudSelect T="string" Value="_estado" ValueChanged="CambioEstado" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true">
+                <MudSelectItem Value="@("PLA")">Planificado</MudSelectItem>
+                <MudSelectItem Value="@("EJE")">En ejecución</MudSelectItem>
+                <MudSelectItem Value="@("TER")">Terminado</MudSelectItem>
+                <MudSelectItem Value="@("SUS")">Suspendido</MudSelectItem>
+                <MudSelectItem Value="@("CAN")">Cancelado</MudSelectItem>
+            </MudSelect>
+        </div>
+    </div>
+
+    @if (_vista == "T")
+    {
+        @if (_items.Count == 0)
+        {
+            <div class="dash-vacio">No hay proyectos con ese filtro.</div>
+        }
+        else
+        {
+            <div class="dash-cards">
+                @foreach (var p in _items)
+                {
+                    var item = p;
+                    var excede = item.VAL_PRESUPUESTO_PROYECTO > 0 && item.VAL_COSTO_PROYECTO > item.VAL_PRESUPUESTO_PROYECTO;
+                    <div class="dash-card">
+                        <div class="c-top">
+                            <div style="flex:1;min-width:0;">
+                                <div class="c-num mono">N° @item.NUM_PROYECTO · @item.DES_TIPO_PROYECTO</div>
+                                <div class="c-tit">@item.DES_PROYECTO</div>
+                                <div class="c-sub">@(string.IsNullOrWhiteSpace(item.DES_RESPONSABLE) ? "Sin responsable" : item.DES_RESPONSABLE)</div>
+                            </div>
+                            <span class="sit sit-@item.COD_SITUACION">@ProyectoApi.Situacion(item.COD_SITUACION)</span>
+                        </div>
+                        <div class="c-av">
+                            <span class="big">@item.TAS_AVANCE.ToString("0")%</span>
+                            <div class="c-trk"><i class="@(item.COD_SITUACION == "ATR" ? "bad" : item.COD_SITUACION == "TER" ? "ok" : "")" style="width:@(Math.Min(100m, item.TAS_AVANCE).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%"></i></div>
+                        </div>
+                        <div class="c-datos">
+                            <div><span>Inicio → Fin programado</span><b>@ProyectoApi.Fecha(item.FEC_INICIO_PROGRAMADO) → @ProyectoApi.Fecha(item.FEC_FINAL_PROGRAMADO)</b></div>
+                            <div><span>Tareas</span><b>@item.NUM_TAREAS_TERMINADAS / @item.NUM_TAREAS@(item.NUM_TAREAS_ATRASADAS > 0 ? $" · {item.NUM_TAREAS_ATRASADAS} atrasadas" : "")</b></div>
+                            <div><span>Presupuesto</span><b>@item.COD_MONEDA_VALORIZACION @((item.VAL_PRESUPUESTO_PROYECTO ?? 0).ToString("N2"))</b></div>
+                            <div><span>Costo real</span><b class="@(excede ? "bad" : "")">@item.COD_MONEDA_VALORIZACION @((item.VAL_COSTO_PROYECTO ?? 0).ToString("N2"))</b></div>
+                        </div>
+                        <div class="c-pie">
+                            <EstadoChip Estado="@item.DES_ESTADO" BackColor="@item.DES_BACKCOLOR" ForeColor="@item.DES_FORECOLOR" />
+                            @if (item.NUM_RIESGOS_ALTOS > 0) { <span class="sit sit-ATR">@item.NUM_RIESGOS_ALTOS riesgo(s) alto(s)</span> }
+                            <span class="sp"></span>
+                            <button type="button" class="dash-pill lleno" @onclick="@(() => Abrir(item))">Abrir expediente</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+</div>
+
+@if (_vista == "G")
+{
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="portafolio-proyectos" style="position:relative;">
+        <MudDataGrid T="PortafolioProyecto" Items="_items" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+            <Columns>
+                <PropertyColumn Property="x => x.NUM_PROYECTO" Title="N°" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.DES_PROYECTO" Title="Proyecto" />
+                <PropertyColumn Property="x => x.DES_TIPO_PROYECTO" Title="Tipo" />
+                <PropertyColumn Property="x => x.DES_RESPONSABLE" Title="Responsable" />
+                <PropertyColumn Property="x => x.FEC_INICIO_PROGRAMADO" Title="Inicio prog." Format="dd/MM/yyyy" />
+                <PropertyColumn Property="x => x.FEC_FINAL_PROGRAMADO" Title="Fin prog." Format="dd/MM/yyyy" />
+                <TemplateColumn Title="Avance" Sortable="false" Filterable="false">
+                    <CellTemplate>
+                        <div class="d-flex align-center gap-1"><div class="prog-mini"><i style="width:@(Math.Min(100m, context.Item.TAS_AVANCE).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%"></i></div><span class="mono">@context.Item.TAS_AVANCE.ToString("0")%</span></div>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.VAL_PRESUPUESTO_PROYECTO" Title="Presupuesto" Format="N2" CellStyle="text-align:right;" />
+                <TemplateColumn Title="Costo real" Sortable="false" Filterable="false" CellStyle="text-align:right;">
+                    <CellTemplate><span class="mono" style="@(context.Item.VAL_PRESUPUESTO_PROYECTO > 0 && context.Item.VAL_COSTO_PROYECTO > context.Item.VAL_PRESUPUESTO_PROYECTO ? "color:#c0392b;font-weight:600;" : "")">@context.Item.VAL_COSTO_PROYECTO?.ToString("N2")</span></CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.NUM_RIESGOS_ALTOS" Title="Riesgos altos" CellStyle="text-align:right;" />
+                <TemplateColumn Title="Situación" Sortable="false" Filterable="false"><CellTemplate><span class="sit sit-@context.Item.COD_SITUACION">@ProyectoApi.Situacion(context.Item.COD_SITUACION)</span></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Estado" Sortable="false" Filterable="false"><CellTemplate><EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="" Sortable="false" Filterable="false">
+                    <CellTemplate><MudIconButton Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" OnClick="@(() => Abrir(context.Item))" title="Abrir el expediente del proyecto" /></CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">No hay proyectos con ese filtro.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="PortafolioProyecto" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+}
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<PortafolioProyecto> _items = new();
+    private string _search = "";
+    private string? _estado;
+    private string _vista = "T";
+    private decimal Pres => _items.Sum(i => i.VAL_PRESUPUESTO_PROYECTO ?? 0);
+    private decimal Costo => _items.Sum(i => i.VAL_COSTO_PROYECTO ?? 0);
+    private decimal? PctCosto => Pres > 0 ? Costo * 100m / Pres : null;
+    private string TonoCosto => PctCosto is null ? "" : PctCosto > 100 ? "bad" : PctCosto > 85 ? "warn" : "ok";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("PROYECTOS", "PortafolioProyectos");
+        await CargarAsync();
+    }
+
+    private Task CambioEstado(string? v) { _estado = v; return CargarAsync(); }
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Proyectos.Portafolio}?estado={Uri.EscapeDataString(_estado ?? "")}&search={Uri.EscapeDataString(_search ?? "")}";
+            _items = await Http.SafeGetAsync<List<PortafolioProyecto>>(url) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PortafolioProyectos), nameof(CargarAsync));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar el portafolio. Ver detalle en el log de errores.", DialogService, nameof(PortafolioProyectos));
+            _items = new();
+        }
+    }
+
+    // El portafolio es de consulta: sus botones de cabecera (imprimir, exportar) los atiende el reporteador.
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        Snackbar.Add($"El botón «{b.DES_BOTON_OPCION}» no tiene un reporte asignado en esta pantalla. Asígnale un diseño en Reportes > Asignación a botones.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(PortafolioProyecto p)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoExpedienteDialog>($"Proyecto {p.NUM_PROYECTO} · {p.DES_PROYECTO}",
+            new DialogParameters { ["NumProyecto"] = p.NUM_PROYECTO },
+            new DialogOptions { FullScreen = true, CloseButton = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();
+    }
+}

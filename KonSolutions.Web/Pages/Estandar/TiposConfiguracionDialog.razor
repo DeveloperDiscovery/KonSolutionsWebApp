@@ -1,0 +1,102 @@
+@using Modelo = KONSolutions.Shared.Models.Estandar.TiposConfiguracion
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@Item?.COD_TIPO_CONFIGURACION" Descripcion="@Item?.DES_TIPO_CONFIGURACION" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+                    <CampoTexto Tabla="ESTANDAR.TIPOS_CONFIGURACION" Columna="COD_TIPO_CONFIGURACION"
+                                @bind-Value="_model.COD_TIPO_CONFIGURACION"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="ESTANDAR.TIPOS_CONFIGURACION" Columna="DES_TIPO_CONFIGURACION"
+                                @bind-Value="_model.DES_TIPO_CONFIGURACION"
+                                Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_TIPO_CONFIGURACION = m.COD_TIPO_CONFIGURACION,
+            DES_TIPO_CONFIGURACION = m.DES_TIPO_CONFIGURACION,
+        };
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre datos que la grilla
+    /// puede tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{ApiRoutes.Estandar.TiposConfiguracion}/{Uri.EscapeDataString(_model.COD_TIPO_CONFIGURACION)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Estandar.TiposConfiguracion;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_CONFIGURACION)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposConfiguracionDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP de alta es estricto y rechaza la clave repetida.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposConfiguracionDialog), nameof(Submit));
+    }
+}

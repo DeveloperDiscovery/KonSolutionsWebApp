@@ -1,0 +1,137 @@
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* La ficha de una emisión: consultarla (con sus líneas y cuántas etiquetas tiene cada una), cambiarle el equipo o la observación,
+   o eliminarla (solo si ninguna etiqueta está enrolada). *@
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@($"Emisión {Item?.NUM_EMISION}")" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_forma" OnValidSubmit="Submit">
+            @if (_e is not null)
+            {
+                <div class="mb-3" style="line-height:1.6;" data-ficha="emision">
+                    <div><strong>@_e.DES_ORIGEN</strong>@(_e.COD_ORIGEN == "C" ? $" · ingreso {_e.NUM_MOVIMIENTO_ALMACEN?.ToString("0")} ({_e.DES_TIPO_MOVIMIENTO})" : "") · almacén <span class="mono">@_e.COD_ALMACEN</span> @_e.DES_ALMACEN</div>
+                    @if (_e.COD_ORIGEN == "C")
+                    {
+                        <div>Comprobante <span class="mono">@_e.NUM_COMPROBANTE_PAGO</span> · @_e.DES_ENTIDAD</div>
+                    }
+                    <div>Emitida el @_e.FEC_EMISION?.ToString("dd/MM/yyyy") por <span class="mono">@_e.COD_USUARIO_REGISTRO</span> ·
+                        <strong>@_e.DES_ESTADO_EMISION</strong> · @_e.CAN_ENROLADAS de @_e.CAN_ETIQUETAS enroladas · @_e.CAN_GRABADAS grabadas@(_e.CAN_ANULADAS > 0 ? $" · {_e.CAN_ANULADAS} anuladas" : "")</div>
+                    @if (_e.FLG_ANULADA)
+                    {
+                        <MudAlert Severity="Severity.Normal" Dense="true" Class="mt-2" data-aviso="anulada">
+                            Anulada por <span class="mono">@_e.COD_USUARIO_ANULACION</span> el @_e.FEC_ANULACION?.ToString("dd/MM/yyyy HH:mm"): @_e.DES_MOTIVO_ANULACION
+                        </MudAlert>
+                    }
+                </div>
+
+                <MudSimpleTable Dense="true" Hover="true" Class="mb-3" Style="font-size:.82rem;" data-tabla="lineas">
+                    <thead><tr><th>Línea</th><th>Producto</th><th>Lote</th><th style="text-align:right;">Origen</th><th style="text-align:right;">Etiquetas</th><th style="text-align:right;">Enroladas</th><th style="text-align:right;">Total</th></tr></thead>
+                    <tbody>
+                        @foreach (var l in _lineas)
+                        {
+                            <tr data-linea="@l.NUM_ITEM">
+                                <td>@l.NUM_ITEM</td>
+                                <td><span class="mono">@l.COD_PRODUCTO</span><br />@l.DES_PRODUCTO</td>
+                                <td class="mono">@l.NUM_LOTE_CONTROL</td>
+                                <td style="text-align:right;">@l.CAN_ORIGEN?.ToString("0.######") @l.COD_UNIDAD_MEDIDA</td>
+                                <td style="text-align:right;">@l.CAN_ETIQUETAS</td>
+                                <td style="text-align:right;">@l.CAN_ENROLADAS</td>
+                                <td style="text-align:right;">@l.CAN_TOTAL.ToString("0.######") @l.COD_UNIDAD_MEDIDA</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+
+                <MudGrid>
+                    <MudItem xs="12" sm="6">
+                        <MudSelect T="string" Label="Equipo" Variant="Variant.Outlined" @bind-Value="_equipo" Clearable="true" ReadOnly="_readonly" data-campo="equipo">
+                            @foreach (var q in _equipos)
+                            {
+                                <MudSelectItem T="string" Value="@q.COD_PRODUCTO">@q.DES_PRODUCTO@(string.IsNullOrWhiteSpace(q.DES_ENTIDAD_MARCA) ? "" : $" ({q.DES_ENTIDAD_MARCA})")</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudTextField T="string" Label="Observación" Variant="Variant.Outlined" Lines="2" MaxLength="500" @bind-Value="_observacion" Immediate="true" ReadOnly="_readonly" data-campo="observacion" />
+                    </MudItem>
+                </MudGrid>
+            }
+
+            @if (Modo == CrudModo.Delete)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Se elimina la emisión con sus líneas y sus etiquetas (ninguna está enrolada). No se puede deshacer.</MudAlert>
+            }
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RfidEmision? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Update;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private readonly object _forma = new();
+    private RfidEmision? _e;
+    private List<RfidEmisionDetalle> _lineas = new();
+    private List<RfidEquipoCombo> _equipos = new();
+    private string? _equipo;
+    private string? _observacion;
+    private bool _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Item is null) return;
+        // Trae todo fresco: lo que se ve acá decide si se puede eliminar o modificar.
+        _e = await Http.SafeGetAsync<RfidEmision>($"{ApiRoutes.Rfid.Emisiones}/{Item.NUM_EMISION}") ?? Item;
+        _lineas = await Http.SafeGetAsync<List<RfidEmisionDetalle>>(ApiRoutes.Rfid.EmisionDetalle(Item.NUM_EMISION)) ?? new();
+        _equipos = await Http.SafeGetAsync<List<RfidEquipoCombo>>(ApiRoutes.Rfid.EquiposCombo) ?? new();
+        _equipo = _e.COD_PRODUCTO_EQUIPO;
+        _observacion = _e.DES_OBSERVACION;
+        // El producto de la emisión puede haber dejado de ser equipo (Configuración general cambió): se sigue mostrando, marcado.
+        if (!string.IsNullOrWhiteSpace(_equipo) && _equipos.All(q => q.COD_PRODUCTO != _equipo) && !string.IsNullOrWhiteSpace(_e.DES_EQUIPO))
+            _equipos.Add(new RfidEquipoCombo { COD_PRODUCTO = _equipo, DES_PRODUCTO = _e.DES_EQUIPO!, DES_ENTIDAD_MARCA = "ya no es equipo" });
+    }
+
+    private async Task Submit()
+    {
+        if (Modo == CrudModo.Read || Item is null) { MudDialog.Cancel(); return; }
+        _saving = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var rd = await Http.DeleteAsync($"{ApiRoutes.Rfid.Emisiones}/{Item.NUM_EMISION}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Emisión eliminada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(EmisionFichaDialog), nameof(Submit), "No se pudo eliminar la emisión");
+                return;
+            }
+            var dto = new RfidEmisionUpdateDto { NUM_EMISION = Item.NUM_EMISION, COD_PRODUCTO_EQUIPO = _equipo, DES_OBSERVACION = _observacion };
+            var resp = await Http.GuardarAsync(ApiRoutes.Rfid.Emisiones, dto, false);
+            if (resp.IsSuccessStatusCode) { Snackbar.Add("Emisión modificada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EmisionFichaDialog), nameof(Submit));
+        }
+        finally { _saving = false; }
+    }
+}

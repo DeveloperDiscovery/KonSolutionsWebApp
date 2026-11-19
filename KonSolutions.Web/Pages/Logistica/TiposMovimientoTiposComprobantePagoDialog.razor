@@ -1,0 +1,175 @@
+@* Alta / modificación / consulta / baja de UN tipo de comprobante de pago asociado a un tipo
+   de movimiento (LOGISTICA.TIPOS_MOVIMIENTO_TIPOS_COMPROBATE_PAGO).
+
+   Mismo molde que TiposOperacionTiposComprobantePagoDialog, que resuelve el caso gemelo del
+   lado comercial. La diferencia es que acá la fila tiene un dato propio además de la clave
+   —el control de correlativo— así que la modificación existe y va por PUT: el SP de alta
+   rechaza una clave repetida. *@
+@using ComprobanteVinculoModel = KONSolutions.Shared.Models.Logistica.TiposMovimientoTiposComprobantePago
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@DesComprobanteTexto" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            <MudTextField Value="@TipoMovimientoTexto" Label="Tipo de Movimiento"
+                          Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+
+            @* El código sólo se elige al asociar: después es clave, y cambiarlo sería otra
+               fila. En modificar se muestra como texto para que se vea cuál es. *@
+            @if (_esNuevo)
+            {
+                <AriaCombo TItem="ComboboxItem" Items="_disponibles"
+                           TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                           @bind-Value="_model.COD_TIPO_COMPROBANTE_PAGO"
+                           Label="Tipo de Comprobante de Pago" Disabled="_readonly" />
+            }
+            else
+            {
+                <MudTextField Value="@DesComprobanteTexto" Label="Tipo de Comprobante de Pago"
+                              Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+            }
+
+            <div class="pet-grupo-box mb-3">
+                <div class="d-flex align-center gap-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Numbers" Size="Size.Small" Style="opacity:.6;" />
+                    <MudText Typo="Typo.body2">Controla Correlativo</MudText>
+                    @* La columna es un entero NOT NULL con prefijo FLG_: se maneja como
+                       interruptor 1/0, igual que el resto de los FLG_ enteros de la base. *@
+                    <MudSwitch T="bool" Value="@(_model.FLG_CONTROL_CORRELATIVO == 1)"
+                               ValueChanged="@(v => _model.FLG_CONTROL_CORRELATIVO = v ? 1 : 0)"
+                               Color="Color.Primary" Disabled="_readonly" />
+                </div>
+            </div>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public ComprobanteVinculoModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string CodClaseMovimiento { get; set; } = "";
+    [Parameter] public string CodTipoMovimiento { get; set; } = "";
+    [Parameter] public string DesTipoMovimiento { get; set; } = "";
+
+    /// <summary>Los que el tipo de movimiento ya tiene. Se sacan del combo de alta: el SP de
+    /// INSERT los rechaza igual, pero mejor no ofrecer lo que va a fallar.</summary>
+    [Parameter] public IEnumerable<string> YaAsociados { get; set; } = Array.Empty<string>();
+
+    private ComprobanteVinculoModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _tiposComprobantePago = new();
+    private List<ComboboxItem> _disponibles => _tiposComprobantePago
+        .Where(t => !YaAsociados.Contains(t.Id, StringComparer.OrdinalIgnoreCase))
+        .ToList();
+
+    private string TipoMovimientoTexto => string.IsNullOrWhiteSpace(DesTipoMovimiento)
+        ? CodTipoMovimiento : $"{CodTipoMovimiento} - {DesTipoMovimiento}";
+
+    private string DesComprobanteTexto
+    {
+        get
+        {
+            var cod = _model.COD_TIPO_COMPROBANTE_PAGO;
+            if (string.IsNullOrEmpty(cod)) return "";
+            // La descripción del maestro primero; si el combo no cargó, la que trae la propia
+            // fila del SHOWALL. La fila ya sabe cómo se llama: no tiene por qué quedar en
+            // blanco porque el catálogo falló.
+            var match = _tiposComprobantePago.FirstOrDefault(t => t.Id == cod);
+            if (match is not null) return $"{match.Id} - {match.Texto}";
+            return string.IsNullOrWhiteSpace(_model.DES_TIPO_COMPROBANTE_PAGO)
+                ? cod : $"{cod} - {_model.DES_TIPO_COMPROBANTE_PAGO}";
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else
+        {
+            _model.COD_CLASE_MOVIMIENTO = CodClaseMovimiento;
+            _model.COD_TIPO_MOVIMIENTO  = CodTipoMovimiento;
+        }
+    }
+
+    private void MapearDesdeModelo(ComprobanteVinculoModel m)
+    {
+        _model.COD_CLASE_MOVIMIENTO       = m.COD_CLASE_MOVIMIENTO;
+        _model.COD_TIPO_MOVIMIENTO        = m.COD_TIPO_MOVIMIENTO;
+        _model.COD_TIPO_COMPROBANTE_PAGO  = m.COD_TIPO_COMPROBANTE_PAGO;
+        _model.FLG_CONTROL_CORRELATIVO    = m.FLG_CONTROL_CORRELATIVO;
+        _model.DES_TIPO_COMPROBANTE_PAGO  = m.DES_TIPO_COMPROBANTE_PAGO;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!_esNuevo && Item is not null)
+        {
+            var fresco = await Http.SafeGetAsync<ComprobanteVinculoModel>(
+                $"{LogisticaRoute.TiposMovimientoTiposComprobantePago}/{Uri.EscapeDataString(_model.COD_CLASE_MOVIMIENTO)}/{Uri.EscapeDataString(_model.COD_TIPO_MOVIMIENTO)}/{Uri.EscapeDataString(_model.COD_TIPO_COMPROBANTE_PAGO)}");
+            if (fresco is not null) MapearDesdeModelo(fresco);
+        }
+
+        _tiposComprobantePago = await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.TiposComprobantesPagoCombobox) ?? new();
+    }
+
+    private async Task Submit()
+    {
+        var ruta = LogisticaRoute.TiposMovimientoTiposComprobantePago;
+
+        if (Modo == CrudModo.Delete)
+        {
+            _saving = true;
+            var rd = await Http.DeleteAsync(
+                $"{ruta}/{Uri.EscapeDataString(_model.COD_CLASE_MOVIMIENTO)}/{Uri.EscapeDataString(_model.COD_TIPO_MOVIMIENTO)}/{Uri.EscapeDataString(_model.COD_TIPO_COMPROBANTE_PAGO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposMovimientoTiposComprobantePagoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_model.COD_TIPO_COMPROBANTE_PAGO))
+        {
+            Snackbar.Add("Elegí el tipo de comprobante de pago.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        var dto = new
+        {
+            _model.COD_CLASE_MOVIMIENTO,
+            _model.COD_TIPO_MOVIMIENTO,
+            _model.COD_TIPO_COMPROBANTE_PAGO,
+            _model.FLG_CONTROL_CORRELATIVO,
+        };
+        // POST para asociar, PUT para modificar: el SP de alta rechaza una clave existente.
+        var resp = await Http.GuardarAsync(ruta, dto, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Asociado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposMovimientoTiposComprobantePagoDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,74 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Material del plan" : $"Material · {Item.DES_PRODUCTO}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="_productos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_producto" ValueChanged="@(v => _producto = v)" Label="Producto" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fases" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" />
+            </MudItem>
+            <MudItem xs="6"><MudNumericField T="decimal?" @bind-Value="_can" Label="Cantidad programada" Variant="Variant.Outlined" Min="0m" /></MudItem>
+            <MudItem xs="6"><MudNumericField T="decimal?" @bind-Value="_costo" Label="Costo unitario estimado" Variant="Variant.Outlined" Min="0m" Format="0.####" /></MudItem>
+            <MudItem xs="12"><MudTextField T="string" @bind-Value="_obs" Label="Observación" Variant="Variant.Outlined" MaxLength="200" /></MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteMaterial? Item { get; set; }
+    [Parameter] public List<ExpedienteMaterial> Plan { get; set; } = new();
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+
+    private List<ComboboxItem> _productos = new(), _fases = new();
+    private string? _producto, _fase, _tarea;
+    private decimal? _can, _costo;
+    private string _obs = "";
+    private bool _guardando;
+
+    private List<ComboboxItem> TareasDeFase => Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _productos = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.ProductosCombobox) ?? new();
+        _fases = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        if (Item is null) return;
+        _producto = Item.COD_PRODUCTO; _fase = Item.COD_FASE?.ToString(); _tarea = Item.COD_TAREA?.ToString(); _can = Item.CAN_PROGRAMADA; _costo = Item.VAL_COSTO_UNITARIO; _obs = Item.DES_OBSERVACION ?? "";
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_producto)) { Snackbar.Add("Elige el producto.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        var sec = esNuevo ? (Plan.Count == 0 ? 1 : Plan.Max(m => m.NUM_SECUENCIA) + 1) : Item!.NUM_SECUENCIA;
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, NUM_SECUENCIA = sec, COD_FASE = int.TryParse(_fase, out var f) ? (int?)f : null, COD_TAREA = int.TryParse(_tarea, out var t) ? (int?)t : null,
+            COD_PRODUCTO = _producto, CAN_PROGRAMADA = _can, VAL_COSTO_UNITARIO = _costo, DES_OBSERVACION = string.IsNullOrWhiteSpace(_obs) ? null : _obs.Trim()
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Materiales, cuerpo, esNuevo);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el material.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

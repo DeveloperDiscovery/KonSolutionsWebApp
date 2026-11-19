@@ -1,0 +1,289 @@
+@* Gradacion de tallas de un molde (script SQL 117, API disenos-tizado/gradacion).
+   Se parte de un molde BASE (con su talla) y se generan los de otras tallas: por INCREMENTOS del largo y del ancho de la pieza, o por reglas por PUNTO (un
+   desplazamiento dx, dy por cada vertice, como las reglas de gradacion de los CAD de patronaje). "Serie rapida" arma las filas de una lista de tallas con un
+   incremento por talla. "Vista previa" dibuja la base y las tallas encimadas; "Generar tallas" crea (o actualiza) el molde de cada talla con el mismo nombre,
+   cantidades y giros del base, y guarda las reglas para poder verlas y regenerar. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Tizado
+@using Poligono = KONSolutions.Shared.Tizado.Poligono
+@using Punto = KONSolutions.Shared.Tizado.Punto
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Globalization
+@using System.Net.Http.Json
+@using System.Text.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<style>
+    .gr-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .gr-tabla th, .gr-tabla td { padding: 4px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .gr-tabla th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+</style>
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.Straighten" />
+            <MudText Typo="Typo.h6">Gradar · @NombreMolde</MudText>
+            <MudChip T="string" Size="Size.Small" data-chip="base">Talla base: @TallaBase</MudChip>
+            <MudChip T="string" Size="Size.Small" data-chip="medidas">@Medidas(_base)</MudChip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+
+        <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="serie">
+            <MudText Typo="Typo.caption">Serie rápida:</MudText>
+            <MudTextField T="string" @bind-Value="_serieTallas" Label="Tallas, de menor a mayor (incluye la base)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:300px;" data-campo="serie-tallas" />
+            <MudNumericField T="double" @bind-Value="_pasoX" Label="Largo por talla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="paso-x" />
+            <MudNumericField T="double" @bind-Value="_pasoY" Label="Ancho por talla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="paso-y" />
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" OnClick="ArmarSerie" data-accion="serie">Armar filas</MudButton>
+        </div>
+
+        <div style="overflow-x:auto;">
+            <table class="gr-tabla" data-tabla="tallas">
+                <thead><tr><th>Talla</th><th>Largo (mm)</th><th>Ancho (mm)</th><th>Por punto</th><th>Resultado</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var f in _filas)
+                    {
+                        <tr data-talla="@f.Talla">
+                            <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v ?? ""; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:80px;" data-campo="talla" /></td>
+                            <td><MudNumericField T="double" Value="f.IncX" ValueChanged="@(v => CambiaInc(f, v, f.IncY))" Variant="Variant.Text" Margin="Margin.Dense" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-x" /></td>
+                            <td><MudNumericField T="double" Value="f.IncY" ValueChanged="@(v => CambiaInc(f, f.IncX, v))" Variant="Variant.Text" Margin="Margin.Dense" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-y" /></td>
+                            <td><MudSwitch T="bool" Value="f.PorPunto" ValueChanged="@(v => PorPunto(f, v))" Color="Color.Primary" data-campo="por-punto" /></td>
+                            <td class="mono">@ResultadoDe(f)</td>
+                            <td><MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => Quitar(f))" data-accion="quitar-talla" /></td>
+                        </tr>
+                        @if (f.PorPunto)
+                        {
+                            <tr data-puntos="@f.Talla">
+                                <td colspan="6">
+                                    <table class="gr-tabla">
+                                        <thead><tr><th>Punto</th><th>X base</th><th>Y base</th><th>dx (mm)</th><th>dy (mm)</th></tr></thead>
+                                        <tbody>
+                                            @for (int i = 0; i < f.Deltas.Count; i++)
+                                            {
+                                                var idx = i;
+                                                <tr data-punto="@(idx + 1)">
+                                                    <td>@(idx + 1)</td>
+                                                    <td class="mono">@Num(_puntos[idx].X)</td>
+                                                    <td class="mono">@Num(_puntos[idx].Y)</td>
+                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][0]" ValueChanged="@(v => { f.Deltas[idx][0] = v; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:100px;" data-campo="dx" /></td>
+                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][1]" ValueChanged="@(v => { f.Deltas[idx][1] = v; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:100px;" data-campo="dy" /></td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="d-flex align-center gap-2 mt-2 mb-2">
+            <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarFila" data-accion="agregar-talla">Agregar talla</MudButton>
+        </div>
+
+        <div class="d-flex align-center gap-2 flex-wrap mb-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Visibility" Disabled="@(_trabajando || _filas.Count == 0)" OnClick="PrevisualizarAsync" data-accion="previa">Vista previa</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_trabajando || _filas.Count == 0)" OnClick="GenerarAsync" data-accion="generar">Generar tallas</MudButton>
+            @if (_previa is not null) { <MudText Typo="Typo.caption" data-aviso="previa-vigente">Vista previa de @_previa.Tallas.Count talla(s).</MudText> }
+        </div>
+
+        @if (_previa is not null)
+        {
+            <div data-zona="previa" style="background:#fff;border:1px solid var(--mud-palette-lines-default);padding:6px;">@((MarkupString)Dibujo())</div>
+            <div style="overflow-x:auto;" class="mt-2">
+                <table class="gr-tabla" data-tabla="previa">
+                    <thead><tr><th>Talla</th><th>Largo</th><th>Ancho</th><th>Área (cm²)</th><th>Δ área</th></tr></thead>
+                    <tbody>
+                        <tr data-previa="@TallaBase"><td>@TallaBase (base)</td><td class="mono">@Num(_base.Largo)</td><td class="mono">@Num(_base.Alto)</td><td class="mono">@Num(_base.Area / 100)</td><td></td></tr>
+                        @foreach (var t in _previa.Tallas)
+                        {
+                            <tr data-previa="@t.DES_TALLA">
+                                <td>@t.DES_TALLA</td><td class="mono">@Num((double)t.VAL_LARGO)</td><td class="mono">@Num((double)t.VAL_ALTO)</td><td class="mono">@Num((double)t.VAL_AREA / 100)</td>
+                                <td class="mono">@(_base.Area > 0 ? (((double)t.VAL_AREA / _base.Area) - 1).ToString("+0.0%;-0.0%;0.0%", CultureInfo.CurrentCulture) : "")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cerrar" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    /// <summary>Molde base.</summary>
+    [Parameter] public int NumSecuencia { get; set; }
+    [Parameter] public string NombreMolde { get; set; } = "";
+    [Parameter] public string TallaBase { get; set; } = "";
+    [Parameter] public string Contorno { get; set; } = "";
+
+    private class Fila
+    {
+        public string Talla { get; set; } = "";
+        public double IncX { get; set; }
+        public double IncY { get; set; }
+        public bool PorPunto { get; set; }
+        public List<double[]> Deltas { get; set; } = new();
+    }
+
+    private readonly List<Fila> _filas = new();
+    private List<Punto> _puntos = new();
+    private (double Largo, double Alto, double Area) _base;
+    private DisenosGradacionPrevia? _previa;
+    private bool _cargando, _trabajando;
+    private string _error = "";
+    private string _serieTallas = "";
+    private double _pasoX = 30, _pasoY = 20;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var poli = LeerContorno(Contorno);
+        if (poli is null) { _error = "El contorno del molde base no es válido."; return; }
+        _puntos = poli.Puntos.ToList(); _base = (poli.Ancho, poli.Alto, poli.Area);
+        _cargando = true;
+        try
+        {
+            var resp = await Http.GetAsync(IngenieriaRoute.DisenosTizadoGradacion(CodDiseno, NumVersion));
+            ApiResponse<List<DisenosGradacionRegla>>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<DisenosGradacionRegla>>>(); } catch (JsonException) { }
+            if (!resp.IsSuccessStatusCode || r is null || !r.Success) _error = !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : $"No se pudieron leer las reglas (error {(int)resp.StatusCode}).";
+            else
+                foreach (var g in (r.Data ?? new()).Where(x => x.NUM_SECUENCIA == NumSecuencia).OrderBy(x => x.DES_TALLA, StringComparer.OrdinalIgnoreCase))
+                {
+                    var f = new Fila { Talla = g.DES_TALLA, IncX = (double)(g.VAL_INC_X ?? 0), IncY = (double)(g.VAL_INC_Y ?? 0) };
+                    if (g.VAL_INC_X is null && g.VAL_INC_Y is null && !string.IsNullOrEmpty(g.DES_DELTAS))
+                    {
+                        try { f.Deltas = JsonSerializer.Deserialize<List<double[]>>(g.DES_DELTAS) ?? new(); f.PorPunto = f.Deltas.Count == _puntos.Count; } catch (JsonException) { }
+                    }
+                    _filas.Add(f);
+                }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        _cargando = false;
+    }
+
+    /// <summary>"x,y x,y ..." -> poligono (nulo si no se puede leer).</summary>
+    private static Poligono? LeerContorno(string? t)
+    {
+        var pts = new List<Punto>();
+        foreach (var tok in (t ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var xy = tok.Split(',');
+            if (xy.Length != 2 || !double.TryParse(xy[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) || !double.TryParse(xy[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) return null;
+            pts.Add(new Punto(x, y));
+        }
+        var p = new Poligono(pts); return p.EsValido ? p : null;
+    }
+
+    private static string Num(double d) => d.ToString("0.##", CultureInfo.CurrentCulture);
+    private static string Medidas((double Largo, double Alto, double Area) b) => $"{Num(b.Largo)} × {Num(b.Alto)} mm";
+
+    private void Invalidar() { _previa = null; }
+
+    private void CambiaInc(Fila f, double x, double y) { f.IncX = x; f.IncY = y; Invalidar(); }
+
+    private void PorPunto(Fila f, bool v)
+    {
+        f.PorPunto = v; Invalidar();
+        if (v && f.Deltas.Count != _puntos.Count)
+        {
+            var poli = LeerContorno(Contorno);
+            f.Deltas = poli is null ? new() : Gradacion.DeltasDesdeIncrementos(poli, f.IncX, f.IncY).Select(d => new[] { d.Dx, d.Dy }).ToList();
+        }
+    }
+
+    private void AgregarFila() { _filas.Add(new Fila()); Invalidar(); }
+    private void Quitar(Fila f) { _filas.Remove(f); Invalidar(); }
+
+    /// <summary>Serie rapida: las tallas van de menor a mayor e incluyen la base; cada paso suma el incremento (la base vale 0 y las menores, negativo).</summary>
+    private void ArmarSerie()
+    {
+        var tallas = (_serieTallas ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        int ib = tallas.FindIndex(t => t.Equals(TallaBase, StringComparison.OrdinalIgnoreCase));
+        if (tallas.Count < 2 || ib < 0) { Snackbar.Add($"Escribe las tallas de menor a mayor incluyendo la base ({TallaBase}). Ej.: S, M, L, XL.", Severity.Warning); return; }
+        for (int i = 0; i < tallas.Count; i++)
+        {
+            if (i == ib) continue;
+            var existente = _filas.FirstOrDefault(f => f.Talla.Equals(tallas[i], StringComparison.OrdinalIgnoreCase));
+            var f2 = existente ?? new Fila { Talla = tallas[i] };
+            f2.PorPunto = false; f2.Deltas = new(); f2.IncX = _pasoX * (i - ib); f2.IncY = _pasoY * (i - ib);
+            if (existente is null) _filas.Add(f2);
+        }
+        Invalidar();
+    }
+
+    private string ResultadoDe(Fila f) => f.PorPunto ? "por punto" : $"{Num(_base.Largo + f.IncX)} × {Num(_base.Alto + f.IncY)}";
+
+    private DisenosGradacionDto Dto() => new()
+    {
+        COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, NUM_SECUENCIA = NumSecuencia,
+        Tallas = _filas.Select(f => f.PorPunto
+            ? new DisenosGradacionTalla { DES_TALLA = f.Talla.Trim(), DELTAS = f.Deltas.Select(d => new[] { d[0], d[1] }).ToList() }
+            : new DisenosGradacionTalla { DES_TALLA = f.Talla.Trim(), VAL_INC_X = f.IncX, VAL_INC_Y = f.IncY }).ToList()
+    };
+
+    private async Task<(bool Ok, string Mensaje, T? Data)> PostAsync<T>(string url, object dto)
+    {
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(url, dto);
+            ApiResponse<T>? body = null;
+            try { body = await resp.Content.ReadFromJsonAsync<ApiResponse<T>>(); } catch { }
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success) return (false, string.IsNullOrWhiteSpace(body?.Message) ? $"Error {(int)resp.StatusCode}" : body!.Message, default);
+            return (true, body.Message ?? "", body.Data);
+        }
+        catch (Exception ex) { return (false, ex.Message, default); }
+    }
+
+    private async Task PrevisualizarAsync()
+    {
+        if (_trabajando) return;
+        _trabajando = true; _error = ""; _previa = null;
+        var r = await PostAsync<DisenosGradacionPrevia>(IngenieriaRoute.DisenosTizadoGradacionPrevia, Dto());
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; return; }
+        _previa = r.Data;
+    }
+
+    private async Task GenerarAsync()
+    {
+        if (_trabajando) return;
+        _trabajando = true; _error = "";
+        var r = await PostAsync<DisenosGradacionResultado>(IngenieriaRoute.DisenosTizadoGradacionGenerar, Dto());
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        Snackbar.Add($"Tallas generadas: {r.Data!.CREADOS} nueva(s) y {r.Data.ACTUALIZADOS} actualizada(s).", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+
+    /// <summary>La base y las tallas encimadas (todas con su esquina en el origen), solo contorno.</summary>
+    private string Dibujo()
+    {
+        if (_previa is null) return "";
+        var contornos = new List<(string Etiqueta, string Pts, string Color)> { (TallaBase, Normalizar(Contorno), "#555") };
+        var paleta = new[] { "#c0392b", "#2980b9", "#27ae60", "#8e44ad", "#d35400", "#16a085" };
+        int k = 0; foreach (var t in _previa.Tallas) contornos.Add((t.DES_TALLA, t.DES_CONTORNO, paleta[k++ % paleta.Length]));
+        double w = 1, h = 1;
+        foreach (var c in contornos) { var p = LeerContorno(c.Pts); if (p is null) continue; w = Math.Max(w, p.Limites.MaxX); h = Math.Max(h, p.Limites.MaxY); }
+        var pad = Math.Max(w, h) * 0.04; string F(double d) => d.ToString("0.##", CultureInfo.InvariantCulture);
+        var sb = new System.Text.StringBuilder($"<svg viewBox=\"{F(-pad)} {F(-pad)} {F(w + 2 * pad)} {F(h + 2 * pad)}\" width=\"100%\" height=\"260\" preserveAspectRatio=\"xMidYMid meet\">");
+        foreach (var c in contornos) sb.Append($"<polygon points=\"{c.Pts}\" fill=\"none\" stroke=\"{c.Color}\" stroke-width=\"{F(Math.Max(w, h) / 250)}\" data-talla=\"{System.Net.WebUtility.HtmlEncode(c.Etiqueta)}\"><title>{System.Net.WebUtility.HtmlEncode(c.Etiqueta)}</title></polygon>");
+        sb.Append("</svg>");
+        return sb.ToString();
+    }
+
+    private static string Normalizar(string contorno) { var p = LeerContorno(contorno); return p is null ? "" : p.AlOrigen().ATexto(); }
+
+    private void Cerrar() => MudDialog.Close(DialogResult.Cancel());
+}

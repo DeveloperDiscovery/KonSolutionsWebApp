@@ -1,0 +1,111 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nuevo documento de compromiso / aceptación" : $"Documento {Item.NUM_SECUENCIA}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="6">
+                <AriaCombo TItem="ComboboxItem" Items="Tipos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_tipo" Label="Tipo de documento" Obligatorio="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField T="string" @bind-Value="_des" Label="Descripción (opcional)" Variant="Variant.Outlined" MaxLength="100" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fases" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_tarea" Label="Etapa (tarea)" />
+            </MudItem>
+            <MudItem xs="12">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <MudFileUpload T="IBrowserFile" FilesChanged="@(f => _archivo = f)" Accept="*/*">
+                        <ActivatorContent><MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.UploadFile">@(_archivo is null ? "Elegir archivo" : "Cambiar archivo")</MudButton></ActivatorContent>
+                    </MudFileUpload>
+                    <span class="mono" style="font-size:.8rem;opacity:.8;">@(_archivo?.Name ?? (Item?.NUM_SECUENCIA_ARCHIVO is not null ? "se conserva el archivo actual (un archivo nuevo reinicia la aprobación)" : "sin archivo"))</span>
+                </div>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_resp" Label="Responsables (uno o más)" Variant="Variant.Outlined" Required="true" SelectAll="false" Dense="true">
+                    @foreach (var e in Entidades) { <MudSelectItem T="string" Value="@e.Id">@e.Texto</MudSelectItem> }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_apr" Label="Aprobadores (uno o más)" Variant="Variant.Outlined" Required="true" SelectAll="false" Dense="true">
+                    @foreach (var e in Entidades) { <MudSelectItem T="string" Value="@e.Id">@e.Texto</MudSelectItem> }
+                </MudSelect>
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteCompromiso? Item { get; set; }
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Tipos { get; set; } = new();
+
+    private string? _tipo, _fase, _tarea, _des;
+    private IBrowserFile? _archivo;
+    private IEnumerable<string> _resp = new HashSet<string>(), _apr = new HashSet<string>();
+    private List<ComboboxItem> _fases = new();
+    private bool _guardando;
+
+    private List<ComboboxItem> TareasDeFase => Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fases = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        if (Item is null) return;
+        _tipo = Item.COD_TIPO_DOCUMENTO_COMPROMISO; _des = Item.DES_DOCUMENTO; _fase = Item.COD_FASE?.ToString(); _tarea = Item.COD_TAREA?.ToString();
+        var personas = await Http.SafeGetAsync<List<ExpedienteCompromisoPersona>>(ApiRoutes.Proyectos.Exp(NumProyecto, $"compromisos/{Item.NUM_SECUENCIA}/personas")) ?? new();
+        _resp = personas.Where(p => p.COD_FUNCION_COMPROMISO == "RES").Select(p => p.COD_ENTIDAD.ToString("0")).ToHashSet();
+        _apr = personas.Where(p => p.COD_FUNCION_COMPROMISO == "APR").Select(p => p.COD_ENTIDAD.ToString("0")).ToHashSet();
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_tipo)) { Snackbar.Add("Elige el tipo de documento.", Severity.Warning); return; }
+        if (!_resp.Any()) { Snackbar.Add("Indica al menos un responsable.", Severity.Warning); return; }
+        if (!_apr.Any()) { Snackbar.Add("Indica al menos un aprobador.", Severity.Warning); return; }
+        _guardando = true;
+        try
+        {
+            int? secArchivo = null;
+            if (_archivo is not null)
+            {
+                using var contenido = new MultipartFormDataContent();
+                await using var stream = _archivo.OpenReadStream(50L * 1024 * 1024);
+                contenido.Add(new StreamContent(stream), "archivo", _archivo.Name);
+                if (int.TryParse(_fase, out var f)) contenido.Add(new StringContent(f.ToString()), "codFase");
+                if (int.TryParse(_tarea, out var t)) contenido.Add(new StringContent(t.ToString()), "codTarea");
+                var resp = await Http.PostAsync(ApiRoutes.Proyectos.Exp(NumProyecto, "archivos"), contenido);
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<int>>();
+                if (r is not { Success: true }) { Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? $"No se pudo subir el archivo (HTTP {(int)resp.StatusCode})." : r!.Message, Severity.Warning); return; }
+                secArchivo = r.Data;
+            }
+            var cuerpo = new
+            {
+                NumSecuencia = Item?.NUM_SECUENCIA, CodTipoDocumento = _tipo, CodFase = int.TryParse(_fase, out var fa) ? (int?)fa : null, CodTarea = int.TryParse(_tarea, out var ta) ? (int?)ta : null,
+                DesDocumento = _des, NumSecuenciaArchivo = secArchivo,
+                Responsables = _resp.Select(x => decimal.Parse(x)).ToList(), Aprobadores = _apr.Select(x => decimal.Parse(x)).ToList()
+            };
+            var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, "compromisos"), cuerpo, Item is null);
+            if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el documento.", Severity.Warning); return; }
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoCompromisoDialog), nameof(Guardar)); Snackbar.Add("No se pudo grabar. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _guardando = false; }
+    }
+}

@@ -1,0 +1,33 @@
+@using KONSolutions.Shared.Models.Reportes
+
+@* REPORTEADOR · EL REPORTE DE UN BOTÓN, EN UN DIÁLOGO
+
+   El mismo editor de Reportes en botones, para abrirlo desde otra pantalla (el panel de botones del diálogo de la
+   opción). Al grabar o quitar el reporte se cierra con Ok(true) para que quien lo abrió vuelva a leer; con Cerrar,
+   Cancel. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Print" />
+            <MudText Typo="Typo.h6">Reporte del botón</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="border:1px solid var(--line,#cfd8dc);border-radius:8px;overflow:hidden;">
+            <BotonReporteEditor CodAplicacion="@CodAplicacion" CodOpcion="@CodOpcion" CodBoton="@CodBoton" OnCambio="Cambio" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Close" OnClick="@(() => MudDialog.Cancel())">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodBoton { get; set; } = "";
+
+    private void Cambio() => MudDialog.Close(DialogResult.Ok(true));
+}

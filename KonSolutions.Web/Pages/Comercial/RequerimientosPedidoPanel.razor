@@ -1,0 +1,689 @@
+@* Ficha "Requerimientos" del documento de Pedido Comercial.
+
+   Arriba los requerimientos de compra registrados; abajo las líneas de los que están
+   marcados. Marcar un requerimiento lo vincula al pedido (tabla de cabecera). El botón
+   "Incorporar al pedido" toma las líneas marcadas, las acumula por producto + unidad, y
+   se las pasa al documento para que cree o sume las líneas del pedido; después graba la
+   trazabilidad, una fila por cada línea de requerimiento.
+
+   Por qué agrupa por producto Y unidad: 10 UNIDAD y 2 CAJA del mismo artículo no se
+   pueden sumar sin factor de conversión, y sumarlos daría una cantidad falsa. Si aparece
+   el mismo producto en dos unidades, entran como dos líneas. *@
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="d-flex flex-column gap-3">
+
+    @if (NumPedidoComercial is null or 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">
+            Graba la cabecera del pedido para poder vincular requerimientos.
+        </MudAlert>
+    }
+    else
+    {
+        <div class="d-flex align-center justify-space-between gap-2 flex-wrap">
+            <MudText Typo="Typo.subtitle2">Requerimientos de compra registrados</MudText>
+            <MudButton StartIcon="@Icons.Material.Filled.Refresh" Size="Size.Small" Variant="Variant.Text"
+                       Disabled="_cargando" OnClick="CargarAsync">Actualizar</MudButton>
+        </div>
+
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+
+        @* Alto fijo con scroll propio: la lista de requerimientos registrados puede ser
+           larga y no debe empujar la grilla de detalle fuera de la pantalla. El encabezado
+           queda pegado arriba para no perder los títulos al bajar. *@
+        <div style="max-height:960px;overflow-y:auto;border:1px solid var(--line);border-radius:4px;">
+        <table class="tabla-simple-editable" style="width:100%;">
+            <thead style="position:sticky;top:0;z-index:2;">
+                <tr>
+                    <th style="width:52px;">
+                        @* Marca o desmarca todos. Sin tri-estado a propósito: con tres estados
+                           el primer click sobre una lista a medias podía no hacer lo esperado. *@
+                        <MudCheckBox T="bool" Value="@TodosRequerimientosMarcados" Dense="true"
+                                     Disabled="@(SoloLectura || _trabajando || _requerimientos.Count == 0)"
+                                     ValueChanged="@(v => MarcarTodosRequerimientosAsync(v))" />
+                    </th>
+                    <th style="width:90px;">N°</th>
+                    <th>Descripción</th>
+                    <th style="width:130px;">Fecha</th>
+                    <th style="width:150px;">Tipo</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_requerimientos.Count == 0 && !_cargando)
+                {
+                    <tr><td colspan="5" class="mono" style="opacity:.5;">No hay requerimientos de compra registrados.</td></tr>
+                }
+                @foreach (var r in _requerimientos)
+                {
+                    <tr>
+                        <td>
+                            <MudCheckBox T="bool" Value="@r.FLG_SECCION" Dense="true" Disabled="@(SoloLectura || _trabajando)"
+                                         ValueChanged="@(v => AlternarRequerimientoAsync(r, v))" />
+                        </td>
+                        <td class="mono">@r.NUM_REQUERIMIENTO_STOCK</td>
+                        <td>@r.DES_REQUERIMIENTO_STOCK</td>
+                        <td class="mono">@(r.FEC_REQUERIMIENTO_STOCK?.ToString("dd/MM/yyyy"))</td>
+                        <td>@r.DES_TIPO_REQUERIMIENTO</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+
+        <div class="d-flex align-center justify-space-between gap-2 flex-wrap mt-2">
+            <MudText Typo="Typo.subtitle2">Detalle de los requerimientos marcados</MudText>
+            <MudButton StartIcon="@Icons.Material.Filled.PlaylistAdd" Variant="Variant.Filled" Size="Size.Small"
+                       Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                       Disabled="@(SoloLectura || _trabajando || !HayQueIncorporar)"
+                       OnClick="IncorporarAsync">Incorporar al pedido</MudButton>
+            @* Retira del pedido TODAS las líneas que entraron desde requerimientos y suelta los
+               requerimientos, para empezar de nuevo. *@
+            <MudButton StartIcon="@Icons.Material.Filled.Undo" Variant="Variant.Filled" Size="Size.Small"
+                       Style="@KONSolutions.Web.Services.EstilosBoton.Cancelar"
+                       Disabled="@(SoloLectura || _trabajando || OnRevertir is null || !HayQueRevertir)"
+                       Title="Quita del pedido todas las líneas generadas por requerimientos y desvincula los requerimientos"
+                       OnClick="RevertirAsync">Revertir</MudButton>
+        </div>
+
+        <table class="tabla-simple-editable" style="width:100%;">
+            <thead>
+                <tr>
+                    <th style="width:52px;">
+                        @* Sólo alcanza a las líneas que todavía se pueden incorporar: las ya
+                           incorporadas (tilde verde) no entran ni al marcar ni al desmarcar. Si
+                           no queda ninguna marcable el check va deshabilitado, y el tooltip dice
+                           por qué — antes quedaba muerto sin explicación. *@
+                        <MudTooltip Text="@(HayLineasMarcables ? "Marcar o desmarcar todas" : "Todas las líneas ya están incorporadas al pedido")">
+                            <MudCheckBox T="bool" Value="@TodasLineasMarcadas" Dense="true"
+                                         Disabled="@(SoloLectura || _trabajando || !HayLineasMarcables)"
+                                         ValueChanged="MarcarTodasLineas" />
+                        </MudTooltip>
+                    </th>
+                    <th style="width:80px;">Req.</th>
+                    <th style="width:70px;">Línea</th>
+                    <th>Producto</th>
+                    @* Desde que el detalle del requerimiento lleva proceso y orden de producción,
+                       el MISMO producto puede venir en varias líneas del mismo requerimiento, una
+                       por orden. Sin estas dos columnas se veían idénticas y sólo las distinguía
+                       el número de línea. *@
+                    <th style="width:160px;">Proceso</th>
+                    <th style="width:150px;">Orden prod.</th>
+                    <th style="width:120px;">Unidad</th>
+                    <th style="width:120px;text-align:right;">Cantidad Requerida</th>
+                    <th style="width:90px;text-align:right;">Factor</th>
+                    <th style="width:120px;text-align:right;">Cantidad Propia</th>
+                    <th style="width:120px;text-align:right;">Cantidad Proveedor</th>
+                    <th style="width:170px;">Tipo de precio</th>
+                    <th style="width:90px;">Moneda</th>
+                    <th style="width:140px;text-align:right;">Precio</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_lineasVisibles.Count == 0 && !_cargando)
+                {
+                    <tr><td colspan="14" class="mono" style="opacity:.5;">Marca un requerimiento para ver sus líneas.</td></tr>
+                }
+                @foreach (var d in _lineasVisibles)
+                {
+                    var k = ClaveLinea(d);
+                    <tr>
+                        <td>
+                            @if (d.FLG_SECCION_DETALLE)
+                            {
+                                @* Ya incorporada: el check queda marcado y desmarcarlo DESHACE el
+                                   vínculo con la línea del pedido. La línea del pedido no se toca:
+                                   puede haberse editado a mano, y borrarla es decisión aparte. *@
+                                <MudTooltip Text="Incorporada al pedido. Desmarca para deshacer el vínculo.">
+                                    <MudCheckBox T="bool" Value="true" Dense="true" Color="Color.Success"
+                                                 Disabled="@(SoloLectura || _trabajando)"
+                                                 ValueChanged="@(v => QuitarVinculoLineaAsync(d))" />
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                <MudCheckBox T="bool" Value="@_lineasMarcadas.Contains(k)" Dense="true"
+                                             Disabled="@(SoloLectura || _trabajando)"
+                                             ValueChanged="@(v => AlternarLinea(k, v))" />
+                            }
+                        </td>
+                        <td class="mono">@d.NUM_REQUERIMIENTO_STOCK</td>
+                        <td class="mono">@d.NUM_SECUENCIA</td>
+                        <td>@($"{d.COD_PRODUCTO} - {d.DES_PRODUCTO}")</td>
+                        <td>@(string.IsNullOrWhiteSpace(d.COD_PROCESO) ? "—" : $"{d.COD_PROCESO} - {d.DES_PROCESO}")</td>
+                        <td class="mono">@OrdenProduccionTexto(d)</td>
+                        <td>@d.COD_UNIDAD_MEDIDA</td>
+                        <td style="text-align:right;" class="mono">@(d.CAN_REQUERIDA?.ToString("N6"))</td>
+                        <td style="text-align:right;" class="mono">@(d.FAC_CONVERSION?.ToString("N4"))</td>
+                        @* Las dos que se graban al incorporar: Propia en CAN_PRODUCTO,
+                           Proveedor en CAN_PRODUCTO_ENTIDAD. *@
+                        <td style="text-align:right;" class="mono">@(d.CAN_PRODUCTO?.ToString("N6"))</td>
+                        <td style="text-align:right;" class="mono">@(d.CAN_PRODUCTO_ENTIDAD?.ToString("N6"))</td>
+                        @* Qué tipo de precio se aplicó: sale del que tiene configurado el tipo
+                           de operación del pedido. Sin esto el precio es un número sin origen. *@
+                        <td>@d.DES_TIPO_PRECIO</td>
+                        <td class="mono">@d.COD_MONEDA</td>
+                        <td style="text-align:right;" class="mono">
+                            @if (d.VAL_PRECIO_ENTIDAD is null)
+                            {
+                                @* Sin precio cargado para ese proveedor y producto: se avisa acá
+                                   y no en el resumen, para que se vea antes de incorporar. *@
+                                <MudTooltip Text="El proveedor no tiene precio cargado para este producto">
+                                    <span style="opacity:.5;">sin precio</span>
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                @d.VAL_PRECIO_ENTIDAD.Value.ToString("N6")
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string CodClaseOperacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodTipoOperacion { get; set; } = "";
+    [Parameter] public decimal? NumPedidoComercial { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+
+    /// <summary>El documento crea o acumula las líneas del pedido y devuelve, por cada
+    /// clave producto|unidad, la secuencia de la línea que quedó. Es un Func y no un
+    /// EventCallback porque hace falta el valor de vuelta para grabar la trazabilidad.</summary>
+    [Parameter] public Func<List<GrupoRequerimientoIncorporar>, Task<Dictionary<string, int>>>? OnIncorporar { get; set; }
+    /// <summary>Pide al documento que borre las líneas del pedido con esas secuencias (sin
+    /// confirmar: la confirmación ya la hizo este panel). Devuelve false si alguna falló.</summary>
+    [Parameter] public Func<IEnumerable<int>, Task<bool>>? OnRevertir { get; set; }
+
+    /// <summary>Para que el documento sepa que hay cambios sin grabar por otro lado.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    /// <summary>Se dispara cuando esta pantalla modificó algo que afecta a las líneas del
+    /// pedido — deshacer un vínculo, o desvincular un requerimiento (el SP de baja borra en
+    /// cascada). El documento lo usa para recargar su detalle.</summary>
+    [Parameter] public EventCallback OnPedidoCambiado { get; set; }
+
+    /// <summary>Se dispara al terminar de incorporar (con o sin fallas en la trazabilidad —
+    /// las líneas del pedido igual se crearon). La pantalla contenedora lo usa para volver
+    /// a la pestaña del documento y que el usuario vea de una las líneas recién agregadas,
+    /// en vez de quedarse mirando la de Requerimientos.</summary>
+    [Parameter] public EventCallback OnIncorporado { get; set; }
+
+    /// <summary>Refresco desde afuera: lo llama la pantalla cuando en el documento se borró
+    /// una línea, porque eso puede haber deshecho vínculos por cascada del SP.</summary>
+    public async Task RefrescarAsync()
+    {
+        await CargarAsync();
+        StateHasChanged();
+    }
+
+    private List<RequerimientoStockRegistrado> _requerimientos = new();
+    private List<RequerimientoStockDetalleRegistrado> _lineas = new();
+    private readonly HashSet<string> _lineasMarcadas = new();
+    private bool _cargando, _trabajando;
+
+    /// <summary>Número de pedido para armar una URL. Va con cultura invariante a propósito:
+    /// interpolar un decimal usa la cultura del navegador, y en es-PE el separador decimal es
+    /// la coma — "1,00" no matchea el segmento decimal de la ruta y la API responde 400 antes
+    /// de llegar al SP. Por eso el error salía sin número ni procedimiento.</summary>
+    private string PedidoUrl => (NumPedidoComercial ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>"orden / ítem / unidad" en una sola celda, que es como se lee de un vistazo.
+    /// Un cero no es una orden: la tabla guarda cero cuando la línea no viene de producción.</summary>
+    private static string OrdenProduccionTexto(RequerimientoStockDetalleRegistrado d)
+    {
+        if (d.NUM_ORDEN_PRODUCCION is not { } orden || orden == 0) return "—";
+        var texto = orden.ToString();
+        if (d.NUM_ORDEN_PRODUCCION_ITEM   is { } item   && item   != 0) texto += $" / {item}";
+        if (d.NUM_ORDEN_PRODUCCION_UNIDAD is { } unidad && unidad != 0) texto += $" / {unidad}";
+        return texto;
+    }
+
+    private static string ClaveLinea(RequerimientoStockDetalleRegistrado d)
+        => $"{d.NUM_REQUERIMIENTO_STOCK}|{d.NUM_SECUENCIA}";
+
+
+    /// <summary>Sólo se listan las líneas de los requerimientos marcados: si el
+    /// requerimiento no está vinculado al pedido, sus líneas no tienen dónde colgarse.</summary>
+    private List<RequerimientoStockDetalleRegistrado> _lineasVisibles => _lineas
+        .Where(d => _requerimientos.Any(r => r.FLG_SECCION && r.NUM_REQUERIMIENTO_STOCK == d.NUM_REQUERIMIENTO_STOCK))
+        .ToList();
+
+    /// <summary>El check de la cabecera se ve marcado sólo cuando lo están todos. Con la
+    /// lista a medias se ve vacío, y el click marca lo que falta.</summary>
+    private bool TodosRequerimientosMarcados =>
+        _requerimientos.Count > 0 && _requerimientos.All(r => r.FLG_SECCION);
+
+    /// <summary>Marca o desmarca todos. Va uno por uno y no en paralelo: cada uno es una
+    /// escritura en la base, y si alguna falla conviene que las demás ya estén hechas y no
+    /// a medio camino. Salta los que ya están como se los quiere dejar.</summary>
+    private async Task MarcarTodosRequerimientosAsync(bool marcar)
+    {
+        if (_trabajando || SoloLectura) return;
+        foreach (var r in _requerimientos.Where(x => x.FLG_SECCION != marcar).ToList())
+            await AlternarRequerimientoAsync(r, marcar);
+    }
+
+    private List<RequerimientoStockDetalleRegistrado> LineasMarcables =>
+        _lineasVisibles.Where(d => !d.FLG_SECCION_DETALLE).ToList();
+
+    private bool HayLineasMarcables => LineasMarcables.Count > 0;
+
+    private bool TodasLineasMarcadas
+    {
+        get
+        {
+            var marcables = LineasMarcables;
+            return marcables.Count > 0 && marcables.All(d => _lineasMarcadas.Contains(ClaveLinea(d)));
+        }
+    }
+
+    private void MarcarTodasLineas(bool marcar)
+    {
+        foreach (var d in LineasMarcables)
+        {
+            var k = ClaveLinea(d);
+            if (marcar) _lineasMarcadas.Add(k); else _lineasMarcadas.Remove(k);
+        }
+    }
+
+    private bool HayQueIncorporar => _lineasVisibles.Any(d => !d.FLG_SECCION_DETALLE && _lineasMarcadas.Contains(ClaveLinea(d)));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (NumPedidoComercial is null or 0) return;
+        if (_requerimientos.Count == 0 && !_cargando) await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        if (NumPedidoComercial is null or 0) return;
+        _cargando = true;
+        try
+        {
+            var baseUrl = ApiRoutes.Comercial.PedidosComercialesRequerimientos;
+            _requerimientos = await Http.SafeGetAsync<List<RequerimientoStockRegistrado>>(
+                $"{baseUrl}/registrados?numPedidoComercial={PedidoUrl}") ?? new();
+            _lineas = await Http.SafeGetAsync<List<RequerimientoStockDetalleRegistrado>>(
+                $"{baseUrl}/registrados-detalle?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion)}" +
+                $"&codTipoOperacion={Uri.EscapeDataString(CodTipoOperacion)}&numPedidoComercial={PedidoUrl}") ?? new();
+
+            // Se descartan las marcas de líneas que ya no están visibles, para no arrastrar
+            // selección de un requerimiento que se desvinculó.
+            var vivas = _lineasVisibles.Select(ClaveLinea).ToHashSet();
+            _lineasMarcadas.RemoveWhere(k => !vivas.Contains(k));
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Marcar/desmarcar el requerimiento graba o borra el vínculo de cabecera en
+    /// el momento: es la tabla de asignación, no hay nada más que confirmar.</summary>
+    private async Task AlternarRequerimientoAsync(RequerimientoStockRegistrado r, bool marcado)
+    {
+        if (_trabajando) return;
+        _trabajando = true;
+        try
+        {
+            var baseUrl = ApiRoutes.Comercial.PedidosComercialesRequerimientos;
+            HttpResponseMessage resp;
+
+            if (marcado)
+            {
+                resp = await Http.PostAsJsonAsync($"{baseUrl}/cabecera", new PedidoComercialRequerimientoStockDto
+                {
+                    COD_CLASE_OPERACION = CodClaseOperacion,
+                    COD_TIPO_OPERACION = CodTipoOperacion,
+                    NUM_PEDIDO_COMERCIAL = NumPedidoComercial ?? 0,
+                    NUM_REQUERIMIENTO_STOCK = r.NUM_REQUERIMIENTO_STOCK
+                });
+            }
+            else
+            {
+                resp = await Http.DeleteAsync(
+                    $"{baseUrl}/cabecera/{Uri.EscapeDataString(CodClaseOperacion)}/{Uri.EscapeDataString(CodTipoOperacion)}" +
+                    $"/{PedidoUrl}/{r.NUM_REQUERIMIENTO_STOCK}");
+            }
+
+            if (resp.IsSuccessStatusCode)
+            {
+                r.FLG_SECCION = marcado;
+                await OnCambio.InvokeAsync();
+                await CargarAsync();
+                // Desvincular arrastra los vínculos de detalle, así que el documento puede
+                // tener información vieja: se le pide que recargue sus líneas.
+                if (!marcado) await OnPedidoCambiado.InvokeAsync();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RequerimientosPedidoPanel),
+                    nameof(AlternarRequerimientoAsync),
+                    marcado ? "No se pudo vincular el requerimiento" : "No se pudo quitar el vínculo");
+            }
+        }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>Deshace el vínculo de una línea ya incorporada. Sólo borra el vínculo: la
+    /// línea del pedido queda como está, con su cantidad, porque pudo haberse ajustado a
+    /// mano después de incorporarla. Si además hay que sacarla del pedido, se borra desde
+    /// la ficha de líneas.</summary>
+    private async Task QuitarVinculoLineaAsync(RequerimientoStockDetalleRegistrado d)
+    {
+        if (_trabajando || SoloLectura) return;
+
+        if (d.NUM_SECUENCIA_PEDIDO is not int secuenciaPedido)
+        {
+            // Sin la secuencia del pedido no se puede armar la clave del vínculo. Pasa si el
+            // SP todavía no devuelve NUM_SECUENCIA_PEDIDO.
+            await ErrorDialogHelper.MostrarAvisoAsync(
+                "No se pudo identificar la línea del pedido a la que está vinculada. " +
+                "Actualiza la pantalla e inténtalo de nuevo.",
+                DialogService, nameof(RequerimientosPedidoPanel));
+            return;
+        }
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            "¿Deshacer el vínculo de esta línea con el pedido? La línea del pedido no se borra.",
+            yesText: "Deshacer", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        _trabajando = true;
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesRequerimientos}/detalle" +
+                      $"/{Uri.EscapeDataString(CodClaseOperacion)}/{Uri.EscapeDataString(CodTipoOperacion)}" +
+                      $"/{PedidoUrl}/{secuenciaPedido}/{d.NUM_REQUERIMIENTO_STOCK}/{d.NUM_SECUENCIA}";
+            var resp = await Http.DeleteAsync(url);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                await CargarAsync();
+                await OnCambio.InvokeAsync();
+                await OnPedidoCambiado.InvokeAsync();
+            }
+            else
+            {
+                // La URL queda en el log: un 400 de binding de ruta no trae ni procedimiento ni
+                // número de error, y el diálogo sale vacío.
+                await ErrorLog.TraceAsync($"DELETE vínculo de detalle falló ({(int)resp.StatusCode}): {url}");
+
+                // El SP responde "registro inexistente" cuando el vínculo ya no está, y eso pasa
+                // legítimamente: borrar la línea del pedido lo arrastra en cascada, y esta ficha
+                // pudo quedar con datos viejos. Antes de dar error se recarga y se comprueba: si
+                // la línea ya no figura incorporada, el objetivo está cumplido y no hay nada que
+                // avisar como falla.
+                await CargarAsync();
+                var sigueIncorporada = _lineas.Any(x =>
+                    x.NUM_REQUERIMIENTO_STOCK == d.NUM_REQUERIMIENTO_STOCK &&
+                    x.NUM_SECUENCIA == d.NUM_SECUENCIA &&
+                    x.FLG_SECCION_DETALLE);
+
+                if (!sigueIncorporada)
+                {
+                    await OnCambio.InvokeAsync();
+                    await OnPedidoCambiado.InvokeAsync();
+                    Snackbar.Add("El vínculo ya no existía. La pantalla quedó actualizada.", Severity.Info);
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                        nameof(RequerimientosPedidoPanel), nameof(QuitarVinculoLineaAsync),
+                        "No se pudo deshacer el vínculo");
+                }
+            }
+        }
+        finally { _trabajando = false; }
+    }
+
+    private void AlternarLinea(string clave, bool marcado)
+    {
+        if (marcado) _lineasMarcadas.Add(clave); else _lineasMarcadas.Remove(clave);
+    }
+
+    /// <summary>Hay algo que revertir: líneas del pedido que vinieron de requerimientos, o
+    /// requerimientos vinculados aunque todavía no se hayan incorporado líneas.</summary>
+    private bool HayQueRevertir => _lineas.Any(d => d.FLG_SECCION_DETALLE) || _requerimientos.Any(r => r.FLG_SECCION);
+
+    /// <summary>Reversión total: borra del pedido las líneas generadas por requerimientos (lo
+    /// que arrastra sus vínculos de detalle) y después suelta cada requerimiento vinculado.
+    /// Si la baja de alguna línea falla, se corta ahí y NO se sueltan los requerimientos:
+    /// dejaría líneas sin origen.</summary>
+    private async Task RevertirAsync()
+    {
+        if (_trabajando || SoloLectura || OnRevertir is null) return;
+
+        var secuencias = _lineas.Where(d => d.FLG_SECCION_DETALLE && d.NUM_SECUENCIA_PEDIDO is not null)
+                                .Select(d => d.NUM_SECUENCIA_PEDIDO!.Value).Distinct().ToList();
+
+        var ok = await DialogService.ShowMessageBox("Revertir",
+            $"Se van a quitar del pedido {secuencias.Count} línea(s) generadas por requerimientos y se desvincularán los requerimientos. ¿Continuar?",
+            yesText: "Revertir", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        _trabajando = true;
+        try
+        {
+            if (secuencias.Count > 0 && !await OnRevertir(secuencias)) return;
+
+            var baseUrl = ApiRoutes.Comercial.PedidosComercialesRequerimientos;
+            var fallidos = 0;
+            foreach (var r in _requerimientos.Where(x => x.FLG_SECCION).ToList())
+            {
+                var resp = await Http.DeleteAsync(
+                    $"{baseUrl}/cabecera/{Uri.EscapeDataString(CodClaseOperacion)}/{Uri.EscapeDataString(CodTipoOperacion)}" +
+                    $"/{PedidoUrl}/{r.NUM_REQUERIMIENTO_STOCK}");
+                if (!resp.IsSuccessStatusCode) fallidos++;
+            }
+
+            _lineasMarcadas.Clear();
+            await CargarAsync();
+            await OnCambio.InvokeAsync();
+            await OnPedidoCambiado.InvokeAsync();
+
+            if (fallidos == 0) Snackbar.Add("Pedido revertido: se quitaron las líneas de requerimientos.", Severity.Success);
+            else await ErrorDialogHelper.MostrarAvisoAsync($"Se quitaron las líneas, pero {fallidos} requerimiento(s) no se pudieron desvincular. Reintenta con Actualizar.",
+                                                           DialogService, nameof(RequerimientosPedidoPanel));
+        }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>Lee el motivo real del fallo (mensaje del SP / de la API) y lo agrega a la lista, con el
+    /// contexto de qué línea fue. Sin esto el aviso final sólo decía "N vínculos no se pudieron grabar".</summary>
+    private static async Task AnotarMotivoAsync(List<string> motivos, HttpResponseMessage resp, string contexto)
+    {
+        string texto;
+        try
+        {
+            var cuerpo = await resp.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(cuerpo);
+            var raiz = doc.RootElement;
+            texto = "";
+            if (raiz.TryGetProperty("data", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                d.TryGetProperty("mensaje", out var m) && m.ValueKind == System.Text.Json.JsonValueKind.String)
+                texto = m.GetString() ?? "";
+            if (string.IsNullOrWhiteSpace(texto) && raiz.TryGetProperty("message", out var mm) && mm.ValueKind == System.Text.Json.JsonValueKind.String)
+                texto = mm.GetString() ?? "";
+            if (string.IsNullOrWhiteSpace(texto)) texto = $"HTTP {(int)resp.StatusCode}";
+        }
+        catch { texto = $"HTTP {(int)resp.StatusCode}"; }
+        var linea = $"• {contexto}: {texto}";
+        if (!motivos.Contains(linea)) motivos.Add(linea);
+    }
+
+    private async Task IncorporarAsync()
+    {
+        if (_trabajando || OnIncorporar is null) return;
+
+        var elegidas = _lineasVisibles
+            .Where(d => !d.FLG_SECCION_DETALLE && _lineasMarcadas.Contains(ClaveLinea(d)))
+            .ToList();
+
+        if (elegidas.Count == 0)
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("Marca al menos una línea para incorporar.",
+                DialogService, nameof(RequerimientosPedidoPanel));
+            return;
+        }
+
+        // Acumulación: una entrada por producto + unidad + ORDEN DE PRODUCCIÓN, con sus
+        // orígenes adentro.
+        //
+        // La orden entra en la clave a propósito: desde que el detalle del requerimiento la
+        // lleva, dos líneas del mismo producto para órdenes distintas son dos cosas distintas
+        // y tienen que quedar en dos líneas del pedido. Agrupando sólo por producto se fundían
+        // en una sola con las cantidades sumadas, y la línea del pedido ya no decía a qué orden
+        // respondía — el dato sólo sobrevivía en la tabla de trazabilidad.
+        var grupos = elegidas
+            .GroupBy(d => new
+            {
+                d.COD_PRODUCTO, d.COD_UNIDAD_MEDIDA, d.NUM_LOTE_CONTROL, d.COD_PROCESO,
+                d.NUM_ORDEN_PRODUCCION, d.NUM_ORDEN_PRODUCCION_ITEM, d.NUM_ORDEN_PRODUCCION_UNIDAD
+            })
+            .Select(g => new GrupoRequerimientoIncorporar
+            {
+                COD_PRODUCTO = g.First().COD_PRODUCTO,
+                DES_PRODUCTO = g.First().DES_PRODUCTO,
+                COD_UNIDAD_MEDIDA = g.First().COD_UNIDAD_MEDIDA,
+                NUM_LOTE_CONTROL = g.Key.NUM_LOTE_CONTROL,
+                COD_PROCESO = g.Key.COD_PROCESO,
+                DES_PROCESO = g.First().DES_PROCESO,
+                NUM_ORDEN_PRODUCCION = g.Key.NUM_ORDEN_PRODUCCION,
+                NUM_ORDEN_PRODUCCION_ITEM = g.Key.NUM_ORDEN_PRODUCCION_ITEM,
+                NUM_ORDEN_PRODUCCION_UNIDAD = g.Key.NUM_ORDEN_PRODUCCION_UNIDAD,
+                CAN_PRODUCTO = g.Sum(x => x.CAN_PRODUCTO ?? 0),
+                CAN_PRODUCTO_ENTIDAD = g.Sum(x => x.CAN_PRODUCTO_ENTIDAD ?? 0),
+                // Es la unidad del PRODUCTO (ENTIDADES_PRODUCTOS.COD_UNIDAD_MEDIDA_ATENCION),
+                // no de la línea de requerimiento — todas las líneas del grupo son el mismo
+                // producto, así que la del primero alcanza.
+                COD_UNIDAD_MEDIDA_ENTIDAD = g.First().COD_UNIDAD_MEDIDA_ENTIDAD,
+                COD_UNIDAD_MEDIDA_SECUNDARIA = g.First().COD_UNIDAD_MEDIDA_SECUNDARIA,
+                CAN_PRODUCTO_SECUNDARIA = g.Sum(x => x.CAN_PRODUCTO_SECUNDARIA ?? 0),
+                // El precio ya viene resuelto por el SP contra ENTIDADES_PRODUCTOS: es el
+                // mismo proveedor y el mismo producto en todas las líneas del grupo.
+                PRE_UNITARIO = g.Select(x => x.VAL_PRECIO_ENTIDAD).FirstOrDefault(v => v is not null),
+                COD_MONEDA = g.First().COD_MONEDA,
+                DES_TIPO_PRECIO = g.First().DES_TIPO_PRECIO,
+                Origenes = g.Select(x => new OrigenRequerimiento
+                {
+                    NUM_REQUERIMIENTO_STOCK = x.NUM_REQUERIMIENTO_STOCK,
+                    NUM_SECUENCIA = x.NUM_SECUENCIA,
+                    CAN_PRODUCTO = x.CAN_PRODUCTO,
+                    CAN_REQUERIDA = x.CAN_REQUERIDA,
+                    COD_UNIDAD_MEDIDA = x.COD_UNIDAD_MEDIDA,
+                    CAN_PRODUCTO_SECUNDARIA = x.CAN_PRODUCTO_SECUNDARIA,
+                    COD_UNIDAD_MEDIDA_SECUNDARIA = x.COD_UNIDAD_MEDIDA_SECUNDARIA
+                }).ToList()
+            })
+            .ToList();
+
+        var dlg = await DialogService.ShowAsync<RequerimientosResumenDialog>("Incorporar al pedido",
+            new DialogParameters { ["Grupos"] = grupos },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        _trabajando = true;
+        try
+        {
+            // 1) El documento crea o suma las líneas y devuelve dónde quedó cada producto.
+            var secuencias = await OnIncorporar(grupos);
+            if (secuencias.Count == 0)
+            {
+                await ErrorDialogHelper.MostrarAvisoAsync(
+                    "No se pudieron crear las líneas del pedido. No se grabó ningún vínculo.",
+                    DialogService, nameof(RequerimientosPedidoPanel));
+                return;
+            }
+
+            // 2) Trazabilidad: una fila por línea de requerimiento, apuntando a la línea del
+            //    pedido que la absorbió.
+            var baseUrl = ApiRoutes.Comercial.PedidosComercialesRequerimientos;
+            int grabados = 0, fallidos = 0;
+            // Motivo de cada fallo (sin repetir), para decirlo en el aviso final en vez de sólo contarlos.
+            var motivos = new List<string>();
+
+            // 1.b) EL VÍNCULO DE CABECERA. Esto FALTABA.
+            //
+            // El SP, el repositorio y el endpoint existían desde siempre, y ningún archivo
+            // del front los llamaba: se grababa el detalle y nunca la cabecera. Como no hay
+            // FK entre las dos tablas, el detalle entraba sin protestar y el pedido quedaba
+            // sin vínculo a nivel documento.
+            //
+            // Un POST por requerimiento distinto, no por línea: el SP hace upsert, así que
+            // volver a vincular uno ya vinculado sólo refresca la fila.
+            //
+            // Si esto falla NO se corta la incorporación: las líneas del pedido ya están
+            // creadas, y dejarlas sin trazabilidad es mejor que dejar el pedido a medias. Se
+            // cuenta como fallo y se avisa al final, junto con los del detalle.
+            foreach (var numReq in grupos.SelectMany(g => g.Origenes)
+                                         .Select(o => o.NUM_REQUERIMIENTO_STOCK)
+                                         .Distinct())
+            {
+                var respCab = await Http.PostAsJsonAsync($"{baseUrl}/cabecera", new PedidoComercialRequerimientoStockDto
+                {
+                    COD_CLASE_OPERACION     = CodClaseOperacion,
+                    COD_TIPO_OPERACION      = CodTipoOperacion,
+                    NUM_PEDIDO_COMERCIAL    = NumPedidoComercial ?? 0,
+                    NUM_REQUERIMIENTO_STOCK = numReq
+                });
+                if (!respCab.IsSuccessStatusCode) { fallidos++; await AnotarMotivoAsync(motivos, respCab, $"Requerimiento {numReq} (cabecera)"); }
+            }
+
+            foreach (var g in grupos)
+            {
+                if (!secuencias.TryGetValue(g.Clave, out var numSecuencia))
+                {
+                    // El documento no pudo con esa línea: sus orígenes quedan sin vincular.
+                    fallidos += g.Origenes.Count;
+                    continue;
+                }
+
+                foreach (var o in g.Origenes)
+                {
+                    var resp = await Http.PostAsJsonAsync($"{baseUrl}/detalle", new PedidoComercialDetalleRequerimientoStockDetalleDto
+                    {
+                        COD_CLASE_OPERACION = CodClaseOperacion,
+                        COD_TIPO_OPERACION = CodTipoOperacion,
+                        NUM_PEDIDO_COMERCIAL = NumPedidoComercial ?? 0,
+                        NUM_SECUENCIA = numSecuencia,
+                        NUM_REQUERIMIENTO_STOCK = o.NUM_REQUERIMIENTO_STOCK,
+                        NUM_SECUENCIA_REQUERIMIENTO_STOCK = o.NUM_SECUENCIA,
+                        // A pedido explícito: acá va la Cantidad Requerida de la línea de
+                        // origen, no la Cantidad Propia (o.CAN_PRODUCTO) que sí usa la línea
+                        // del pedido. Es solo para este insert de trazabilidad.
+                        CAN_PRODUCTO = o.CAN_REQUERIDA,
+                        COD_UNIDAD_MEDIDA = o.COD_UNIDAD_MEDIDA,
+                        CAN_PRODUCTO_SECUDARIO = o.CAN_PRODUCTO_SECUNDARIA,
+                        COD_UNIDAD_MEDIDA_SECUNDARIO = o.COD_UNIDAD_MEDIDA_SECUNDARIA
+                    });
+                    if (resp.IsSuccessStatusCode) grabados++;
+                    else { fallidos++; await AnotarMotivoAsync(motivos, resp, $"Req. {o.NUM_REQUERIMIENTO_STOCK} línea {o.NUM_SECUENCIA} (cantidad {o.CAN_REQUERIDA:N2})"); }
+                }
+            }
+
+            _lineasMarcadas.Clear();
+            await OnCambio.InvokeAsync();
+            await CargarAsync();
+
+            if (fallidos == 0)
+                Snackbar.Add($"{grupos.Count} línea(s) incorporadas al pedido.", Severity.Success);
+            else
+                await ErrorDialogHelper.MostrarAvisoAsync(
+                    $"Se incorporaron las líneas, pero {fallidos} vínculo(s) de trazabilidad no se pudieron grabar " +
+                    $"({grabados} sí).\n\nMotivo:\n{string.Join("\n", motivos.Take(5))}\n\nRevisa la ficha antes de continuar.",
+                    DialogService, nameof(RequerimientosPedidoPanel));
+
+            await OnIncorporado.InvokeAsync();
+        }
+        finally { _trabajando = false; }
+    }
+}

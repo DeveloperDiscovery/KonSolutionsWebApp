@@ -1,0 +1,719 @@
+@* Aprobaciones por opción de menú.
+   ENTORNO.APLICACIONES_OPCIONES_APROBACIONES
+
+   Dos grillas:
+
+     1. Las OPCIONES de menú (aplicación + opción), con cuántos niveles tiene armada cada una.
+     2. Los NIVELES de la opción marcada: área, cargo, tramo de montos y las banderas.
+
+   De dónde salen las opciones. No hay un SHOWALL que devuelva "todas las aprobaciones";
+   el SP exige aplicación + opción. Así que el maestro se arma con el árbol de menú que
+   MenuService ya tiene cargado (cero llamadas nuevas) y el conteo por opción viene de un
+   único SP de resumen. Consecuencia a tener presente: se listan las opciones que el rol
+   activo ve en su menú. Para un rol de Seguridad eso es todo el sistema; para uno acotado,
+   sólo lo suyo.
+
+   Las banderas son independientes, no un estado. Un notificado se entera y el documento
+   sigue; un aprobador detiene el documento hasta que firma; el último aprobador lo cierra.
+   Por eso el orden de aprobación sólo aplica a los aprobadores: un notificado no ocupa lugar
+   en la fila.
+
+   FLG_HABILITADO es aparte de todo eso: un nivel deshabilitado sigue en la tabla pero no
+   participa de la cadena. Sirve para sacar a alguien del circuito sin perder cómo estaba
+   configurado, y por eso el diagnóstico de la cadena sólo mira los niveles habilitados.
+
+   El tramo de montos (moneda + mínimo + máximo) es opcional: vacío significa que ese nivel
+   aprueba sin tope. Si se pone algún importe, la moneda pasa a ser obligatoria — un tope sin
+   moneda no se puede comparar contra el importe del documento. *@
+@page "/entorno/aplicaciones-opciones-aprobaciones"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Entorno
+@using KONSolutions.Shared.Models.Seguridad
+@using KONSolutions.Shared.Common
+@using System.Globalization
+@inject HttpClient Http
+@inject LimitesService Limites
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject MenuService MenuSvc
+
+<PageTitle>Aprobaciones por Opción · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Aprobaciones por Opción" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+            Schema ENTORNO · @_opcionesFiltradas.Count de @_opciones.Count opciones · @_opciones.Count(o => NivelesDe(o) > 0) con flujo
+        </MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar opción..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex align-center gap-2">
+        @* 231 opciones y 2 con flujo: sin este filtro hay que pasar cuatro páginas para
+           encontrar las que interesan.
+
+           Va con MudSwitch y no con MudCheckBox: es el control que el sistema usa para
+           prender y apagar cosas (el mismo de la columna Habilitado), y un filtro que se
+           deja puesto es justamente eso. *@
+        <MudSwitch T="bool" Value="_soloConFlujo"
+                   Color="Color.Success" Size="Size.Small"
+                   ValueChanged="@((bool v) => { _soloConFlujo = v; AplicarFiltro(); })"
+                   Label="Solo con configuración" />
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@* ── MAESTRO · Aplicación y opción ── *@
+<MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mb-4">
+    <div data-resizable-grid="opciones-aprobaciones" data-default-height="260" style="position:relative;">
+    <MudDataGrid T="OpcionTreeviewItem" Items="_opcionesFiltradas" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre"
+                 RowClick="OnOpcionRowClick" RowClassFunc="@FilaOpcionSeleccionada">
+        <Columns>
+            @* El nombre adelante y el código detrás: "00030" no le dice nada a nadie, pero
+               sigue siendo lo que se busca cuando uno viene de la configuración. *@
+            <TemplateColumn Sortable="false" Title="Aplicación" Width="230">
+                <CellTemplate>
+                    @NombreAplicacion(context.Item.COD_APLICACION)
+                    <span class="mono ml-2" style="opacity:.45;font-size:.78rem;">@context.Item.COD_APLICACION</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Opción">
+                <CellTemplate>
+                    @context.Item.DES_OPCION_APLICACION
+                    <span class="mono ml-2" style="opacity:.45;font-size:.78rem;">@context.Item.COD_OPCION_APLICACION</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Niveles" Width="150" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    @{ var n = NivelesDe(context.Item); var chip = ChipOpcion(context.Item); }
+                    @if (n == 0)
+                    {
+                        <EstadoChip Estado="@chip.T" BackColor="@chip.B" ForeColor="@chip.F" />
+                    }
+                    else
+                    {
+                        <span class="mono">@n</span>
+                        <span class="ml-2"><EstadoChip Estado="@chip.T" BackColor="@chip.B" ForeColor="@chip.F" /></span>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin opciones.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="OpcionTreeviewItem" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@* ── DETALLE · Niveles de la opción ── *@
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div class="d-flex align-center justify-space-between pa-3 flex-wrap gap-2" style="border-bottom:1px solid var(--line);">
+        <div>
+            <MudText Typo="Typo.h6">Cadena de aprobación</MudText>
+            <MudText Class="mono" Style="opacity:.5;font-size:.78rem;color:var(--subtitulo-color,#6b6358);">
+                @if (_opcionSel is null) { <text>Sin opción seleccionada</text> }
+                else { <text>@_opcionSel.DES_OPCION_APLICACION · @_niveles.Count nivel(es)</text> }
+            </MudText>
+        </div>
+        <div class="d-flex align-center gap-2">
+            @if (_opcionSel is not null && _niveles.Count > 0)
+            {
+                var d = Diagnostico();
+                <EstadoChip Estado="@d.T" BackColor="@d.B" ForeColor="@d.F" />
+            }
+            <GridRefreshButton OnRefresh="LoadNiveles" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                       Disabled="@(_opcionSel is null)" Size="Size.Small"
+                       OnClick="AgregarNivel">Agregar nivel</MudButton>
+        </div>
+    </div>
+
+    @if (_opcionSel is null)
+    {
+        <MudText Class="pa-6 mono" Style="opacity:.4;">Selecciona una opción para ver su cadena de aprobación.</MudText>
+    }
+    else if (_cargandoNiveles)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+    else
+    {
+        <div data-resizable-grid="opciones-aprobaciones-niveles" style="position:relative;">
+        @* Edición por celda: al confirmar una celda se graba, salvo en las filas nuevas, a las
+           que todavía les falta la secuencia (la asigna el SP) y se graban con su propio botón. *@
+        <MudDataGrid T="AplicacionOpcionAprobacion" Items="_niveles" Dense="true" Hover="true" Striped="true"
+                     ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                     CommittedItemChanges="@(async (AplicacionOpcionAprobacion it) => await GuardarSiNoEsNueva(it))"
+                     Height="100%" FixedHeader="true">
+            <Columns>
+                <TemplateColumn Title="Sec" Sortable="false" Editable="false" Width="70"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        @if (it.EsNueva)
+                        {
+                            <span class="mono" style="color:var(--warn,#B87503);font-weight:600;">nvo</span>
+                        }
+                        else
+                        {
+                            <span class="mono">@it.NUM_SECUENCIA</span>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                @* Área y cargo se eligen con combo siempre: acá NO son la clave (la clave es la
+                   secuencia), así que se pueden corregir sin borrar y volver a crear la fila. *@
+                <TemplateColumn Title="Área" Sortable="false" Editable="false" Width="240">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <AriaCombo TItem="ComboboxItem" Items="_areas"
+                                   TextFunc="@(a => a.Texto)" ValueFunc="@(a => a.Id)"
+                                   Value="@(it.COD_AREA?.ToString())"
+                                   ValueChanged="@(v => AsignarArea(it, v))"
+                                   Label="Área" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Cargo" Sortable="false" Editable="false" Width="240">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <AriaCombo TItem="ComboboxItem" Items="@CargosDe(it.COD_AREA)"
+                                   TextFunc="@(c => c.Texto)" ValueFunc="@(c => c.Id)"
+                                   Value="@(it.COD_CARGO?.ToString())"
+                                   ValueChanged="@(async v => { it.COD_CARGO = int.TryParse(v, out var n) ? n : null; await GuardarSiNoEsNueva(it); })"
+                                   Label="Cargo" Disabled="@(it.COD_AREA is null)" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <PropertyColumn Property="x => x.NUM_ORDEN_APROBACION" Title="Orden" Sortable="false"
+                                Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;" />
+
+                @* Tramo de montos. La moneda no es parte de la clave, así que se puede cambiar
+                   también en una fila ya grabada; al elegir se graba, salvo que la fila todavía
+                   sea nueva (esa se graba con su propio botón). *@
+                <TemplateColumn Title="Moneda" Sortable="false" Editable="false" Width="150">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                   TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)"
+                                   Value="@it.COD_MONEDA"
+                                   ValueChanged="@(async v => { it.COD_MONEDA = v; await GuardarSiNoEsNueva(it); })"
+                                   Label="Moneda" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                @* Formato contable: separador de miles y los decimales que declara la columna
+                   en la base (ENTORNO.LIMITES_COLUMNAS, vía LimitesService), no un 2 fijo.
+                   Sin flechitas: son importes, no contadores — y la flecha de "subir de a uno"
+                   sobre un tope de 999,999.00 no sirve para nada. *@
+                <TemplateColumn Title="Monto mínimo" Sortable="false" Editable="false" Width="150"
+                                HeaderStyle="text-align:right;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudNumericField T="decimal?" Value="@it.VAL_MONTO_MINIMO"
+                                         ValueChanged="@(async v => { it.VAL_MONTO_MINIMO = v; await GuardarSiNoEsNueva(it); })"
+                                         Variant="Variant.Outlined" Margin="Margin.Dense"
+                                         Class="campo-numerico-derecha mb-0"
+                                         Format="@_formatoMonto" Culture="@CultureInfo.CurrentCulture"
+                                         Min="0" Max="@_montoMaximoPermitido"
+                                         HideSpinButtons="true" Clearable="true" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Monto máximo" Sortable="false" Editable="false" Width="150"
+                                HeaderStyle="text-align:right;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudNumericField T="decimal?" Value="@it.VAL_MONTO_MAXIMO"
+                                         ValueChanged="@(async v => { it.VAL_MONTO_MAXIMO = v; await GuardarSiNoEsNueva(it); })"
+                                         Variant="Variant.Outlined" Margin="Margin.Dense"
+                                         Class="campo-numerico-derecha mb-0"
+                                         Format="@_formatoMonto" Culture="@CultureInfo.CurrentCulture"
+                                         Min="0" Max="@_montoMaximoPermitido"
+                                         HideSpinButtons="true" Clearable="true"
+                                         Error="@(it.VAL_MONTO_MINIMO is not null && it.VAL_MONTO_MAXIMO is not null
+                                                  && it.VAL_MONTO_MAXIMO <= it.VAL_MONTO_MINIMO)" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                @* Un nivel deshabilitado queda en la tabla pero no participa de la cadena:
+                   sirve para sacar a alguien del circuito sin perder cómo estaba configurado. *@
+                <TemplateColumn Title="Habilitado" Sortable="false" Editable="false" Width="110"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_HABILITADO ?? false)"
+                                   ValueChanged="@(async v => { it.FLG_HABILITADO = v; await GuardarSiNoEsNueva(it); })"
+                                   Color="Color.Success" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Aprueba" Sortable="false" Editable="false" Width="100"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_APROBADOR ?? false)"
+                                   ValueChanged="@(async v => { it.FLG_APROBADOR = v; if (!v) it.FLG_APROBADOR_ULTIMO = false; await GuardarSiNoEsNueva(it); })"
+                                   Color="Color.Primary" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Notifica" Sortable="false" Editable="false" Width="100"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_NOTIFICADO ?? false)"
+                                   ValueChanged="@(async v => { it.FLG_NOTIFICADO = v; await GuardarSiNoEsNueva(it); })"
+                                   Color="Color.Info" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                @* Sólo un aprobador puede cerrar la cadena: si la fila no aprueba, el interruptor
+                   queda deshabilitado en vez de dejar grabar algo que el servicio va a rechazar. *@
+                <TemplateColumn Title="Último" Sortable="false" Editable="false" Width="100"
+                                CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <MudSwitch T="bool" Value="@(it.FLG_APROBADOR_ULTIMO ?? false)"
+                                   Disabled="@(it.FLG_APROBADOR != true)"
+                                   ValueChanged="@(async v => { it.FLG_APROBADOR_ULTIMO = v; await GuardarSiNoEsNueva(it); })"
+                                   Color="Color.Success" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="110">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        @if (it.EsNueva)
+                        {
+                            <span title="Grabar" style="display:inline-flex;align-items:center;">
+                                <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Success"
+                                               OnClick="@(() => GuardarNivel(it))" />
+                            </span>
+                            <span title="Descartar" style="display:inline-flex;align-items:center;">
+                                <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                               OnClick="@(() => _niveles.Remove(it))" />
+                            </span>
+                        }
+                        else
+                        {
+                            <span title="Eliminar" style="display:inline-flex;align-items:center;">
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               OnClick="@(() => EliminarNivel(it))" />
+                            </span>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Esta opción no tiene cadena de aprobación.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="AplicacionOpcionAprobacion" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+        </div>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // Maestro
+    private List<OpcionTreeviewItem> _opciones = new();
+    private List<AplicacionOpcionAprobacionResumen> _resumen = new();
+    private string _search = "";
+    private OpcionTreeviewItem? _opcionSel;
+
+    // Detalle
+    private List<AplicacionOpcionAprobacion> _niveles = new();
+    private List<ComboboxItem> _areas = new();
+    private List<ComboboxItem> _monedas = new();
+
+    /// <summary>Formato de los importes ("N2", "N4"…) y tope, tomados de la definición real de
+    /// la columna en la base. Se resuelven una vez: no cambian mientras la pantalla está
+    /// abierta, y pedirlos por celda sería recorrer la tabla de límites en cada render.</summary>
+    private string _formatoMonto = "N2";
+    private decimal? _montoMaximoPermitido;
+
+    private const string TablaMontos   = "APLICACIONES_OPCIONES_APROBACIONES";
+    private const string ColumnaMonto  = "VAL_MONTO_MINIMO";
+    private bool _cargandoNiveles;
+
+    /// <summary>Cargos por área, cacheados: el combo de Cargo de cada fila depende del área de
+    /// esa fila, y varias filas suelen compartir área.</summary>
+    private readonly Dictionary<int, List<ComboboxItem>> _cargosPorArea = new();
+
+    private List<OpcionTreeviewItem> _opcionesFiltradas = new();
+    private bool _soloConFlujo;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ENTORNO", "AplicacionesOpcionesAprobaciones");
+        _areas   = await CargarCombo(ApiRoutes.Administracion.AreasCombobox);
+        _monedas = await CargarCombo(ApiRoutes.Estandar.MonedasCombobox);
+
+        // Los dos montos son la misma definición en la base, así que alcanza con leer una.
+        // Si la tabla de límites no la tuviera, quedan los dos decimales de siempre.
+        _formatoMonto = $"N{Limites.Decimales(TablaMontos, ColumnaMonto) ?? 2}";
+        _montoMaximoPermitido = Limites.MaxDecimal(TablaMontos, ColumnaMonto);
+        await Load();
+    }
+
+    private async Task<List<ComboboxItem>> CargarCombo(string ruta)
+    {
+        try { return (await Http.SafeGetAsync<List<ComboboxItem>>(ruta)) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(AplicacionesOpcionesAprobaciones), nameof(CargarCombo));
+            return new();
+        }
+    }
+
+    // ── Maestro ──────────────────────────────────────────────────────────────
+    private async Task Load()
+    {
+        // Las opciones ya están en memoria (árbol de menú): no se piden de nuevo.
+        _opciones = MenuSvc.OpcionesMenu
+            .Where(o => !string.IsNullOrWhiteSpace(o.COD_OPCION_APLICACION))
+            // Por nombre de aplicación, no por código: el código no tiene orden que signifique
+            // algo para quien lee la grilla.
+            .OrderBy(o => NombreAplicacion(o.COD_APLICACION)).ThenBy(o => o.DES_OPCION_APLICACION)
+            .ToList();
+
+        try
+        {
+            _resumen = (await Http.SafeGetAsync<List<AplicacionOpcionAprobacionResumen>>(
+                ApiRoutes.Entorno.AplicacionesOpcionesAprobacionesResumen)) ?? new();
+        }
+        catch (Exception ex)
+        {
+            // El resumen es informativo: sin él la pantalla sigue sirviendo, sólo que la
+            // columna Niveles queda en cero. No se corta la carga por esto.
+            await ErrorLog.LogAsync(ex, nameof(AplicacionesOpcionesAprobaciones), nameof(Load));
+            _resumen = new();
+        }
+
+        AplicarFiltro();
+
+        if (_opcionSel is not null && !_opciones.Any(o => MismaOpcion(o, _opcionSel)))
+        {
+            _opcionSel = null;
+            _niveles = new();
+        }
+    }
+
+    private void AplicarFiltro()
+    {
+        IEnumerable<OpcionTreeviewItem> q = _opciones;
+
+        // El filtro de "solo con configuración" va primero: achica la lista antes de la
+        // búsqueda por texto, que es la parte cara (resuelve el nombre de aplicación por fila).
+        if (_soloConFlujo) q = q.Where(o => NivelesDe(o) > 0);
+
+        var t = _search?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(t))
+            q = q.Where(o =>
+                  (o.DES_OPCION_APLICACION?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (o.COD_OPCION_APLICACION?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (o.COD_APLICACION?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
+               || NombreAplicacion(o.COD_APLICACION).Contains(t, StringComparison.OrdinalIgnoreCase));
+
+        _opcionesFiltradas = q.ToList();
+    }
+
+    /// <summary>La búsqueda filtra en memoria: las opciones ya están todas cargadas y una vuelta
+    /// al servidor no traería nada nuevo.</summary>
+    private Task Buscar() { AplicarFiltro(); return Task.CompletedTask; }
+
+    /// <summary>Nombre de la aplicación, con el código como respaldo. Se cachea porque la
+    /// grilla lo pide una vez por fila y por render, y la búsqueda recorre la lista entera:
+    /// resolverlo cada vez recorrería _botones (miles de filas) en cada pasada.</summary>
+    private readonly Dictionary<string, string> _nombreApp = new();
+
+    private string NombreAplicacion(string? cod)
+    {
+        if (string.IsNullOrWhiteSpace(cod)) return "";
+        if (_nombreApp.TryGetValue(cod, out var n)) return n;
+        n = MenuSvc.DescripcionAplicacion(cod) ?? cod;
+        _nombreApp[cod] = n;
+        return n;
+    }
+
+    private static bool MismaOpcion(OpcionTreeviewItem a, OpcionTreeviewItem b)
+        => a.COD_APLICACION == b.COD_APLICACION && a.COD_OPCION_APLICACION == b.COD_OPCION_APLICACION;
+
+    private string FilaOpcionSeleccionada(OpcionTreeviewItem item, int _)
+        => _opcionSel is not null && MismaOpcion(item, _opcionSel) ? "fila-seleccionada" : "";
+
+    private AplicacionOpcionAprobacionResumen? ResumenDe(OpcionTreeviewItem o)
+        => _resumen.FirstOrDefault(r => r.COD_APLICACION == o.COD_APLICACION
+                                     && r.COD_OPCION_APLICACION == o.COD_OPCION_APLICACION);
+
+    private int NivelesDe(OpcionTreeviewItem o) => ResumenDe(o)?.CAN_NIVELES ?? 0;
+
+    /// <summary>Estado de la opción en el maestro. "Sin aprobador" es el caso que importa
+    /// señalar: hay gente configurada, pero nadie que firme, así que el documento nunca avanza.</summary>
+    private (string T, string B, string F) ChipOpcion(OpcionTreeviewItem o)
+    {
+        var r = ResumenDe(o);
+        if (r is null || r.CAN_NIVELES == 0) return ("Sin flujo", "rgba(0,0,0,.06)", "#6B819A");
+        if (r.CAN_APROBADORES == 0)          return ("Sin aprobador", "#FAE5E2", "#C0392B");
+        return ("Configurada", "#E2F1EA", "#2E7D5B");
+    }
+
+    private async Task OnOpcionRowClick(DataGridRowClickEventArgs<OpcionTreeviewItem> args)
+    {
+        _opcionSel = args.Item;
+        await LoadNiveles();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        // El alta de esta pantalla es "agregar nivel", y depende de la opción marcada.
+        if (b.FLG_ACCION_POST == true) { AgregarNivel(); }
+        return Task.CompletedTask;
+    }
+
+    // ── Detalle ──────────────────────────────────────────────────────────────
+    private async Task LoadNiveles()
+    {
+        if (_opcionSel is null) { _niveles = new(); return; }
+        _cargandoNiveles = true;
+        try
+        {
+            var url = $"{ApiRoutes.Entorno.AplicacionesOpcionesAprobaciones}"
+                    + $"?codAplicacion={Uri.EscapeDataString(_opcionSel.COD_APLICACION)}"
+                    + $"&codOpcionAplicacion={Uri.EscapeDataString(_opcionSel.COD_OPCION_APLICACION)}";
+            _niveles = (await Http.SafeGetAsync<List<AplicacionOpcionAprobacion>>(url)) ?? new();
+            _niveles = _niveles.OrderBy(x => x.NUM_SECUENCIA).ToList();
+
+            // Los cargos de las áreas ya usadas: sin esto el combo de Cargo de una fila grabada
+            // aparecería vacío hasta volver a elegir el área.
+            foreach (var area in _niveles.Where(x => x.COD_AREA is not null)
+                                         .Select(x => x.COD_AREA!.Value).Distinct())
+                await AsegurarCargosAsync(area);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(AplicacionesOpcionesAprobaciones), nameof(LoadNiveles));
+            _niveles = new();
+        }
+        finally { _cargandoNiveles = false; }
+    }
+
+    private void AgregarNivel()
+    {
+        if (_opcionSel is null) return;
+        _niveles.Add(new AplicacionOpcionAprobacion
+        {
+            COD_APLICACION        = _opcionSel.COD_APLICACION,
+            COD_OPCION_APLICACION = _opcionSel.COD_OPCION_APLICACION,
+            FLG_HABILITADO        = true,
+            FLG_APROBADOR         = true,
+            FLG_NOTIFICADO        = false,
+            FLG_APROBADOR_ULTIMO  = false,
+            // Sugerido, no impuesto: el siguiente lugar libre en la fila de aprobación.
+            NUM_ORDEN_APROBACION  = ProximoOrden(),
+            EsNueva               = true
+        });
+    }
+
+    private int ProximoOrden()
+    {
+        var usados = _niveles.Where(x => x.FLG_APROBADOR == true && x.NUM_ORDEN_APROBACION is not null)
+                             .Select(x => x.NUM_ORDEN_APROBACION!.Value).ToList();
+        return usados.Count == 0 ? 1 : usados.Max() + 1;
+    }
+
+    private List<ComboboxItem> CargosDe(int? codArea)
+        => codArea is null ? new() : _cargosPorArea.GetValueOrDefault(codArea.Value, new());
+
+    private async Task AsegurarCargosAsync(int codArea)
+    {
+        if (_cargosPorArea.ContainsKey(codArea)) return;
+        _cargosPorArea[codArea] = await CargarCombo($"{ApiRoutes.Administracion.Areas}/{codArea}/cargos");
+    }
+
+    /// <summary>Al cambiar el área se limpia el cargo —el anterior era de otra área— y se cargan
+    /// los cargos de la nueva. No se graba todavía: la fila queda incompleta hasta que se elija
+    /// el cargo, y grabar con cargo nulo lo rechazaría el servicio.</summary>
+    private async Task AsignarArea(AplicacionOpcionAprobacion it, string? val)
+    {
+        it.COD_AREA = int.TryParse(val, out var n) ? n : null;
+        it.COD_CARGO = null;
+        if (it.COD_AREA is not null) await AsegurarCargosAsync(it.COD_AREA.Value);
+        StateHasChanged();
+    }
+
+    private Task GuardarSiNoEsNueva(AplicacionOpcionAprobacion it)
+        => it.EsNueva ? Task.CompletedTask : GuardarNivel(it);
+
+    /// <summary>Las mismas reglas que valida el servicio, comprobadas antes de salir a la red
+    /// para que el aviso llegue sin viaje de ida y vuelta. El servicio las vuelve a comprobar:
+    /// esto avisa antes, no lo reemplaza.</summary>
+    private string? ValidarLocal(AplicacionOpcionAprobacion it)
+    {
+        if (it.COD_AREA is null || it.COD_CARGO is null)
+            return "Elige el área y el cargo del nivel.";
+
+        var aprueba  = it.FLG_APROBADOR == true;
+        var notifica = it.FLG_NOTIFICADO == true;
+
+        if (!aprueba && !notifica)
+            return "El nivel tiene que aprobar o notificar. Si no hace ninguna de las dos cosas, no cumple ninguna función.";
+
+        if (aprueba && it.NUM_ORDEN_APROBACION is null)
+            return "Un aprobador necesita orden de aprobación: es el lugar que ocupa en la fila.";
+
+        // Tramo de montos: se puede dejar vacío (aprueba sin tope), pero si hay algún importe
+        // la moneda deja de ser opcional. Mismas reglas que valida el servicio.
+        var hayImporte = it.VAL_MONTO_MINIMO is not null || it.VAL_MONTO_MAXIMO is not null;
+        if (hayImporte && string.IsNullOrWhiteSpace(it.COD_MONEDA))
+            return "Elige la moneda del tramo de montos.";
+
+        if (it.VAL_MONTO_MINIMO is not null && it.VAL_MONTO_MINIMO < 0)
+            return "El monto mínimo no puede ser negativo.";
+
+        if (it.VAL_MONTO_MINIMO is not null && it.VAL_MONTO_MAXIMO is not null
+            && it.VAL_MONTO_MAXIMO <= it.VAL_MONTO_MINIMO)
+            return "El monto máximo debe ser mayor que el monto mínimo.";
+
+        var otros = _niveles.Where(x => !ReferenceEquals(x, it)).ToList();
+
+        if (otros.Any(x => x.COD_AREA == it.COD_AREA && x.COD_CARGO == it.COD_CARGO))
+            return "Ese cargo ya está en la cadena de aprobación de esta opción.";
+
+        if (aprueba && otros.Any(x => x.FLG_APROBADOR == true
+                                   && x.NUM_ORDEN_APROBACION == it.NUM_ORDEN_APROBACION))
+            return $"El orden {it.NUM_ORDEN_APROBACION} ya lo ocupa otro aprobador de esta opción.";
+
+        if (it.FLG_APROBADOR_ULTIMO == true && otros.Any(x => x.FLG_APROBADOR_ULTIMO == true))
+            return "Esta opción ya tiene un último aprobador. Quítaselo al actual antes de marcar otro.";
+
+        return null;
+    }
+
+    private async Task GuardarNivel(AplicacionOpcionAprobacion it)
+    {
+        var error = ValidarLocal(it);
+        if (error is not null)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(error, DialogService, nameof(AplicacionesOpcionesAprobaciones));
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ApiRoutes.Entorno.AplicacionesOpcionesAprobaciones, it, it.EsNueva);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(it.EsNueva ? "Nivel agregado." : "Nivel actualizado.", Severity.Success);
+            await LoadNiveles();
+            await RefrescarResumenAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(AplicacionesOpcionesAprobaciones), nameof(GuardarNivel));
+    }
+
+    private async Task EliminarNivel(AplicacionOpcionAprobacion it)
+    {
+        var confirmado = await DialogService.ShowMessageBox(
+            "Eliminar", $"¿Quitar la secuencia {it.NUM_SECUENCIA} de la cadena de aprobación de esta opción?",
+            yesText: "Eliminar", cancelText: "Cancelar");
+        if (confirmado != true) return;
+
+        var url = $"{ApiRoutes.Entorno.AplicacionesOpcionesAprobaciones}"
+                + $"?codAplicacion={Uri.EscapeDataString(it.COD_APLICACION)}"
+                + $"&codOpcionAplicacion={Uri.EscapeDataString(it.COD_OPCION_APLICACION)}"
+                + $"&numSecuencia={it.NUM_SECUENCIA}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Nivel eliminado.", Severity.Success);
+            await LoadNiveles();
+            await RefrescarResumenAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(AplicacionesOpcionesAprobaciones), nameof(EliminarNivel));
+    }
+
+    /// <summary>Sólo el conteo del maestro. No se llama a Load(): eso volvería a filtrar y
+    /// podría mover la selección debajo del cursor mientras el usuario sigue editando.</summary>
+    private async Task RefrescarResumenAsync()
+    {
+        try
+        {
+            _resumen = (await Http.SafeGetAsync<List<AplicacionOpcionAprobacionResumen>>(
+                ApiRoutes.Entorno.AplicacionesOpcionesAprobacionesResumen)) ?? _resumen;
+
+            // Con "solo con configuración" activo, una opción que acaba de recibir su primer
+            // nivel tiene que aparecer en la lista; y una que se quedó sin niveles, salir.
+            if (_soloConFlujo) AplicarFiltro();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(AplicacionesOpcionesAprobaciones), nameof(RefrescarResumenAsync));
+        }
+    }
+
+    /// <summary>Estado de la cadena completa que está en pantalla. Mira lo que hay cargado,
+    /// incluidas las filas nuevas sin grabar, porque es lo que el usuario está viendo.</summary>
+    private (string T, string B, string F) Diagnostico()
+    {
+        // Sólo los habilitados: un nivel apagado está guardado pero fuera del circuito, así que
+        // contarlo diría que la cadena está completa cuando en la práctica no lo está.
+        var vigentes = _niveles.Where(x => x.FLG_HABILITADO == true).ToList();
+
+        if (vigentes.Count == 0) return ("Todos deshabilitados", "#FAE5E2", "#C0392B");
+
+        var aprobadores = vigentes.Count(x => x.FLG_APROBADOR == true);
+        var ultimos     = vigentes.Count(x => x.FLG_APROBADOR_ULTIMO == true);
+
+        if (aprobadores == 0) return ("Sin aprobador", "#FAE5E2", "#C0392B");
+        if (ultimos == 0)     return ("Falta el último", "#FBF0DC", "#B87503");
+        if (ultimos > 1)      return ("Más de un último", "#FAE5E2", "#C0392B");
+
+        // El último aprobador debería ser el de mayor orden: si no, la cadena cierra antes de
+        // pasar por alguien que igual va a tener que firmar.
+        var ordenUltimo = vigentes.FirstOrDefault(x => x.FLG_APROBADOR_ULTIMO == true)?.NUM_ORDEN_APROBACION ?? 0;
+        var ordenMayor  = vigentes.Where(x => x.FLG_APROBADOR == true)
+                                  .Max(x => x.NUM_ORDEN_APROBACION ?? 0);
+        if (ordenUltimo < ordenMayor) return ("El último no es el de mayor orden", "#FBF0DC", "#B87503");
+
+        // Tramos de monto solapados entre aprobadores de la misma moneda: dos niveles se
+        // disputarían el mismo documento. Se avisa, no se bloquea: puede ser intencional.
+        if (TramosSolapados(vigentes)) return ("Tramos de monto solapados", "#FBF0DC", "#B87503");
+
+        return ("Cadena completa", "#E2F1EA", "#2E7D5B");
+    }
+
+    /// <summary>Dos aprobadores de la misma moneda cuyos tramos de monto se pisan. Los niveles
+    /// sin importes quedan fuera de la comparación: ésos aprueban cualquier monto y solaparse
+    /// con ellos es lo normal, no un error.</summary>
+    private static bool TramosSolapados(List<AplicacionOpcionAprobacion> niveles)
+    {
+        var conTramo = niveles
+            .Where(x => x.FLG_APROBADOR == true
+                     && !string.IsNullOrWhiteSpace(x.COD_MONEDA)
+                     && (x.VAL_MONTO_MINIMO is not null || x.VAL_MONTO_MAXIMO is not null))
+            .ToList();
+
+        foreach (var grupo in conTramo.GroupBy(x => x.COD_MONEDA))
+        {
+            var lista = grupo.ToList();
+            for (var i = 0; i < lista.Count; i++)
+                for (var j = i + 1; j < lista.Count; j++)
+                {
+                    var aMin = lista[i].VAL_MONTO_MINIMO ?? decimal.MinValue;
+                    var aMax = lista[i].VAL_MONTO_MAXIMO ?? decimal.MaxValue;
+                    var bMin = lista[j].VAL_MONTO_MINIMO ?? decimal.MinValue;
+                    var bMax = lista[j].VAL_MONTO_MAXIMO ?? decimal.MaxValue;
+                    if (aMin < bMax && bMin < aMax) return true;
+                }
+        }
+        return false;
+    }
+}

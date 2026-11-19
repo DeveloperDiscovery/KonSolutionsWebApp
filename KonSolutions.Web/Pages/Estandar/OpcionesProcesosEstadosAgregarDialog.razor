@@ -1,0 +1,78 @@
+@* OpcionesProcesosEstadosAgregarDialog.razor
+   -----------------------------------------------------------------------
+   Combo simple (sin selección múltiple) de Tipos de Estado (ESTANDAR.TIPOS_ESTADOS)
+   para asignar UNO a una Aplicación+Opción (ESTANDAR.OPCIONES_PROCESOS_ESTADOS).
+   Para agregar varios, se reabre el diálogo — más simple y predecible que la
+   selección múltiple original. *@
+@using Modelo = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstados
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Agregar Tipo de Estado</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Style="opacity:.7;font-size:.8rem;" Class="mb-3">
+            Opción @CodAplicacion / @CodOpcionAplicacion
+        </MudText>
+        @if (!_disponibles.Any())
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;">No hay tipos de estado disponibles para agregar (todos ya están asignados, o no hay tipos de estado registrados).</MudText>
+        }
+        else
+        {
+            <AriaCombo TItem="ComboboxItem" Items="_disponibles"
+                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       @bind-Value="_seleccionado"
+                       Label="Tipo de Estado" Obligatorio="true" Class="mb-3" />
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Cancel())" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" OnClick="Confirmar" Disabled="@(_guardando || string.IsNullOrWhiteSpace(_seleccionado))" Style="@EstilosBoton.Confirmar">
+            @(_guardando ? "Guardando..." : "Agregar")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcionAplicacion { get; set; } = "";
+    [Parameter] public List<short> YaAsignados { get; set; } = new();
+
+
+    private List<ComboboxItem> _todos = new();
+    private List<ComboboxItem> _disponibles => _todos.Where(t => !YaAsignados.Any(y => y.ToString() == t.Id)).ToList();
+    private string? _seleccionado;
+    private bool _guardando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _todos = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.TiposEstadosCombobox)) ?? new();
+    }
+
+    private async Task Confirmar()
+    {
+        if (!short.TryParse(_seleccionado, out var codTipoEstado)) return;
+        _guardando = true;
+        var dto = new Modelo { COD_APLICACION = CodAplicacion, COD_OPCION_APLICACION = CodOpcionAplicacion, COD_TIPO_ESTADO = codTipoEstado };
+        var resp = await Http.PostAsJsonAsync(EstandarRoute.OpcionesProcesosEstados, dto);
+        _guardando = false;
+
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Tipo de estado agregado.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstadosAgregarDialog), nameof(Confirmar));
+        }
+    }
+}

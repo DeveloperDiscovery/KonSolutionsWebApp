@@ -1,0 +1,2152 @@
+﻿@using Modelo = KONSolutions.Shared.Models.Comercial.PedidoComercial
+@using Item = KONSolutions.Shared.Models.Comercial.PedidoComercialDetalle
+@using CalculoItem = KONSolutions.Shared.Models.Comercial.PedidoComercialCalculo
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject IAuthService AuthService
+@inject ConfigService ConfigSvc
+
+@*
+    Documento completo (cabecera + detalle), embebido como segunda solapa de
+    PedidosComerciales.razor — mismo patrón que RequerimientoDocumento.razor.
+
+    Layout de cabecera en DOS paneles lado a lado (no en solapas General/Comercial/
+    Logística como antes) — replica el boceto aprobado. Panel izquierdo: identificación
+    del documento, entidad, temporada/colección, logística y estado. Panel derecho:
+    parámetros comerciales (moneda, pago, descuento, centros de costo, proyecto,
+    rendición de cuentas), observación y acciones.
+
+    Reglas de negocio numeradas 1-19 (mismas del boceto) resueltas contra el
+    Tipo de Operación elegido — ver bloque TipoOperacionLite en @code. Los flags
+    FLG_CENTRO_COSTO / FLG_PROYECTO / FLG_LOTE_CONTROL de las reglas 10-11, 12-13 y 18
+    se asumen columnas de COMERCIAL.TIPOS_OPERACION igual que FLG_POSITIVO/
+    FLG_COMERCIO_EXTERIOR (que ya andan) — si el SP de Tipos de Operación no las
+    devuelve todavía, esas reglas puntuales quedan sin efecto (null) hasta agregarlas,
+    sin romper nada más. Avisar si hace falta agregarlas al SP.
+*@
+<style>
+    /* Fila 2 de una proforma: descripción, N° de proforma del proveedor y las dos fechas. Con las 12
+       columnas de la grilla no se puede repartir: a 2 columnas una fecha mide unos 140 px y «30/10/2026»
+       se corta (con la letra de la aplicación necesita unos 170). Por eso la fila se reparte por
+       proporción: la descripción 2 partes y cada campo chico 1, sin bajar de 184 px. Si el panel es
+       angosto (menos de 760 px), la descripción va sola y los otros tres debajo, a un tercio cada uno.
+       La cuenta es con el ancho del panel (container query) y no con el de la pantalla: el zoom de la
+       aplicación cambia el ancho del panel y no el de la pantalla.
+       La fila va en su propia grilla (pc-fila2): repartida como sea, no se le sube el Proveedor.
+       app.css le da la separación vertical (padding) a cada celda de una grilla de formulario:
+       las de adentro ya la tienen, así que la celda que las envuelve va sin padding arriba ni
+       abajo (si no, la fila 2 baja el doble). A los lados sí lo lleva: el margen negativo de
+       la grilla de adentro lo compensa.
+       Las clases pc-fila2-desc y pc-fila2-chico solo se usan en una proforma; en las demás
+       clases la fila queda como siempre. */
+    .documento-logistica .mud-grid-item.pc-fila2 { padding-top: 0 !important; padding-bottom: 0 !important;
+                                                   container-type: inline-size; container-name: pcfila2; }
+    .documento-logistica .pc-fila2 .mud-grid-item.pc-fila2-desc { flex: 2 1 0; max-width: none; min-width: 0; }
+    .documento-logistica .pc-fila2 .mud-grid-item.pc-fila2-chico { flex: 1 1 0; max-width: none; min-width: 184px; }
+    @@container pcfila2 (max-width: 760px) {
+        .documento-logistica .pc-fila2 .mud-grid-item.pc-fila2-desc { flex: 0 0 100%; max-width: 100%; }
+        .documento-logistica .pc-fila2 .mud-grid-item.pc-fila2-chico { flex: 1 1 0; max-width: 33.3333%; min-width: 0; }
+    }
+</style>
+<div class="documento-logistica">
+    <EditForm Context="formulario" Model="_model" OnValidSubmit="Submit">
+        <DataAnnotationsValidator />
+
+        <MudGrid Spacing="2">
+            <!-- ══════════════ PANEL IZQUIERDO ══════════════ -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);height:100%;">
+                    <MudGrid Spacing="2">
+                        @* FILA 1 — Tipo de operación manda sobre casi todo el resto de la
+                           cabecera (reglas 1 a 19), así que abre. Tipo de Pedido lo hereda de
+                           él (ver AplicarTipoOperacion); Tipo de Documento lo fija él y no se
+                           elige (regla 7); N° Pedido lo genera la base al grabar (regla 8).
+                           Los cuatro son "de qué documento estamos hablando". *@
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposOperacion"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_OPERACION" ValueChanged="CambiarTipoOperacion"
+                                       Label="Tipo de operación" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="2">
+                            <MudTextField Variant="Variant.Outlined" T="string" Value="@_model.DES_TIPO_PEDIDO_COMERCIAL"
+                                          ReadOnly="true" Label="Tipo de Pedido" Disabled="true" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposComprobantePago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_COMPROBANTE_PAGO" ValueChanged="@(v => _model.COD_TIPO_COMPROBANTE_PAGO = v)"
+                                       Label="Tipo de Documento" Disabled="true" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <MudTextField Variant="Variant.Outlined" T="string" Value="@(_cabeceraGrabada ? _model.NUM_PEDIDO_COMERCIAL?.ToString() : "(automático)")" ReadOnly="true"
+                                          Label="N° Pedido" Disabled="true" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 2 — Descripción + las dos fechas. En una proforma va también el
+                           número que le puso el proveedor a su proforma (NUM_DOCUMENTO, hasta 20
+                           caracteres), entre la descripción y las fechas, que se achican para
+                           darle lugar: ver el <style> del principio (pc-fila2-*).
+                           La fila va en su propia grilla, dentro de un MudItem de 12: así, se
+                           reparta como se reparta, la fila 3 empieza siempre con el Proveedor.
+                           Con los mismos Spacing, la grilla de adentro deja cada campo donde
+                           estaba (sus márgenes negativos se comen el padding del MudItem). *@
+                        <MudItem xs="12" Class="pc-fila2">
+                            <MudGrid Spacing="2">
+                                <MudItem xs="12" md="6" Class="@(EsProforma ? "pc-fila2-desc" : null)">
+                                    <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="DES_PEDIDO_COMERCIAL"
+                                                @bind-Value="_model.DES_PEDIDO_COMERCIAL" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                                </MudItem>
+                                @if (EsProforma)
+                                {
+                                    <MudItem xs="4" Class="pc-fila2-chico">
+                                        <MudTextField Variant="Variant.Outlined" T="string" @bind-Value="_model.NUM_DOCUMENTO" MaxLength="20"
+                                                      Label="Nº Proforma Proveedor" Disabled="_readonly" Class="mb-3" />
+                                    </MudItem>
+                                }
+                                <MudItem xs="6" md="3" Class="@(EsProforma ? "pc-fila2-chico" : null)">
+                                    <MudDatePicker Variant="Variant.Outlined" Label="Fecha de pedido" Date="_fecPedido" DateChanged="CambiarFechaPedidoAsync" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                                </MudItem>
+                                <MudItem xs="6" md="3" Class="@(EsProforma ? "pc-fila2-chico" : null)">
+                                    <MudDatePicker Variant="Variant.Outlined" Label="Fecha de vencimiento" @bind-Date="_fecVencimiento" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                                </MudItem>
+                            </MudGrid>
+                        </MudItem>
+
+                        @* FILA 3 — Regla 1 (Cliente/Proveedor) y regla 2 (Vendedor). *@
+                        <MudItem xs="12" md="6">
+                            <AriaCombo TItem="ComboboxItem" Items="_entidadesCliente"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.COD_ENTIDAD?.ToString())"
+                                       ValueChanged="CambiarEntidad"
+                                       SearchFunc="BuscarEntidadClienteProveedorAsync" MinCharacters="2" TextoInicial="@_textoEntidadInicial"
+                                       Label="@_labelEntidad" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            @* En operación positiva el vendedor es la entidad del usuario
+                               logueado: no se elige, se completa sola y queda bloqueada. En las
+                               demás se busca entre las entidades que dependen del proveedor del
+                               pedido (COD_ENTIDAD_DEPENDENCIA), por eso ahí sí hay SearchFunc.
+                               El SearchFunc va en null cuando el vendedor es fijo, para que el
+                               combo no ofrezca buscar algo que no se puede cambiar.
+
+                               El cast del SearchFunc es necesario: un ternario entre null y un
+                               grupo de métodos no infiere tipo por sí solo. Esta explicación va
+                               aquí arriba y no al lado del atributo porque un comentario Razor
+                               metido ENTRE los atributos de una etiqueta se interpreta como el
+                               nombre de un atributo y revienta al renderizar. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_entidadesVendedor"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.COD_ENTIDAD_VENDEDOR?.ToString())"
+                                       ValueChanged="@(v => _model.COD_ENTIDAD_VENDEDOR = decimal.TryParse(v, out var n) ? n : null)"
+                                       TextoInicial="@_textoEntidadVendedorInicial"
+                                       Label="@_labelVendedor" Disabled="@(_readonly || _vendedorEsDeSesion)" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 4 — Dirección de Entrega (regla 4), País (regla 9) e Incoterm
+                           (regla 15), repartida 6/3/3: la Dirección es el texto más largo de
+                           los tres, País e Incoterm son códigos cortos. *@
+                        <MudItem xs="12" md="6">
+                            @* De dónde salen las direcciones lo decide FLG_POSITIVO del Tipo de
+                               Operación: en las COMPRAS (false) se entrega en una sucursal propia
+                               y en las ventas (true) en una dirección del cliente.
+                               El pedido tiene una columna distinta para cada caso —COD_SUCURSAL
+                               (texto) y NUM_SECUENCIA_DIRECCION (numérico)—, así que el combo
+                               escribe en una o en la otra y deja la que no corresponde en null.
+                               Nunca quedan las dos con valor. *@
+                            <AriaCombo TItem="ComboboxItem" Items="@(_direccionesDeSucursal ? _sucursales : _direcciones)"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_direccionesDeSucursal ? _model.COD_SUCURSAL : _model.NUM_SECUENCIA_DIRECCION?.ToString())"
+                                       ValueChanged="CambiarDireccionEntrega"
+                                       Label="@(_direccionesDeSucursal ? "Dirección de Entrega (sucursal)" : "Dirección de Entrega")"
+                                       Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_paises"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_PAIS_DESTINO" ValueChanged="@(v => _model.COD_PAIS_DESTINO = v)"
+                                       Label="País Destino / Origen" Disabled="@(_readonly || _flgComercioExterior != true)" Class="mb-3" />
+                        </MudItem>
+                        @* Incoterm (regla 15): se habilita únicamente cuando el Tipo de
+                           Operación es de comercio exterior. Queda con la misma condición que
+                           País Destino/Origen, que es su vecino y responde a lo mismo: los dos
+                           sólo tienen sentido en una operación de importación o exportación.
+                           AplicarTipoOperacion ya limpia COD_INCOTERM cuando FLG_COMERCIO_EXTERIOR
+                           deja de ser true, así que el campo no puede quedar con un valor viejo
+                           mientras está deshabilitado. *@
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_incoterms"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_INCOTERM" ValueChanged="@(v => _model.COD_INCOTERM = v)"
+                                       Label="Incoterm" Disabled="@(_readonly || _flgComercioExterior != true)" Class="mb-3" />
+                        </MudItem>
+                        @* FILA 5 — Los cuatro campos de la operación positiva (reglas 3, 5, 6
+                           y 17). Antes se ocultaban cuando FLG_POSITIVO no era true; ahora
+                           están SIEMPRE a la vista y se deshabilitan cuando el tipo de
+                           operación no los admite. Es el mismo criterio que este formulario ya
+                           usa con País Destino, Motivo y los Centros de Costo: el campo se ve,
+                           así el usuario sabe que existe, pero no se puede editar si la regla
+                           no aplica. Deshabilitado además significa que no se toca el valor
+                           guardado. *@
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_unidadesComerciales"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_UNIDAD_COMERCIAL?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_UNIDAD_COMERCIAL = decimal.TryParse(v, out var n) ? n : null)"
+                                       Label="Unidad Comercial" Disabled="@(_readonly || _flgPositivo != true)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_temporadas"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_TEMPORADA?.ToString())"
+                                       ValueChanged="CambiarTemporada"
+                                       Label="Temporada" Disabled="@(_readonly || _flgPositivo != true)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_colecciones"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_COLECCION?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_COLECCION = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Colección" Disabled="@(_readonly || _flgPositivo != true || _model.NUM_TEMPORADA is null)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="NUM_PURCHASE_ORDER"
+                                        @bind-Value="_model.NUM_PURCHASE_ORDER"
+                                        Disabled="@(_readonly || _flgPositivo != true || _flgComercioExterior != true)" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 6 — Los cuatro campos cortos, tal como los tienes en pantalla.
+                           Lote de Control (regla 18) también pasa a estar siempre visible:
+                           se habilita sólo en operaciones NO positivas con FLG_LOTE_CONTROL. *@
+                        <MudItem xs="6" md="3">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="NUM_TRACKING"
+                                        @bind-Value="_model.NUM_TRACKING" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_lotesControl"
+                                       TextFunc="@(t => EtiquetaLote(t))" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_LOTE_CONTROL?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_LOTE_CONTROL = decimal.TryParse(v, out var n) ? n : null)"
+                                       Label="Lote de Control" Disabled="@(_readonly || _flgPositivo != false || _flgLoteControl != true)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <MudDatePicker Variant="Variant.Outlined" Label="Entrega Prog. Pública" @bind-Date="_fecEntregaPublica" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <MudDatePicker Variant="Variant.Outlined" Label="Fecha de entrega" @bind-Date="_fecEntrega" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+
+                        @* FILA 7 — Regla 19: Estado, nunca se edita a mano. Si el Tipo de
+                           Operación sincroniza con otro (una Orden de Compra que nació de una
+                           Proforma, por ejemplo), el SP arma DES_PEDIDO_ORIGEN y se muestra al
+                           lado — mismo lugar donde el usuario ya está mirando el estado, que
+                           es el otro dato que cambia cuando el pedido viene de una conversión. *@
+                        @* Orden: Estado, Origen — Estado abre porque es lo primero que se
+                           mira; Origen cierra porque solo aparece cuando el pedido vino de una
+                           conversión. Tipo de Pedido se movió a la FILA 1, junto a Tipo de
+                           Operación (del que se hereda). *@
+                        <MudItem xs="12" md="@(string.IsNullOrWhiteSpace(_model.DES_PEDIDO_ORIGEN) ? 12 : 6)">
+                            <div class="d-flex align-end gap-1">
+                                <div style="flex:1;min-width:0;">
+                                    <EstadoCombo CodTipoEstado="@_codTipoEstadoDesdeOperacion"
+                                                 @bind-Value="_model.COD_ESTADO"
+                                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                                 Disabled="true" Class="mb-3" />
+                                </div>
+                                @* Historial de estados: sólo tiene sentido con la cabecera ya
+                                   grabada, porque antes no existe ningún NUM_PEDIDO_COMERCIAL
+                                   contra el cual pedirlo. *@
+                                @if (_cabeceraGrabada)
+                                {
+                                    <MudTooltip Text="Ver historial de estados">
+                                        <MudIconButton Icon="@Icons.Material.Filled.History" Size="Size.Small"
+                                                       Style="@EstilosBoton.Confirmar" Class="mb-3"
+                                                       OnClick="AbrirHistorialEstadosAsync" />
+                                    </MudTooltip>
+                                }
+                            </div>
+                        </MudItem>
+                        @if (!string.IsNullOrWhiteSpace(_model.DES_PEDIDO_ORIGEN))
+                        {
+                            <MudItem xs="12" md="6">
+                                <MudTextField Variant="Variant.Outlined" T="string" Label="Origen" Value="@_model.DES_PEDIDO_ORIGEN"
+                                              ReadOnly="true" Disabled="true" Class="mb-3"
+                                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.CallSplit" />
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+
+            <!-- ══════════════ PANEL DERECHO ══════════════ -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3 d-flex flex-column" Style="border:1px solid var(--line);height:100%;">
+                    <MudGrid Spacing="2">
+                        @* FILA 1 — El bloque de pago completo: con qué se paga y en qué
+                           condiciones. Tipo de cambio va angosto (md=2) porque es un número
+                           corto y además lo completa el sistema (regla 14), no se tipea. *@
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_MONEDA" ValueChanged="CambiarMonedaAsync"
+                                       Label="Moneda" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="2">
+                            <MudNumericField Variant="Variant.Outlined" T="decimal?" Value="_model.FAC_TIPO_CAMBIO" ReadOnly="true" Label="Tipo de cambio" Format="@Decimales.FormatoFactor" Disabled="true" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_formasPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_FORMA_PAGO" ValueChanged="@(v => _model.COD_FORMA_PAGO = v)"
+                                       Label="Forma de pago" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_condicionesPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_CONDICION_PAGO" ValueChanged="@(v => _model.COD_CONDICION_PAGO = v)"
+                                       Label="Condición de pago" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 2 — Descuento: el tipo elegido trae la tasa, que no se tipea. *@
+                        <MudItem xs="12" md="6">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposDescuento"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_DESCUENTO" ValueChanged="CambiarTipoDescuento"
+                                       Label="Tipo de descuento" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudNumericField Variant="Variant.Outlined" T="decimal?" Value="_model.TAS_DESCUENTO" ReadOnly="true" Label="Tasa de descuento (%)" Format="@Decimales.FormatoPorcentual" Disabled="true" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 3 — Motivo (regla 16, habilitado solo si el Tipo de Operación
+                           tiene tipo de motivo) junto a los dos Centros de Costo (reglas 10 y
+                           11, visibles solo si NO es positiva y habilitados con
+                           FLG_CENTRO_COSTO). Los tres responden a "a cuenta de qué va esto". *@
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_motivos"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_MOTIVO" ValueChanged="@(v => _model.COD_MOTIVO = v)"
+                                       Label="Motivo" Disabled="@(_readonly || string.IsNullOrWhiteSpace(_model.COD_TIPO_MOTIVO))" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_centrosCosto"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_CENTRO_COSTO_SOLICITANTE"
+                                       ValueChanged="@(v => _model.COD_CENTRO_COSTO_SOLICITANTE = v)"
+                                       Label="Centro de Costo Solicitante" Disabled="@(_readonly || _flgPositivo != false || _flgCentroCosto != true)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_centrosCosto"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_CENTRO_COSTO_DESTINO"
+                                       ValueChanged="@(v => _model.COD_CENTRO_COSTO_DESTINO = v)"
+                                       Label="Centro de Costo Requiriente" Disabled="@(_readonly || _flgPositivo != false || _flgCentroCosto != true)" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 4 — Reglas 12 y 13: Proyecto y Rendición de Cuentas. Igual que
+                           los campos de la fila 5 del panel izquierdo, ahora se ven siempre y
+                           se habilitan sólo en operaciones NO positivas cuyo Tipo de Operación
+                           tenga FLG_PROYECTO. *@
+                        <MudItem xs="12" md="6">
+                            @* Proyecto pasa de campo numérico a combo: el número suelto obligaba a
+                               saberlo de memoria. El catálogo llega en el LOADCOMBOS. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_proyectos"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_PROYECTO?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_PROYECTO = decimal.TryParse(v, out var n) ? n : null)"
+                                       Label="Proyecto" Disabled="@(_readonly || _flgPositivo != false || _flgProyecto != true)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudNumericField Variant="Variant.Outlined" T="decimal?" @bind-Value="_model.NUM_RENDICION_CUENTAS" Label="Rendición de Cuentas"
+                                             Disabled="@(_readonly || _flgPositivo != false || _flgProyecto != true)" Class="mb-3" />
+                        </MudItem>
+
+                        @* FILA 5 — Observación, a todo el ancho y al final. *@
+                        <MudItem xs="12">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="DES_OBSERVACION"
+                                        @bind-Value="_model.DES_OBSERVACION" Lines="4" Disabled="_readonly" Class="mb-3" />
+
+                            @* Notificación en curso, debajo de la observación. Ya no va
+                               alineada a la derecha: ahora es un campo con marco, así que
+                               toma el ancho de la fila como cualquier otro. *@
+                            <NotificacionLinea Numero="@_model.NUM_NOTIFICACION" Descripcion="@_model.DES_NOTIFICACION"
+                                               Fecha="@_model.FEC_NOTIFICACION" Estado="@_model.DES_ESTADO_NOTIFICACION"
+                                               BackColor="@_model.DES_BACKCOLOR_NOTIFICACION" ForeColor="@_model.DES_FORECOLOR_NOTIFICACION" />
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudSpacer />
+                    <div class="d-flex align-center gap-2 mt-4">
+                        <MudSpacer />
+                        @* Botones configurados con FLG_DIALOG. Mismo lugar que en el diálogo
+                           modal: a la izquierda de Cerrar y Grabar, separados por una línea.
+                           Se muestran sólo con la cabecera ya grabada porque casi todos
+                           (imprimir, exportar, aprobar) actúan sobre un documento que existe;
+                           antes de grabar no hay número de pedido al que referirse. *@
+                        @if (_cabeceraGrabada && !string.IsNullOrWhiteSpace(CodAplicacion))
+                        {
+                            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                             Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                                             CodTipoEstado="@_model.COD_TIPO_ESTADO" CodEstadoActual="@_model.COD_ESTADO" Fila="@_model" />
+                            <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+                        }
+                        <MudButton StartIcon="@Icons.Material.Filled.Close" OnClick="Cerrar" Disabled="_saving" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+                        @if (!_readonly)
+                        {
+                            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Save" Disabled="_saving">
+                                @(Modo == CrudModo.Delete ? "Eliminar" : _cabeceraGrabada ? "Guardar cambios" : "Grabar cabecera")
+                            </MudButton>
+                        }
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        @* ── Detalle ── Vive en su propio marco y no se habilita hasta que la cabecera esté
+           grabada: las líneas se insertan contra el número de pedido, que lo genera la base
+           recién al grabar. Los requerimientos que originan el pedido están en su propia
+           pestaña, al lado de esta pantalla — la maneja PedidosComerciales.razor. *@
+        <MudPaper Elevation="0" Class="mt-4 pa-3" Style="border:1px solid var(--line);">
+            <div class="d-flex align-center gap-2 mb-2">
+                <MudText Typo="Typo.subtitle2">Líneas del pedido</MudText>
+                @if (!_cabeceraGrabada)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text"
+                             Icon="@Icons.Material.Filled.Lock">Graba la cabecera para cargar líneas</MudChip>
+                }
+                <MudSpacer />
+                <GridClearFiltersButton OnClear="LimpiarFiltrosDetalle" HasFilters="@(_filtrosDetalle.Any(f => f.Value is not null))" />
+                @if (!_readonly && _cabeceraGrabada && !_porRequerimientos)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarItem">Agregar línea</MudButton>
+                }
+            </div>
+
+            @* Las líneas y los cálculos van lado a lado: 4/5 para el detalle, 1/5 para los
+               importes. En pantalla angosta el flex-wrap los apila y cada uno toma el ancho
+               completo, así que no hay que mantener breakpoints aparte. *@
+            <div class="d-flex gap-3" style="flex-wrap:wrap;align-items:flex-start;">
+            <div class="@(_cabeceraGrabada ? "" : "detalle-bloqueado")" data-resizable-grid="pedido-comercial-detalle" style="position:relative;flex:4 1 480px;min-width:0;">
+                <MudDataGrid T="Item" Items="@BaseDetalle(-1)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="_readonly" EditMode="DataGridEditMode.Cell"
+                             CommittedItemChanges="@(async (Item it) => await GuardarItem(it))"
+                             Hierarchy="true" Height="420px" FixedHeader="true">
+                    <Columns>
+                        <HierarchyColumn T="Item" Width="36px" />
+                        <TemplateColumn Sortable="false" Editable="false" Width="45px" CellStyle="text-align:right;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetalle == 0)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(0))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(0)" ValorDe="@(x => x.NUM_SECUENCIA?.ToString() ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetalle(0, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.NUM_SECUENCIA</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Width="420px" Editable="@(!_porRequerimientos)">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetalle == 1)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(1))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(1)" ValorDe="@(x => x.COD_PRODUCTO ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetalle(1, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <span class="mono" style="opacity:.65;">@it.COD_PRODUCTO</span>
+                                <span class="ml-1">@it.DES_PRODUCTO</span>
+                            </CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                @* TextoInicial se arma IGUAL que TextFunc ("COD — DES"). Antes era solo
+                                   DES_PRODUCTO, así que el código aparecía al elegir un producto y desaparecía
+                                   al reabrir el pedido: la misma línea se mostraba de dos formas distintas. *@
+                                <AriaCombo TItem="ProductoModel" Items="_productos"
+                                           TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")" ValueFunc="@(x => x.COD_PRODUCTO)"
+                                           Value="@it.COD_PRODUCTO" ValueChanged="@(v => AsignarProducto(it, v))"
+                                           SearchFunc="BuscarProductoAsync" MinCharacters="2"
+                                           TextoInicial="@($"{it.COD_PRODUCTO} — {it.DES_PRODUCTO}")"
+                                           Disabled="_readonly" Class="" />
+                            </EditTemplate>
+                        </TemplateColumn>
+                        @* Proceso y orden de producción, en UNA celda de resumen, igual que en
+                           Requerimientos: cuatro combos en cascada no entran en una grilla que ya
+                           lleva producto, lote, unidades, cantidades y precios.
+
+                           Editable="false" es de la GRILLA, no del dato: la celda no entra en
+                           edición en línea, se abre el diálogo con un clic. Ahí sí se eligen los
+                           cuatro. *@
+                        <TemplateColumn Sortable="false" Editable="false" Width="300px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Lote / Proceso / Orden" Activo="@(_ordenColDetalle == 2)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(2))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(2)" ValorDe="@(x => ResumenLoteOrden(x))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetalle(2, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @{ var itOp = context.Item; }
+                                <div style="display:flex;align-items:center;gap:2px;">
+                                    <div @onclick="@(() => AbrirOrdenProduccionAsync(itOp))"
+                                         title="@(_readonly ? "Ver lote, proceso y orden de producción" : "Clic para elegir lote, proceso y orden de producción")"
+                                         style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;">
+                                        <span class="mono">@ResumenLoteOrden(itOp)</span>
+                                        @if (!_readonly)
+                                        {
+                                            <MudIcon Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Style="opacity:.35;" />
+                                        }
+                                    </div>
+                                    @* El "+" de crear lote sobrevive a la fusión de columnas: era
+                                       lo que evitaba mandar al usuario a otra pantalla y volver,
+                                       perdiendo la línea que estaba editando. Va FUERA del área
+                                       clicable del resumen, para que no abra el diálogo de paso. *@
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small"
+                                                       Disabled="@(_model.COD_ENTIDAD is null)"
+                                                       Title="@(_model.COD_ENTIDAD is null ? "Elige primero la entidad del pedido" : "Crear un lote nuevo para esta entidad")"
+                                                       OnClick="@(() => CrearLoteAsync(itOp))" />
+                                    }
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Editable="false" Width="60px" CellStyle="text-align:center;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-center gap-1">
+                                    <EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetalle == 3)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(3))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(3)" ValorDe="@(x => x.COD_UNIDAD_MEDIDA ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetalle(3, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@(string.IsNullOrWhiteSpace(context.Item.COD_UNIDAD_MEDIDA) ? "—" : context.Item.COD_UNIDAD_MEDIDA)</span></CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO" Sortable="false" Editable="@(!_porRequerimientos)" Width="110px" CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cantidad Propia" Activo="@(_ordenColDetalle == 4)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(4))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(4)" ValorDe="@(x => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetalle(4, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        @* CAN_PRODUCTO_ENTIDAD = "Cantidad Proveedor": la cantidad en la unidad del
+                           proveedor (ENTIDADES_PRODUCTOS.COD_UNIDAD_MEDIDA_ATENCION). El SP calcula
+                           VAL_TOTAL a partir de ESTA columna, no de Cantidad Propia — por eso se deja
+                           editable y no solo informativa, aunque venga precargada. *@
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO_ENTIDAD" Sortable="false" Editable="@(!_porRequerimientos)" Width="120px" CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cantidad Proveedor" Activo="@(_ordenColDetalle == 5)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(5))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(5)" ValorDe="@(x => x.CAN_PRODUCTO_ENTIDAD?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetalle(5, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        @* Unidad de Cantidad Proveedor. Desnormalizada, no se edita acá: la fija el
+                           producto en ENTIDADES_PRODUCTOS, no la línea del pedido. *@
+                        <TemplateColumn Sortable="false" Editable="false" Width="100px" CellStyle="text-align:center;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-center gap-1">
+                                    <EncabezadoOrdenable Texto="UM Proveedor" Activo="@(_ordenColDetalle == 6)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(6))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(6)" ValorDe="@(x => x.COD_UNIDAD_MEDIDAD_ENTIDAD ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetalle(6, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>@(string.IsNullOrWhiteSpace(context.Item.COD_UNIDAD_MEDIDAD_ENTIDAD) ? "—" : context.Item.COD_UNIDAD_MEDIDAD_ENTIDAD)</CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.PRE_UNITARIO" Sortable="false" Width="100px" CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoPrecioUnitario">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="P. Unitario" Activo="@(_ordenColDetalle == 7)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(7))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(7)" ValorDe="@(x => x.PRE_UNITARIO?.ToString(Decimales.FormatoPrecioUnitario) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetalle(7, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.TAS_DESCUENTO" Sortable="false" Width="90px" CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoPorcentual">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Desc. %" Activo="@(_ordenColDetalle == 8)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(8))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(8)" ValorDe="@(x => x.TAS_DESCUENTO?.ToString(Decimales.FormatoPorcentual) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(8)" ValoresActivosChanged="@(v => FiltroDetalle(8, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Sortable="false" Editable="false" Width="100px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Total" Activo="@(_ordenColDetalle == 9)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(9))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(9)" ValorDe="@(x => CalcularTotal(x).ToString("N2"))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(9)" ValoresActivosChanged="@(v => FiltroDetalle(9, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@(CalcularTotal(context.Item).ToString("N2"))</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                            <CellTemplate>
+                                @if (!_readonly)
+                                {
+                                    var it = context.Item;
+                                    <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Primary" OnClick="@(() => GuardarItemConAviso(it))" Title="Grabar línea" />
+                                    @if (!_porRequerimientos)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => QuitarItem(it))" Title="Quitar línea" />
+                                    }
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin líneas.</MudText></NoRecordsContent>
+                    @* Trazabilidad: de qué requerimiento(s) de stock salió esta línea. *@
+                    <ChildRowContent Context="lineaRow">
+                        <LineaRequerimientosStockSubgrid CodClaseOperacion="@(_model.COD_CLASE_OPERACION ?? "")"
+                                                          CodTipoOperacion="@(_model.COD_TIPO_OPERACION ?? "")"
+                                                          NumPedidoComercial="@(_model.NUM_PEDIDO_COMERCIAL ?? 0)"
+                                                          NumSecuencia="@(lineaRow.Item.NUM_SECUENCIA ?? 0)" />
+                    </ChildRowContent>
+                </MudDataGrid>
+                <div class="d-flex align-center gap-4 mt-2 mono" style="font-size:.82rem;opacity:.7;">
+                    <span>Líneas <b>@_items.Count</b></span>
+                    <span>Total <b>@_valTotalCalculado.ToString("N2")</b></span>
+                </div>
+                <div class="grid-resize-handle"></div>
+            </div>
+
+            @* ── Cálculos del pedido ─────────────────────────────────────────────────
+               Solo lectura: los importes los arma la base al grabar las líneas, no esta
+               pantalla. Se refresca junto con el detalle (ver CargarCalculoAsync). *@
+            @* data-resizable-grid con la MISMA clave que el detalle: así gridAutoAlto y el
+               tirador de alto tratan a las dos grillas como un grupo y quedan siempre a la
+               misma altura, incluso al arrastrar el borde o cambiar el tamaño de la ventana.
+               data-cols-key le da identidad propia SOLO para los anchos de columna, que no se
+               pueden compartir porque las columnas no son las mismas. *@
+            <div data-resizable-grid="pedido-comercial-detalle" data-cols-key="pedido-comercial-calculo"
+                 style="flex:1 1 200px;min-width:0;">
+                <MudDataGrid T="CalculoItem" Items="_calculos" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="true" Height="420px" FixedHeader="true">
+                    <Columns>
+                        <TemplateColumn Title="Concepto" Sortable="false" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.DES_TIPO_VALOR_CALCULO</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Tasa" Sortable="false" Width="60px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>
+                                @* Sin tasa la celda va vacía: un guion se leería como "tasa cero". *@
+                                <span class="mono">@(context.Item.TAS_IMPUESTO?.ToString("N2"))</span>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Valor" Sortable="false" Width="90px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>
+                                <span class="mono">@(context.Item.VAL_CALCULO?.ToString("N2") ?? "—")</span>
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent>
+                        <MudText Class="pa-4 mono" Style="opacity:.5;font-size:.8rem;">
+                            @(_cabeceraGrabada ? "Sin cálculos." : "Graba la cabecera.")
+                        </MudText>
+                    </NoRecordsContent>
+                </MudDataGrid>
+                <div class="d-flex align-center gap-4 mt-2 mono" style="font-size:.82rem;opacity:.7;">
+                    <span>Conceptos <b>@_calculos.Count</b></span>
+                </div>
+            </div>
+
+            </div>
+        </MudPaper>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string? CodClaseOperacion { get; set; }
+    [Parameter] public string? CodTipoOperacionSugerido { get; set; }
+    /// <summary>Códigos de la opción, para resolver los botones marcados con FLG_DIALOG.
+    /// Los pasa la pantalla de lista, que es la que los recibe del menú.</summary>
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Qué hacer con un botón del pie. Por ahora sólo deja el rastro en el log: el
+    /// flag define DÓNDE se muestra el botón, no qué hace, y cada acción concreta (imprimir,
+    /// exportar, aprobar) se conecta aquí cuando esté definida.</summary>
+    private async Task OnAccionDialog(BotonTreeviewItem b)
+    {
+        if (PedidosComerciales.ReversionDe(b, _model.NUM_PEDIDO_COMERCIAL) is { } rv) { await RevertirAsync(rv); return; }
+
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre el pedido {NumPedidoUrl}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(PedidoComercialDocumento), "Acción pendiente");
+    }
+
+    /// <summary>Mismo efecto que el botón de la grilla, sobre el documento abierto. Después
+    /// relee la cabecera: el SP le cambió el estado.</summary>
+    private async Task RevertirAsync(PedidosComerciales.Reversion rv)
+    {
+        var ok = await DialogService.ShowMessageBox(rv.Titulo, rv.Pregunta, yesText: "Revertir", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var url = $"{rv.Ruta}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}";
+        var resp = await Http.PostAsync(url, null);
+        if (!resp.IsSuccessStatusCode)
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PedidoComercialDocumento),
+                nameof(RevertirAsync), $"No se pudo completar: {rv.Titulo.ToLower()}");
+            return;
+        }
+        _huboCambios = true;
+        Snackbar.Add(rv.Exito, Severity.Success);
+        await RecargarCabeceraCompletaAsync();
+        StateHasChanged();
+    }
+
+    private Modelo _model = new();
+    private List<Item> _items = new();
+
+    // ── Filtro de columna, estilo Excel, para la grilla de líneas ─────────────────────────
+    // El buscador de valores por columna vuelve a agrupar los HIJOS con su padre: filtra
+    // sobre las líneas de PRIMER nivel (_items), que es lo que la grilla ya trata como filas;
+    // la trazabilidad de cada línea (ChildRowContent) sigue viva sin cambios.
+    private readonly Dictionary<int, HashSet<string>?> _filtrosDetalle = new();
+
+    private List<Item> BaseDetalle(int col) => AplicarFiltrosDetalle(OrdenarDetalle(_items), col);
+
+    private string ValorDetalle(Item x, int col) => col switch
+    {
+        0 => x.NUM_SECUENCIA?.ToString() ?? "",
+        1 => x.COD_PRODUCTO ?? "",
+        2 => ResumenLoteOrden(x),
+        3 => x.COD_UNIDAD_MEDIDA ?? "",
+        4 => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+        5 => x.CAN_PRODUCTO_ENTIDAD?.ToString(Decimales.FormatoCantidad) ?? "",
+        6 => x.COD_UNIDAD_MEDIDAD_ENTIDAD ?? "",
+        7 => x.PRE_UNITARIO?.ToString(Decimales.FormatoPrecioUnitario) ?? "",
+        8 => x.TAS_DESCUENTO?.ToString(Decimales.FormatoPorcentual) ?? "",
+        9 => CalcularTotal(x).ToString("N2"),
+        _ => ""
+    };
+
+    private int? _ordenColDetalle;
+    private bool _ordenAscDetalle = true;
+    private void ToggleOrdenDetalle(int col) { if (_ordenColDetalle == col) _ordenAscDetalle = !_ordenAscDetalle; else { _ordenColDetalle = col; _ordenAscDetalle = true; } }
+    private List<Item> OrdenarDetalle(List<Item> items) => _ordenColDetalle is not { } col ? items : _ordenAscDetalle ? items.OrderBy(x => ValorDetalle(x, col)).ToList() : items.OrderByDescending(x => ValorDetalle(x, col)).ToList();
+
+    private List<Item> AplicarFiltrosDetalle(List<Item> src, int ex)
+    {
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosDetalle) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<Item> q = src;
+        foreach (var (c, v) in _filtrosDetalle)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorDetalle(x, c)));
+        }
+        return q.ToList();
+    }
+
+    private void FiltroDetalle(int c, HashSet<string>? v) { _filtrosDetalle[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosDetalle() { foreach (var k in _filtrosDetalle.Keys.ToList()) _filtrosDetalle[k] = null; StateHasChanged(); }
+    private List<CalculoItem> _calculos = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    /// <summary>El pedido tiene líneas que vienen de requerimientos de stock. Con eso: no se
+    /// agregan ítems, no se cambian producto ni cantidades (vienen del requerimiento), no se
+    /// quitan líneas a mano (para eso está "Revertir" en la ficha de Requerimientos). Sólo
+    /// precio y descuento. Lo trae el SP (FLG_POR_REQUERIMIENTO) y se refresca al incorporar o revertir.</summary>
+    private bool _porRequerimientos => _model.FLG_POR_REQUERIMIENTO == true;
+
+    private async Task RefrescarPorRequerimientosAsync()
+    {
+        if (_model.NUM_PEDIDO_COMERCIAL is not decimal num || num <= 0) return;
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesRequerimientos}/registrados?numPedidoComercial={num.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            var lista = await Http.SafeGetAsync<List<RequerimientoStockRegistrado>>(url) ?? new();
+            _model.FLG_POR_REQUERIMIENTO = lista.Any(r => r.FLG_SECCION);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(RefrescarPorRequerimientosAsync)); }
+    }
+    private bool _cabeceraGrabada => _model.NUM_PEDIDO_COMERCIAL is not null && _model.NUM_PEDIDO_COMERCIAL > 0;
+
+    /// <summary>Abre el historial de estados del pedido ya grabado. El botón que lo llama
+    /// sólo se muestra con _cabeceraGrabada, así que NUM_PEDIDO_COMERCIAL siempre tiene
+    /// valor acá.</summary>
+    private async Task AbrirHistorialEstadosAsync()
+    {
+        var parametros = new DialogParameters
+        {
+            ["CodClaseOperacion"] = _model.COD_CLASE_OPERACION ?? "",
+            ["CodTipoOperacion"] = _model.COD_TIPO_OPERACION ?? "",
+            ["NumPedidoComercial"] = _model.NUM_PEDIDO_COMERCIAL ?? 0
+        };
+        await DialogService.ShowAsync<PedidoComercialEstadosDialog>("", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true });
+    }
+    private bool _huboCambios;
+    private readonly HashSet<int> _itemsNuevos = new();
+
+    private DateTime? _fecPedido, _fecVencimiento, _fecEntrega, _fecEntregaPublica;
+    private string? _textoEntidadInicial, _textoEntidadVendedorInicial;
+    private decimal _valTotalCalculado => _items.Sum(CalcularTotal);
+
+    private List<ComboboxItem> _tiposOperacion = new(), _entidadesCliente = new(), _entidadesVendedor = new(),
+        _monedas = new(), _formasPago = new(), _condicionesPago = new(), _tiposDescuento = new(),
+        _incoterms = new(), _paises = new(), _motivos = new(), _lotesControl = new(),
+        _tiposComprobantePago = new(), _unidadesComerciales = new(), _direcciones = new(),
+        _temporadas = new(), _colecciones = new(), _centrosCosto = new(), _proyectos = new(),
+        _sucursales = new();
+
+    /// <summary>True cuando la Dirección de Entrega debe salir de las sucursales propias en
+    /// vez de las direcciones de la entidad.
+    ///
+    /// Es el caso de la COMPRA (FLG_POSITIVO = false): la mercadería la recibimos nosotros,
+    /// así que se entrega en una sucursal propia. En la venta (true) se entrega en una
+    /// dirección del cliente.</summary>
+    private bool _direccionesDeSucursal => _flgPositivo == false;
+
+    /// <summary>Escribe la dirección elegida en la columna que corresponde según el origen, y
+    /// limpia la otra: si quedaran las dos cargadas, el pedido tendría dos direcciones de
+    /// entrega contradictorias y no habrea forma de saber cuál vale.</summary>
+    private void CambiarDireccionEntrega(string? valor)
+    {
+        if (_direccionesDeSucursal)
+        {
+            _model.COD_SUCURSAL = valor;
+            _model.NUM_SECUENCIA_DIRECCION = null;
+        }
+        else
+        {
+            _model.NUM_SECUENCIA_DIRECCION = decimal.TryParse(valor, out var n) ? n : null;
+            _model.COD_SUCURSAL = null;
+        }
+    }
+
+    /// <summary>Trae las sucursales la primera vez que hacen falta y las deja cacheadas. No
+    /// dependen de la entidad ni del pedido, así que una sola lectura por pantalla alcanza.
+    /// Se usa el SHOWALL y no el combobox porque el combo tiene que mostrar la DIRECCIÓN de
+    /// la sucursal, y el _SHOWCOMBOX devuelve el nombre.</summary>
+    private async Task AsegurarSucursalesAsync()
+    {
+        if (!_direccionesDeSucursal || _sucursales.Count > 0) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Sucursales>>>(
+                ApiRoutes.Estandar.Sucursales);
+            _sucursales = (r?.Data ?? new())
+                .Select(x => new ComboboxItem
+                {
+                    Id = x.COD_SUCURSAL,
+                    // Alguna sucursal puede no tener la dirección cargada: en ese caso se
+                    // muestra su nombre, para no dejar una opción en blanco imposible de elegir.
+                    Texto = string.IsNullOrWhiteSpace(x.DES_DIRECCION) ? x.DES_SUCURSAL : x.DES_DIRECCION
+                }).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(AsegurarSucursalesAsync)); }
+    }
+    /// <summary>Tipos de documento agrupados por tipo de operación, tal como los trajo el
+    /// LOADCOMBOS. Reemplaza la llamada al servidor que antes se hacía cada vez que el
+    /// usuario cambiaba de Tipo de Operación.</summary>
+    private Dictionary<string, List<ComboboxItem>> _comprobantesPorOperacion = new();
+    private List<ProductoModel> _productos = new();
+
+    /// <summary>Ahora incluye el propio COD_TIPO_ENTIDAD del Tipo de Operación (regla 1: se
+    /// toma directo de la tabla, no se infiere VEN/PRV a partir de FLG_POSITIVO) y los tres
+    /// flags nuevos de las reglas 10-11, 12-13 y 18 — ver nota al inicio del archivo sobre el
+    /// supuesto de que ya existen en COMERCIAL.TIPOS_OPERACION.</summary>
+    private class TipoOperacionLite
+    {
+        public string COD_TIPO_OPERACION { get; set; } = "";
+        public string DES_TIPO_OPERACION { get; set; } = "";
+        public int? COD_TIPO_ESTADO_RELACIONADO { get; set; }
+        public bool? FLG_POSITIVO { get; set; }
+        public bool? FLG_COMERCIO_EXTERIOR { get; set; }
+        public string? COD_TIPO_ENTIDAD { get; set; }
+        public bool? FLG_CENTRO_COSTO { get; set; }
+        public bool? FLG_PROYECTO { get; set; }
+        public bool? FLG_LOTE_CONTROL { get; set; }
+        // El SP (PROC_ESTANDAR_TIPOS_OPERACION_SHOWCOMBOX) ya trae estos dos vía JOIN a
+        // COMERCIAL.TIPOS_PEDIDO_COMERCIAL: sólo faltaba leerlos acá y copiarlos al pedido.
+        public string? COD_TIPO_PEDIDO_COMERCIAL { get; set; }
+        public string? DES_TIPO_PEDIDO_COMERCIAL { get; set; }
+    }
+    private readonly Dictionary<string, TipoOperacionLite> _tiposOperacionPorCodigo = new();
+    private int? _codTipoEstadoDesdeOperacion;
+    private bool? _flgPositivo;
+    private bool? _flgComercioExterior;
+    private bool? _flgCentroCosto;
+    private bool? _flgProyecto;
+    private bool? _flgLoteControl;
+
+    private string _labelEntidad => _flgPositivo switch { true => "Cliente", false => "Proveedor", null => "Entidad (cliente/proveedor)" };
+    private string _labelVendedor => _flgPositivo == true ? "Ejecutivo de Cuentas" : "Vendedor";
+
+    /// <summary>True cuando el vendedor lo fija la sesión (Tipo de Operación con
+    /// FLG_POSITIVO = true) en vez de elegirse entre las entidades dependientes.</summary>
+    private bool _vendedorEsDeSesion => _flgPositivo == true;
+
+    /// <summary>Completa el Vendedor con la entidad del usuario logueado
+    /// (UsuarioSesion.COD_ENTIDAD) cuando la operación es positiva.
+    ///
+    /// No pisa un valor ya grabado: al abrir un pedido viejo se respeta el vendedor con el
+    /// que se guardó, aunque hoy la sesión sea otro usuario. Sólo completa cuando está vacío,
+    /// que es el caso del pedido nuevo o del que acaba de cambiar de tipo de operación.
+    ///
+    /// Si el usuario logueado no tiene entidad vinculada, el campo queda vacío y bloqueado:
+    /// es un dato que falta en su ficha de usuario, no algo que se arregle desde el pedido.</summary>
+    private async Task AplicarVendedorDeSesionAsync()
+    {
+        if (!_vendedorEsDeSesion || _model.COD_ENTIDAD_VENDEDOR is not null) return;
+        try
+        {
+            var sesion = await AuthService.GetSesionAsync();
+            var codEntidad = sesion?.COD_ENTIDAD;
+            if (codEntidad is null) return;
+
+            _model.COD_ENTIDAD_VENDEDOR = codEntidad;
+            _textoEntidadVendedorInicial = await ResolverTextoEntidadAsync(codEntidad.Value);
+            _entidadesVendedor = new()
+            {
+                new ComboboxItem
+                {
+                    Id = codEntidad.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Texto = _textoEntidadVendedorInicial ?? codEntidad.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                }
+            };
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(AplicarVendedorDeSesionAsync)); }
+    }
+
+    private class ClaseOperacionLite { public int? COD_TIPO_MOTIVO_RELACIONADO { get; set; } }
+
+    private class TipoDescuentoLite
+    {
+        public int? COD_TIPO_DESCUENTO { get; set; }
+        public string DES_TIPO_DESCUENTO { get; set; } = "";
+        public decimal? TAS_DESCUENTO { get; set; }
+    }
+    private readonly Dictionary<string, decimal?> _tasaPorTipoDescuento = new();
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Item is null;
+        if (Item is not null)
+        {
+            _model = Item;
+            _fecPedido = Item.FEC_PEDIDO;
+            _fecVencimiento = Item.FEC_VECIMIENTO;
+            _fecEntrega = Item.FEC_ENTREGA;
+            _fecEntregaPublica = Item.FEC_ENTREGA_PUBLICA;
+            _textoEntidadInicial = string.IsNullOrWhiteSpace(Item.DES_COMERCIAL) ? Item.DES_NOMBRE_COMPLETO : Item.DES_COMERCIAL;
+        }
+        else
+        {
+            _model = new Modelo
+            {
+                COD_CLASE_OPERACION = CodClaseOperacion ?? "",
+                COD_TIPO_OPERACION = CodTipoOperacionSugerido ?? "",
+                FEC_PEDIDO = DateTime.Today
+            };
+            _fecPedido = DateTime.Today;
+        }
+    }
+
+    /// <summary>Si el pedido ya está grabado, se reemplaza el modelo por el SHOWBYID
+    /// completo antes de cualquier otra carga.
+    ///
+    /// Item llega de la fila de la grilla, que sale del SHOWALL/SEARCH — un listado, más
+    /// liviano a propósito. Columnas que solo trae el SHOWBYID (como DES_PEDIDO_ORIGEN)
+    /// llegaban vacías, aunque el dato sí existiera en la base: la pantalla mostraba lo que
+    /// tenía la grilla en ese momento, no el registro real. De paso esto también evita abrir
+    /// el documento con una fila desactualizada si alguien más lo modificó entre que se
+    /// cargó la lista y se hizo clic en Editar.</summary>
+    private async Task RecargarCabeceraCompletaAsync()
+    {
+        if (!_cabeceraGrabada) return;
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComerciales}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<Modelo>>(url);
+            if (r?.Data is null) return;
+
+            _model = r.Data;
+            _fecPedido = _model.FEC_PEDIDO;
+            _fecVencimiento = _model.FEC_VECIMIENTO;
+            _fecEntrega = _model.FEC_ENTREGA;
+            _fecEntregaPublica = _model.FEC_ENTREGA_PUBLICA;
+            _textoEntidadInicial = string.IsNullOrWhiteSpace(_model.DES_COMERCIAL) ? _model.DES_NOMBRE_COMPLETO : _model.DES_COMERCIAL;
+        }
+        catch (Exception ex)
+        {
+            // Si falla, se sigue trabajando con lo que trajo la grilla: es lo mismo que
+            // pasaba antes de este cambio, no una regresión.
+            await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(RecargarCabeceraCompletaAsync));
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RecargarCabeceraCompletaAsync();
+
+        var tareas = new List<Task>
+        {
+            // Un solo viaje trae nueve catálogos: tipos de operación, tipos de documento por
+            // operación, países, incoterms, monedas, formas y condiciones de pago, tipos de
+            // descuento (con su tasa) y proyectos. Antes eran nueve llamadas HTTP.
+            CargarCombosAsync(),
+            // Los lotes NO se cargan acá: dependen de la entidad del pedido y los trae
+            // CargarDependientesDeEntidadAsync. Pedirlos sueltos volvería a llenar el combo
+            // con los lotes de todas las entidades, que es justo lo que hay que evitar.
+            // Los dos Centros de Costo (Solicitante y Requiriente) salen del mismo catálogo:
+            // se carga una sola vez y se comparte entre los dos combos.
+            CargarComboAsync($"{ApiRoutes.Contabilidad.CentrosCosto}/combobox", l => _centrosCosto = l),
+            ResolverTipoMotivoDesdeClaseAsync(),
+        };
+        await Task.WhenAll(tareas);
+
+        if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_OPERACION)) AplicarTiposComprobantePago(_model.COD_TIPO_OPERACION);
+        if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_MOTIVO)) await CargarMotivosAsync(_model.COD_TIPO_MOTIVO);
+        if (_model.COD_ENTIDAD_VENDEDOR is not null) _textoEntidadVendedorInicial = await ResolverTextoEntidadAsync(_model.COD_ENTIDAD_VENDEDOR.Value);
+        if (_model.COD_ENTIDAD is not null) await CargarDependientesDeEntidadAsync(_model.COD_ENTIDAD.Value);
+        // Sin esto el combo de Vendedor quedaría vacío al abrir un pedido guardado: mostraría
+        // el texto del vendedor actual pero no habrea con qué reemplazarlo.
+        if (!_vendedorEsDeSesion) await CargarVendedoresDeEntidadAsync();
+        if (_model.NUM_TEMPORADA is not null && _model.COD_ENTIDAD is not null) await CargarColeccionesAsync(_model.COD_ENTIDAD.Value, _model.NUM_TEMPORADA.Value);
+        if (_cabeceraGrabada) await CargarDetalleAsync(_model.NUM_PEDIDO_COMERCIAL!.Value);
+        // Recién acá están las líneas: se repasa la lista de lotes para que los que ya están
+        // grabados en el detalle sigan visibles aunque no sean de la entidad del pedido.
+        AsegurarLotesEnUso();
+        await CargarCalculoAsync();
+        if (!_model.FAC_TIPO_CAMBIO.HasValue) await CargarTipoCambioAsync();
+    }
+
+    /// <summary>Lo que se lee en el combo de lotes: la descripción, o el NÚMERO cuando no
+    /// tiene descripción.
+    ///
+    /// Sin esto, un lote sin DES_LOTE_CONTROL se dibujaba como una opción EN BLANCO: una
+    /// franja de color en la lista, sin texto, que no se puede identificar ni buscar. Existe,
+    /// se puede elegir y se graba — pero el usuario no tiene forma de saber cuál es.
+    ///
+    /// No se oculta el lote: el dato es suyo y tiene derecho a verlo. Se muestra por su
+    /// número, que siempre está.</summary>
+    private static string EtiquetaLote(ComboboxItem t)
+        => string.IsNullOrWhiteSpace(t.Texto) ? (t.Id ?? "") : t.Texto;
+
+    /// <summary>Crea un lote para la entidad del pedido y lo deja elegido en la línea.
+    ///
+    /// El lote queda GRABADO apenas se confirma el diálogo, aunque después se cancele la
+    /// edición de la línea. Es inevitable —el número lo asigna el servidor al insertarlo— y
+    /// tampoco es grave: un lote de más sin usar no rompe nada, mientras que pedirle al
+    /// usuario que lo cree en otra pantalla sí le hace perder la línea que estaba editando.</summary>
+    private async Task CrearLoteAsync(Item it)
+    {
+        if (_readonly || _model.COD_ENTIDAD is null) return;
+
+        var parametros = new DialogParameters
+        {
+            ["CodEntidad"] = _model.COD_ENTIDAD.Value,
+            ["DesEntidad"] = _textoEntidadInicial
+        };
+
+        var dlg = await DialogService.ShowAsync<LoteRapidoDialog>("Nuevo lote de control",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+
+        if ((await dlg.Result) is not { Canceled: false, Data: LoteRapidoDialog.Creado creado }) return;
+
+        // Entra a la lista y queda seleccionado en la línea, sin releer todo el combo: el lote
+        // es de esta entidad por construcción, así que no hace falta preguntarle a la base si
+        // corresponde.
+        if (!_lotesControl.Any(x => string.Equals(x.Id, creado.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase)))
+            _lotesControl.Insert(0, new ComboboxItem { Id = creado.NUM_LOTE_CONTROL, Texto = creado.DES_LOTE_CONTROL ?? creado.NUM_LOTE_CONTROL });
+
+        it.NUM_LOTE_CONTROL = creado.NUM_LOTE_CONTROL;
+        StateHasChanged();
+    }
+
+    /// <summary>Mete en la lista de lotes los que el documento YA tiene grabados y que la
+    /// entidad actual no ofrece — el de la cabecera y el de cada línea.
+    ///
+    /// Es la contracara obligatoria de filtrar por entidad. Un pedido viejo, o uno al que se
+    /// le cambió la entidad, puede tener un lote que ya no está en la lista; sin esto el
+    /// combo se dibuja con un valor que no está entre sus opciones y se ve VACÍO, mientras el
+    /// dato sigue grabado. El usuario creería que no tiene lote y en la base sí lo tiene.
+    ///
+    /// Se agregan MARCADOS, para que se distingan de los que sí son de la entidad. No se
+    /// borran solos: si hay que cambiarlos, que lo decida quien mira la pantalla.</summary>
+    private void AsegurarLotesEnUso()
+    {
+        var enUso = _items.Select(x => x.NUM_LOTE_CONTROL)
+                          .Append(_model.NUM_LOTE_CONTROL?.ToString())
+                          .Where(v => !string.IsNullOrWhiteSpace(v))
+                          .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var lote in enUso)
+        {
+            if (_lotesControl.Any(x => string.Equals(x.Id, lote, StringComparison.OrdinalIgnoreCase))) continue;
+            _lotesControl.Insert(0, new ComboboxItem { Id = lote!, Texto = "(de otra entidad)" });
+        }
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarComboAsync)); }
+    }
+
+    /// <summary>PROC_COMERCIAL_PEDIDOS_COMERCIALES_LOADCOMBOS — los catálogos que no
+    /// dependen de nada que el usuario elija dentro de la pantalla, en una sola llamada.
+    /// Sigue el mismo patrón que el resto de los módulos (ver TiposOperacion.Loadcombos).
+    ///
+    /// Tipos de Documento entra igual aunque SÍ dependa del Tipo de Operación: se traen
+    /// todos los pares de la clase y después se filtran en memoria, así cambiar de tipo de
+    /// operación ya no cuesta un viaje al servidor.</summary>
+    private async Task CargarCombosAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodClaseOperacion)) return;
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesLoadcombos}?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<LoadCombosResult>>(url);
+            var d = r?.Data;
+            if (d is null) return;
+
+            // TiposOperacion viene tipado (con los flags): se arma el combo para la vista y
+            // se indexa aparte, porque AplicarTipoOperacion necesita los flags completos.
+            _tiposOperacion  = d.TiposOperacion.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION }).ToList();
+            IndexarTiposOperacion(d.TiposOperacion);
+            await AsegurarSucursalesAsync();
+            await AplicarVendedorDeSesionAsync();
+            _paises          = d.Paises;
+            _incoterms       = d.Incoterms;
+            _monedas         = d.Monedas;
+            _formasPago      = d.FormasPago;
+            _condicionesPago = d.CondicionesPago;
+            _proyectos       = d.Proyectos;
+
+            _comprobantesPorOperacion = d.TiposComprobantePago
+                .GroupBy(x => x.COD_TIPO_OPERACION)
+                .ToDictionary(g => g.Key,
+                              g => g.Select(x => new ComboboxItem { Id = x.COD_TIPO_COMPROBANTE_PAGO, Texto = x.DES_TIPO_COMPROBANTE_PAGO }).ToList());
+
+            _tiposDescuento = d.TiposDescuento
+                .Select(t => new ComboboxItem { Id = t.COD_TIPO_DESCUENTO?.ToString() ?? "", Texto = t.DES_TIPO_DESCUENTO })
+                .ToList();
+            _tasaPorTipoDescuento.Clear();
+            foreach (var t in d.TiposDescuento) _tasaPorTipoDescuento[t.COD_TIPO_DESCUENTO?.ToString() ?? ""] = t.TAS_DESCUENTO;
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarCombosAsync)); }
+    }
+
+    private class LoadCombosResult
+    {
+        public List<TipoOperacionLite> TiposOperacion { get; set; } = new();
+        public List<TipoComprobantePagoDeOperacion> TiposComprobantePago { get; set; } = new();
+        public List<ComboboxItem> Paises          { get; set; } = new();
+        public List<ComboboxItem> Incoterms       { get; set; } = new();
+        public List<ComboboxItem> Monedas         { get; set; } = new();
+        public List<ComboboxItem> FormasPago      { get; set; } = new();
+        public List<ComboboxItem> CondicionesPago { get; set; } = new();
+        public List<TipoDescuentoConTasa> TiposDescuento { get; set; } = new();
+        public List<ComboboxItem> Proyectos       { get; set; } = new();
+    }
+    private class TipoComprobantePagoDeOperacion
+    {
+        public string COD_TIPO_OPERACION        { get; set; } = "";
+        public string COD_TIPO_COMPROBANTE_PAGO { get; set; } = "";
+        public string DES_TIPO_COMPROBANTE_PAGO { get; set; } = "";
+    }
+    private class TipoDescuentoConTasa
+    {
+        public int?     COD_TIPO_DESCUENTO { get; set; }
+        public string   DES_TIPO_DESCUENTO { get; set; } = "";
+        public decimal? TAS_DESCUENTO      { get; set; }
+    }
+
+    /// <summary>Tipos de Operación queda con los datos que ya trajo el LOADCOMBOS; esto sólo
+    /// rearma el diccionario de flags que usa AplicarTipoOperacion.</summary>
+    private void IndexarTiposOperacion(List<TipoOperacionLite> lista)
+    {
+        _tiposOperacionPorCodigo.Clear();
+        foreach (var t in lista) _tiposOperacionPorCodigo[t.COD_TIPO_OPERACION] = t;
+        if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_OPERACION) && _tiposOperacionPorCodigo.TryGetValue(_model.COD_TIPO_OPERACION, out var actual))
+            AplicarTipoOperacion(actual);
+    }
+
+    /// <summary>El Tipo de Operación decide, sin que el usuario los toque: Tipo de Estado,
+    /// Tipo de Entidad a buscar (regla 1, directo de la tabla), visibilidad de Incoterm/
+    /// Unidad Comercial/Temporada-Colección/Purchase Order/Lote de Control/Centro de Costo/
+    /// Proyecto-Rendición según los flags correspondientes.</summary>
+    private void AplicarTipoOperacion(TipoOperacionLite t)
+    {
+        _codTipoEstadoDesdeOperacion = t.COD_TIPO_ESTADO_RELACIONADO;
+        _flgPositivo = t.FLG_POSITIVO;
+        _flgComercioExterior = t.FLG_COMERCIO_EXTERIOR;
+        _flgCentroCosto = t.FLG_CENTRO_COSTO;
+        _flgProyecto = t.FLG_PROYECTO;
+        _flgLoteControl = t.FLG_LOTE_CONTROL;
+        // Oculto: se guarda igual, solo no se elige a mano — regla 1 toma el tipo directo
+        // de la tabla en vez de inferir VEN/PRV desde FLG_POSITIVO.
+        _model.COD_TIPO_ENTIDAD = t.COD_TIPO_ENTIDAD;
+        if (t.FLG_COMERCIO_EXTERIOR != true) _model.COD_INCOTERM = null;
+        // Igual que Tipo de Documento: no se elige a mano, lo fija el Tipo de Operación.
+        // Pero acá SÍ hay que cuidar de NO pisar un valor ya grabado (mismo criterio que
+        // AplicarVendedorDeSesionAsync): esto se llama también al ABRIR un pedido existente
+        // -vía IndexarTiposOperacion, después de que RecargarCabeceraCompletaAsync ya trajo
+        // el valor real del SHOWBYID-, y aplicar el default del catálogo encima borraría lo
+        // que el pedido tiene grabado. Sólo se completa cuando está vacío: un pedido nuevo, o
+        // uno al que CambiarTipoOperacion recién le limpió el campo a propósito.
+        if (_model.COD_TIPO_PEDIDO_COMERCIAL is null)
+        {
+            _model.COD_TIPO_PEDIDO_COMERCIAL = t.COD_TIPO_PEDIDO_COMERCIAL;
+            _model.DES_TIPO_PEDIDO_COMERCIAL = t.DES_TIPO_PEDIDO_COMERCIAL ?? "";
+        }
+    }
+
+    private async Task CambiarTipoOperacion(string? codTipoOperacion)
+    {
+        _model.COD_TIPO_OPERACION = codTipoOperacion ?? "";
+        _model.COD_ESTADO = null;
+        _model.COD_ENTIDAD = null;
+        _textoEntidadInicial = null;
+        _entidadesCliente = new();
+        // Sin entidad no hay lotes que ofrecer: el combo se vacía en vez de quedarse con los
+        // de la entidad anterior, que ya no corresponden.
+        _lotesControl = new();
+        _model.COD_TIPO_COMPROBANTE_PAGO = null;
+        _tiposComprobantePago = new();
+        // Cambiar el tipo de operación puede cambiar el ORIGEN de la Dirección de Entrega
+        // (sucursales vs. entidad), así que la elección anterior deja de ser válida: se
+        // limpian las dos columnas y se vuelve a elegir.
+        _model.NUM_SECUENCIA_DIRECCION = null;
+        _model.COD_SUCURSAL = null;
+        _direcciones = new();
+        // El vendedor también cambia de origen con el tipo de operación (entidad de la sesión
+        // vs. dependientes del proveedor), así que el anterior deja de ser válido.
+        _model.COD_ENTIDAD_VENDEDOR = null;
+        _textoEntidadVendedorInicial = null;
+        _entidadesVendedor = new();
+        // Cambiar a mano el Tipo de Operación SÍ debe traer el Tipo de Pedido del nuevo tipo,
+        // aunque el anterior ya tuviera uno: se limpia acá para que AplicarTipoOperacion (que
+        // no pisa un valor existente) lo complete de nuevo con el del tipo recién elegido.
+        _model.COD_TIPO_PEDIDO_COMERCIAL = null;
+        _model.DES_TIPO_PEDIDO_COMERCIAL = "";
+
+        if (!string.IsNullOrWhiteSpace(codTipoOperacion) && _tiposOperacionPorCodigo.TryGetValue(codTipoOperacion, out var t))
+        {
+            AplicarTipoOperacion(t);
+            await AsegurarSucursalesAsync();
+            await AplicarVendedorDeSesionAsync();
+            AplicarTiposComprobantePago(codTipoOperacion);
+        }
+        else
+        {
+            _codTipoEstadoDesdeOperacion = null;
+            _flgPositivo = null;
+            _flgComercioExterior = null;
+            _flgCentroCosto = null;
+            _flgProyecto = null;
+            _flgLoteControl = null;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Reglas 3 y 4: al elegir la Entidad se cargan sus Unidades Comerciales y
+    /// Direcciones — si cualquiera de las dos trae un solo resultado, se autoselecciona.</summary>
+    private async Task CambiarEntidad(string? codEntidad)
+    {
+        _model.COD_ENTIDAD = decimal.TryParse(codEntidad, out var n) ? n : null;
+        _model.NUM_UNIDAD_COMERCIAL = null;
+        _model.NUM_SECUENCIA_DIRECCION = null;
+        _model.NUM_TEMPORADA = null;
+        _model.NUM_COLECCION = null;
+        _unidadesComerciales = new();
+        _direcciones = new();
+        _temporadas = new();
+        _colecciones = new();
+        if (_model.COD_ENTIDAD is not null) await CargarDependientesDeEntidadAsync(_model.COD_ENTIDAD.Value);
+        // Los vendedores dependen del proveedor recién elegido; en operación positiva no se
+        // usan (ahí el vendedor es la entidad de la sesión), así que ni se piden.
+        if (!_vendedorEsDeSesion) await CargarVendedoresDeEntidadAsync();
+        await AplicarInformacionComercialAsync();
+        StateHasChanged();
+    }
+
+    /// <summary>COMERCIAL.ENTIDADES_INFORMACION_COMERCIAL — trae las condiciones pactadas con
+    /// esta entidad para ESTE tipo de operación y las propone en la cabecera: moneda,
+    /// condición de pago y forma de pago.
+    ///
+    /// Nota: son datos de la ficha "Información Comercial" de la entidad, no de "Información
+    /// Financiera" — esa última guarda cuentas bancarias (banco, número, CCI) y no tiene
+    /// ninguno de estos tres campos.
+    ///
+    /// La clave de la tabla es (entidad, clase de operación, tipo de operación), que es
+    /// exactamente el contexto del pedido, así que se pide la fila puntual en vez de traer
+    /// la lista y filtrar. Si esa combinación no está configurada, no se toca nada: se deja
+    /// lo que el usuario ya haya puesto.</summary>
+    private async Task AplicarInformacionComercialAsync()
+    {
+        if (_model.COD_ENTIDAD is null
+            || string.IsNullOrWhiteSpace(CodClaseOperacion)
+            || string.IsNullOrWhiteSpace(_model.COD_TIPO_OPERACION)) return;
+
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.EntidadesInformacionComercial}/{_model.COD_ENTIDAD}"
+                    + $"/{Uri.EscapeDataString(CodClaseOperacion)}"
+                    + $"/{Uri.EscapeDataString(_model.COD_TIPO_OPERACION)}";
+            // SafeGetAsync y no GetFromJsonAsync: cuando la entidad no tiene condiciones
+            // configuradas para este tipo de operación la API responde 404, que es un caso
+            // esperable y no un error que haya que loguear ni mostrar.
+            var info = await Http.SafeGetAsync<KONSolutions.Shared.Models.Comercial.EntidadesInformacionComercial>(url);
+            if (info is null) return;
+
+            // Sólo se pisa lo que la ficha tenga cargado: si allá quedó en blanco, no se
+            // borra lo que el usuario ya eligió en el pedido.
+            // El pedido guarda estos dos códigos como string y la ficha como int (así están
+            // declarados en cada modelo): hay que convertir, y con InvariantCulture para que
+            // el valor coincida con el Id del combo.
+            var monedaCambio = false;
+            if (!string.IsNullOrWhiteSpace(info.COD_MONEDA) && info.COD_MONEDA != _model.COD_MONEDA)
+            {
+                _model.COD_MONEDA = info.COD_MONEDA;
+                monedaCambio = true;
+            }
+            if (info.COD_CONDICION_PAGO is not null)
+                _model.COD_CONDICION_PAGO = info.COD_CONDICION_PAGO.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (info.COD_FORMA_PAGO is not null)
+                _model.COD_FORMA_PAGO = info.COD_FORMA_PAGO.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            // Si el proveedor trajo una moneda distinta, la cotización que estuviera puesta
+            // es de otra moneda y ya no sirve: se recalcula.
+            if (monedaCambio) await CargarTipoCambioAsync();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(AplicarInformacionComercialAsync)); }
+    }
+
+    private async Task CargarDependientesDeEntidadAsync(decimal codEntidad)
+    {
+        try
+        {
+            var uc = await Http.GetFromJsonAsync<ApiResponse<List<EntidadesUnidadesComerciales>>>(
+                $"{ApiRoutes.Comercial.EntidadesUnidadesComerciales}?codEntidad={codEntidad}");
+            _unidadesComerciales = (uc?.Data ?? new())
+                .Select(u => new ComboboxItem { Id = u.COD_UNIDAD_COMERCIAL?.ToString() ?? "", Texto = u.DES_UNIDAD_COMERCIAL ?? "" }).ToList();
+            if (_unidadesComerciales.Count == 1) _model.NUM_UNIDAD_COMERCIAL = decimal.TryParse(_unidadesComerciales[0].Id, out var nu) ? nu : null;
+
+            // Las direcciones de la entidad sólo se piden cuando son las que se van a usar:
+            // en una operación positiva la Dirección de Entrega sale de las sucursales y esta
+            // lista no se muestra, así que traerla sería una llamada al pedo.
+            if (!_direccionesDeSucursal)
+            {
+                var dir = await Http.GetFromJsonAsync<ApiResponse<List<EntidadesDirecciones>>>(
+                    $"{ApiRoutes.Comercial.EntidadesDirecciones}?codEntidad={codEntidad}");
+                _direcciones = (dir?.Data ?? new())
+                    .Select(d => new ComboboxItem { Id = d.NUM_SECUENCIA?.ToString() ?? "", Texto = d.DES_DIRECCION ?? "" }).ToList();
+                if (_direcciones.Count == 1) _model.NUM_SECUENCIA_DIRECCION = decimal.TryParse(_direcciones[0].Id, out var nd) ? nd : null;
+            }
+
+            var tmp = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Comercial.EntidadesTemporadas>>>(
+                $"{ApiRoutes.Comercial.EntidadesTemporadas}?codEntidad={codEntidad}");
+            _temporadas = (tmp?.Data ?? new())
+                .Select(t => new ComboboxItem { Id = t.NUM_TEMPORADA?.ToString() ?? "", Texto = t.DES_TEMPORADA }).ToList();
+
+            // Lotes de control DE ESTA ENTIDAD. Antes venían todos, de todas las entidades,
+            // con lo cual se podía asignarle a un pedido de un proveedor el lote de otro —y
+            // el lote es de quien lo emitió, no del sistema—.
+            await CargarComboAsync(ApiRoutes.Logistica.LotesControlComboboxDe(codEntidad),
+                                   l => _lotesControl = l);
+            AsegurarLotesEnUso();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarDependientesDeEntidadAsync)); }
+    }
+
+    private async Task CambiarTemporada(string? numTemporada)
+    {
+        _model.NUM_TEMPORADA = decimal.TryParse(numTemporada, out var n) ? n : null;
+        _model.NUM_COLECCION = null;
+        _colecciones = new();
+        if (_model.COD_ENTIDAD is not null && _model.NUM_TEMPORADA is not null)
+            await CargarColeccionesAsync(_model.COD_ENTIDAD.Value, _model.NUM_TEMPORADA.Value);
+        StateHasChanged();
+    }
+
+    private async Task CargarColeccionesAsync(decimal codEntidad, decimal numTemporada)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<EntidadesTemporadasColecciones>>>(
+                $"{ApiRoutes.Comercial.EntidadesTemporadasColecciones}?codEntidad={codEntidad}&numTemporada={numTemporada}");
+            _colecciones = (r?.Data ?? new())
+                .Select(c => new ComboboxItem { Id = c.NUM_COLECCION?.ToString() ?? "", Texto = c.DES_COLECCION }).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarColeccionesAsync)); }
+    }
+
+    /// <summary>Completa el Tipo de Cambio (regla 14: no se tipea a mano) con la cotización
+    /// de la moneda elegida a la FECHA DEL PEDIDO — resuelta ahora por
+    /// PROC_ESTANDAR_MONEDAS_TIPO_CAMBIO_OBTENER, que hace en la base lo que antes se
+    /// hacía acá con LINQ (fecha exacta o la última anterior) y de paso resuelve el caso
+    /// que la pantalla no cubría: si la moneda del pedido ES la moneda pivot configurada
+    /// (ESTANDAR.CONFIGURACION_GENERAL.COD_MONEDA_PIVOT_TIPO_CAMBIO), el tipo de cambio es
+    /// 1 — antes quedaba vacío, porque MONEDAS_TIPO_CAMBIO nunca tiene filas para la
+    /// pivot (no tendría sentido cotizarla contra sí misma).</summary>
+    private async Task CargarTipoCambioAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_model.COD_MONEDA)) return;
+        try
+        {
+            var fecha = (_fecPedido ?? DateTime.Today).Date.ToString("yyyy-MM-dd");
+            var url = $"{ApiRoutes.Estandar.MonedasTipoCambioObtener}?codMoneda={Uri.EscapeDataString(_model.COD_MONEDA)}&fecTipoCambio={fecha}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<TipoCambioResultado>>(url);
+            // Sin cotización se deja el campo vacío a propósito: mostrar un valor viejo de
+            // otra moneda sería peor que no mostrar nada.
+            _model.FAC_TIPO_CAMBIO = r?.Data?.FAC_TIPO_CAMBIO;
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarTipoCambioAsync)); }
+    }
+
+    /// <summary>Al cambiar la moneda cambia la cotización que corresponde.</summary>
+    private async Task CambiarMonedaAsync(string? codMoneda)
+    {
+        _model.COD_MONEDA = codMoneda;
+        await CargarTipoCambioAsync();
+    }
+
+    /// <summary>Al cambiar la fecha del pedido cambia la cotización que corresponde.</summary>
+    private async Task CambiarFechaPedidoAsync(DateTime? fecha)
+    {
+        _fecPedido = fecha;
+        await CargarTipoCambioAsync();
+    }
+    /// <summary>Regla 7: el Tipo de Documento no lo elige el usuario, lo fija el Tipo de
+    /// Operación. Si trae uno solo se autoselecciona; el combo queda siempre Disabled.
+    /// Ya no va al servidor: los pares vienen todos en el LOADCOMBOS y aquí sólo se filtra
+    /// el grupo que corresponde, así cambiar de tipo de operación es instantáneo.</summary>
+    private void AplicarTiposComprobantePago(string codTipoOperacion)
+    {
+        _tiposComprobantePago = _comprobantesPorOperacion.TryGetValue(codTipoOperacion, out var lista)
+            ? lista
+            : new();
+        if (_tiposComprobantePago.Count == 1) _model.COD_TIPO_COMPROBANTE_PAGO = _tiposComprobantePago[0].Id;
+    }
+
+    private async Task CambiarTipoDescuento(string? codTipoDescuento)
+    {
+        _model.COD_TIPO_DESCUENTO = codTipoDescuento;
+        _model.TAS_DESCUENTO = string.IsNullOrWhiteSpace(codTipoDescuento) ? null : _tasaPorTipoDescuento.GetValueOrDefault(codTipoDescuento);
+        await CargarCalculoAsync();
+    }
+
+    private async Task ResolverTipoMotivoDesdeClaseAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodClaseOperacion)) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<ClaseOperacionLite>>($"{ApiRoutes.Estandar.ClasesOperacion}/{Uri.EscapeDataString(CodClaseOperacion)}");
+            var codTipoMotivo = r?.Data?.COD_TIPO_MOTIVO_RELACIONADO;
+            _model.COD_TIPO_MOTIVO = codTipoMotivo?.ToString();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(ResolverTipoMotivoDesdeClaseAsync)); }
+    }
+
+    private async Task CargarMotivosAsync(string codTipoMotivo)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.MotivosPorTipo}?codTipoMotivo={Uri.EscapeDataString(codTipoMotivo)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url);
+            _motivos = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarMotivosAsync)); }
+    }
+
+    /// <summary>Filtra por tipo de Entidad según COD_TIPO_ENTIDAD del Tipo de Operación
+    /// elegido (regla 1). Sin Tipo de Operación todavía elegido, no filtra por tipo.</summary>
+    private async Task<IEnumerable<ComboboxItem>> BuscarEntidadClienteProveedorAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.Entidades}/search?search={Uri.EscapeDataString(texto)}";
+            if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_ENTIDAD)) url += $"&desTiposEntidad={Uri.EscapeDataString(_model.COD_TIPO_ENTIDAD + "_")}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(url, ct);
+            var lista = (r?.Data ?? new()).Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = string.IsNullOrWhiteSpace(e.DES_COMERCIAL) ? e.DES_NOMBRE_COMPLETO : e.DES_COMERCIAL }).ToList();
+            _entidadesCliente = lista;
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ComboboxItem>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(BuscarEntidadClienteProveedorAsync)); return Enumerable.Empty<ComboboxItem>(); }
+    }
+
+    /// <summary>Regla 2: si es positiva, la entidad vendedora se restringe a la Entidad de la
+    /// Sesión (no se busca libremente); si no, se buscan Entidades Dependientes de la
+    /// Entidad Cliente/Proveedor ya elegida — igual que antes, sin esa segunda entidad
+    /// elegida no hay universo por el cual filtrar y la búsqueda queda vacía.</summary>
+    /// <summary>PROC_ESTANDAR_ENTIDADES_DEPENDIENTES_SHOWCOMBOX — los vendedores del
+    /// proveedor: las personas cuya COD_ENTIDAD_DEPENDENCIA es la entidad del pedido.
+    ///
+    /// Antes esto era una búsqueda remota contra Entidades/search filtrando por dependencia,
+    /// que obligaba a tipear dos letras para ver algo. Ahora es una lista cerrada que se
+    /// carga al elegir el proveedor: son pocos y el SP ya aplica las reglas del negocio
+    /// (sólo personas, y sólo si la entidad de dependencia tiene prefijo comercial).</summary>
+    private async Task CargarVendedoresDeEntidadAsync()
+    {
+        _entidadesVendedor = new();
+        if (_model.COD_ENTIDAD is null) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<EntidadDependienteLite>>>(
+                ApiRoutes.Estandar.EntidadesDependientesDe(_model.COD_ENTIDAD.Value));
+            _entidadesVendedor = (r?.Data ?? new())
+                .Select(e => new ComboboxItem
+                {
+                    Id = e.COD_ENTIDAD?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+                    Texto = e.DES_ENTIDAD
+                }).ToList();
+
+            // Si el proveedor tiene un solo vendedor, no tiene sentido hacerlo elegir. Pero
+            // sólo cuando el campo está vacío: al abrir un pedido ya grabado se respeta el
+            // vendedor con el que se guardó.
+            if (_entidadesVendedor.Count == 1 && _model.COD_ENTIDAD_VENDEDOR is null)
+            {
+                _model.COD_ENTIDAD_VENDEDOR = decimal.TryParse(_entidadesVendedor[0].Id, out var nv) ? nv : null;
+                _textoEntidadVendedorInicial = _entidadesVendedor[0].Texto;
+            }
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarVendedoresDeEntidadAsync)); }
+    }
+
+    private class EntidadDependienteLite
+    {
+        public decimal? COD_ENTIDAD { get; set; }
+        public string DES_ENTIDAD { get; set; } = "";
+    }
+
+    private async Task<string?> ResolverTextoEntidadAsync(decimal codEntidad)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<KONSolutions.Shared.Models.Estandar.Entidad>>($"{ApiRoutes.Estandar.Entidades}/{codEntidad}");
+            var e = r?.Data;
+            return e is null ? null : (string.IsNullOrWhiteSpace(e.DES_COMERCIAL) ? e.DES_NOMBRE_COMPLETO : e.DES_COMERCIAL);
+        }
+        catch { return null; }
+    }
+
+    private async Task<IEnumerable<ProductoModel>> BuscarProductoAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>(url, ct);
+            var lista = r?.Data ?? new();
+            _productos = _productos.Where(p => lista.All(l => l.COD_PRODUCTO != p.COD_PRODUCTO)).Concat(lista).ToList();
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ProductoModel>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(BuscarProductoAsync)); return Enumerable.Empty<ProductoModel>(); }
+    }
+
+    private void AsignarProducto(Item it, string? cod)
+    {
+        it.COD_PRODUCTO = cod ?? "";
+        var p = _productos.FirstOrDefault(x => x.COD_PRODUCTO == cod);
+        it.DES_PRODUCTO = p?.DES_PRODUCTO ?? "";
+        it.COD_UNIDAD_MEDIDA = Vacio(p?.COD_UNIDAD_MEDIDA);
+    }
+
+    /// <summary>Vuelca al pedido lo que el panel de requerimientos ya acumuló.
+    ///
+    /// Cada grupo viene con un producto, una unidad y la cantidad sumada. Si el pedido ya
+    /// tiene una línea de ese mismo producto y unidad, se le suma encima en vez de crear
+    /// una línea repetida; si no, se crea una nueva.
+    ///
+    /// Devuelve, por clave producto|unidad, la secuencia de la línea que quedó — el panel
+    /// la necesita para grabar de qué requerimiento salió cada cantidad. Una línea que no
+    /// se pudo grabar no entra en el resultado, así el panel no deja trazabilidad colgando
+    /// de algo que no existe.</summary>
+    /// <summary>Se dispara cuando cambian las líneas del pedido de una forma que puede
+    /// afectar a los vínculos con requerimientos — hoy, al borrar una línea.</summary>
+    [Parameter] public EventCallback OnLineasCambiadas { get; set; }
+
+    /// <summary>Recarga el detalle desde la base. Lo llama la ficha de Requerimientos
+    /// después de deshacer un vínculo o desvincular un requerimiento, porque esos SP tocan
+    /// datos que este documento tiene en memoria.</summary>
+    public async Task RecargarDetalleAsync()
+    {
+        if (_model.NUM_PEDIDO_COMERCIAL is decimal num && num > 0)
+        {
+            await CargarDetalleAsync(num);
+            await CargarCalculoAsync();
+            await RefrescarPorRequerimientosAsync();
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Borra del pedido las líneas con esas secuencias, SIN confirmar ni tocar la
+    /// pantalla línea por línea. La usa "Revertir" de la ficha de Requerimientos (que ya
+    /// pidió la confirmación). Devuelve false en cuanto una baja falla: no se sigue, para no
+    /// dejar el pedido a medias sin avisar.</summary>
+    public async Task<bool> QuitarLineasAsync(IEnumerable<int> secuencias)
+    {
+        if (_readonly || !_cabeceraGrabada) return false;
+        foreach (var sec in secuencias.Distinct().OrderByDescending(x => x))
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Comercial.PedidosComercialesDetalle}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}/{sec}");
+            if (!rd.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(PedidoComercialDocumento), nameof(QuitarLineasAsync), $"No se pudo eliminar la línea {sec}");
+                await RecargarDetalleAsync();
+                return false;
+            }
+            _huboCambios = true;
+        }
+        _itemsNuevos.Clear();
+        await RecargarDetalleAsync();
+        return true;
+    }
+
+    // ── Lo que la pestaña de Requerimientos necesita saber de este documento ──────
+    // Vive al lado de esta pantalla, no adentro, así que la pantalla contenedora la
+    // conecta por @ref. Estos tres accesores son todo lo que expone.
+
+    /// <summary>Número del pedido, o null si la cabecera todavía no se grabó.</summary>
+    public decimal? NumPedidoActual => _cabeceraGrabada ? _model.NUM_PEDIDO_COMERCIAL : null;
+    public string ClaseOperacionActual => _model.COD_CLASE_OPERACION ?? "";
+
+    /// <summary>¿Es una proforma? Es la clase de operación PRFRM (ESTANDAR.CLASES_OPERACION), la que
+    /// le pasa la opción del menú («COD_CLASE_OPERACION = 'PRFRM'»).</summary>
+    private bool EsProforma => string.Equals(_model.COD_CLASE_OPERACION ?? CodClaseOperacion, "PRFRM", StringComparison.OrdinalIgnoreCase);
+    public string TipoOperacionActual => _model.COD_TIPO_OPERACION ?? "";
+    public bool EsSoloLectura => _readonly;
+
+    /// <summary>Marca el documento como modificado desde afuera, para que al cerrarlo la
+    /// lista se refresque.</summary>
+    public void MarcarCambio() => _huboCambios = true;
+
+    public async Task<Dictionary<string, int>> IncorporarRequerimientosAsync(List<GrupoRequerimientoIncorporar> grupos)
+    {
+        var resultado = new Dictionary<string, int>();
+        if (_readonly || !_cabeceraGrabada) return resultado;
+
+        foreach (var g in grupos)
+        {
+            // La clave la arma el propio grupo (GrupoRequerimientoIncorporar.Clave). Antes se
+            // escribía acá a mano, igual que en el panel: dos copias de la misma cadena que
+            // tenían que coincidir, y si una cambiaba no había error de compilación sino un
+            // diccionario que no encontraba nada.
+            var clave = g.Clave;
+
+            // Un grupo CON orden de producción nunca se suma a una línea existente: cada orden
+            // es su propia línea del pedido. Y no se puede buscar "la línea de esa orden" en
+            // _items porque PEDIDOS_COMERCIALES_DETALLE no tiene esas columnas —la orden vive
+            // en el requerimiento y se reconstruye por la tabla de trazabilidad—, así que el
+            // grupo con orden siempre crea línea nueva.
+            //
+            // Los grupos SIN orden mantienen el comportamiento de siempre: se suman a la línea
+            // que ya exista para ese producto y unidad.
+            var linea = g.SinOrdenProduccion
+                ? _items.FirstOrDefault(x =>
+                    string.Equals(x.COD_PRODUCTO, g.COD_PRODUCTO, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.COD_UNIDAD_MEDIDA ?? "", g.COD_UNIDAD_MEDIDA ?? "", StringComparison.OrdinalIgnoreCase))
+                : null;
+
+            if (linea is null)
+            {
+                var sig = (_items.Count == 0 ? 0 : _items.Max(x => x.NUM_SECUENCIA ?? 0)) + 1;
+                linea = new Item
+                {
+                    NUM_PEDIDO_COMERCIAL = _model.NUM_PEDIDO_COMERCIAL,
+                    NUM_SECUENCIA = sig,
+                    COD_PRODUCTO = g.COD_PRODUCTO,
+                    DES_PRODUCTO = g.DES_PRODUCTO ?? "",
+                    COD_UNIDAD_MEDIDA = Vacio(g.COD_UNIDAD_MEDIDA),
+                    COD_UNIDAD_MEDIDA_SECUNDARIO = Vacio(g.COD_UNIDAD_MEDIDA_SECUNDARIA),
+                    CAN_PRODUCTO = g.CAN_PRODUCTO,
+                    CAN_PRODUCTO_ENTIDAD = g.CAN_PRODUCTO_ENTIDAD,
+                    // El nombre del campo en esta tabla lleva la doble D (typo real de la
+                    // columna); el del grupo viene con una sola D porque así lo escribió el
+                    // SP de requerimientos — dos SP, dos alias, cada uno tal cual el suyo.
+                    COD_UNIDAD_MEDIDAD_ENTIDAD = Vacio(g.COD_UNIDAD_MEDIDA_ENTIDAD),
+                    CAN_PRODUCTO_SECUDARIO = g.CAN_PRODUCTO_SECUNDARIA,
+                    // Proceso y orden de producción, tal cual vienen del requerimiento. Son parte
+                    // de la IDENTIDAD del grupo (GrupoRequerimientoIncorporar.Clave los incluye),
+                    // así que acá no hay nada que decidir: la línea es de esta orden y de ninguna
+                    // otra. Sin estas cinco asignaciones el dato moría en el panel — se agrupaba
+                    // por orden, se creaba una línea por orden, y la línea salía sin la orden.
+                    // Lote de control de la línea del requerimiento: sin esto la línea del pedido sale sin lote
+                    // y la Orden de Compra (PROC_COMERCIAL_PEDIDO_COMERCIAL_SINCRONIZA copia el de la línea) también.
+                    NUM_LOTE_CONTROL = g.NUM_LOTE_CONTROL,
+                    COD_PROCESO = g.COD_PROCESO,
+                    DES_PROCESO = g.DES_PROCESO,
+                    NUM_ORDEN_PRODUCCION = g.NUM_ORDEN_PRODUCCION,
+                    NUM_ORDEN_PRODUCCION_ITEM = g.NUM_ORDEN_PRODUCCION_ITEM,
+                    NUM_ORDEN_PRODUCCION_UNIDAD = g.NUM_ORDEN_PRODUCCION_UNIDAD,
+                    // El precio lo resuelve el SP de requerimientos contra ENTIDADES_PRODUCTOS y
+                    // viaja dentro del grupo. Si viene null, la línea entra sin precio y se
+                    // completa a mano — es preferible a inventar un valor.
+                    PRE_UNITARIO = g.PRE_UNITARIO,
+                    // Descuento por defecto: 0 (no vacío).
+                    TAS_DESCUENTO = 0
+                };
+                _items.Add(linea);
+                _itemsNuevos.Add(sig);
+            }
+            else
+            {
+                linea.CAN_PRODUCTO = (linea.CAN_PRODUCTO ?? 0) + g.CAN_PRODUCTO;
+                linea.CAN_PRODUCTO_ENTIDAD = (linea.CAN_PRODUCTO_ENTIDAD ?? 0) + g.CAN_PRODUCTO_ENTIDAD;
+                if (string.IsNullOrWhiteSpace(linea.COD_UNIDAD_MEDIDAD_ENTIDAD))
+                    linea.COD_UNIDAD_MEDIDAD_ENTIDAD = Vacio(g.COD_UNIDAD_MEDIDA_ENTIDAD);
+                if (g.CAN_PRODUCTO_SECUNDARIA is > 0)
+                    linea.CAN_PRODUCTO_SECUDARIO = (linea.CAN_PRODUCTO_SECUDARIO ?? 0) + g.CAN_PRODUCTO_SECUNDARIA;
+                // Sólo se completa el precio si la línea no tenía: si alguien ya lo negoció a
+                // mano, incorporar más cantidad no debe pisarlo.
+                if (linea.PRE_UNITARIO is null or 0) linea.PRE_UNITARIO = g.PRE_UNITARIO;
+            }
+
+            if (await GuardarItem(linea) && linea.NUM_SECUENCIA is int sec)
+                resultado[clave] = sec;
+        }
+
+        // Si entró al menos una línea, el pedido pasa a ser "por requerimientos".
+        if (resultado.Count > 0) _model.FLG_POR_REQUERIMIENTO = true;
+        StateHasChanged();
+        return resultado;
+    }
+
+    /// <summary>Mismo cálculo que hace ahora PROC_COMERCIAL_PEDIDOS_COMERCIALES_DETALLE_INSERT
+    /// / _UPDATE: PRE_UNITARIO * CAN_PRODUCTO_ENTIDAD, no * CAN_PRODUCTO. Si se dejara
+    /// CAN_PRODUCTO acá, el "Total" de la grilla mostraría un número distinto al que la
+    /// base termina grabando en cuanto hay conversión de unidad de por medio.</summary>
+    private static decimal CalcularTotal(Item it)
+    {
+        var cantidad = it.CAN_PRODUCTO_ENTIDAD ?? it.CAN_PRODUCTO ?? 0;
+        var bruto = cantidad * (it.PRE_UNITARIO ?? 0);
+        var desc = bruto * (it.TAS_DESCUENTO ?? 0) / 100;
+        return bruto - desc;
+    }
+
+    private async Task CargarDetalleAsync(decimal numPedidoComercial)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesDetallePorCabecera}/{ClaseUrl}/{TipoUrl}/{numPedidoComercial}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<Item>>>(url);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarDetalleAsync)); }
+    }
+
+    /// <summary>Trae los cálculos del pedido. El SP los pide por cabecera completa (clase,
+    /// tipo y número), no solo por número: la misma numeración se repite entre clases de
+    /// operación, así que con el número suelto traería importes de otro documento.</summary>
+    private async Task CargarCalculoAsync()
+    {
+        if (!_cabeceraGrabada) { _calculos = new(); return; }
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesCalculoPorCabecera}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<CalculoItem>>>(url);
+            _calculos = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            // Los cálculos son informativos: si fallan, el detalle sigue siendo usable.
+            // Se deja la grilla vacía y queda el rastro en ErrorLog.
+            _calculos = new();
+            await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(CargarCalculoAsync));
+        }
+    }
+
+    private void AgregarItem()
+    {
+        var sig = (_items.Count == 0 ? 0 : _items.Max(x => x.NUM_SECUENCIA ?? 0)) + 1;
+        var it = new Item { NUM_PEDIDO_COMERCIAL = _model.NUM_PEDIDO_COMERCIAL, NUM_SECUENCIA = sig, CAN_PRODUCTO = 0, TAS_DESCUENTO = 0 };
+        AplicarValoresPorDefecto(it);
+        _items.Add(it);
+        _itemsNuevos.Add(sig);
+    }
+
+    /// <summary>Proceso y orden de producción por defecto, de Configuración General (pestaña
+    /// Almacenes) — los mismos cuatro valores que ya aplica Requerimientos.
+    ///
+    /// Sólo para la línea escrita a mano: la que viene del panel ya trae los suyos, y son los
+    /// del requerimiento. Por eso se llama en AgregarItem y NO en IncorporarRequerimientosAsync.
+    ///
+    /// Los cuatro van juntos o no va ninguno: medio camino no sirve para nada. Y si la
+    /// configuración no tiene proceso cargado, no se inventa nada — la línea queda genérica,
+    /// que es lo correcto para un pedido que no es de consumo de producción.</summary>
+    private void AplicarValoresPorDefecto(Item it)
+    {
+        var cfg = ConfigSvc.Current;
+
+        if (string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL) && !string.IsNullOrWhiteSpace(cfg.LoteControlDefault))
+            it.NUM_LOTE_CONTROL = cfg.LoteControlDefault;
+
+        // "Sin producción" es proceso vacío Y orden nula o cero, igual que en Requerimientos.
+        var sinProduccion = string.IsNullOrWhiteSpace(it.COD_PROCESO) && it.NUM_ORDEN_PRODUCCION is null or 0;
+        if (sinProduccion && !string.IsNullOrWhiteSpace(cfg.ProcesoDefault))
+        {
+            it.COD_PROCESO                 = cfg.ProcesoDefault;
+            it.NUM_ORDEN_PRODUCCION        = cfg.OrdenProduccionDefault;
+            it.NUM_ORDEN_PRODUCCION_ITEM   = cfg.OrdenProduccionItemDefault;
+            it.NUM_ORDEN_PRODUCCION_UNIDAD = cfg.OrdenProduccionUnidadDefault;
+        }
+    }
+
+    /// <summary>Abre el diálogo y, sólo si se graba ahí, baja los cuatro valores a la línea y
+    /// la manda a la base. Cancelar no toca nada: el diálogo trabaja sobre copias.
+    ///
+    /// Se le avisa al diálogo si la línea PUEDE tener vínculos con requerimientos, para que
+    /// advierta que cambiar la orden no los mueve. No se cuenta cuántos son: el endpoint de
+    /// vínculos de detalle exige el número de requerimiento como filtro, así que no hay forma
+    /// de pedir "todos los orígenes de esta línea" sin recorrer los requerimientos uno por
+    /// uno. La línea recién agregada a mano no tiene orígenes todavía y no lleva el aviso.</summary>
+    private async Task AbrirOrdenProduccionAsync(Item it)
+    {
+        if (!_cabeceraGrabada) return;
+
+        var puedeTenerOrigenes = !_itemsNuevos.Contains(it.NUM_SECUENCIA ?? 0);
+
+        var parametros = new DialogParameters
+        {
+            ["Lotes"]                 = _lotesControl,
+            ["NumLoteControl"]        = it.NUM_LOTE_CONTROL,
+            ["CodProceso"]            = it.COD_PROCESO,
+            ["NumOrden"]              = it.NUM_ORDEN_PRODUCCION,
+            ["NumItem"]               = it.NUM_ORDEN_PRODUCCION_ITEM,
+            ["NumUnidad"]             = it.NUM_ORDEN_PRODUCCION_UNIDAD,
+            ["NumSecuencia"]          = it.NUM_SECUENCIA,
+            ["DesProducto"]           = it.DES_PRODUCTO,
+            ["PuedeTenerOrigenes"]    = puedeTenerOrigenes,
+            ["SoloLectura"]           = _readonly
+        };
+
+        var dlg = await DialogService.ShowAsync<OrdenProduccionPedidoDialog>("Proceso y orden de producción",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+
+        if ((await dlg.Result) is not { Canceled: false, Data: OrdenProduccionPedidoDialog.Seleccion sel }) return;
+
+        it.NUM_LOTE_CONTROL            = sel.NUM_LOTE_CONTROL;
+        it.COD_PROCESO                 = sel.COD_PROCESO;
+        it.DES_PROCESO                 = sel.DES_PROCESO;
+        it.NUM_ORDEN_PRODUCCION        = sel.NUM_ORDEN_PRODUCCION;
+        it.NUM_ORDEN_PRODUCCION_ITEM   = sel.NUM_ORDEN_PRODUCCION_ITEM;
+        it.NUM_ORDEN_PRODUCCION_UNIDAD = sel.NUM_ORDEN_PRODUCCION_UNIDAD;
+
+        // Se graba la línea, igual que al confirmar cualquier otra celda. Si no, el botón
+        // diría "Grabar" y no grabaría nada.
+        if (await GuardarItem(it))
+        {
+            Snackbar.Add($"Ítem {it.NUM_SECUENCIA}: proceso y orden de producción grabados.", Severity.Success);
+            _huboCambios = true;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Lo que se lee en la celda: "PROC — Descripción · orden / ítem / unidad".
+    ///
+    /// El cero NO se descarta: cero es un número de orden real en esta base —hoy es el único
+    /// cargado—, y esconderlo haría que esa orden no se viera nunca. "Sin orden" es NULL.</summary>
+    /// <summary>Lo que se lee en la celda combinada: el lote primero —es lo que más se busca
+    /// al revisar una línea— y detrás el proceso y la orden.</summary>
+    private string ResumenLoteOrden(Item it)
+    {
+        var orden = ResumenOrdenProduccion(it);
+        // La DESCRIPCIÓN del lote (la que se ve en el combo "Lote de Control"), no el número
+        // interno: se busca en _lotesControl, que ya está cargado para ese mismo combo. El
+        // número queda de respaldo si el lote no aparece ahí (p.ej. todavía no cargó la
+        // lista) para no dejar la celda vacía.
+        var lote  = string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL) ? null
+                  : _lotesControl.FirstOrDefault(l => string.Equals(l.Id, it.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase)) is { } l && !string.IsNullOrWhiteSpace(l.Texto)
+                      ? l.Texto
+                      : it.NUM_LOTE_CONTROL;
+
+        if (lote is null)  return orden;
+        if (orden == "—")  return lote;
+        return $"{lote} · {orden}";
+    }
+
+    private static string ResumenOrdenProduccion(Item it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_PROCESO)) return "—";
+
+        var texto = string.IsNullOrWhiteSpace(it.DES_PROCESO)
+            ? it.COD_PROCESO!
+            : $"{it.COD_PROCESO} — {it.DES_PROCESO}";
+
+        if (it.NUM_ORDEN_PRODUCCION is { } orden)
+        {
+            texto += $" · {orden}";
+            if (it.NUM_ORDEN_PRODUCCION_ITEM   is { } item)   texto += $" / {item}";
+            if (it.NUM_ORDEN_PRODUCCION_UNIDAD is { } unidad) texto += $" / {unidad}";
+        }
+        return texto;
+    }
+
+    private async Task QuitarItem(Item it)
+    {
+        var sec = it.NUM_SECUENCIA ?? 0;
+        if (!_itemsNuevos.Contains(sec))
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Comercial.PedidosComercialesDetalle}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}/{sec}");
+            if (!rd.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(PedidoComercialDocumento), nameof(QuitarItem), $"No se pudo eliminar la línea {sec}");
+                return;
+            }
+            _huboCambios = true;
+            // El SP de baja borra también los vínculos con requerimientos de esa línea, y el
+            // de cabecera si el requerimiento se queda sin ninguna. La ficha de al lado tiene
+            // que enterarse.
+            await OnLineasCambiadas.InvokeAsync();
+        }
+        _itemsNuevos.Remove(sec);
+        _items.Remove(it);
+        await CargarCalculoAsync();
+    }
+
+    /// <summary>Clase y tipo de operación listos para un segmento de URL. Son string? en el
+    /// modelo, así que se resuelve el null acá y no en cada llamada — de paso desaparecen los
+    /// avisos del compilador por pasar una referencia posiblemente nula a EscapeDataString.</summary>
+    private string ClaseUrl => Uri.EscapeDataString(_model.COD_CLASE_OPERACION ?? "");
+    private string TipoUrl  => Uri.EscapeDataString(_model.COD_TIPO_OPERACION ?? "");
+
+    /// <summary>El número de pedido cuando va dentro de una URL. Invariante a propósito: en
+    /// es-PE el separador decimal es la coma, y "1,00" no matchea un segmento decimal de ruta
+    /// — la API devuelve 400 sin llegar al procedimiento.</summary>
+    private string NumPedidoUrl =>
+        (_model.NUM_PEDIDO_COMERCIAL ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+
+    private async Task GuardarItemConAviso(Item it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_PRODUCTO)) { await ErrorDialogHelper.MostrarAvisoAsync("Elige el producto antes de grabar la línea.", DialogService, nameof(PedidoComercialDocumento)); return; }
+        if (await GuardarItem(it)) Snackbar.Add($"Línea {it.NUM_SECUENCIA} grabada.", Severity.Success);
+    }
+
+    private async Task<bool> GuardarItem(Item it)
+    {
+        if (_readonly || string.IsNullOrWhiteSpace(it.COD_PRODUCTO)) return false;
+        // La clave de la línea son cuatro columnas: sin clase y tipo de operación el SP la
+        // rechaza. Se toman siempre de la cabecera, no de lo que traiga el item.
+        it.COD_CLASE_OPERACION = _model.COD_CLASE_OPERACION;
+        it.COD_TIPO_OPERACION = _model.COD_TIPO_OPERACION;
+        it.NUM_PEDIDO_COMERCIAL = _model.NUM_PEDIDO_COMERCIAL;
+        // El SP la exige y recalcula VAL_TOTAL a partir de ella. Si "Cantidad Proveedor"
+        // se dejó vacía (línea sin conversión, o cargada antes de este campo existir), se
+        // manda igual a Cantidad Propia — asume 1 a 1 en vez de fallar.
+        it.CAN_PRODUCTO_ENTIDAD ??= it.CAN_PRODUCTO;
+        it.VAL_TOTAL = CalcularTotal(it);
+        var sec = it.NUM_SECUENCIA ?? 0;
+        var esNuevo = _itemsNuevos.Contains(sec);
+
+        var r = await Http.GuardarAsync(ApiRoutes.Comercial.PedidosComercialesDetalle, it, esNuevo);
+        if (!r.IsSuccessStatusCode)
+        {
+            await ErrorDialogHelper.MostrarAsync(r, ErrorLog, DialogService, nameof(PedidoComercialDocumento), nameof(GuardarItem), $"No se pudo grabar la línea {sec}");
+            return false;
+        }
+        _itemsNuevos.Remove(sec);
+        _huboCambios = true;
+        // Los importes los arma la base a partir de las líneas, así que después de grabar
+        // una hay que volver a leerlos: si no, la grilla de la derecha muestra el total
+        // anterior y parece que el sistema no tomó el cambio.
+        await CargarCalculoAsync();
+        return true;
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync(_huboCambios);
+
+    /// <summary>Pone en null los campos que las reglas del Tipo de Operación tienen
+    /// deshabilitados, justo antes de grabar.
+    ///
+    /// Desde que los campos condicionales pasaron a verse siempre (deshabilitados en vez de
+    /// ocultos), un valor puede quedar cargado en un campo que la regla no admite: lo
+    /// autocompleta la pantalla —por ejemplo, cuando la entidad tiene una sola unidad
+    /// comercial se elige sola— y después viaja igual al grabar. Eso es lo que hacía saltar
+    /// la FK de UNIDADES_COMERCIALES en una compra, donde Unidad Comercial ni siquiera
+    /// aplica.
+    ///
+    /// Se limpia aquí, en un solo lugar, y no en cada autocompletado: así vale para cualquier
+    /// camino por el que un campo se llene, incluido el usuario cargando algo y después
+    /// cambiando el Tipo de Operación.</summary>
+    private void LimpiarCamposQueNoAplican()
+    {
+        // Sólo en operación positiva (reglas 3, 5, 6 y 17).
+        if (_flgPositivo != true)
+        {
+            _model.NUM_UNIDAD_COMERCIAL = null;
+            _model.NUM_TEMPORADA        = null;
+            _model.NUM_COLECCION        = null;
+            _model.NUM_PURCHASE_ORDER   = null;
+        }
+
+        // Sólo en operación NO positiva (reglas 10 a 13 y 18).
+        if (_flgPositivo != false)
+        {
+            _model.COD_CENTRO_COSTO_SOLICITANTE = null;
+            _model.COD_CENTRO_COSTO_DESTINO     = null;
+            _model.NUM_PROYECTO                 = null;
+            _model.NUM_RENDICION_CUENTAS        = null;
+            _model.NUM_LOTE_CONTROL             = null;
+        }
+        else
+        {
+            // Aun siendo NO positiva, estos dependen además de su propio flag.
+            if (_flgCentroCosto != true)
+            {
+                _model.COD_CENTRO_COSTO_SOLICITANTE = null;
+                _model.COD_CENTRO_COSTO_DESTINO     = null;
+            }
+            if (_flgProyecto != true)
+            {
+                _model.NUM_PROYECTO          = null;
+                _model.NUM_RENDICION_CUENTAS = null;
+            }
+            if (_flgLoteControl != true) _model.NUM_LOTE_CONTROL = null;
+        }
+
+        // Comercio exterior (reglas 9 y 15).
+        if (_flgComercioExterior != true)
+        {
+            _model.COD_PAIS_DESTINO = null;
+            _model.COD_INCOTERM     = null;
+        }
+
+        // La Dirección de Entrega sale de un origen o del otro, nunca de los dos.
+        if (_direccionesDeSucursal) _model.NUM_SECUENCIA_DIRECCION = null;
+        else                        _model.COD_SUCURSAL            = null;
+    }
+
+    private async Task Submit()
+    {
+        _model.FEC_PEDIDO = _fecPedido;
+        _model.FEC_VECIMIENTO = _fecVencimiento;
+        _model.FEC_ENTREGA = _fecEntrega;
+        _model.FEC_ENTREGA_PUBLICA = _fecEntregaPublica;
+        _model.COD_CLASE_OPERACION = CodClaseOperacion ?? _model.COD_CLASE_OPERACION;
+        LimpiarCamposQueNoAplican();
+
+        _saving = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                foreach (var it in _items.ToList())
+                    await Http.DeleteAsync($"{ApiRoutes.Comercial.PedidosComercialesDetalle}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}/{it.NUM_SECUENCIA}");
+
+                var url = $"{ApiRoutes.Comercial.PedidosComerciales}/{ClaseUrl}/{TipoUrl}/{NumPedidoUrl}";
+                var rd = await Http.DeleteAsync(url);
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Pedido eliminado.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(PedidoComercialDocumento), nameof(Submit), "No se pudo eliminar el pedido");
+                return;
+            }
+
+            var esAlta = !_cabeceraGrabada;
+            HttpResponseMessage resp;
+            if (esAlta)
+            {
+                var dto = new PedidoComercialInsertDto
+                {
+                    COD_CLASE_OPERACION = _model.COD_CLASE_OPERACION, COD_TIPO_OPERACION = _model.COD_TIPO_OPERACION,
+                    DES_PEDIDO_COMERCIAL = _model.DES_PEDIDO_COMERCIAL, COD_TIPO_COMPROBANTE_PAGO = _model.COD_TIPO_COMPROBANTE_PAGO,
+                    NUM_DOCUMENTO = _model.NUM_DOCUMENTO, NUM_PROYECTO = _model.NUM_PROYECTO,
+                    COD_TIPO_PEDIDO_COMERCIAL = _model.COD_TIPO_PEDIDO_COMERCIAL, FEC_PEDIDO = _model.FEC_PEDIDO,
+                    FEC_VECIMIENTO = _model.FEC_VECIMIENTO, FEC_ENTREGA = _model.FEC_ENTREGA, FEC_ENTREGA_PUBLICA = _model.FEC_ENTREGA_PUBLICA,
+                    COD_TIPO_ENTIDAD = _model.COD_TIPO_ENTIDAD, COD_ENTIDAD = _model.COD_ENTIDAD,
+                    NUM_TEMPORADA = _model.NUM_TEMPORADA, NUM_COLECCION = _model.NUM_COLECCION, COD_MONEDA = _model.COD_MONEDA, FAC_TIPO_CAMBIO = _model.FAC_TIPO_CAMBIO,
+                    NUM_UNIDAD_COMERCIAL = _model.NUM_UNIDAD_COMERCIAL, NUM_SECUENCIA_DIRECCION = _model.NUM_SECUENCIA_DIRECCION,
+                    COD_CENTRO_COSTO_SOLICITANTE = _model.COD_CENTRO_COSTO_SOLICITANTE, COD_CENTRO_COSTO_DESTINO = _model.COD_CENTRO_COSTO_DESTINO,
+                    COD_SUCURSAL = _model.COD_SUCURSAL, COD_FORMA_PAGO = _model.COD_FORMA_PAGO, COD_CONDICION_PAGO = _model.COD_CONDICION_PAGO,
+                    COD_TIPO_DESCUENTO = _model.COD_TIPO_DESCUENTO, TAS_DESCUENTO = _model.TAS_DESCUENTO, VAL_TOTAL = _valTotalCalculado,
+                    COD_ENTIDAD_VENDEDOR = _model.COD_ENTIDAD_VENDEDOR, NUM_PURCHASE_ORDER = _model.NUM_PURCHASE_ORDER,
+                    COD_PAIS_DESTINO = _model.COD_PAIS_DESTINO, NUM_LOTE_CONTROL = _model.NUM_LOTE_CONTROL,
+                    NUM_RENDICION_CUENTAS = _model.NUM_RENDICION_CUENTAS, COD_TIPO_MOTIVO = _model.COD_TIPO_MOTIVO, COD_MOTIVO = _model.COD_MOTIVO,
+                    DES_OBSERVACION = _model.DES_OBSERVACION, NUM_PEDIDO_COMERCIAL_RELACIONADO = _model.NUM_PEDIDO_COMERCIAL_RELACIONADO,
+                    NUM_TRACKING = _model.NUM_TRACKING, COD_INCOTERM = _model.COD_INCOTERM, COD_TIPO_ESTADO = _model.COD_TIPO_ESTADO, COD_ESTADO = _model.COD_ESTADO,
+                };
+                resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.PedidosComerciales, dto);
+            }
+            else
+            {
+                var dto = new PedidoComercialUpdateDto
+                {
+                    COD_CLASE_OPERACION = _model.COD_CLASE_OPERACION, COD_TIPO_OPERACION = _model.COD_TIPO_OPERACION,
+                    NUM_PEDIDO_COMERCIAL = _model.NUM_PEDIDO_COMERCIAL ?? 0,
+                    DES_PEDIDO_COMERCIAL = _model.DES_PEDIDO_COMERCIAL, COD_TIPO_COMPROBANTE_PAGO = _model.COD_TIPO_COMPROBANTE_PAGO,
+                    NUM_DOCUMENTO = _model.NUM_DOCUMENTO, NUM_PROYECTO = _model.NUM_PROYECTO,
+                    COD_TIPO_PEDIDO_COMERCIAL = _model.COD_TIPO_PEDIDO_COMERCIAL, FEC_PEDIDO = _model.FEC_PEDIDO,
+                    FEC_VECIMIENTO = _model.FEC_VECIMIENTO, FEC_ENTREGA = _model.FEC_ENTREGA, FEC_ENTREGA_PUBLICA = _model.FEC_ENTREGA_PUBLICA,
+                    COD_TIPO_ENTIDAD = _model.COD_TIPO_ENTIDAD, COD_ENTIDAD = _model.COD_ENTIDAD,
+                    NUM_TEMPORADA = _model.NUM_TEMPORADA, NUM_COLECCION = _model.NUM_COLECCION, COD_MONEDA = _model.COD_MONEDA, FAC_TIPO_CAMBIO = _model.FAC_TIPO_CAMBIO,
+                    NUM_UNIDAD_COMERCIAL = _model.NUM_UNIDAD_COMERCIAL, NUM_SECUENCIA_DIRECCION = _model.NUM_SECUENCIA_DIRECCION,
+                    COD_CENTRO_COSTO_SOLICITANTE = _model.COD_CENTRO_COSTO_SOLICITANTE, COD_CENTRO_COSTO_DESTINO = _model.COD_CENTRO_COSTO_DESTINO,
+                    COD_SUCURSAL = _model.COD_SUCURSAL, COD_FORMA_PAGO = _model.COD_FORMA_PAGO, COD_CONDICION_PAGO = _model.COD_CONDICION_PAGO,
+                    COD_TIPO_DESCUENTO = _model.COD_TIPO_DESCUENTO, TAS_DESCUENTO = _model.TAS_DESCUENTO, VAL_TOTAL = _valTotalCalculado,
+                    COD_ENTIDAD_VENDEDOR = _model.COD_ENTIDAD_VENDEDOR, NUM_PURCHASE_ORDER = _model.NUM_PURCHASE_ORDER,
+                    COD_PAIS_DESTINO = _model.COD_PAIS_DESTINO, NUM_LOTE_CONTROL = _model.NUM_LOTE_CONTROL,
+                    NUM_RENDICION_CUENTAS = _model.NUM_RENDICION_CUENTAS, COD_TIPO_MOTIVO = _model.COD_TIPO_MOTIVO, COD_MOTIVO = _model.COD_MOTIVO,
+                    DES_OBSERVACION = _model.DES_OBSERVACION, NUM_PEDIDO_COMERCIAL_RELACIONADO = _model.NUM_PEDIDO_COMERCIAL_RELACIONADO,
+                    NUM_TRACKING = _model.NUM_TRACKING, COD_INCOTERM = _model.COD_INCOTERM, COD_TIPO_ESTADO = _model.COD_TIPO_ESTADO, COD_ESTADO = _model.COD_ESTADO,
+                };
+                resp = await Http.PutAsJsonAsync(ApiRoutes.Comercial.PedidosComerciales, dto);
+            }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PedidoComercialDocumento), nameof(Submit));
+                return;
+            }
+
+            _huboCambios = true;
+
+            if (esAlta)
+            {
+                var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+                if (decimal.TryParse(cuerpo?.Data?.Codigo, out var generado))
+                {
+                    _model.NUM_PEDIDO_COMERCIAL = generado;
+                    Snackbar.Add($"Pedido N° {generado} creado. Ya puedes cargar las líneas.", Severity.Success);
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAvisoAsync("El pedido se creó, pero la base no devolvió su número: reabre el documento para cargarle líneas.", DialogService, nameof(PedidoComercialDocumento));
+                }
+            }
+            else
+            {
+                Snackbar.Add("Pedido actualizado.", Severity.Success);
+            }
+
+            // El descuento recién llega a la base al grabar la cabecera, así que este es el
+            // momento en que los importes pueden haber cambiado de verdad. El refresco que
+            // hace CambiarTipoDescuento es para que la grilla no quede mostrando lo de antes
+            // mientras editas; el que vale es este.
+            await CargarCalculoAsync();
+
+            // Y la cabecera: el SP puede haber movido el Estado o cualquier otro campo que la
+            // pantalla no escribe. Es el mismo método que ya se usa al abrir el documento.
+            await RecargarCabeceraCompletaAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PedidoComercialDocumento), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(PedidoComercialDocumento));
+        }
+        finally { _saving = false; }
+    }
+}

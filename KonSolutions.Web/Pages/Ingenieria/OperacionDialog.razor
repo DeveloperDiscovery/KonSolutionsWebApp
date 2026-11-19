@@ -1,0 +1,130 @@
+@* Alta, cambio, consulta y baja de una operacion del catalogo (script SQL 120). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudText data-zona="confirmar">¿Eliminar <b>@_m.COD_OPERACION · @_m.DES_OPERACION</b>? Se borra también su lista de componentes. Si es componente de otra operación, tiene tiempos o está en una ruta, el sistema no lo permitirá.</MudText>
+        }
+        else
+        {
+            <div class="d-flex gap-3">
+                <MudTextField T="string" @bind-Value="_m.COD_OPERACION" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
+                <MudTextField T="string" @bind-Value="_m.DES_OPERACION" Label="Operación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
+            </div>
+            <div class="d-flex gap-3 mt-2">
+                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="proceso">
+                    @foreach (var p in Lista("procesos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_m.COD_SUB_PROCESO" Label="Subproceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="subproceso">
+                    @foreach (var p in Lista("subprocesos").Where(s => s.DES_DETALLE == _m.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <MudSelect T="string" @bind-Value="_m.COD_TIPO_OPERACION_PRODUCCION" Label="Tipo de operación (familia técnica: trae su clase y función)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" data-campo="tipo">
+                @foreach (var p in Lista("tipos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES · @ClaseNombre(p.COD_REGLA)</MudSelectItem> }
+            </MudSelect>
+            <div class="d-flex gap-3 mt-2">
+                <MudSelect T="string" @bind-Value="_m.COD_CATEGORIA_OCUPACIONAL" Label="Categoría (A-D)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="categoria">
+                    @foreach (var p in Lista("categorias")) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_m.COD_TIPO_MAQUINA" Label="Tipo de máquina" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="maquina">
+                    @foreach (var p in Lista("maquinas")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_m.COD_UNIDAD_MEDIDA_TIEMPO" Label="Unidad del tiempo" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:170px;" data-campo="unidad">
+                    @foreach (var p in Lista("unidades")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Una operación compuesta no lleva categoría ni máquina propias: las tienen sus hojas. Para aprobar un tiempo, la hoja necesita ambas.</MudText>
+            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+            @if (!_nuevo)
+            {
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
+                    <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
+                    <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
+                </MudSelect>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <PanelAuditoria Class="" CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO" CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO" FecRegistro="@Item?.FEC_REGISTRO"
+                         CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION" FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura && Modo != CrudModo.Delete ? "Cerrar" : "Cancelar")</MudButton>
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudButton Color="Color.Error" Variant="Variant.Filled" Disabled="_guardando" OnClick="Eliminar" data-accion="confirmar-eliminar">Eliminar</MudButton>
+        }
+        else if (!_soloLectura)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Operacion? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    private OperacionGuardarDto _m = new() { COD_UNIDAD_MEDIDA_TIEMPO = "MIN" };
+    private Dictionary<string, List<CatalogoOperacionItem>> _combos = new();
+    private bool _nuevo, _guardando;
+    private short _estado;
+    private string _error = "";
+    private bool _soloLectura => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<CatalogoOperacionItem> Lista(string k) => _combos.GetValueOrDefault(k) ?? new();
+    private static string ClaseNombre(string? k) => k switch { "MANUA" => "manual", "MAQUI" => "con máquina", "INSPC" => "inspección", "LOGIS" => "logística", "OBRAC" => "obra", _ => "" };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _nuevo = Modo == CrudModo.Create;
+        if (Item is not null)
+            _m = new OperacionGuardarDto
+            {
+                COD_OPERACION = Item.COD_OPERACION, DES_OPERACION = Item.DES_OPERACION, COD_TIPO_OPERACION_PRODUCCION = Item.COD_TIPO_OPERACION_PRODUCCION, COD_PROCESO = Item.COD_PROCESO,
+                COD_SUB_PROCESO = Item.COD_SUB_PROCESO, COD_CATEGORIA_OCUPACIONAL = Item.COD_CATEGORIA_OCUPACIONAL, COD_TIPO_MAQUINA = Item.COD_TIPO_MAQUINA,
+                COD_UNIDAD_MEDIDA_TIEMPO = Item.COD_UNIDAD_MEDIDA_TIEMPO, DES_OBSERVACION = Item.DES_OBSERVACION, COD_TIPO_ESTADO = Item.COD_TIPO_ESTADO, COD_ESTADO = Item.COD_ESTADO
+            };
+        _estado = _m.COD_ESTADO ?? 0;
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.OperacionesCombos);
+        if (c.Data is not null) _combos = c.Data; else _error = c.Mensaje ?? "No se pudieron leer los catálogos.";
+        if (_nuevo)
+        {
+            var s = await OperacionesApi.LeerAsync<string>(Http, IngRoute.OperacionesSiguienteCodigo);
+            if (s.Ok && !string.IsNullOrEmpty(s.Data)) _m.COD_OPERACION = s.Data;
+        }
+    }
+
+    private void CambiaProceso(string? p) { _m.COD_PROCESO = p ?? ""; _m.COD_SUB_PROCESO = null; }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_m.COD_OPERACION) || string.IsNullOrWhiteSpace(_m.DES_OPERACION)) { _error = "El código y el nombre son obligatorios."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_PROCESO)) { _error = "Elige el proceso."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_OPERACION_PRODUCCION)) { _error = "Elige el tipo de operación."; return; }
+        _guardando = true;
+        var r = await ProyectoApi.GuardarAsync(Http, IngRoute.Operaciones, _m, _nuevo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add(_nuevo ? "Operación creada." : "Operación modificada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+
+    private async Task Eliminar()
+    {
+        _error = "";
+        _guardando = true;
+        var r = await ProyectoApi.DeleteAsync(Http, IngRoute.Operacion(_m.COD_OPERACION));
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo eliminar."; return; }
+        Snackbar.Add("Operación eliminada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

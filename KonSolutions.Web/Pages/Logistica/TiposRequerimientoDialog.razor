@@ -1,0 +1,205 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.TiposRequerimiento
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@Item?.COD_TIPO_REQUERIMIENTO" Descripcion="@Item?.DES_TIPO_REQUERIMIENTO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_REQUERIMIENTO" Columna="COD_TIPO_REQUERIMIENTO"
+                                @bind-Value="_model.COD_TIPO_REQUERIMIENTO"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_REQUERIMIENTO" Columna="DES_TIPO_REQUERIMIENTO"
+                                @bind-Value="_model.DES_TIPO_REQUERIMIENTO"
+                                Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposReserva"
+                               TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)"
+                               @bind-Value="_model.COD_TIPO_RESERVA"
+                               Label="Tipo de Reserva" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposEstado"
+                               TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)"
+                               Value="@(_model.COD_TIPO_ESTADO?.ToString())"
+                               ValueChanged="@(v => _model.COD_TIPO_ESTADO = int.TryParse(v, out var n) ? n : null)"
+                               Label="Tipo de Estado" Disabled="_readonly" />
+                </MudItem>
+                @* El check va FUERA del grupo de radios, y la separación es el mensaje: las seis
+                   de abajo son excluyentes —elegir una apaga las otras cinco— y ésta no compite
+                   con ninguna. Un tipo puede ser de compra y de consumo de producción a la vez.
+                   Misma forma que el de ProcesosDialog, que tiene el mismo caso. *@
+                <MudItem xs="12">
+                    <div class="d-flex flex-wrap align-center" style="gap:var(--input-space-v,20px) var(--input-space-h,16px);">
+                        <MudCheckBox T="bool?" Value="_model.FLG_CONSUMO_PRODUCCION" ValueChanged="@(v => _model.FLG_CONSUMO_PRODUCCION = v)"
+                                     Color="Color.Primary" Disabled="_readonly">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.PrecisionManufacturing" Size="Size.Small" Style="opacity:.6;" /> Consumo de producción</div>
+                        </MudCheckBox>
+                    </div>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudRadioGroup T="string" Value="@_operacionSeleccionada" ValueChanged="OnOperacionChanged" Disabled="_readonly">
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("TRANSFERENCIA")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.SwapHoriz" /> Transferencia entre almacenes</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("PRODUCCION")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Factory" /> Producción</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("COMPRA")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.ShoppingCart" /> Compra</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("CONSUMO_INTERNO")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Inventory" /> Consumo interno</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("REPOSICION")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Replay" /> Reposición</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("VENTA")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.PointOfSale" /> Venta</div>
+                            </MudRadio>
+                        </div>
+                    </MudRadioGroup>
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private List<ComboboxItem> _tiposReserva = new();
+    private List<ComboboxItem> _tiposEstado = new();
+    private string? _operacionSeleccionada;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(ApiRoutes.Logistica.TiposReservaStockCombobox);
+            _tiposReserva = r?.Data ?? new();
+        }
+        catch { _tiposReserva = new(); }
+
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(ApiRoutes.Estandar.TiposEstadosCombobox);
+            _tiposEstado = r?.Data ?? new();
+        }
+        catch { _tiposEstado = new(); }
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_TIPO_REQUERIMIENTO       = m.COD_TIPO_REQUERIMIENTO,
+            DES_TIPO_REQUERIMIENTO       = m.DES_TIPO_REQUERIMIENTO,
+            COD_TIPO_RESERVA             = m.COD_TIPO_RESERVA,
+            COD_TIPO_ESTADO              = m.COD_TIPO_ESTADO,
+            FLG_TRANSFERENCIA            = m.FLG_TRANSFERENCIA,
+            FLG_PRODUCCION               = m.FLG_PRODUCCION,
+            FLG_COMPRA                   = m.FLG_COMPRA,
+            FLG_CONSUMO_INTERNO          = m.FLG_CONSUMO_INTERNO,
+            FLG_REPOSICION               = m.FLG_REPOSICION,
+            FLG_VENTA                    = m.FLG_VENTA,
+            FLG_CONSUMO_PRODUCCION       = m.FLG_CONSUMO_PRODUCCION,
+        };
+        _operacionSeleccionada =
+            m.FLG_TRANSFERENCIA == true ? "TRANSFERENCIA" :
+            m.FLG_PRODUCCION == true ? "PRODUCCION" :
+            m.FLG_COMPRA == true ? "COMPRA" :
+            m.FLG_CONSUMO_INTERNO == true ? "CONSUMO_INTERNO" :
+            m.FLG_REPOSICION == true ? "REPOSICION" :
+            m.FLG_VENTA == true ? "VENTA" : null;
+    }
+
+    private void OnOperacionChanged(string? val)
+    {
+        _operacionSeleccionada = val;
+        _model.FLG_TRANSFERENCIA = val == "TRANSFERENCIA";
+        _model.FLG_PRODUCCION = val == "PRODUCCION";
+        _model.FLG_COMPRA = val == "COMPRA";
+        _model.FLG_CONSUMO_INTERNO = val == "CONSUMO_INTERNO";
+        _model.FLG_REPOSICION = val == "REPOSICION";
+        _model.FLG_VENTA = val == "VENTA";
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre datos que la grilla
+    /// puede tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{ApiRoutes.Logistica.TiposRequerimiento}/{Uri.EscapeDataString(_model.COD_TIPO_REQUERIMIENTO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Logistica.TiposRequerimiento;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_REQUERIMIENTO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposRequerimientoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP de alta es estricto y rechaza la clave repetida.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposRequerimientoDialog), nameof(Submit));
+    }
+}

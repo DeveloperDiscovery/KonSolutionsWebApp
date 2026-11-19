@@ -1,0 +1,228 @@
+@using CuentaContableModel = KONSolutions.Shared.Models.Contabilidad.CuentaContable
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(760px,95vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_CUENTA_CONTABLE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* Automático: se arma como Cuenta padre + siguiente correlativo entre sus
+                       hijas (o el siguiente disponible a nivel raíz si no hay padre). Se recalcula
+                       cada vez que cambia la Cuenta padre — ver RecalcularCodigoAutomatico(). *@
+                    <CampoTexto Tabla="CONTABILIDAD.CUENTAS_CONTABLES" Columna="COD_CUENTA_CONTABLE"
+                                @bind-Value="_model.COD_CUENTA_CONTABLE"
+                                Disabled="true" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="CONTABILIDAD.CUENTAS_CONTABLES" Columna="DES_CUENTA_CONTABLE"
+                                @bind-Value="_model.DES_CUENTA_CONTABLE" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    @* Margin.Normal para que arranque a la misma altura que el AriaCombo y el
+                       CampoTexto de la misma fila; sin esto, Nivel quedaba más arriba que Cuenta
+                       padre. Dentro de un diálogo los tres márgenes se anulan por CSS y la
+                       separación la da el padding de la celda (Configuración General), así que
+                       los tres siguen empatados — pero el Margin.Normal tiene que quedar, porque
+                       es lo que los iguala donde esa regla no llega. *@
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_NIVEL" Label="Nivel" Min="1"
+                                      Variant="Variant.Outlined" Margin="Margin.Normal" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    @* Una cuenta de nivel 1 (raíz) no tiene padre — se excluye la propia cuenta de la
+                       lista para no poder elegirse a sí misma como su propio padre. *@
+                    <AriaCombo TItem="ComboboxItem" Items="_cuentasPadre"
+                               TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)"
+                               Value="@_model.COD_CUENTA_CONTABLE_PADRE"
+                               ValueChanged="@(v => { _model.COD_CUENTA_CONTABLE_PADRE = v; RecalcularCodigoAutomatico(); })"
+                               Label="Cuenta padre" Disabled="@(!_esNuevo || _readonly)" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_naturalezas"
+                               TextFunc="@(n => $"{n.Id} - {n.Texto}")" ValueFunc="@(n => n.Id)"
+                               Value="@_model.COD_CUENTA_NATURALEZA" ValueChanged="@(v => _model.COD_CUENTA_NATURALEZA = v)"
+                               Label="Naturaleza" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* Solo obligatorio si la cuenta tiene padre: una cuenta raíz (Elemento, sin
+                       padre) es un agrupador contable y no necesariamente cae en una única línea
+                       de Estado de Situación Financiera/Resultados — sus hijas sí lo necesitan. *@
+                    <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@_model.COD_TIPO_CUENTA_CONTABLE" ValueChanged="@(v => _model.COD_TIPO_CUENTA_CONTABLE = v)"
+                               Label="Tipo de cuenta contable" Disabled="_readonly"
+                               Obligatorio="@(!string.IsNullOrWhiteSpace(_model.COD_CUENTA_CONTABLE_PADRE))" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_GENERA_ASIENTO" Disabled="_readonly"
+                               Color="Color.Primary" Label="Genera asiento" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_CENTRO_COSTO" Disabled="_readonly"
+                               Color="Color.Primary" Label="Exige centro de costo" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <EstadoCombo DesTabla="CONTABILIDAD.CUENTAS_CONTABLES" @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public CuentaContableModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private CuentaContableModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _cuentasPadre = new();
+    private List<ComboboxItem> _naturalezas = new();
+    private List<ComboboxItem> _tipos = new();
+
+    // Todo el plan de cuentas, con su COD_CUENTA_CONTABLE_PADRE — el combobox genérico no
+    // trae ese dato, y hace falta para calcular hermanas al generar el código automático.
+    private List<CuentaContableModel> _todasLasCuentas = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+
+        var tCuentas = Http.SafeGetAsync<List<CuentaContableModel>>(ApiRoutes.Contabilidad.CuentasContables);
+        var tNaturalezas = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Contabilidad.CuentasNaturalezaCombobox);
+        var tTipos = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Contabilidad.TiposCuentaContableCombobox);
+        await Task.WhenAll(tCuentas, tNaturalezas, tTipos);
+        _todasLasCuentas = await tCuentas ?? new();
+        _cuentasPadre = _todasLasCuentas
+            .Where(c => _esNuevo || c.COD_CUENTA_CONTABLE != _model.COD_CUENTA_CONTABLE)
+            .Select(c => new ComboboxItem { Id = c.COD_CUENTA_CONTABLE, Texto = c.DES_CUENTA_CONTABLE })
+            .ToList();
+        _naturalezas = await tNaturalezas ?? new();
+        _tipos = await tTipos ?? new();
+
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+        else if (_esNuevo) RecalcularCodigoAutomatico();
+    }
+
+    /// <summary>Código automático = Cuenta padre + siguiente correlativo entre sus hijas
+    /// directas (o el siguiente disponible a nivel raíz, si no hay padre elegido). Se toma la
+    /// última hija por orden alfabético del código completo y se le suma 1 al tramo propio —
+    /// si esa última tenía letras (no numérica), se cae a "01" para no intentar sumarle 1 a
+    /// texto. NUM_NIVEL se ajusta junto con el código: profundidad del padre + 1, o 1 en la raíz.</summary>
+    private void RecalcularCodigoAutomatico()
+    {
+        if (!_esNuevo) return;
+
+        var padre = _model.COD_CUENTA_CONTABLE_PADRE;
+        var hermanas = _todasLasCuentas
+            .Where(c => string.IsNullOrWhiteSpace(padre)
+                ? string.IsNullOrWhiteSpace(c.COD_CUENTA_CONTABLE_PADRE)
+                : c.COD_CUENTA_CONTABLE_PADRE == padre)
+            .Select(c => c.COD_CUENTA_CONTABLE)
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToList();
+
+        var prefijo = padre ?? "";
+        string tramoNuevo;
+        if (hermanas.Count == 0)
+        {
+            tramoNuevo = string.IsNullOrWhiteSpace(padre) ? "1" : "01";
+        }
+        else
+        {
+            var ultima = hermanas[^1];
+            var tramoUltimo = ultima.Length > prefijo.Length ? ultima[prefijo.Length..] : "";
+            if (int.TryParse(tramoUltimo, out var n))
+                tramoNuevo = (n + 1).ToString().PadLeft(tramoUltimo.Length, '0');
+            else
+                tramoNuevo = "01"; // hermanas con código no numérico (dato cargado a mano): no se intenta sumar
+        }
+
+        _model.COD_CUENTA_CONTABLE = prefijo + tramoNuevo;
+        _model.NUM_NIVEL = string.IsNullOrWhiteSpace(padre)
+            ? 1
+            : (_todasLasCuentas.FirstOrDefault(c => c.COD_CUENTA_CONTABLE == padre)?.NUM_NIVEL ?? 0) + 1;
+    }
+
+    private void MapearDesdeModelo(CuentaContableModel m)
+    {
+        _model = new CuentaContableModel
+        {
+            COD_CUENTA_CONTABLE = m.COD_CUENTA_CONTABLE,
+            DES_CUENTA_CONTABLE = m.DES_CUENTA_CONTABLE,
+            NUM_NIVEL = m.NUM_NIVEL,
+            COD_CUENTA_CONTABLE_PADRE = m.COD_CUENTA_CONTABLE_PADRE,
+            COD_CUENTA_NATURALEZA = m.COD_CUENTA_NATURALEZA,
+            FLG_GENERA_ASIENTO = m.FLG_GENERA_ASIENTO,
+            FLG_CENTRO_COSTO = m.FLG_CENTRO_COSTO,
+            COD_TIPO_CUENTA_CONTABLE = m.COD_TIPO_CUENTA_CONTABLE,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            COD_ESTADO = m.COD_ESTADO
+        };
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<CuentaContableModel>(
+            $"{ApiRoutes.Contabilidad.CuentasContables}/{Uri.EscapeDataString(_model.COD_CUENTA_CONTABLE)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Contabilidad.CuentasContables;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_CUENTA_CONTABLE)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(CuentasContablesDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP INSERT no es upsert.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(CuentasContablesDialog), nameof(Submit));
+    }
+}

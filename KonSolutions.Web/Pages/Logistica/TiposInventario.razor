@@ -1,0 +1,174 @@
+@page "/logistica/tipos-inventario"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.TiposInventario
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Tipos de Inventario · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Tipos de Inventario" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="tiposinventario" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Código" Width="@Limites.ColWidth("LOGISTICA.TIPOS_INVENTARIO","COD_TIPO_INVENTARIO",80,120)" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono">@context.Item.COD_TIPO_INVENTARIO</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción" Width="@Limites.ColWidth("LOGISTICA.TIPOS_INVENTARIO","DES_TIPO_INVENTARIO",180,340)">
+                <CellTemplate>@context.Item.DES_TIPO_INVENTARIO</CellTemplate>
+            </TemplateColumn>
+            @* Muestreo + ABC Aleatorio en una sola columna, mismo criterio que la columna
+               "Lectores" de Puntos de Conteo (íconos siempre visibles, atenuados si el flag
+               está apagado) en vez de dos columnas de check separadas. *@
+            <TemplateColumn Sortable="false" Title="Muestreo / ABC Aleat." Width="140px" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    <div class="d-flex align-center justify-center gap-1">
+                        <MudTooltip Text="@(context.Item.FLG_MUESTREO == true ? "Muestreo" : "Sin muestreo")">
+                            <MudIcon Icon="@Icons.Material.Filled.Science" Size="Size.Small"
+                                     Color="@(context.Item.FLG_MUESTREO == true ? Color.Primary : Color.Default)"
+                                     Style="@(context.Item.FLG_MUESTREO == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                        <MudTooltip Text="@(context.Item.FLG_ABC_ALEATORIO == true ? "ABC Aleatorio" : "Sin ABC Aleatorio")">
+                            <MudIcon Icon="@Icons.Material.Filled.Shuffle" Size="Size.Small"
+                                     Color="@(context.Item.FLG_ABC_ALEATORIO == true ? Color.Primary : Color.Default)"
+                                     Style="@(context.Item.FLG_ABC_ALEATORIO == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Área / Cargo Responsable" Width="220">
+                <CellTemplate>
+                    <span class="mono" style="opacity:.65;">@context.Item.COD_AREA_RESPONSABLE</span>
+                    <span class="ml-1">@context.Item.DES_AREA_RESPONSABLE</span>
+                    <br />
+                    <span class="mono" style="opacity:.65;">@context.Item.COD_CARGO_RESPONSABLE</span>
+                    <span class="ml-1">@context.Item.DES_CARGO_RESPONSABLE</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Área / Cargo Almacén" Width="220">
+                <CellTemplate>
+                    <span class="mono" style="opacity:.65;">@context.Item.COD_AREA_ALMACEN</span>
+                    <span class="ml-1">@context.Item.DES_AREA_ALMACEN</span>
+                    <br />
+                    <span class="mono" style="opacity:.65;">@context.Item.COD_CARGO_ALMACEN</span>
+                    <span class="ml-1">@context.Item.DES_CARGO_ALMACEN</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "TiposInventario");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.TIPOS_INVENTARIO", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    /// <summary>Con texto de búsqueda usa el SP _SEARCH (esta tabla sí lo tiene funcionando);
+    /// sin texto trae el listado completo por SHOWALL.</summary>
+    private async Task Load()
+    {
+        try
+        {
+            var ruta = string.IsNullOrWhiteSpace(_search)
+                ? ApiRoutes.Logistica.TiposInventario
+                : $"{ApiRoutes.Logistica.TiposInventarioSearch}?search={Uri.EscapeDataString(_search)}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(ruta);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TiposInventario), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(TiposInventario));
+            _items = new();
+        }
+    }
+
+    private Task Buscar() => Load();
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo registro",
+            CrudModo.Delete => $"Eliminar · {item?.DES_TIPO_INVENTARIO}",
+            CrudModo.Read   => $"Consultar · {item?.DES_TIPO_INVENTARIO}",
+            _               => $"Editar · {item?.DES_TIPO_INVENTARIO}"
+        };
+        var dlg = await DialogService.ShowAsync<TiposInventarioDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.TIPOS_INVENTARIO", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

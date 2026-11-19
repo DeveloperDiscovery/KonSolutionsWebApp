@@ -1,0 +1,49 @@
+@* Diálogo de confirmación genérico para acciones que no son CRUD (no encajan en
+   CrudDialogActions: no hay "Crear/Modificar/Eliminar", es un botón de proceso propio,
+   ej. "Generar reservas"). Mismos botones/colores que el resto de la app — tomados de
+   Configuración General (--boton-backcolor/--boton-forecolor), no los genéricos de MudBlazor.
+
+   Uso:
+   var ok = await DialogService.ShowAsync<ConfirmarAccionDialog>(titulo,
+       new DialogParameters {
+           ["Mensaje"] = "¿Generar las reservas de stock de este requerimiento?",
+           ["TextoConfirmar"] = "Generar",
+           ["IconoConfirmar"] = Icons.Material.Filled.PlaylistAddCheck
+       },
+       new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+   var confirmado = (await ok.Result) is { Canceled: false }; *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@IconoTitulo" Color="Color.Primary" Size="Size.Medium" />
+            <MudText Typo="Typo.h6">@Titulo</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body1">@Mensaje</MudText>
+    </DialogContent>
+    <DialogActions>
+        <div class="d-flex align-center gap-2 pa-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.Cancel" Style="@EstilosBoton.Cancelar">
+                @TextoCancelar
+            </MudButton>
+            <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))" Variant="Variant.Filled"
+                       StartIcon="@IconoConfirmar" Style="@EstilosBoton.Confirmar">
+                @TextoConfirmar
+            </MudButton>
+        </div>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string Titulo { get; set; } = "Confirmar";
+    [Parameter] public string Mensaje { get; set; } = "";
+    [Parameter] public string IconoTitulo { get; set; } = Icons.Material.Filled.HelpOutline;
+    [Parameter] public string TextoConfirmar { get; set; } = "Confirmar";
+    [Parameter] public string IconoConfirmar { get; set; } = Icons.Material.Filled.Check;
+    [Parameter] public string TextoCancelar { get; set; } = "Cancelar";
+
+}

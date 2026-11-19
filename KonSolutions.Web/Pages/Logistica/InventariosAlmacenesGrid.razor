@@ -1,0 +1,534 @@
+@* InventariosAlmacenesGrid.razor
+   -----------------------------------------------------------------------
+   Sub-módulo embebido en la segunda solapa de Inventarios.razor: lista los
+   almacenes incluidos en un inventario puntual (LOGISTICA.INVENTARIOS_ALMACENES,
+   clave compuesta NUM_INVENTARIO + COD_ALMACEN). Alta/edición vía
+   InventariosAlmacenesDialog.razor (mismo criterio "grilla + diálogo" que
+   Inventarios.razor con InventariosDialog.razor) — ya no edición inline en
+   la celda: con 5 fechas + observación + switches, el diálogo es más claro
+   que una fila de grilla.
+
+   Sin control de cambios (Cambios.Suscribir) ni pendientes/notificaciones — a
+   pedido explícito, se suprimen por ahora en este sub-módulo.
+
+   Botones de acción vía AccionesBotones (config BotonTreeviewItem), no fijos en el
+   markup — mismo criterio que DisenosVersionPanel dentro de Disenos.razor: como este
+   componente no es una página ruteada, no recibe CodAplicacion/CodOpcionAplicacion por
+   parámetro del router, así que se resuelven en memoria por el nombre de formulario
+   registrado en el árbol de opciones (MenuService.BuscarCodigosPorFormulario). Si el
+   admin todavía no registró esa fila, cae a los códigos del padre (Inventarios). *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenes
+@using InventarioModelo = KONSolutions.Shared.Models.Logistica.Inventarios
+@using UbicacionModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesUbicaciones
+@using ProductoModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesProductos
+@using ImagenModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesImagen
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+@inject LimitesService Limites
+@inject MenuService MenuSvc
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h6">Almacenes del inventario N° @Inventario.NUM_INVENTARIO</MudText>
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">@_items.Count almacén(es)</MudText>
+    </div>
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Volver" Style="@EstilosBoton.Cancelar">
+            Volver a Inventarios
+        </MudButton>
+        <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@* Franja con el detalle del inventario dueño de este detalle — antes solo mostraba
+   descripción + cantidad de almacenes; ahora también Tipo, Entidad responsable, Motivo,
+   Estado y las fechas programadas/efectuadas, igual información que ve InventariosDialog. *@
+<MudPaper Elevation="0" Class="pa-4 mb-4" Style="border:1px solid var(--line);">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Descripción</MudText>
+            <MudText Style="font-size:.67rem;">@Inventario.DES_INVENTARIO</MudText>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Tipo de inventario</MudText>
+            <MudText Style="font-size:.67rem;">@(Inventario.DES_TIPO_INVENTARIO ?? "—")</MudText>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Entidad responsable</MudText>
+            <MudText Style="font-size:.67rem;">@(Inventario.DES_NOMBRE_COMPLETO ?? "—")</MudText>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Motivo</MudText>
+            <MudText Style="font-size:.67rem;">@(Inventario.DES_MOTIVO ?? "—")</MudText>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Inicio / Final programado</MudText>
+            <MudText Style="font-size:.67rem;">@(Inventario.FEC_INICIO_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—") — @(Inventario.FEC_FINAL_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")</MudText>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="4" Class="py-1">
+            <MudText Style="opacity:.6;font-size:.5rem;">Estado</MudText>
+            <MudText Style="font-size:.67rem;">@(Inventario.DES_ESTADO ?? "—")</MudText>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="inventarios-almacenes" style="position:relative;">
+    @* Selección de fila simple (single-selection): elegir un almacén habilita las 3
+       secciones de abajo (Ubicaciones/Productos a inventariar, Imagen de stock), que
+       dependen de NUM_INVENTARIO + COD_ALMACEN. *@
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica"
+                 RowClick="OnAlmacenRowClick" RowClassFunc="@FilaAlmacenSeleccionado">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Almacén" Width="@Limites.ColWidth("LOGISTICA.INVENTARIOS_ALMACENES","COD_ALMACEN",100,220)">
+                <CellTemplate><span class="mono">@context.Item.COD_ALMACEN</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción" Width="@Limites.ColWidth("LOGISTICA.INVENTARIOS_ALMACENES","DES_ALMACEN",120,260)">
+                <CellTemplate>@context.Item.DES_ALMACEN</CellTemplate>
+            </TemplateColumn>
+            @* Total + Inmovilización en una sola columna, íconos siempre visibles y atenuados
+               cuando el flag está apagado — mismo criterio que la columna "Lectores" de
+               Puntos de Conteo. *@
+            <TemplateColumn Sortable="false" Title="Total / Inmov." Width="100" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    <div class="d-flex align-center justify-center gap-1">
+                        <MudTooltip Text="@(context.Item.FLG_TOTAL == true ? "Es almacén total" : "No es almacén total")">
+                            <MudIcon Icon="@Icons.Material.Filled.Summarize" Size="Size.Small"
+                                     Color="@(context.Item.FLG_TOTAL == true ? Color.Success : Color.Default)"
+                                     Style="@(context.Item.FLG_TOTAL == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                        <MudTooltip Text="@(context.Item.FLG_INMOVILIZACION == true ? "Inmovilizado" : "No inmovilizado")">
+                            <MudIcon Icon="@Icons.Material.Filled.Lock" Size="Size.Small"
+                                     Color="@(context.Item.FLG_INMOVILIZACION == true ? Color.Warning : Color.Default)"
+                                     Style="@(context.Item.FLG_INMOVILIZACION == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Entidad Responsable" Width="220">
+                <CellTemplate>@context.Item.DES_NOMBRE_COMPLETO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Programado" Width="150">
+                <CellTemplate>
+                    <span class="mono" style="font-size:.72rem;">
+                        @(context.Item.FEC_INICIO_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")<br />
+                        @(context.Item.FEC_FINAL_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                    </span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Efectuado" Width="150">
+                <CellTemplate>
+                    <span class="mono" style="font-size:.72rem;">
+                        @(context.Item.FEC_INICIO_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")<br />
+                        @(context.Item.FEC_FINAL_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                    </span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Fecha de Corte" Width="130">
+                <CellTemplate>
+                    <span class="mono" style="font-size:.72rem;">@(context.Item.FEC_CORTE?.ToString("dd/MM/yyyy HH:mm") ?? "—")</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Observación" Width="240">
+                <CellTemplate><span class="mono" style="opacity:.75;">@context.Item.DES_OBSERVACION</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="150">
+                <CellTemplate>
+                    <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div @onclick:stopPropagation="true">
+                        <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                         CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin almacenes agregados a este inventario.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@* Las 3 tablas hijas dependen de un almacén puntual (NUM_INVENTARIO + COD_ALMACEN forman
+   parte de su clave) — solo se muestran cuando hay un almacén seleccionado en la grilla
+   de arriba. Sin control de cambios/pendientes, mismo criterio que el resto de este
+   sub-módulo. Errores centralizados vía ErrorDialogHelper. *@
+@if (_almacenSeleccionado is not null)
+{
+    <MudPaper Elevation="0" Class="pa-4 mt-4 mb-4" Style="border:1px solid var(--line);">
+        <MudText Typo="Typo.subtitle1" Class="mb-3">Almacén @_almacenSeleccionado.COD_ALMACEN</MudText>
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-3">
+            <MudTabPanel Text="Ubicaciones y Productos a Inventariar" Icon="@Icons.Material.Filled.PinDrop">
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <div class="d-flex align-center gap-3 mb-3">
+                            <MudText Typo="Typo.subtitle2">Ubicaciones a Inventariar</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add" Size="Size.Small"
+                                       OnClick="AgregarUbicaciones" Style="@EstilosBoton.Confirmar">Agregar</MudButton>
+                        </div>
+                        <div data-resizable-grid="inventarios-almacenes-ubicaciones" style="position:relative;">
+                        <MudDataGrid T="UbicacionModelo" Items="_ubicaciones" Dense="true" Hover="true" Striped="true"
+                                     Height="100%" FixedHeader="true" RowsPerPage="10">
+                            <Columns>
+                                <TemplateColumn Sortable="false" Title="Ubicación" Width="140">
+                                    <CellTemplate><span class="mono">@context.Item.COD_UBICACION_ALMACEN</span></CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Sortable="false" Title="Descripción">
+                                    <CellTemplate>@context.Item.DES_UBICACION_ALMACEN</CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Sortable="false" Title="Polígono" Width="120">
+                                    <CellTemplate>@context.Item.DES_POLIGONO</CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Sortable="false" Title="Acciones" Width="90">
+                                    <CellTemplate>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => EliminarUbicacion(context.Item))" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin ubicaciones agregadas a este almacén.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="UbicacionModelo" /></PagerContent>
+                        </MudDataGrid>
+                        <div class="grid-resize-handle"></div>
+                        </div>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <div class="d-flex align-center gap-3 mb-3">
+                            <MudText Typo="Typo.subtitle2">Productos a Inventariar</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add" Size="Size.Small"
+                                       OnClick="AgregarProductos" Style="@EstilosBoton.Confirmar">Agregar</MudButton>
+                        </div>
+                        <div data-resizable-grid="inventarios-almacenes-productos" style="position:relative;">
+                        <MudDataGrid T="ProductoModelo" Items="_productos" Dense="true" Hover="true" Striped="true"
+                                     Height="100%" FixedHeader="true" RowsPerPage="10">
+                            <Columns>
+                                <TemplateColumn Sortable="false" Title="Producto" Width="150">
+                                    <CellTemplate><span class="mono">@context.Item.COD_PRODUCTO</span></CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Sortable="false" Title="Descripción">
+                                    <CellTemplate>@(context.Item.DES_DETALLADA ?? context.Item.DES_PRODUCTO)</CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Sortable="false" Title="Acciones" Width="90">
+                                    <CellTemplate>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => EliminarProducto(context.Item))" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin productos agregados a este almacén.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="ProductoModelo" /></PagerContent>
+                        </MudDataGrid>
+                        <div class="grid-resize-handle"></div>
+                        </div>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Imagen de Stock" Icon="@Icons.Material.Filled.CameraAlt">
+                @* Solo lectura: sin botón agregar/editar/eliminar. La puebla un proceso
+                   todavía no implementado (toma de imagen de stock). *@
+                <div data-resizable-grid="inventarios-almacenes-imagen" style="position:relative;">
+                <MudDataGrid T="ImagenModelo" Items="_imagen" Dense="true" Hover="true" Striped="true"
+                             Height="100%" FixedHeader="true" RowsPerPage="10">
+                    <Columns>
+                        <TemplateColumn Sortable="false" Title="Ubicación" Width="110">
+                            <CellTemplate><span class="mono">@context.Item.COD_UBICACION_ALMACEN</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Producto" Width="130">
+                            <CellTemplate><span class="mono">@context.Item.COD_PRODUCTO</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Lote" Width="100">
+                            <CellTemplate>@context.Item.NUM_LOTE_CONTROL</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Cantidad" Width="100" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.CAN_PRODUCTO</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Conteo" Width="100" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.CAN_PRODUCTO_CONTEO</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Dif. conteo" Width="100" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.CAN_PRODUCTO_CONTEO_DIFERENCIA</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="U.M." Width="80">
+                            <CellTemplate>@context.Item.COD_UNIDAD_MEDIDA</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Inventariada" Width="110" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.CAN_PRODUCTO_INVENTARIADA</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Title="Diferencia" Width="100" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                            <CellTemplate>@context.Item.CAN_PRODUCTO_DIFERENCIA</CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin datos de imagen de stock. Se genera por proceso, no admite carga manual.</MudText></NoRecordsContent>
+                    <PagerContent><MudDataGridPager T="ImagenModelo" /></PagerContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+                </div>
+            </MudTabPanel>
+        </MudTabs>
+    </MudPaper>
+}
+
+@code {
+    [Parameter, EditorRequired] public InventarioModelo Inventario { get; set; } = new();
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    /// <summary>Botón "Puntos de Conteo" de una fila de almacén — el padre (Inventarios.razor)
+    /// abre su propia solapa con InventariosAlmacenesPuntoTomaGrid para ese almacén puntual.</summary>
+    [Parameter] public EventCallback<Modelo> OnAbrirPuntosConteo { get; set; }
+    /// <summary>Códigos del módulo padre (Inventarios) — usados como fallback si el
+    /// admin todavía no registró "ASIGNACIÓN DE ALMACENES AL INVENTARIO" con su propio
+    /// DES_FORMULARIO en el árbol de opciones.</summary>
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+    /// <summary>Avisa al padre (Inventarios.razor) que ya terminó de cargar sus datos — el
+    /// padre monta este componente ANTES de activar la solapa, y recién la activa cuando esto
+    /// se dispara, así el usuario nunca ve la grilla vacía mientras carga.</summary>
+    [Parameter] public EventCallback OnCargado { get; set; }
+
+    private string _codAplicacion = "";
+    private string _codOpcionAplicacion = "";
+
+    private List<Modelo> _items = new();
+
+
+    // ── Almacén seleccionado (single-selection) y sus 3 tablas hijas ──
+    private Modelo? _almacenSeleccionado;
+    private List<UbicacionModelo> _ubicaciones = new();
+    private List<ProductoModelo> _productos = new();
+    private List<ImagenModelo> _imagen = new();
+
+    private string FilaAlmacenSeleccionado(Modelo item, int _)
+        => _almacenSeleccionado is not null && item.NUM_INVENTARIO == _almacenSeleccionado.NUM_INVENTARIO
+           && item.COD_ALMACEN == _almacenSeleccionado.COD_ALMACEN ? "fila-seleccionada" : "";
+
+    private async Task OnAlmacenRowClick(DataGridRowClickEventArgs<Modelo> args)
+    {
+        _almacenSeleccionado = args.Item;
+        await CargarTablasHijas();
+    }
+
+    private async Task CargarTablasHijas()
+    {
+        if (_almacenSeleccionado is null) { _ubicaciones = new(); _productos = new(); _imagen = new(); return; }
+        var numInv = _almacenSeleccionado.NUM_INVENTARIO;
+        var codAlm = Uri.EscapeDataString(_almacenSeleccionado.COD_ALMACEN);
+        try
+        {
+            var ru = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenesUbicaciones}?numInventario={numInv}&codAlmacen={codAlm}");
+            _ubicaciones = ru.IsSuccessStatusCode ? (await ru.Content.ReadFromJsonAsync<ApiResponse<List<UbicacionModelo>>>())?.Data ?? new() : new();
+
+            var rp = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenesProductos}?numInventario={numInv}&codAlmacen={codAlm}");
+            _productos = rp.IsSuccessStatusCode ? (await rp.Content.ReadFromJsonAsync<ApiResponse<List<ProductoModelo>>>())?.Data ?? new() : new();
+
+            var ri = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenesImagen}?numInventario={numInv}&codAlmacen={codAlm}");
+            _imagen = ri.IsSuccessStatusCode ? (await ri.Content.ReadFromJsonAsync<ApiResponse<List<ImagenModelo>>>())?.Data ?? new() : new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesGrid), nameof(CargarTablasHijas));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información del almacén. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesGrid), "Error al cargar");
+        }
+    }
+
+    private async Task AgregarUbicaciones()
+    {
+        var parametros = new DialogParameters
+        {
+            ["NumInventario"] = (int)_almacenSeleccionado!.NUM_INVENTARIO!,
+            ["CodAlmacen"] = _almacenSeleccionado.COD_ALMACEN,
+            ["YaAgregadas"] = _ubicaciones.Select(x => x.COD_UBICACION_ALMACEN).ToList()
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesUbicacionesAgregarDialog>("Agregar ubicaciones", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarTablasHijas();
+    }
+
+    private async Task EliminarUbicacion(UbicacionModelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar ubicación",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar ubicación",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar la ubicación {item.COD_UBICACION_ALMACEN} de este almacén?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesUbicaciones}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.COD_UBICACION_ALMACEN}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Ubicación quitada.", Severity.Success); await CargarTablasHijas(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesGrid), nameof(EliminarUbicacion));
+    }
+
+    private async Task AgregarProductos()
+    {
+        var parametros = new DialogParameters
+        {
+            ["NumInventario"] = (int)_almacenSeleccionado!.NUM_INVENTARIO!,
+            ["CodAlmacen"] = _almacenSeleccionado.COD_ALMACEN,
+            ["YaAgregados"] = _productos.Select(x => x.COD_PRODUCTO).ToList()
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesProductosAgregarDialog>("Agregar productos", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarTablasHijas();
+    }
+
+    private async Task EliminarProducto(ProductoModelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar producto",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar producto",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el producto {item.COD_PRODUCTO} de este almacén?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesProductos}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.COD_PRODUCTO}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Producto quitado.", Severity.Success); await CargarTablasHijas(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesGrid), nameof(EliminarProducto));
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cod = MenuSvc.BuscarCodigosPorFormulario("Logistica/InventariosAlmacenes.razor");
+        (_codAplicacion, _codOpcionAplicacion) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+        await Load();
+        await OnCargado.InvokeAsync();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return AgregarAlmacen();
+        return AccionProceso(b, null);
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return Editar(item);
+        if (b.FLG_ACCION_DELETE == true) return Eliminar(item);
+        if (b.FLG_ACCION_GET    == true) return AbrirDialog(item, CrudModo.Read);
+        return AccionProceso(b, item);
+    }
+
+    /// <summary>Botones de proceso sin verbo HTTP propio (Imagen de stock, Puntos de conteo,
+    /// Iniciar/Terminar inventario) — todavía no tienen SP/handler asociado en este sub-módulo,
+    /// salvo "Puntos de Conteo" que ya abre su propia solapa en el padre (Inventarios.razor).</summary>
+    private Task AccionProceso(BotonTreeviewItem b, Modelo? item)
+    {
+        var nombre = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant();
+        if (item is not null && nombre.Contains("PUNTO") && nombre.Contains("CONTEO"))
+            return OnAbrirPuntosConteo.InvokeAsync(item);
+
+        Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>El SP _SHOWALL filtra por NUM_INVENTARIO (sin control de cambios por pedido
+    /// explícito). Errores centralizados vía ErrorDialogHelper, no Snackbar suelto.</summary>
+    private async Task Load()
+    {
+        try
+        {
+            var resp = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenes}?numInventario={Inventario.NUM_INVENTARIO}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<Modelo>>>();
+                _items = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesGrid), nameof(Load));
+                _items = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesGrid), nameof(Load));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesGrid), "Error al cargar");
+            _items = new();
+        }
+
+        // Foco en el primer registro al entrar a la pantalla: selecciona automáticamente
+        // el primer almacén de la lista (resalta la fila y abre sus pestañas hijas), sin
+        // esperar a que el usuario haga clic.
+        _almacenSeleccionado = _items.FirstOrDefault();
+        await CargarTablasHijas();
+    }
+
+    private async Task AgregarAlmacen() => await AbrirDialog(null, CrudModo.Create);
+    private async Task Editar(Modelo item) => await AbrirDialog(item, CrudModo.Update);
+
+    private async Task AbrirDialog(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Agregar almacén",
+            _                => $"Editar · {item?.COD_ALMACEN}"
+        };
+        var parametros = new DialogParameters
+        {
+            ["Item"] = item,
+            ["Modo"] = modo,
+            ["NumInventario"] = (int)Inventario.NUM_INVENTARIO,
+            ["AlmacenesYaAgregados"] = _items.Select(x => x.COD_ALMACEN).ToList(),
+            ["InventarioFecInicioProgramada"] = Inventario.FEC_INICIO_PROGRAMADA,
+            ["InventarioFecFinalProgramada"] = Inventario.FEC_FINAL_PROGRAMADA,
+            ["InventarioFecInicioEfectuada"] = Inventario.FEC_INICIO_EFECTUADA,
+            ["InventarioFecFinalEfectuada"] = Inventario.FEC_FINAL_EFECTUADA,
+            ["CodAplicacion"] = _codAplicacion,
+            ["CodOpcionAplicacion"] = _codOpcionAplicacion
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesDialog>(titulo, parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Eliminar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar almacén",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar almacén del inventario",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el almacén {item.COD_ALMACEN} del inventario N° {Inventario.NUM_INVENTARIO}?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenes}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Almacén quitado.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesGrid), nameof(Eliminar));
+    }
+
+    private async Task Volver()
+    {
+        if (OnCerrar.HasDelegate) await OnCerrar.InvokeAsync();
+    }
+}

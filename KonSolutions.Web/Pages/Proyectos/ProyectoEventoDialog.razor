@@ -1,0 +1,100 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nuevo evento" : $"Evento · {Item.DES_EVENTO}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="8">
+                <MudTextField T="string" @bind-Value="_des" Label="Evento" Variant="Variant.Outlined" MaxLength="100" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudSwitch T="bool" @bind-Value="_retraso" Color="Color.Error" Label="@(_retraso ? "Es un retraso" : "No es un retraso")" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudDatePicker @bind-Date="_iniF" Label="Fecha de inicio" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudTimePicker @bind-Time="_iniH" Label="Hora de inicio" Variant="Variant.Outlined" Editable="true" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudDatePicker @bind-Date="_finF" Label="Fecha final (vacía: evento abierto)" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudTimePicker @bind-Time="_finH" Label="Hora final" Variant="Variant.Outlined" Editable="true" Clearable="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fasesCombo" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasCombo" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" />
+            </MudItem>
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_resp" ValueChanged="@(v => _resp = v)" Label="Responsable" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_obs" Label="Observación" Variant="Variant.Outlined" Lines="2" MaxLength="500" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteEvento? Item { get; set; }
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+
+    private string _des = "", _obs = "";
+    private bool _retraso, _guardando;
+    private DateTime? _iniF, _finF;
+    private TimeSpan? _iniH, _finH;
+    private string? _fase, _tarea, _resp;
+    private List<ComboboxItem> _fasesCombo = new();
+
+    private List<ComboboxItem> TareasCombo => Tareas.Where(t => int.TryParse(_fase, out var f) ? t.COD_FASE == f : true)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override void OnInitialized()
+    {
+        _fasesCombo = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        if (Item is null) { _iniF = DateTime.Today; _iniH = DateTime.Now.TimeOfDay; return; }
+        _des = Item.DES_EVENTO; _obs = Item.DES_OBSERVACION ?? ""; _retraso = Item.FLG_RETRASO;
+        _iniF = Item.FEC_HORA_INICIO.Date; _iniH = Item.FEC_HORA_INICIO.TimeOfDay;
+        if (Item.FEC_HORA_FINAL is { } f) { _finF = f.Date; _finH = f.TimeOfDay; }
+        _fase = Item.COD_FASE?.ToString(); _tarea = Item.COD_TAREA?.ToString(); _resp = Item.COD_ENTIDAD_RESPONSABLE?.ToString("0");
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción del evento.", Severity.Warning); return; }
+        if (_iniF is null || _iniH is null) { Snackbar.Add("Falta la fecha y la hora de inicio.", Severity.Warning); return; }
+        var ini = _iniF.Value.Date + _iniH.Value;
+        DateTime? fin = null;
+        if (_finF is not null) fin = _finF.Value.Date + (_finH ?? TimeSpan.Zero);
+        else if (_finH is not null) { Snackbar.Add("Si pones la hora final, pon también la fecha final.", Severity.Warning); return; }
+        if (fin is not null && fin < ini) { Snackbar.Add("La fecha y hora final no puede ser anterior a la inicial.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        var cuerpo = new
+        {
+            NumSecuencia = Item?.NUM_SECUENCIA,
+            CodFase = int.TryParse(_fase, out var f) ? (int?)f : null,
+            CodTarea = int.TryParse(_tarea, out var t) ? (int?)t : null,
+            DesEvento = _des.Trim(), FlgRetraso = _retraso, FecHoraInicio = ini, FecHoraFinal = fin,
+            CodEntidadResponsable = decimal.TryParse(_resp, out var r) ? (decimal?)r : null,
+            DesObservacion = string.IsNullOrWhiteSpace(_obs) ? null : _obs.Trim()
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, "eventos"), cuerpo, esNuevo);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el evento.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

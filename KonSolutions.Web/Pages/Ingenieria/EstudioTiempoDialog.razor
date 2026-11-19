@@ -1,0 +1,107 @@
+@* Estudio de tiempos de una operacion (script SQL 121): los elementos del ciclo con su tiempo observado y su frecuencia; el ritmo es la valoracion del analista
+   (100 % = normal). Tiempo base = suma(observado x frecuencia) x ritmo / 100. Un estudio que respalda una version aprobada es de solo lectura. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_soloLectura) { <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-zona="solo-lectura">Este estudio respalda una versión aprobada: no se puede modificar. Haz un estudio nuevo.</MudAlert> }
+        <div class="d-flex flex-wrap gap-3">
+            <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:240px;" data-campo="metodo">
+                @foreach (var x in _metodos) { <MudSelectItem T="string" Value="@x.COD">@x.COD · @x.DES</MudSelectItem> }
+            </MudSelect>
+            <MudDatePicker T="DateTime?" @bind-Date="_m.FEC_ESTUDIO" Label="Fecha del estudio" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:200px;" data-campo="fecha" />
+            <MudNumericField T="decimal" @bind-Value="_m.VAL_RITMO_PCT" Label="Ritmo %" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1m" Max="300m" Disabled="_soloLectura" Style="max-width:120px;" data-campo="ritmo" />
+            <MudNumericField T="int?" @bind-Value="_m.CAN_CICLOS" Label="Ciclos medidos" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Disabled="_soloLectura" Style="max-width:140px;" data-campo="ciclos" />
+        </div>
+        <div style="overflow-x:auto;" class="mt-2">
+            <table class="et-tabla" data-tabla="elementos">
+                <thead><tr><th></th><th>Elemento</th><th class="n">Tiempo observado (min)</th><th class="n">Frecuencia</th><th>Máquina</th><th></th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < _m.Elementos.Count; i++)
+                    {
+                        var e = _m.Elementos[i]; var idx = i;
+                        <tr data-elemento="@(i + 1)">
+                            <td class="mono">@(i + 1)</td>
+                            <td><MudTextField T="string" @bind-Value="e.DES_ELEMENTO" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="elemento" /></td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_TIEMPO_OBSERVADO" Min="0m" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" Style="width:120px;" data-campo="observado" /></td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" Style="width:90px;" data-campo="frecuencia" /></td>
+                            <td><MudSwitch T="bool" @bind-Value="e.FLG_ELEMENTO_MAQUINA" Color="Color.Primary" Disabled="_soloLectura" data-campo="maquina" /></td>
+                            <td>@if (!_soloLectura) { <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Quitar(idx))" data-accion="quitar" /> }</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (!_soloLectura) { <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="Agregar" Class="mt-2" data-accion="agregar">Agregar elemento</MudButton> }
+        <div class="d-flex flex-wrap gap-6 mt-3 mono" data-zona="calculo">
+            <span>Tiempo observado: <b>@OperacionesApi.Min(Observado)</b></span>
+            <span>Tiempo base: <b>@OperacionesApi.Min(Base)</b> min</span>
+            <span>Parte de máquina: <b>@(Base > 0 ? (Maquina / Base * 100).ToString("0") : "0") %</b></span>
+        </div>
+        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura ? "Cerrar" : "Cancelar")</MudButton>
+        @if (!_soloLectura) { <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar estudio</MudButton> }
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .et-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .et-tabla th, .et-tabla td { padding: 2px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .et-tabla th { font-weight: 600; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+    .et-tabla .n { text-align: right; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Operacion Operacion { get; set; } = new();
+    /// <summary>El estudio que se abre; nulo = estudio nuevo.</summary>
+    [Parameter] public EstudioTiempo? Estudio { get; set; }
+
+    private EstudioTiempoGuardarDto _m = new();
+    private List<CatalogoOperacionItem> _metodos = new();
+    private bool _guardando;
+    private string _error = "";
+    private bool _soloLectura => Estudio?.FLG_APROBADO == true;
+
+    private decimal Observado => _m.Elementos.Sum(e => e.VAL_TIEMPO_OBSERVADO * e.VAL_FRECUENCIA);
+    private decimal Base => Observado * _m.VAL_RITMO_PCT / 100m;
+    private decimal Maquina => _m.Elementos.Where(e => e.FLG_ELEMENTO_MAQUINA).Sum(e => e.VAL_TIEMPO_OBSERVADO * e.VAL_FRECUENCIA) * _m.VAL_RITMO_PCT / 100m;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _m = new EstudioTiempoGuardarDto { COD_OPERACION = Operacion.COD_OPERACION, COD_METODO_TIEMPO = "CRONO", FEC_ESTUDIO = DateTime.Today, VAL_RITMO_PCT = 100 };
+        if (Estudio is not null)
+        {
+            _m.NUM_ESTUDIO_TIEMPO = Estudio.NUM_ESTUDIO_TIEMPO; _m.COD_METODO_TIEMPO = Estudio.COD_METODO_TIEMPO; _m.FEC_ESTUDIO = Estudio.FEC_ESTUDIO; _m.COD_ENTIDAD_ANALISTA = Estudio.COD_ENTIDAD_ANALISTA;
+            _m.VAL_RITMO_PCT = Estudio.VAL_RITMO_PCT; _m.CAN_CICLOS = Estudio.CAN_CICLOS; _m.DES_OBSERVACION = Estudio.DES_OBSERVACION;
+            var el = await OperacionesApi.LeerAsync<List<EstudioTiempoElemento>>(Http, IngRoute.OperacionesEstudioElementos(Estudio.NUM_ESTUDIO_TIEMPO));
+            if (!el.Ok) _error = el.Mensaje ?? "";
+            _m.Elementos = (el.Data ?? new()).Select(e => new EstudioTiempoElementoDto { DES_ELEMENTO = e.DES_ELEMENTO, VAL_TIEMPO_OBSERVADO = e.VAL_TIEMPO_OBSERVADO, VAL_FRECUENCIA = e.VAL_FRECUENCIA, FLG_ELEMENTO_MAQUINA = e.FLG_ELEMENTO_MAQUINA }).ToList();
+        }
+        else _m.Elementos.Add(new EstudioTiempoElementoDto { VAL_FRECUENCIA = 1 });
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.OperacionesCombos);
+        _metodos = c.Data?.GetValueOrDefault("metodos") ?? new();
+    }
+
+    private void Agregar() => _m.Elementos.Add(new EstudioTiempoElementoDto { VAL_FRECUENCIA = 1 });
+    private void Quitar(int i) { if (_m.Elementos.Count > 1) _m.Elementos.RemoveAt(i); }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (_m.Elementos.Any(e => string.IsNullOrWhiteSpace(e.DES_ELEMENTO))) { _error = "Todos los elementos necesitan descripción."; return; }
+        if (Base <= 0) { _error = "El tiempo base del estudio debe ser mayor que cero."; return; }
+        _guardando = true;
+        var r = await OperacionesApi.EnviarAsync<EstudioTiempoResultado>(Http, HttpMethod.Post, IngRoute.OperacionesEstudios, _m);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add($"Estudio {r.Data?.NUM_ESTUDIO_TIEMPO} guardado: base {OperacionesApi.Min(r.Data?.VAL_TIEMPO_BASE)} min.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(r.Data?.NUM_ESTUDIO_TIEMPO));
+    }
+}

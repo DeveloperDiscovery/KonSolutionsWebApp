@@ -1,0 +1,162 @@
+@* Alta, cambio, consulta y baja de un armado de linea (script SQL 125): la ruta y el proceso cuyas operaciones se reparten, la disposicion de la linea, el turno y la meta. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudText data-zona="confirmar">¿Eliminar el armado <b>@_m.COD_ARMADO · @_m.DES_ARMADO</b>? Se borran también sus puestos y el reparto de operaciones. La ruta y las operaciones no se tocan.</MudText>
+        }
+        else
+        {
+            <div class="d-flex gap-3">
+                <MudTextField T="string" @bind-Value="_m.COD_ARMADO" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
+                <MudTextField T="string" @bind-Value="_m.DES_ARMADO" Label="Nombre del armado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
+            </div>
+            <div class="d-flex gap-3 mt-2">
+                <MudSelect T="string" Value="_m.COD_RUTA_PRODUCCION" ValueChanged="CambiaRuta" Label="Ruta de producción" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="ruta">
+                    @foreach (var p in Lista("rutas")) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso de la ruta" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="proceso">
+                    @foreach (var p in ProcesosDeLaRuta()) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+            </div>
+            <div class="d-flex gap-3 mt-2">
+                <MudSelect T="string" Value="_m.COD_LINEA_PRODUCCION" ValueChanged="CambiaLinea" Label="Línea de producción (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="linea">
+                    @foreach (var p in Lista("lineas").Where(l => l.DES_DETALLE == _m.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_m.COD_TIPO_DISTRIBUCION" Label="Disposición" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="distribucion">
+                    @foreach (var p in Lista("distribuciones")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+            </div>
+            var dis = Lista("distribuciones").FirstOrDefault(d => d.COD == _m.COD_TIPO_DISTRIBUCION);
+            @if (dis is not null)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.7;" data-zona="regla">@(dis.COD_REGLA == "MAX_PUESTO"
+                    ? "Lineal: el ciclo de la línea lo marca el puesto más lento (minutos del puesto ÷ sus operarios)."
+                    : "Los operarios se reparten el trabajo: ciclo = minutos totales ÷ operarios totales.")@(dis.FLG_2 == true ? " Las precedencias de la ruta se respetan." : " No exige precedencias.")</MudText>
+            }
+            <div class="d-flex gap-3 mt-2">
+                <MudNumericField T="decimal?" @bind-Value="_turno" Label="Minutos del turno" Min="1m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="turno" />
+                <MudNumericField T="decimal?" @bind-Value="_eficiencia" Label="Eficiencia (%)" Min="1m" Max="100m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="eficiencia" />
+                <MudNumericField T="decimal?" @bind-Value="_m.VAL_META_UNIDADES" Label="Meta de unidades por turno" Min="1m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="meta" />
+            </div>
+            <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Takt = minutos del turno × eficiencia ÷ meta. Sin meta no hay takt y no se puede sugerir el balance.</MudText>
+            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+            @if (!_nuevo)
+            {
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
+                    <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
+                    <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
+                </MudSelect>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <PanelAuditoria Class="" CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO" CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO" FecRegistro="@Item?.FEC_REGISTRO"
+                         CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION" FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura && Modo != CrudModo.Delete ? "Cerrar" : "Cancelar")</MudButton>
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudButton Color="Color.Error" Variant="Variant.Filled" Disabled="_guardando" OnClick="Eliminar" data-accion="confirmar-eliminar">Eliminar</MudButton>
+        }
+        else if (!_soloLectura)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Armado? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    private ArmadoGuardarDto _m = new();
+    private decimal? _turno = 480, _eficiencia = 85;
+    private Dictionary<string, List<CatalogoOperacionItem>> _combos = new();
+    private bool _nuevo, _guardando;
+    private short _estado;
+    private string _error = "";
+    private bool _soloLectura => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<CatalogoOperacionItem> Lista(string k) => _combos.GetValueOrDefault(k) ?? new();
+    private IEnumerable<CatalogoOperacionItem> ProcesosDeLaRuta() => Lista("rutaprocesos").Where(p => p.DES_DETALLE == _m.COD_RUTA_PRODUCCION);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _nuevo = Modo == CrudModo.Create;
+        if (Item is not null)
+        {
+            _m = new ArmadoGuardarDto
+            {
+                COD_ARMADO = Item.COD_ARMADO, DES_ARMADO = Item.DES_ARMADO, COD_RUTA_PRODUCCION = Item.COD_RUTA_PRODUCCION, COD_PROCESO = Item.COD_PROCESO,
+                COD_TIPO_DISTRIBUCION = Item.COD_TIPO_DISTRIBUCION, COD_LINEA_PRODUCCION = Item.COD_LINEA_PRODUCCION, VAL_META_UNIDADES = Item.VAL_META_UNIDADES,
+                DES_OBSERVACION = Item.DES_OBSERVACION, COD_TIPO_ESTADO = Item.COD_TIPO_ESTADO, COD_ESTADO = Item.COD_ESTADO
+            };
+            _turno = Item.VAL_MINUTOS_TURNO; _eficiencia = Item.TAS_EFICIENCIA;
+        }
+        _estado = _m.COD_ESTADO ?? 0;
+        if (Modo == CrudModo.Delete) return;
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.LineasArmadosCombos);
+        if (c.Data is not null) _combos = c.Data; else _error = c.Mensaje ?? "No se pudieron leer los catálogos.";
+        if (_nuevo)
+        {
+            var s = await OperacionesApi.LeerAsync<string>(Http, IngRoute.LineasArmadosSiguienteCodigo);
+            if (s.Ok && !string.IsNullOrEmpty(s.Data)) _m.COD_ARMADO = s.Data;
+        }
+    }
+
+    private void CambiaRuta(string? r)
+    {
+        _m.COD_RUTA_PRODUCCION = r ?? "";
+        // si la ruta tiene un solo proceso se elige solo; si el elegido no esta en la nueva ruta se limpia
+        var ps = ProcesosDeLaRuta().ToList();
+        if (!ps.Any(p => p.COD == _m.COD_PROCESO)) { _m.COD_PROCESO = ps.Count == 1 ? ps[0].COD : ""; _m.COD_LINEA_PRODUCCION = null; }
+    }
+
+    private void CambiaProceso(string? p) { _m.COD_PROCESO = p ?? ""; _m.COD_LINEA_PRODUCCION = null; }
+
+    /// <summary>Al elegir la linea, su disposicion por defecto se propone (si la linea la tiene).</summary>
+    private void CambiaLinea(string? l)
+    {
+        _m.COD_LINEA_PRODUCCION = l;
+        var def = Lista("lineas").FirstOrDefault(x => x.COD == l && x.DES_DETALLE == _m.COD_PROCESO)?.COD_REGLA;
+        if (!string.IsNullOrEmpty(def) && Lista("distribuciones").Any(d => d.COD == def)) _m.COD_TIPO_DISTRIBUCION = def;
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_m.COD_ARMADO) || string.IsNullOrWhiteSpace(_m.DES_ARMADO)) { _error = "El código y el nombre son obligatorios."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_RUTA_PRODUCCION)) { _error = "Elige la ruta."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_PROCESO)) { _error = "Elige el proceso de la ruta."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_DISTRIBUCION)) { _error = "Elige la disposición de la línea."; return; }
+        if (_turno is null or <= 0) { _error = "Los minutos del turno deben ser mayores que cero."; return; }
+        if (_eficiencia is null or <= 0 or > 100) { _error = "La eficiencia debe estar entre 1 y 100 por ciento."; return; }
+        if (_m.VAL_META_UNIDADES is <= 0) { _error = "La meta debe ser mayor que cero (o dejarla vacía)."; return; }
+        _m.VAL_MINUTOS_TURNO = _turno; _m.TAS_EFICIENCIA = _eficiencia;
+        _guardando = true;
+        var r = await ProyectoApi.GuardarAsync(Http, IngRoute.LineasArmados, _m, _nuevo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add(_nuevo ? "Armado creado." : "Armado modificado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(_m.COD_ARMADO.Trim().ToUpperInvariant()));
+    }
+
+    private async Task Eliminar()
+    {
+        _error = "";
+        _guardando = true;
+        var r = await ProyectoApi.DeleteAsync(Http, IngRoute.LineaArmado(_m.COD_ARMADO));
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo eliminar."; return; }
+        Snackbar.Add("Armado eliminado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

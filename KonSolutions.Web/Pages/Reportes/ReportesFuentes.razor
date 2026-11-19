@@ -1,0 +1,597 @@
+@page "/reportes/reportes-fuentes"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject MenuService MenuService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<PageTitle>Fuentes de datos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* REPORTEADOR · FUENTES DE DATOS
+
+   Una fuente es un SP registrado: de él se leen los parámetros (sys.parameters) y, al probarlo con valores de
+   ejemplo, sus resultados y columnas. Aquí se les pone etiqueta, control, combo y valor por defecto a los
+   parámetros, y etiqueta, formato y alineación a las columnas. Los diseños (listados y fichas) se arman en la
+   pantalla de Diseños sobre una fuente.
+
+   El SP lo escribe quien hace el reporte. Lo que se espera de él:
+     - parámetros opcionales (NULL = todos) y, en las fichas, con el mismo nombre que los campos de la fila;
+     - un resultado para un listado; cabecera (una fila) + detalle (+ adicionales) para una ficha;
+     - errores con THROW, sin SELECT en el CATCH.
+   @COD_USUARIO, @COD_ROL_USUARIO y @COD_ESTACION se marcan solos como "de sistema": los llena la API. *@
+<div>
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Fuentes de datos" CodAplicacion="@_codAp" CodOpcionAplicacion="@_codOp" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Reporteador · los SP que alimentan los reportes, con sus parámetros y columnas
+            </MudText>
+        </div>
+        <MudSpacer />
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Add"
+                   Disabled="_grabando" OnClick="Nueva">Nueva fuente</MudButton>
+    </div>
+
+    <div class="rep-columnas">
+        @* ══════════ LISTA ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel">
+            <div class="pa-2 px-3 rep-cab">Fuentes registradas</div>
+            <div class="pa-2">
+                <MudTextField T="string" @bind-Value="_buscar" Label="Buscar" Variant="Variant.Outlined" Immediate="true"
+                              Margin="Margin.Dense" Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
+            </div>
+            @if (_cargandoLista)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            <div style="overflow:auto;max-height:70vh;">
+                @foreach (var f in Filtradas)
+                {
+                    var x = f;
+                    <div class="rep-item @(x.NUM_FUENTE == _det?.Fuente.NUM_FUENTE ? "rep-item-sel" : "")" @onclick="@(() => Abrir(x))">
+                        <div style="font-weight:700;">@x.DES_FUENTE</div>
+                        <div class="mono" style="font-size:.72rem;opacity:.7;">@($"{x.DES_ESQUEMA}.{x.DES_PROCEDIMIENTO}")</div>
+                        <div style="font-size:.72rem;opacity:.7;">
+                            @($"{x.NUM_RESULTADOS} resultado{(x.NUM_RESULTADOS == 1 ? "" : "s")} · {x.NUM_PARAMETROS} parámetro{(x.NUM_PARAMETROS == 1 ? "" : "s")} · {x.NUM_DISENOS} diseño{(x.NUM_DISENOS == 1 ? "" : "s")}")
+                            @if (!x.FLG_EXISTE) { <span style="color:var(--mud-palette-error);font-weight:700;"> · el SP ya no existe</span> }
+                            @if (!x.FLG_HABILITADO) { <span> · deshabilitada</span> }
+                        </div>
+                    </div>
+                }
+                @if (!_cargandoLista && Filtradas.Count == 0)
+                {
+                    <MudText Class="pa-3" Typo="Typo.body2" Style="opacity:.6;">No hay fuentes.</MudText>
+                }
+            </div>
+        </MudPaper>
+
+        @* ══════════ EDITOR ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel">
+            @if (_det is not { } d)
+            {
+                <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">Elige una fuente de la lista o crea una nueva.</MudText>
+            }
+            else
+            {
+                <div class="pa-2 px-3 rep-cab d-flex align-center gap-2">
+                    <span>@(d.Fuente.NUM_FUENTE is null ? "Nueva fuente" : $"Fuente N° {d.Fuente.NUM_FUENTE}")</span>
+                    <MudSpacer />
+                    @if (d.Fuente.NUM_FUENTE is not null)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Error" Style="@EstilosBoton.Eliminar"
+                                   StartIcon="@Icons.Material.Filled.Delete" Disabled="_grabando" OnClick="Eliminar">Eliminar</MudButton>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save"
+                               Disabled="_grabando" OnClick="Grabar">@(_grabando ? "Grabando..." : "Grabar")</MudButton>
+                </div>
+                <div class="pa-3">
+                    <div class="rep-grid4">
+                        <MudTextField T="string" @bind-Value="d.Fuente.DES_FUENTE" Label="Descripción *" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" />
+                        <div>
+                            <AriaCombo TItem="ReporteProcedimiento" Items="_procedimientos" SearchFunc="BuscarProcedimientos" MinCharacters="2"
+                                       TextFunc="@(p => p.DES_NOMBRE + (p.FLG_REGISTRADO ? "  (ya registrado)" : ""))" ValueFunc="@(p => p.DES_NOMBRE)"
+                                       Value="@NombreSp" TextoInicial="@NombreSp" ValueChanged="ElegirProcedimiento"
+                                       Label="Procedimiento almacenado *" Class="" />
+                        </div>
+                        <AriaCombo TItem="ComboboxItem" Items="_aplicaciones" TextFunc="@(a => $"{a.Id} - {a.Texto}")" ValueFunc="@(a => a.Id)"
+                                   Value="@d.Fuente.COD_APLICACION" ValueChanged="@(v => d.Fuente.COD_APLICACION = v)" Label="Módulo (opcional)" Class="" />
+                        <MudNumericField T="int?" @bind-Value="d.Fuente.NUM_TIEMPO_MAXIMO" Label="Tiempo máximo (seg.)" Min="5" Max="1800"
+                                         Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="120" />
+                    </div>
+                    <div class="rep-grid2 mt-2">
+                        <MudTextField T="string" @bind-Value="d.Fuente.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="500" />
+                        <MudSwitch T="bool" @bind-Value="d.Fuente.FLG_HABILITADO" Label="Habilitada" Color="Color.Success" />
+                    </div>
+
+                    @* ── Parámetros ── *@
+                    <div class="d-flex align-center gap-2 mt-4 mb-1">
+                        <MudText Typo="Typo.subtitle2" Style="font-weight:800;">PARÁMETROS</MudText>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;">leídos del SP (nombre y tipo no se editan)</MudText>
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Sync"
+                                   Disabled="@(_leyendo || string.IsNullOrWhiteSpace(d.Fuente.DES_PROCEDIMIENTO))" OnClick="LeerParametros">
+                            @(_leyendo ? "Leyendo..." : "Leer parámetros")
+                        </MudButton>
+                    </div>
+                    @if (d.Parametros.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Style="opacity:.6;">El SP no tiene parámetros, o todavía no se leyeron.</MudText>
+                    }
+                    else
+                    {
+                        <div style="overflow:auto;">
+                            <table class="tabla-simple-editable rep-tabla">
+                                <thead>
+                                    <tr>
+                                        <th style="width:52px;">Orden</th><th>Parámetro</th><th>Tipo</th><th style="min-width:150px;">Etiqueta</th>
+                                        <th style="width:120px;">Control</th><th style="min-width:220px;">Combo (SP · columna código · columna texto)</th>
+                                        <th style="width:170px;">Valor por defecto</th><th>Oblig.</th><th>Sistema</th><th>Visible</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var p in d.Parametros.OrderBy(x => x.NUM_ORDEN))
+                                    {
+                                        var x = p;
+                                        <tr class="@(x.FLG_SISTEMA ? "rep-sistema" : "")">
+                                            <td><input class="rep-input" type="number" value="@x.NUM_ORDEN" @onchange="@(e => x.NUM_ORDEN = int.TryParse(e.Value?.ToString(), out var n) ? n : x.NUM_ORDEN)" /></td>
+                                            <td class="mono" style="font-weight:700;">@x.DES_PARAMETRO</td>
+                                            <td class="mono" style="font-size:.72rem;opacity:.7;">@Tipo(x)</td>
+                                            <td><input class="rep-input" value="@x.DES_ETIQUETA" @onchange="@(e => x.DES_ETIQUETA = e.Value?.ToString())" disabled="@x.FLG_SISTEMA" /></td>
+                                            <td>
+                                                <select class="rep-input" value="@x.COD_CONTROL" @onchange="@(e => x.COD_CONTROL = e.Value?.ToString() ?? "TXT")" disabled="@x.FLG_SISTEMA">
+                                                    @foreach (var (c, t) in Controles) { <option value="@c">@t</option> }
+                                                </select>
+                                            </td>
+                                            <td>
+                                                @if (x.COD_CONTROL == "CMB")
+                                                {
+                                                    <div class="d-flex gap-1">
+                                                        <input class="rep-input mono" style="flex:2;" placeholder="dbo.PROC_..._COMBO" value="@x.DES_COMBO_PROCEDIMIENTO"
+                                                               @onchange="@(e => x.DES_COMBO_PROCEDIMIENTO = e.Value?.ToString())" />
+                                                        <input class="rep-input mono" style="flex:1;" placeholder="código" value="@x.DES_COMBO_COLUMNA_ID"
+                                                               @onchange="@(e => x.DES_COMBO_COLUMNA_ID = e.Value?.ToString())" />
+                                                        <input class="rep-input mono" style="flex:1;" placeholder="texto" value="@x.DES_COMBO_COLUMNA_TEXTO"
+                                                               @onchange="@(e => x.DES_COMBO_COLUMNA_TEXTO = e.Value?.ToString())" />
+                                                    </div>
+                                                }
+                                                else { <span style="opacity:.4;">—</span> }
+                                            </td>
+                                            <td>
+                                                <div class="d-flex gap-1">
+                                                    <select class="rep-input" value="@(x.COD_VALOR_DEFECTO ?? "")" @onchange="@(e => x.COD_VALOR_DEFECTO = Vacio(e.Value?.ToString()))">
+                                                        @foreach (var (c, t) in x.FLG_SISTEMA ? DefectosSistema : Defectos) { <option value="@c">@t</option> }
+                                                    </select>
+                                                    @if (x.COD_VALOR_DEFECTO == "FIJO")
+                                                    {
+                                                        <input class="rep-input" style="width:80px;" value="@x.DES_VALOR_DEFECTO" @onchange="@(e => x.DES_VALOR_DEFECTO = e.Value?.ToString())" />
+                                                    }
+                                                </div>
+                                            </td>
+                                            <td style="text-align:center;"><input type="checkbox" checked="@x.FLG_OBLIGATORIO" disabled="@x.FLG_SISTEMA" @onchange="@(e => x.FLG_OBLIGATORIO = (bool)(e.Value ?? false))" /></td>
+                                            <td style="text-align:center;"><input type="checkbox" checked="@x.FLG_SISTEMA" @onchange="@(e => CambiarSistema(x, (bool)(e.Value ?? false)))" /></td>
+                                            <td style="text-align:center;"><input type="checkbox" checked="@x.FLG_VISIBLE" disabled="@x.FLG_SISTEMA" @onchange="@(e => x.FLG_VISIBLE = (bool)(e.Value ?? false))" /></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                        <MudText Typo="Typo.caption" Style="opacity:.65;">
+                            Visible desmarcado: el parámetro no se pide en el diálogo; se llena con la fila o la pantalla (si traen un campo con el mismo nombre) o queda en NULL.
+                            Un combo recibe por nombre los demás valores del diálogo y de la fila (por ejemplo @@COD_CLASE_OPERACION).
+                        </MudText>
+                    }
+
+                    @* ── Probar ── *@
+                    <div class="d-flex align-center gap-2 mt-4 mb-1">
+                        <MudText Typo="Typo.subtitle2" Style="font-weight:800;">PROBAR Y DETECTAR RESULTADOS</MudText>
+                        <MudText Typo="Typo.caption" Style="opacity:.6;">fechas aaaa-mm-dd · números con punto decimal · vacío = NULL</MudText>
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.PlayArrow"
+                                   Disabled="@(_probando || string.IsNullOrWhiteSpace(d.Fuente.DES_PROCEDIMIENTO))" OnClick="Probar">
+                            @(_probando ? "Ejecutando..." : "Probar")
+                        </MudButton>
+                    </div>
+                    <div class="rep-grid4">
+                        @foreach (var p in d.Parametros.Where(x => !x.FLG_SISTEMA).OrderBy(x => x.NUM_ORDEN))
+                        {
+                            var x = p;
+                            var campo = x.DES_PARAMETRO.TrimStart('@');
+                            <MudTextField T="string" Label="@($"{x.DES_ETIQUETA ?? campo} ({Tipo(x)})")" Value="@(_muestra.GetValueOrDefault(campo))"
+                                          ValueChanged="@(v => _muestra[campo] = v)" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" />
+                        }
+                    </div>
+                    @if (_prueba is not null)
+                    {
+                        <MudText Typo="Typo.caption" Class="d-block mt-1" Style="opacity:.7;">
+                            @($"Ejecutó en {_prueba.NUM_SEGUNDOS:0.##} s y devolvió {_prueba.Resultados.Count} resultado{(_prueba.Resultados.Count == 1 ? "" : "s")}.")
+                        </MudText>
+                    }
+                    @if (_aviso is not null)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">@_aviso</MudAlert>
+                    }
+
+                    @* ── Resultados y columnas ── *@
+                    @foreach (var r in d.Resultados.OrderBy(x => x.NUM_RESULTADO))
+                    {
+                        var rr = r;
+                        var muestra = _prueba?.Resultados.FirstOrDefault(x => x.NUM_RESULTADO == rr.NUM_RESULTADO);
+                        <div class="rep-resultado mt-3">
+                            <div class="d-flex align-center gap-2 pa-2 px-3 rep-cab2">
+                                <span style="font-weight:800;">Resultado @rr.NUM_RESULTADO</span>
+                                <input class="rep-input" style="max-width:260px;" value="@rr.DES_RESULTADO" placeholder="Nombre (Cabecera, Detalle...)"
+                                       @onchange="@(e => rr.DES_RESULTADO = e.Value?.ToString())" />
+                                <select class="rep-input" style="max-width:220px;" value="@rr.COD_PAPEL" @onchange="@(e => rr.COD_PAPEL = e.Value?.ToString() ?? "DET")">
+                                    <option value="CAB">Cabecera (una fila)</option>
+                                    <option value="DET">Detalle (varias filas)</option>
+                                    <option value="ADI">Adicional</option>
+                                </select>
+                                @if (muestra is not null)
+                                {
+                                    <span style="font-size:.75rem;opacity:.7;">@($"{muestra.NUM_FILAS:N0} fila{(muestra.NUM_FILAS == 1 ? "" : "s")} en la prueba")</span>
+                                }
+                            </div>
+                            <div style="overflow:auto;">
+                                <table class="tabla-simple-editable rep-tabla">
+                                    <thead><tr><th>Columna</th><th>Tipo</th><th style="min-width:160px;">Etiqueta</th><th style="width:160px;">Formato</th><th style="width:110px;">Alineación</th></tr></thead>
+                                    <tbody>
+                                        @foreach (var c in d.Columnas.Where(x => x.NUM_RESULTADO == rr.NUM_RESULTADO).OrderBy(x => x.NUM_ORDEN))
+                                        {
+                                            var cc = c;
+                                            <tr>
+                                                <td class="mono" style="font-weight:700;">@cc.DES_COLUMNA</td>
+                                                <td class="mono" style="font-size:.72rem;opacity:.7;">@cc.DES_TIPO_DATO</td>
+                                                <td><input class="rep-input" value="@cc.DES_ETIQUETA" @onchange="@(e => cc.DES_ETIQUETA = e.Value?.ToString())" /></td>
+                                                <td><input class="rep-input mono" list="rep-formatos" value="@cc.DES_FORMATO" @onchange="@(e => cc.DES_FORMATO = Vacio(e.Value?.ToString()))" /></td>
+                                                <td>
+                                                    <select class="rep-input" value="@(cc.COD_ALINEACION ?? "")" @onchange="@(e => cc.COD_ALINEACION = Vacio(e.Value?.ToString()))">
+                                                        <option value="">(según el tipo)</option><option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option>
+                                                    </select>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                            @if (muestra is { Muestra.Count: > 0 })
+                            {
+                                <details class="pa-2 px-3">
+                                    <summary style="cursor:pointer;font-size:.78rem;font-weight:700;">Ver las primeras filas</summary>
+                                    <div style="overflow:auto;max-height:240px;">
+                                        <table class="tabla-simple-editable rep-tabla" style="font-size:.72rem;">
+                                            <thead><tr>@foreach (var c in muestra.Columnas) { <th>@c.DES_COLUMNA</th> }</tr></thead>
+                                            <tbody>
+                                                @foreach (var f in muestra.Muestra.Take(10))
+                                                {
+                                                    <tr>@foreach (var v in f) { <td>@v</td> }</tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </details>
+                            }
+                        </div>
+                    }
+                    @if (d.Resultados.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Class="mt-3" Style="opacity:.6;">Todavía no hay resultados: prueba el SP para detectarlos.</MudText>
+                    }
+                    <datalist id="rep-formatos">
+                        <option value="dd/MM/yyyy"></option><option value="dd/MM/yyyy HH:mm"></option><option value="#,##0.00"></option>
+                        <option value="#,##0"></option><option value="#,##0.000"></option><option value="0"></option><option value="LETRAS"></option>
+                    </datalist>
+                </div>
+            }
+        </MudPaper>
+    </div>
+</div>
+
+<style>
+    .rep-columnas { display:grid; grid-template-columns:minmax(240px,320px) minmax(0,1fr); gap:12px; align-items:start; }
+    @@media (max-width: 900px) { .rep-columnas { grid-template-columns:1fr; } }
+    .rep-panel { border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+    .rep-cab { background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:700; }
+    .rep-cab2 { background:var(--mud-palette-background-grey,#f3f4f6); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+    .rep-item { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; font-size:.84rem; }
+    .rep-item:hover { background:rgba(0,0,0,.03); }
+    .rep-item-sel { background:#fffde7; border-left:3px solid var(--grilla-cab-fondo,#163a5f); }
+    .rep-grid4 { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; align-items:center; }
+    .rep-grid2 { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+    .rep-tabla { width:100%; font-size:.8rem; }
+    .rep-tabla td { vertical-align:middle; }
+    .rep-input { width:100%; border:1px solid #cfd8dc; border-radius:4px; padding:3px 6px; font-size:.8rem; background:#fff; }
+    .rep-input:disabled { background:#f5f5f5; color:#90a4ae; }
+    .rep-sistema td { background:#ede7f6; }
+    .rep-resultado { border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+</style>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const string Formulario = "Reportes/ReportesFuentes.razor";
+    private string _codAp = "", _codOp = "";
+    private List<ReporteFuente> _fuentes = new();
+    private List<ComboboxItem> _aplicaciones = new();
+    private List<ReporteProcedimiento> _procedimientos = new();
+    private ReporteFuenteDetalle? _det;
+    private ReportePrueba? _prueba;
+    private readonly Dictionary<string, string?> _muestra = new(StringComparer.OrdinalIgnoreCase);
+    private string? _buscar, _aviso;
+    private bool _cargandoLista, _grabando, _leyendo, _probando;
+
+    private static readonly (string, string)[] Controles =
+        { ("FEC", "Fecha"), ("FEH", "Fecha y hora"), ("NUM", "Número"), ("TXT", "Texto"), ("CMB", "Combo"), ("CHK", "Sí / No") };
+    private static readonly (string, string)[] Defectos =
+    {
+        ("", "(ninguno)"), ("HOY", "Hoy"), ("AYER", "Ayer"), ("INIMES", "Inicio del mes"), ("FINMES", "Fin del mes"),
+        ("INIMESANT", "Inicio del mes anterior"), ("FINMESANT", "Fin del mes anterior"), ("INIANO", "Inicio del año"),
+        ("HACE7", "Hace 7 días"), ("HACE30", "Hace 30 días"), ("FIJO", "Valor fijo"), ("PRIMERO", "Primer ítem del combo")
+    };
+    private static readonly (string, string)[] DefectosSistema = { ("USUARIO", "Usuario conectado"), ("ROL", "Rol activo"), ("ESTACION", "Estación (IP)") };
+
+    private List<ReporteFuente> Filtradas => string.IsNullOrWhiteSpace(_buscar) ? _fuentes
+        : _fuentes.Where(f => (f.DES_FUENTE ?? "").Contains(_buscar, StringComparison.OrdinalIgnoreCase)
+                           || (f.DES_PROCEDIMIENTO ?? "").Contains(_buscar, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private string? NombreSp => _det is null || string.IsNullOrWhiteSpace(_det.Fuente.DES_PROCEDIMIENTO) ? null
+        : $"{_det.Fuente.DES_ESQUEMA ?? "dbo"}.{_det.Fuente.DES_PROCEDIMIENTO}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("REPORTES", "ReportesFuentes");
+        _codAp = CodAplicacion;
+        _codOp = CodOpcionAplicacion;
+        if ((string.IsNullOrWhiteSpace(_codAp) || string.IsNullOrWhiteSpace(_codOp)) && MenuService.BuscarCodigosPorFormulario(Formulario) is { } cod)
+            (_codAp, _codOp) = cod;
+        _aplicaciones = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Seguridad.AplicacionesCombobox) ?? new();
+        await CargarLista();
+    }
+
+    private async Task CargarLista()
+    {
+        _cargandoLista = true;
+        var (d, err) = await Reportes.GetAsync<List<ReporteFuente>>(ApiRoutes.Reportes.Fuentes);
+        _fuentes = d ?? new();
+        if (err is not null) Snackbar.Add(err, Severity.Warning);
+        _cargandoLista = false;
+    }
+
+    private void Nueva()
+    {
+        _det = new ReporteFuenteDetalle { Fuente = new ReporteFuente { DES_ESQUEMA = "dbo", FLG_HABILITADO = true } };
+        _prueba = null; _aviso = null; _muestra.Clear();
+    }
+
+    private async Task Abrir(ReporteFuente f)
+    {
+        if (f.NUM_FUENTE is not { } n) return;
+        var (d, err) = await Reportes.GetAsync<ReporteFuenteDetalle>(ApiRoutes.Reportes.Fuente(n));
+        if (d is null) { Snackbar.Add(err ?? "No se pudo leer la fuente.", Severity.Warning); return; }
+        _det = d; _prueba = null; _aviso = null; _muestra.Clear();
+        foreach (var p in d.Parametros.Where(x => !x.FLG_SISTEMA)) _muestra[p.DES_PARAMETRO.TrimStart('@')] = DefectoMuestra(p);
+    }
+
+    private async Task<IEnumerable<ReporteProcedimiento>> BuscarProcedimientos(string texto, CancellationToken ct)
+    {
+        var (d, _) = await Reportes.GetAsync<List<ReporteProcedimiento>>(ApiRoutes.Reportes.Procedimientos(texto));
+        _procedimientos = d ?? new();
+        return _procedimientos;
+    }
+
+    private async Task ElegirProcedimiento(string? nombre)
+    {
+        if (_det is null || string.IsNullOrWhiteSpace(nombre)) return;
+        var partes = nombre.Split('.', 2);
+        _det.Fuente.DES_ESQUEMA = partes.Length == 2 ? partes[0] : "dbo";
+        _det.Fuente.DES_PROCEDIMIENTO = partes.Length == 2 ? partes[1] : partes[0];
+        if (string.IsNullOrWhiteSpace(_det.Fuente.DES_FUENTE))
+            _det.Fuente.DES_FUENTE = ReportesWebService.EtiquetaDesdeNombre(_det.Fuente.DES_PROCEDIMIENTO.Replace("PROC_", "").Replace("REPORTE_", ""));
+        _det.Resultados.Clear(); _det.Columnas.Clear(); _prueba = null;
+        await LeerParametros();
+    }
+
+    /// <summary>Lee los parámetros del SP. Los que ya estaban conservan su configuración; los nuevos toman una
+    /// etiqueta (del diccionario o del nombre), un control según su tipo y, si son usuario/rol/estación, quedan de sistema.</summary>
+    private async Task LeerParametros()
+    {
+        if (_det is null || string.IsNullOrWhiteSpace(_det.Fuente.DES_PROCEDIMIENTO)) return;
+        _leyendo = true; _aviso = null;
+        try
+        {
+            var (lista, err) = await Reportes.GetAsync<List<ReporteParametroSp>>(ApiRoutes.Reportes.ParametrosSp(_det.Fuente.DES_ESQUEMA, _det.Fuente.DES_PROCEDIMIENTO));
+            if (lista is null) { Snackbar.Add(err ?? "No se pudieron leer los parámetros.", Severity.Warning); return; }
+            var avisos = new List<string>();
+            var nuevos = new List<ReporteFuenteParametro>();
+            foreach (var sp in lista)
+            {
+                if (sp.FLG_SALIDA) { avisos.Add($"{sp.DES_PARAMETRO} es de salida (OUTPUT): el reporte no lo usa."); continue; }
+                var viejo = _det.Parametros.FirstOrDefault(x => string.Equals(x.DES_PARAMETRO, sp.DES_PARAMETRO, StringComparison.OrdinalIgnoreCase));
+                var p = viejo ?? Nuevo(sp);
+                p.DES_TIPO_DATO = sp.DES_TIPO_DATO; p.NUM_LONGITUD = sp.NUM_LONGITUD; p.NUM_PRECISION = sp.NUM_PRECISION; p.NUM_ESCALA = sp.NUM_ESCALA;
+                p.NUM_ORDEN ??= sp.NUM_ORDEN;
+                nuevos.Add(p);
+            }
+            var quitados = _det.Parametros.Where(x => !nuevos.Contains(x)).Select(x => x.DES_PARAMETRO).ToList();
+            if (quitados.Count > 0) avisos.Add($"Ya no están en el SP y se quitaron: {string.Join(", ", quitados)}.");
+            _det.Parametros = nuevos;
+            foreach (var p in nuevos.Where(x => !x.FLG_SISTEMA))
+                if (!_muestra.ContainsKey(p.DES_PARAMETRO.TrimStart('@'))) _muestra[p.DES_PARAMETRO.TrimStart('@')] = DefectoMuestra(p);
+            _aviso = avisos.Count > 0 ? string.Join(" ", avisos) : null;
+        }
+        finally { _leyendo = false; }
+    }
+
+    private static ReporteFuenteParametro Nuevo(ReporteParametroSp sp)
+    {
+        var n = sp.DES_PARAMETRO.ToUpperInvariant();
+        var sistema = n is "@COD_USUARIO" or "@COD_USUARIO_REGISTRO" or "@COD_ROL_USUARIO" or "@COD_ESTACION" or "@COD_ESTACION_REGISTRO";
+        var tipo = (sp.DES_TIPO_DATO ?? "").ToLowerInvariant();
+        return new ReporteFuenteParametro
+        {
+            DES_PARAMETRO = sp.DES_PARAMETRO,
+            NUM_ORDEN = sp.NUM_ORDEN,
+            DES_ETIQUETA = !string.IsNullOrWhiteSpace(sp.DES_ETIQUETA_DICCIONARIO) ? sp.DES_ETIQUETA_DICCIONARIO : ReportesWebService.EtiquetaDesdeNombre(sp.DES_PARAMETRO),
+            COD_CONTROL = tipo switch
+            {
+                "date" => "FEC",
+                "datetime" or "datetime2" or "smalldatetime" => "FEH",
+                "bit" => "CHK",
+                "int" or "smallint" or "tinyint" or "bigint" or "decimal" or "numeric" or "money" or "float" or "real" => "NUM",
+                _ => "TXT"
+            },
+            FLG_SISTEMA = sistema,
+            FLG_VISIBLE = !sistema,
+            COD_VALOR_DEFECTO = sistema ? (n.Contains("ROL") ? "ROL" : n.Contains("ESTACION") ? "ESTACION" : "USUARIO") : null
+        };
+    }
+
+    private void CambiarSistema(ReporteFuenteParametro p, bool sistema)
+    {
+        p.FLG_SISTEMA = sistema;
+        if (sistema)
+        {
+            var n = p.DES_PARAMETRO.ToUpperInvariant();
+            p.COD_VALOR_DEFECTO = n.Contains("ROL") ? "ROL" : n.Contains("ESTACION") ? "ESTACION" : "USUARIO";
+            p.FLG_VISIBLE = false; p.FLG_OBLIGATORIO = false;
+        }
+        else
+        {
+            if (p.COD_VALOR_DEFECTO is "USUARIO" or "ROL" or "ESTACION") p.COD_VALOR_DEFECTO = null;
+            p.FLG_VISIBLE = true;
+        }
+    }
+
+    /// <summary>Ejecuta el SP con los valores de ejemplo y actualiza resultados y columnas. Lo que ya estaba
+    /// configurado (etiquetas, formatos, papel de cada resultado) se conserva para las columnas que siguen.</summary>
+    private async Task Probar()
+    {
+        if (_det is null) return;
+        _probando = true; _aviso = null;
+        try
+        {
+            var dto = new ReportePruebaDto
+            {
+                DES_ESQUEMA = _det.Fuente.DES_ESQUEMA, DES_PROCEDIMIENTO = _det.Fuente.DES_PROCEDIMIENTO,
+                NUM_TIEMPO_MAXIMO = _det.Fuente.NUM_TIEMPO_MAXIMO, Parametros = _det.Parametros,
+                Valores = new(_muestra, StringComparer.OrdinalIgnoreCase)
+            };
+            var (p, err) = await Reportes.PostAsync<ReportePrueba>(ApiRoutes.Reportes.FuentesProbar, dto);
+            if (p is null) { _aviso = err ?? "No se pudo ejecutar el SP."; return; }
+            _prueba = p;
+            Fusionar(p);
+        }
+        finally { _probando = false; }
+    }
+
+    private void Fusionar(ReportePrueba p)
+    {
+        var resultados = new List<ReporteFuenteResultado>();
+        var columnas = new List<ReporteFuenteColumna>();
+        var quitadas = new List<string>();
+        foreach (var r in p.Resultados)
+        {
+            var viejo = _det!.Resultados.FirstOrDefault(x => x.NUM_RESULTADO == r.NUM_RESULTADO);
+            var papel = viejo?.COD_PAPEL ?? (p.Resultados.Count == 1 ? "DET" : r.NUM_RESULTADO == 1 ? "CAB" : r.NUM_RESULTADO == 2 ? "DET" : "ADI");
+            resultados.Add(new ReporteFuenteResultado
+            {
+                NUM_RESULTADO = r.NUM_RESULTADO, COD_PAPEL = papel,
+                DES_RESULTADO = viejo?.DES_RESULTADO ?? (papel == "CAB" ? "Cabecera" : papel == "DET" ? "Detalle" : $"Resultado {r.NUM_RESULTADO}")
+            });
+            foreach (var c in r.Columnas)
+            {
+                var vieja = _det.Columnas.FirstOrDefault(x => x.NUM_RESULTADO == r.NUM_RESULTADO && string.Equals(x.DES_COLUMNA, c.DES_COLUMNA, StringComparison.OrdinalIgnoreCase));
+                columnas.Add(new ReporteFuenteColumna
+                {
+                    NUM_RESULTADO = r.NUM_RESULTADO, DES_COLUMNA = c.DES_COLUMNA, NUM_ORDEN = c.NUM_ORDEN, DES_TIPO_DATO = c.DES_TIPO_DATO,
+                    DES_ETIQUETA = vieja?.DES_ETIQUETA ?? c.DES_ETIQUETA, DES_FORMATO = vieja is null ? c.DES_FORMATO : vieja.DES_FORMATO,
+                    COD_ALINEACION = vieja is null ? c.COD_ALINEACION : vieja.COD_ALINEACION
+                });
+            }
+        }
+        quitadas.AddRange(_det!.Columnas.Where(v => !columnas.Any(c => c.NUM_RESULTADO == v.NUM_RESULTADO && string.Equals(c.DES_COLUMNA, v.DES_COLUMNA, StringComparison.OrdinalIgnoreCase)))
+                                        .Select(v => $"{v.DES_COLUMNA} (resultado {v.NUM_RESULTADO})"));
+        _det.Resultados = resultados;
+        _det.Columnas = columnas;
+        if (quitadas.Count > 0)
+            _aviso = $"El SP ya no devuelve: {string.Join(", ", quitadas)}. Al grabar, los diseños de esta fuente dejan de usar esas columnas.";
+    }
+
+    private async Task Grabar()
+    {
+        if (_det is null || _grabando) return;
+        if (string.IsNullOrWhiteSpace(_det.Fuente.DES_FUENTE)) { Snackbar.Add("Falta la descripción.", Severity.Warning); return; }
+        if (string.IsNullOrWhiteSpace(_det.Fuente.DES_PROCEDIMIENTO)) { Snackbar.Add("Elige el procedimiento.", Severity.Warning); return; }
+        if (_det.Resultados.Count == 0) { Snackbar.Add("Prueba el SP para detectar sus resultados antes de grabar.", Severity.Warning); return; }
+        _grabando = true;
+        try
+        {
+            await ConservarColumnasNuevas();
+            var (num, err) = await Reportes.PostAsync<int>(ApiRoutes.Reportes.Fuentes, _det);
+            if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+            Snackbar.Add($"Fuente N° {num} grabada.", Severity.Success);
+            await CargarLista();
+            if (_fuentes.FirstOrDefault(f => f.NUM_FUENTE == num) is { } f) await Abrir(f);
+        }
+        finally { _grabando = false; }
+    }
+
+    /// <summary>Sin «Probar» desde que se abrió, la lista de columnas es la que se leyó al abrir la fuente. Mientras tanto la
+    /// API pudo agregarle columnas nuevas del SP (lo hace al generar un reporte). Grabar reemplaza todas las columnas: sin
+    /// esto, esas se perderían y los diseños que ya las tienen no se podrían grabar. Con «Probar» manda lo que el SP devuelve
+    /// hoy, que es lo correcto.</summary>
+    private async Task ConservarColumnasNuevas()
+    {
+        if (_prueba is not null || _det?.Fuente.NUM_FUENTE is not { } n) return;
+        var (actual, _) = await Reportes.GetAsync<ReporteFuenteDetalle>(ApiRoutes.Reportes.Fuente(n));
+        foreach (var c in actual?.Columnas ?? new())
+            if (_det.Resultados.Any(r => r.NUM_RESULTADO == c.NUM_RESULTADO)
+                && !_det.Columnas.Any(x => x.NUM_RESULTADO == c.NUM_RESULTADO && string.Equals(x.DES_COLUMNA, c.DES_COLUMNA, StringComparison.OrdinalIgnoreCase)))
+                _det.Columnas.Add(c);
+    }
+
+    private async Task Eliminar()
+    {
+        if (_det?.Fuente.NUM_FUENTE is not { } n) return;
+        var ok = await DialogService.ShowMessageBox("Eliminar fuente", $"¿Eliminar la fuente «{_det.Fuente.DES_FUENTE}»? Si tiene diseños, primero hay que eliminarlos.",
+                                                    yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var err = await Reportes.DeleteAsync(ApiRoutes.Reportes.Fuente(n));
+        if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+        Snackbar.Add("Fuente eliminada.", Severity.Success);
+        _det = null;
+        await CargarLista();
+    }
+
+    private static string Tipo(ReporteFuenteParametro p)
+    {
+        var t = p.DES_TIPO_DATO ?? "";
+        return t switch
+        {
+            "nvarchar" or "varchar" or "nchar" or "char" => $"{t}({(p.NUM_LONGITUD == -1 ? "max" : p.NUM_LONGITUD?.ToString())})",
+            "decimal" or "numeric" => $"{t}({p.NUM_PRECISION},{p.NUM_ESCALA})",
+            _ => t
+        };
+    }
+
+    private static string? DefectoMuestra(ReporteFuenteParametro p)
+    {
+        var hoy = DateTime.Today;
+        var ini = new DateTime(hoy.Year, hoy.Month, 1);
+        return (p.COD_VALOR_DEFECTO ?? "").ToUpperInvariant() switch
+        {
+            "HOY" => hoy.ToString("yyyy-MM-dd"), "AYER" => hoy.AddDays(-1).ToString("yyyy-MM-dd"),
+            "INIMES" => ini.ToString("yyyy-MM-dd"), "FINMES" => ini.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd"),
+            "INIMESANT" => ini.AddMonths(-1).ToString("yyyy-MM-dd"), "FINMESANT" => ini.AddDays(-1).ToString("yyyy-MM-dd"),
+            "INIANO" => new DateTime(hoy.Year, 1, 1).ToString("yyyy-MM-dd"), "HACE7" => hoy.AddDays(-7).ToString("yyyy-MM-dd"),
+            "HACE30" => hoy.AddDays(-30).ToString("yyyy-MM-dd"), "FIJO" => p.DES_VALOR_DEFECTO,
+            _ => null
+        };
+    }
+
+    private static string? Vacio(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}

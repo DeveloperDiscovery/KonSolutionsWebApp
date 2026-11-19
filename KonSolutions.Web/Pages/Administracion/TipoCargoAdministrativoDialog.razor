@@ -1,0 +1,142 @@
+@using KONSolutions.Shared.Models.Administracion
+@inject CatalogoService<TipoCargoAdministrativo, TipoCargoAdministrativoDto> Service
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(480px,95vw);">
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+            @if (_isEdit || _readonly)
+            {
+                <MudTextField Value="@_model.COD_TIPO_CARGO?.ToString()" Label="Código" Variant="Variant.Outlined"
+                              Disabled="true" Class="mb-3" />
+            }
+            <CampoTexto Tabla="ADMINISTRACION.TIPOS_CARGO_ADMINISTRATIVO" Columna="DES_TIPO_CARGO"
+                        @bind-Value="_model.DES_TIPO_CARGO" Disabled="_readonly" />
+
+            <MudRadioGroup T="string" Value="@_nivelSeleccionado" ValueChanged="OnNivelChanged" Disabled="_readonly">
+                <div class="d-flex gap-4 mb-3 mt-2" style="flex-wrap:wrap;">
+                    <MudRadio T="string" Value="@("GERENCIA")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.AccountBalance" Color="Color.Primary" Size="Size.Medium" /> Gerencia</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("SUB_GERENCIA")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.AccountTree" Color="Color.Primary" Size="Size.Medium" /> Sub-gerencia</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("JEFATURA")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.SupervisorAccount" Color="Color.Primary" Size="Size.Medium" /> Jefatura</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("SUB_JEFATURA")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Badge" Color="Color.Primary" Size="Size.Medium" /> Sub-jefatura</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("SUPERVISOR")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Groups" Color="Color.Primary" Size="Size.Medium" /> Supervisor</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("ANALISTA")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Assessment" Color="Color.Primary" Size="Size.Medium" /> Analista</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("ASISTENTE")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Support" Color="Color.Primary" Size="Size.Medium" /> Asistente</div>
+                    </MudRadio>
+                    <MudRadio T="string" Value="@("OPERARIO")" Color="Color.Primary">
+                        <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Engineering" Color="Color.Primary" Size="Size.Medium" /> Operario</div>
+                    </MudRadio>
+                </div>
+            </MudRadioGroup>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TipoCargoAdministrativo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TipoCargoAdministrativoDto _model = new();
+    private bool _isEdit, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private string? _nivelSeleccionado;
+
+    protected override void OnInitialized()
+    {
+        _isEdit = Modo == CrudModo.Update;
+        if (Item is not null) MapearDesdeModelo(Item);
+    }
+
+    /// <summary>Copia los campos editables del modelo (Item de la grilla, o la respuesta
+    /// fresca de GetByIdAsync) hacia _model.</summary>
+    private void MapearDesdeModelo(TipoCargoAdministrativo m)
+    {
+        _model = new TipoCargoAdministrativoDto
+        {
+            COD_TIPO_CARGO   = m.COD_TIPO_CARGO,
+            DES_TIPO_CARGO   = m.DES_TIPO_CARGO,
+            FLG_GERENCIA     = m.FLG_GERENCIA,
+            FLG_SUB_GERENCIA = m.FLG_SUB_GERENCIA,
+            FLG_JEFATURA     = m.FLG_JEFATURA,
+            FLG_SUB_JEFATURA = m.FLG_SUB_JEFATURA,
+            FLG_SUPERVISOR   = m.FLG_SUPERVISOR,
+            FLG_ANALISTA     = m.FLG_ANALISTA,
+            FLG_ASISTENTE    = m.FLG_ASISTENTE,
+            FLG_OPERARIO     = m.FLG_OPERARIO
+        };
+        _nivelSeleccionado =
+            m.FLG_GERENCIA == true ? "GERENCIA" :
+            m.FLG_SUB_GERENCIA == true ? "SUB_GERENCIA" :
+            m.FLG_JEFATURA == true ? "JEFATURA" :
+            m.FLG_SUB_JEFATURA == true ? "SUB_JEFATURA" :
+            m.FLG_SUPERVISOR == true ? "SUPERVISOR" :
+            m.FLG_ANALISTA == true ? "ANALISTA" :
+            m.FLG_ASISTENTE == true ? "ASISTENTE" :
+            m.FLG_OPERARIO == true ? "OPERARIO" : null;
+    }
+
+    private void OnNivelChanged(string? val)
+    {
+        _nivelSeleccionado = val;
+        _model.FLG_GERENCIA = val == "GERENCIA";
+        _model.FLG_SUB_GERENCIA = val == "SUB_GERENCIA";
+        _model.FLG_JEFATURA = val == "JEFATURA";
+        _model.FLG_SUB_JEFATURA = val == "SUB_JEFATURA";
+        _model.FLG_SUPERVISOR = val == "SUPERVISOR";
+        _model.FLG_ANALISTA = val == "ANALISTA";
+        _model.FLG_ASISTENTE = val == "ASISTENTE";
+        _model.FLG_OPERARIO = val == "OPERARIO";
+    }
+
+    /// <summary>Trae el registro fresco desde GetByIdAsync — se usa al abrir el diálogo
+    /// (Modificar/Eliminar/Ver, nunca Crear) para no mostrar datos desactualizados de la grilla.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Service.GetByIdAsync(_model.COD_TIPO_CARGO?.ToString() ?? "");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Modo != CrudModo.Create && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        if (Modo == CrudModo.Delete)
+        {
+            var (okd, msgd) = await Service.EliminarAsync(_model.COD_TIPO_CARGO?.ToString() ?? "");
+            _saving = false;
+            if (okd) { Snackbar.Add("Tipo de cargo administrativo eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarMensajeAsync(msgd, DialogService, nameof(TipoCargoAdministrativoDialog));
+            return;
+        }
+        var (ok, msg) = await Service.GuardarAsync(_model, Modo == CrudModo.Create);
+        _saving = false;
+        if (ok) { Snackbar.Add(_isEdit ? "Tipo de cargo administrativo actualizado." : "Tipo de cargo administrativo creado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarMensajeAsync(msg, DialogService, nameof(TipoCargoAdministrativoDialog));
+    }
+}

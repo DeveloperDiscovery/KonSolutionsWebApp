@@ -1,0 +1,58 @@
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Pide el motivo y anula (una emisión completa o una etiqueta). El motivo es obligatorio: queda registrado con quién y cuándo anuló.
+   Con «Reponer» (solo para una etiqueta enrolada) se crea una etiqueta pendiente nueva en su lugar, de la misma línea y la misma cantidad. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@Titulo</MudText></TitleContent>
+    <DialogContent>
+        <EditForm Model="_forma" OnValidSubmit="Submit">
+            @if (!string.IsNullOrWhiteSpace(Aviso))
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3" data-aviso="anular">@Aviso</MudAlert>
+            }
+            <MudTextField T="string" Label="Motivo de la anulación" Variant="Variant.Outlined" Lines="3" MaxLength="500" @bind-Value="_motivo" Immediate="true"
+                          Required="true" RequiredError="Indica el motivo." Class="mb-3" data-campo="motivo" />
+            @if (MostrarReponer)
+            {
+                <MudSwitch T="bool" Label="Reponer: crear una etiqueta pendiente nueva en su lugar" Color="Color.Primary" @bind-Value="_reponer" Class="mb-2" data-campo="reponer" />
+            }
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-2">
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_saving" data-accion="cancelar">Cancelar</MudButton>
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Error" Disabled="@(_saving || string.IsNullOrWhiteSpace(_motivo))" data-accion="anular">Anular</MudButton>
+            </MudStack>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>Ruta PUT completa que anula (de ApiRoutes.Rfid.EmisionAnular o EtiquetaAnular).</summary>
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter] public string Titulo { get; set; } = "Anular";
+    [Parameter] public string? Aviso { get; set; }
+    [Parameter] public bool MostrarReponer { get; set; }
+    [Parameter] public string ExitoMensaje { get; set; } = "Anulado.";
+
+    private readonly object _forma = new();
+    private string? _motivo;
+    private bool _reponer = true, _saving;
+
+    private async Task Submit()
+    {
+        if (string.IsNullOrWhiteSpace(_motivo)) { Snackbar.Add("Indica el motivo de la anulación.", Severity.Warning); return; }
+        _saving = true;
+        try
+        {
+            var dto = new RfidEtiquetaAnularDto { DES_MOTIVO_ANULACION = _motivo.Trim(), FLG_REPONER = MostrarReponer && _reponer };
+            var resp = await Http.GuardarAsync(Url, dto, false);
+            if (resp.IsSuccessStatusCode) { Snackbar.Add(ExitoMensaje, Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RfidAnularDialog), nameof(Submit), "No se pudo anular");
+        }
+        finally { _saving = false; }
+    }
+}

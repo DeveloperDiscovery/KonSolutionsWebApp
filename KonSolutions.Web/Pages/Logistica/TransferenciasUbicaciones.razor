@@ -1,0 +1,928 @@
+@page "/logistica/transferencias-ubicaciones"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject ConfiguracionGeneralService ConfigGeneral
+@inject MenuService MenuService
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<PageTitle>Transferencias entre Ubicaciones · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* TRASLADOS ENTRE UBICACIONES DE UN MISMO ALMACÉN — de un rack a otro (RACK 1 F-1 C-2 → RACK 3 F-4 C-4).
+
+   Se elige el ORIGEN (un casillero de un rack, o una ubicación suelta), se escribe cuánto mover de
+   cada producto, se elige el DESTINO y se agrega al traslado. El traslado puede juntar líneas de
+   varios casilleros. Al confirmar, PROC_LOGISTICA_TRASLADO_UBICACIONES_REGISTRA lo graba en una
+   sola transacción como una transferencia: una salida (descuenta del origen) y su ingreso (suma en
+   el destino), los dos en el mismo almacén. Así el kardex por ubicación y la trazabilidad lo ven
+   sin nada especial.
+
+   Por defecto solo se mueve el DISPONIBLE: lo reservado se queda donde está. Con el interruptor
+   «Mover también lo reservado» se mueve primero lo reservado y su reserva pasa a la ubicación destino
+   (script 79); lo reservado sigue sin poder salir del almacén. *@
+<div class="documento-logistica">
+
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Transferencias entre Ubicaciones" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · mover stock de una ubicación a otra dentro del mismo almacén
+            </MudText>
+        </div>
+    </div>
+
+    <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4" @bind-ActivePanelIndex="_pestana">
+
+        @* ══════════════════════════ NUEVO TRASLADO ══════════════════════════ *@
+        <MudTabPanel Text="Nuevo traslado" Icon="@Icons.Material.Filled.SwapHoriz">
+
+            @* ── Cabecera: almacén, tipo, fecha y observación ── *@
+            <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+                <div class="rejilla-campos" style="grid-template-columns:repeat(24,minmax(0,1fr));">
+                    <div style="grid-column:span 6;">
+                        <AriaCombo TItem="ComboboxItem" Items="_almacenes"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_codAlmacen" ValueChanged="OnAlmacenChanged"
+                                   Label="Almacén" Disabled="@(_lineas.Count > 0 || _grabando)" Class="" />
+                    </div>
+                    <div style="grid-column:span 7;">
+                        @* Solo las salidas con alcance "Entre Ubicaciones del Almacén" que el rol
+                           tiene habilitadas en este almacén. *@
+                        <AriaCombo TItem="TrasladoUbicacionesTipo" Items="_tiposValidos"
+                                   TextFunc="@(t => $"{t.COD_TIPO_MOVIMIENTO} - {t.DES_TIPO_MOVIMIENTO}")" ValueFunc="@(t => t.COD_TIPO_MOVIMIENTO ?? "")"
+                                   @bind-Value="_codTipo" AutoSeleccionarUnico="true"
+                                   Label="Tipo de movimiento" Disabled="@(string.IsNullOrWhiteSpace(_codAlmacen) || _grabando)" Class="" />
+                    </div>
+                    @* Sin Margin.Dense: así miden lo mismo que el AriaCombo (51.25px, el alto de un
+                       Outlined normal), igual que en el documento de Movimientos de Almacén. *@
+                    <div style="grid-column:span 3;">
+                        <MudDatePicker @bind-Date="_fecha" Label="Fecha" Variant="Variant.Outlined"
+                                       DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                                       Disabled="_grabando" />
+                    </div>
+                    <div style="grid-column:span 8;">
+                        <MudTextField T="string" @bind-Value="_observacion" Label="Observación" Variant="Variant.Outlined"
+                                      MaxLength="500" Disabled="_grabando" />
+                    </div>
+                    <div style="grid-column:span 12;">
+                        @* Lo reservado (por ejemplo la mercadería de una compra) solo se puede mover dentro del
+                           mismo almacén, y viaja con su reserva: sigue reservada en la ubicación destino. *@
+                        <MudSwitch T="bool" @bind-Value="_conReservado" Color="Color.Primary" Disabled="_grabando || _lineas.Count > 0"
+                                   Label="Mover también lo reservado (la reserva viaja con el stock)" />
+                    </div>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(_codAlmacen) && !_cargandoMapa && _tiposValidos.Count == 0)
+                {
+                    @* Dice POR QUÉ no hay tipo, en vez de un aviso genérico: no es lo mismo que el SP no
+                       exista, que no haya tipos de traslado, o que existan y el rol no los tenga. *@
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+                        <div style="font-weight:700;">No hay un tipo de movimiento de traslado que puedas usar en este almacén.</div>
+                        @if (string.IsNullOrWhiteSpace(_claseMovimiento))
+                        {
+                            <div>Configuración General no tiene la clase de movimiento de almacén (COD_CLASE_MOVIMIENTO_ALMACEN).</div>
+                        }
+                        else if (_errorTipos is not null)
+                        {
+                            <div>No se pudieron leer los tipos: <span class="mono">@_errorTipos</span></div>
+                            <div style="font-size:.78rem;">
+                                Si dice que no encuentra PROC_LOGISTICA_TRASLADO_UBICACIONES_TIPOS, ese SP no se creó. Pasa cuando
+                                04_TRASLADO_UBICACIONES.sql se ejecuta antes que 01_TIPOS_MOVIMIENTO_ALCANCE_UBICACIONES.sql (la columna
+                                nueva todavía no existe). Ejecuta 01 y después 04 completo.
+                            </div>
+                        }
+                        else if (_tiposTraslado.Count == 0)
+                        {
+                            <div>
+                                En la clase @_claseMovimiento no hay ninguna salida con Transferencia y alcance "Entre Ubicaciones del
+                                Almacén". Créala en Tipos de Movimiento, con su ingreso como tipo sincronizado, o ejecuta
+                                05_EJEMPLO_TIPOS_TRASLADO.sql.
+                            </div>
+                        }
+                        else
+                        {
+                            <div>Hay tipos de traslado, pero ninguno se puede usar aquí:</div>
+                            @foreach (var t in _tiposTraslado)
+                            {
+                                <div class="mono" style="font-size:.75rem;">@t.COD_TIPO_MOVIMIENTO - @t.DES_TIPO_MOVIMIENTO: @MotivoTipo(t)</div>
+                            }
+                            @* La evidencia: lo que respondió la API para el rol en el almacén
+                               (PROC_SEGURIDAD_ROLES_USUARIO_ALMACENES_TIPOS_MOVIMIENTO_SHOWCOMBOX). *@
+                            <div class="mono" style="font-size:.72rem;opacity:.8;margin-top:4px;">
+                                @($"Tipos que tiene el rol {MenuService.RolActivo} en el almacén {_codAlmacen} ({_tiposDelRol.Count}): {string.Join(", ", _tiposDelRol.OrderBy(x => x))}")
+                            </div>
+                        }
+                    </MudAlert>
+                }
+            </MudPaper>
+
+            @if (_cargandoMapa)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mb-2" />
+            }
+            else if (!string.IsNullOrWhiteSpace(_codAlmacen))
+            {
+                @* ── Origen → Destino ── *@
+                <div style="display:grid;grid-template-columns:minmax(0,1fr) 92px minmax(0,1fr);align-items:stretch;">
+                    @Panel(_origen)
+                    <div class="d-flex flex-column align-center justify-center gap-2">
+                        <MudTooltip Text="@(MotivoNoAgregar ?? "Agregar al traslado")">
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Variant="Variant.Filled" Size="Size.Large"
+                                           Style="@($"{EstilosBoton.Confirmar}border-radius:50%;width:64px;height:64px;")"
+                                           Disabled="@(MotivoNoAgregar is not null || _grabando)" OnClick="AgregarAlTraslado" />
+                        </MudTooltip>
+                        <MudText Typo="Typo.caption" Align="Align.Center" Style="font-weight:700;line-height:1.2;">Agregar<br />al traslado</MudText>
+                        @* El motivo va escrito y no sólo en el tooltip: un botón deshabilitado no
+                           siempre recibe el mouse, y el tooltip no llega a salir. *@
+                        @if (MotivoNoAgregar is { } motivo)
+                        {
+                            <MudText Typo="Typo.caption" Align="Align.Center" Style="opacity:.65;font-size:.68rem;line-height:1.2;">@motivo</MudText>
+                        }
+                    </div>
+                    @Panel(_destino)
+                </div>
+
+                @* ── El traslado en preparación ── *@
+                <MudPaper Elevation="0" Class="mt-3" Style="border:1px solid var(--line);border-radius:8px;overflow:hidden;">
+                    <div class="pa-2 px-3 d-flex align-center gap-2" style="background:var(--grilla-cab-fondo,#163a5f);color:var(--grilla-cab-texto,#ffd54f);font-weight:800;">
+                        <span class="tu-num">3</span> Traslado en preparación
+                        <span style="font-weight:400;opacity:.8;font-size:.8rem;">— todavía no se graba nada</span>
+                    </div>
+                    @if (_lineas.Count == 0)
+                    {
+                        <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">
+                            Elige el origen, escribe cuánto mover, elige el destino y toca la flecha. Puedes juntar líneas de varios casilleros.
+                        </MudText>
+                    }
+                    else
+                    {
+                        <table class="tabla-simple-editable" style="width:100%;font-size:.8rem;">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th>Producto</th>
+                                    <th style="width:170px;">Lote / OP</th>
+                                    <th>Desde</th>
+                                    <th>Hacia</th>
+                                    <th style="width:130px;text-align:right;">Cantidad</th>
+                                    <th style="width:60px;">UM</th>
+                                    <th style="width:50px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for (var i = 0; i < _lineas.Count; i++)
+                                {
+                                    var l = _lineas[i];
+                                    var n = i + 1;
+                                    <tr>
+                                        <td class="mono">@n</td>
+                                        <td>
+                                            <div class="mono" style="font-size:.7rem;opacity:.6;">@l.Stock.COD_PRODUCTO</div>
+                                            <div>@l.Stock.DES_PRODUCTO</div>
+                                        </td>
+                                        <td class="mono" style="font-size:.72rem;">@LoteOrden(l.Stock)</td>
+                                        <td class="mono">@Rotulo(l.Stock.COD_UBICACION_ALMACEN)</td>
+                                        <td class="mono" style="color:var(--mud-palette-info);">@Rotulo(l.Destino)</td>
+                                        <td class="mono" style="text-align:right;">@Num(l.Cantidad)</td>
+                                        <td class="mono">@l.Stock.COD_UNIDAD_MEDIDA</td>
+                                        <td>
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                                           title="Quitar del traslado" Disabled="_grabando" OnClick="@(() => _lineas.Remove(l))" />
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    <div class="d-flex align-center gap-2 pa-3" style="border-top:1px solid var(--line);">
+                        <MudText Typo="Typo.caption" Style="opacity:.7;">@_lineas.Count línea(s)</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Close"
+                                   Disabled="@(_lineas.Count == 0 || _grabando)" OnClick="@(() => _lineas.Clear())">Limpiar</MudButton>
+                        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save"
+                                   Disabled="@(_lineas.Count == 0 || _grabando || string.IsNullOrWhiteSpace(_codTipo))" OnClick="Confirmar">
+                            @(_grabando ? "Grabando..." : $"Confirmar traslado ({_lineas.Count} línea(s))")
+                        </MudButton>
+                    </div>
+                </MudPaper>
+            }
+            else
+            {
+                <MudText Class="pa-4 mono" Style="opacity:.5;">Elige el almacén.</MudText>
+            }
+        </MudTabPanel>
+
+        @* ══════════════════════════════ HISTORIAL ══════════════════════════════ *@
+        <MudTabPanel Text="Historial" Icon="@Icons.Material.Filled.History">
+            <div class="d-flex align-end gap-3 mb-3" style="flex-wrap:wrap;">
+                <MudDatePicker @bind-Date="_histDesde" Label="Desde" Variant="Variant.Outlined"
+                               DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" Clearable="true" Style="max-width:170px;" />
+                <MudDatePicker @bind-Date="_histHasta" Label="Hasta" Variant="Variant.Outlined"
+                               DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" Clearable="true" Style="max-width:170px;" />
+                <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Search"
+                           Disabled="@(string.IsNullOrWhiteSpace(_codAlmacen) || _cargandoHist)" OnClick="CargarHistorial">Consultar</MudButton>
+                <MudText Typo="Typo.caption" Style="opacity:.7;">Almacén @(_codAlmacen ?? "—") (el de la pestaña Nuevo traslado)</MudText>
+            </div>
+            @if (_cargandoHist)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mb-2" />
+            }
+            else if (_historial.Count == 0)
+            {
+                <MudText Class="pa-4 mono" Style="opacity:.5;">@(_histConsultado ? "No hay traslados en ese rango." : "Elige el rango y toca Consultar.")</MudText>
+            }
+            else
+            {
+                <div style="overflow:auto;max-height:62vh;">
+                    <table class="tabla-simple-editable" style="width:100%;font-size:.8rem;">
+                        <thead style="position:sticky;top:0;z-index:1;">
+                            <tr>
+                                <th style="width:90px;">Fecha</th>
+                                <th style="width:120px;">Salida / Ingreso</th>
+                                <th>Producto</th>
+                                <th style="width:160px;">Lote / OP</th>
+                                <th>Desde</th>
+                                <th>Hacia</th>
+                                <th style="width:120px;text-align:right;">Cantidad</th>
+                                <th style="width:120px;">Estado</th>
+                                <th style="width:120px;">Usuario</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var h in _historial)
+                            {
+                                <tr title="@h.DES_OBSERVACION">
+                                    <td class="mono">@h.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy")</td>
+                                    <td class="mono">@h.NUM_MOVIMIENTO_SALIDA-@h.NUM_SECUENCIA → @h.NUM_MOVIMIENTO_INGRESO</td>
+                                    <td>
+                                        <div class="mono" style="font-size:.7rem;opacity:.6;">@h.COD_PRODUCTO</div>
+                                        <div>@h.DES_PRODUCTO</div>
+                                    </td>
+                                    <td class="mono" style="font-size:.72rem;">@LoteOrden(h.NUM_LOTE_CONTROL, h.COD_PROCESO, h.NUM_ORDEN_PRODUCCION, h.NUM_ORDEN_PRODUCCION_ITEM, h.NUM_ORDEN_PRODUCCION_UNIDAD)</td>
+                                    <td>
+                                        <div class="mono" style="font-size:.7rem;opacity:.6;">@h.COD_UBICACION_ORIGEN</div>
+                                        <div>@h.DES_UBICACION_ORIGEN</div>
+                                    </td>
+                                    <td>
+                                        <div class="mono" style="font-size:.7rem;opacity:.6;">@h.COD_UBICACION_DESTINO</div>
+                                        <div>@h.DES_UBICACION_DESTINO</div>
+                                    </td>
+                                    <td class="mono" style="text-align:right;">@Num(h.CAN_PRODUCTO) @h.COD_UNIDAD_MEDIDA</td>
+                                    <td>
+                                        @if (!string.IsNullOrWhiteSpace(h.DES_ESTADO))
+                                        {
+                                            <EstadoChip Estado="@h.DES_ESTADO" BackColor="@h.DES_BACKCOLOR" ForeColor="@h.DES_FORECOLOR" />
+                                        }
+                                    </td>
+                                    <td class="mono" style="font-size:.74rem;">@h.COD_USUARIO_REGISTRO</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </MudTabPanel>
+    </MudTabs>
+</div>
+
+<style>
+    .tu-num { display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
+              background:var(--grilla-cab-texto,#ffd54f);color:var(--grilla-cab-fondo,#163a5f);font-size:.75rem; }
+    .tu-rack { display:grid;gap:5px;overflow-x:auto;padding:2px; }
+    .tu-celda { border:1px solid #cfd8dc;border-radius:5px;min-height:44px;font-size:.66rem;display:flex;flex-direction:column;
+                align-items:center;justify-content:center;font-family:Consolas,monospace;color:#90a4ae;background:#fafafa;
+                cursor:pointer;user-select:none;line-height:1.25;padding:2px; }
+    .tu-celda b { font-size:.7rem; }
+    .tu-celda.con-stock { background:#e8f5e9;color:#2e7d32;border-color:#a5d6a7; }
+    .tu-celda.sin-casillero { visibility:hidden;cursor:default; }
+    .tu-celda.elegida-origen { outline:3px solid #ffb300;outline-offset:1px;background:#fff8e1;color:#e65100; }
+    .tu-celda.elegida-destino { outline:3px solid #1565c0;outline-offset:1px;background:#e3f2fd;color:#1565c0; }
+</style>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Lo que se eligió de un lado (origen o destino): el rack, la ubicación y su stock.</summary>
+    private sealed class Lado
+    {
+        public bool EsOrigen;
+        public string? Rack;
+        public string? Ubicacion;
+        public List<TrasladoUbicacionesStock> Stock = new();
+        public bool Cargando;
+        // Lo que se escribió en "A mover", por clave de stock (sólo en el origen).
+        public Dictionary<string, decimal?> AMover = new();
+        // Lo que lista el combo Ubicación de este lado: las ubicaciones del rack elegido.
+        public List<OpcionUbicacion> Opciones = new();
+    }
+
+    /// <summary>Valor del combo Rack para las ubicaciones que no son casillero de ningún rack.</summary>
+    private const string FueraDeRack = "(FUERA DE RACK)";
+
+    /// <summary>Una línea del traslado en preparación.</summary>
+    private sealed class LineaVm
+    {
+        public TrasladoUbicacionesStock Stock = new();
+        public string Destino = "";
+        public decimal Cantidad;
+    }
+
+    /// <summary>Una opción del combo Ubicación: un casillero (con su rack) o una ubicación suelta.</summary>
+    private sealed record OpcionUbicacion(string Cod, string Texto, string? Rack, int Productos);
+
+    private readonly Lado _origen = new() { EsOrigen = true };
+    private readonly Lado _destino = new();
+    private readonly List<LineaVm> _lineas = new();
+
+    private int _pestana;
+    private string _claseMovimiento = "";
+    private List<ComboboxItem> _almacenes = new();
+    private string? _codAlmacen;
+    private List<TrasladoUbicacionesTipo> _tiposValidos = new();
+    // Para el aviso cuando no hay tipo: todos los de traslado de la clase, los que el rol tiene
+    // en el almacén y el error de la API si no se pudieron leer.
+    private List<TrasladoUbicacionesTipo> _tiposTraslado = new();
+    private HashSet<string> _tiposDelRol = new();
+    private string? _errorTipos;
+    private string? _codTipo;
+    private DateTime? _fecha = DateTime.Today;
+    private string? _observacion;
+    // Con el interruptor encendido, el traslado mueve también lo reservado y su reserva se pasa a la ubicación destino.
+    private bool _conReservado;
+    private TrasladoUbicacionesMapa _mapa = new();
+    private List<OpcionUbicacion> _ubicaciones = new();
+    private List<TrasladoUbicacionesRack> _racksCombo = new();
+    private bool _cargandoMapa, _grabando;
+
+    private DateTime? _histDesde = DateTime.Today.AddDays(-30), _histHasta;
+    private List<TrasladoUbicacionesHistorial> _historial = new();
+    private bool _cargandoHist, _histConsultado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "TransferenciasUbicaciones");
+        var cfg = await ConfigGeneral.GetParaLayoutAsync();
+        _claseMovimiento = cfg?.COD_CLASE_MOVIMIENTO_ALMACEN?.Trim() ?? "";
+        // Los almacenes del rol activo, igual que en Movimientos de Almacén.
+        var rol = MenuService.RolActivo;
+        _almacenes = string.IsNullOrWhiteSpace(rol)
+            ? new()
+            : (await LeerAsync<List<ComboboxItem>>($"{ApiRoutes.Seguridad.RolesAlmacenes}/combobox/{Uri.EscapeDataString(rol)}")).Data ?? new();
+        if (_almacenes.Count == 1) await OnAlmacenChanged(_almacenes[0].Id);
+    }
+
+    // ── Almacén, tipos y mapa ────────────────────────────────────────────────────
+    private async Task OnAlmacenChanged(string? v)
+    {
+        _codAlmacen = string.IsNullOrWhiteSpace(v) ? null : v;
+        _codTipo = null;
+        _tiposValidos = new(); _tiposTraslado = new(); _tiposDelRol = new(); _errorTipos = null;
+        AplicarMapa(new());
+        LimpiarLado(_origen); LimpiarLado(_destino);
+        _historial = new(); _histConsultado = false;
+        if (_codAlmacen is null) return;
+
+        _cargandoMapa = true;
+        StateHasChanged();
+        try
+        {
+            var rol = MenuService.RolActivo ?? "";
+            var delRol = LeerAsync<List<ComboboxItem>>(
+                $"{ApiRoutes.Seguridad.RolesAlmacenesTiposMovimiento}/combobox/{Uri.EscapeDataString(rol)}/{Uri.EscapeDataString(_codAlmacen)}");
+            var deTraslado = string.IsNullOrWhiteSpace(_claseMovimiento)
+                ? Task.FromResult<(List<TrasladoUbicacionesTipo>? Data, string? Error)>((null, null))
+                : LeerAsync<List<TrasladoUbicacionesTipo>>(ApiRoutes.Logistica.TrasladosUbicacionesTipos(_claseMovimiento));
+            var mapa = LeerAsync<TrasladoUbicacionesMapa>(ApiRoutes.Logistica.TrasladosUbicacionesMapa(_codAlmacen));
+
+            // Un tipo sirve si es de traslado, el rol lo tiene en este almacén y está bien configurado.
+            var (delRolData, delRolError) = await delRol;
+            var (trasladoData, trasladoError) = await deTraslado;
+            _tiposDelRol = (delRolData ?? new()).Select(t => t.Id).ToHashSet();
+            _tiposTraslado = trasladoData ?? new();
+            _errorTipos = trasladoError is not null ? trasladoError
+                        : delRolError is not null ? $"tipos del rol: {delRolError}"
+                        : null;
+            _tiposValidos = _tiposTraslado
+                .Where(t => _tiposDelRol.Contains(t.COD_TIPO_MOVIMIENTO ?? "") && string.IsNullOrWhiteSpace(t.DES_PROBLEMA))
+                .ToList();
+            if (_tiposValidos.Count == 1) _codTipo = _tiposValidos[0].COD_TIPO_MOVIMIENTO;
+
+            AplicarMapa((await mapa).Data ?? new());
+            _origen.Rack = _destino.Rack = _racksCombo.FirstOrDefault()?.COD_CONTENEDOR;
+            ArmarOpciones(_origen); ArmarOpciones(_destino);
+        }
+        finally { _cargandoMapa = false; }
+    }
+
+    /// <summary>Por qué un tipo de traslado no aparece en el combo.</summary>
+    private string MotivoTipo(TrasladoUbicacionesTipo t)
+    {
+        var motivos = new List<string>();
+        // Lo que se revisa es SEGURIDAD.ROLES_USUARIO_ALMACENES_TIPOS_MOVIMIENTO: tenerlo en el
+        // almacén (Almacenes → Tipos de Movimiento) no basta, igual que en Movimientos de Almacén.
+        if (!_tiposDelRol.Contains(t.COD_TIPO_MOVIMIENTO ?? ""))
+            motivos.Add($"no está asignado al rol {MenuService.RolActivo} en el almacén {_codAlmacen}. Tenerlo en el almacén no basta: "
+                      + $"asígnalo en Seguridad → Roles → {MenuService.RolActivo} → pestaña Almacenes → {_codAlmacen} → tipos de movimiento.");
+        if (!string.IsNullOrWhiteSpace(t.DES_PROBLEMA)) motivos.Add(t.DES_PROBLEMA!);
+        return string.Join(" ", motivos);
+    }
+
+    private static void LimpiarLado(Lado l)
+    {
+        l.Rack = null; l.Ubicacion = null; l.Stock = new(); l.AMover.Clear();
+    }
+
+    private async Task RecargarMapa()
+    {
+        if (_codAlmacen is null) return;
+        if ((await LeerAsync<TrasladoUbicacionesMapa>(ApiRoutes.Logistica.TrasladosUbicacionesMapa(_codAlmacen))).Data is { } m)
+            AplicarMapa(m);
+    }
+
+    /// <summary>Guarda el mapa y arma las listas de los combos:
+    /// - Ubicación (_ubicaciones): todas las ubicaciones del almacén, primero las sueltas y después
+    ///   los casilleros, rack por rack, en orden de fila y columna. Cada lado muestra solo las de su
+    ///   rack (ArmarOpciones).
+    /// - Rack (_racksCombo): los racks y, si hay ubicaciones que no son casillero de ningún rack,
+    ///   una opción más para ellas (FueraDeRack).
+    /// Se arman una vez por mapa: el combo compara la lista por referencia.</summary>
+    private void AplicarMapa(TrasladoUbicacionesMapa m)
+    {
+        _mapa = m;
+        var sueltas = m.Sueltas
+            .Where(u => !string.IsNullOrWhiteSpace(u.COD_UBICACION_ALMACEN))
+            .Select(u => new OpcionUbicacion(u.COD_UBICACION_ALMACEN!, u.DES_UBICACION_ALMACEN ?? "", null, u.CAN_PRODUCTOS ?? 0));
+        var casilleros = m.Casilleros
+            .Where(c => !string.IsNullOrWhiteSpace(c.COD_UBICACION_ALMACEN))
+            .OrderBy(c => m.Racks.FindIndex(r => r.COD_CONTENEDOR == c.COD_CONTENEDOR))
+            .ThenBy(c => c.NUM_FILA).ThenBy(c => c.NUM_COLUMNA)
+            .Select(c => new OpcionUbicacion(c.COD_UBICACION_ALMACEN!, c.DES_CASILLERO ?? c.DES_UBICACION_ALMACEN ?? "", c.COD_CONTENEDOR, c.CAN_PRODUCTOS ?? 0));
+        _ubicaciones = sueltas.Concat(casilleros).ToList();
+        _racksCombo = m.Sueltas.Count == 0
+            ? m.Racks
+            : m.Racks.Append(new TrasladoUbicacionesRack { COD_CONTENEDOR = FueraDeRack, DES_CONTENEDOR = "UBICACIONES FUERA DE RACK" }).ToList();
+        ArmarOpciones(_origen); ArmarOpciones(_destino);
+    }
+
+    /// <summary>Las ubicaciones del rack del lado. Sin rack elegido, todas.</summary>
+    private void ArmarOpciones(Lado l)
+    {
+        l.Opciones = l.Rack switch
+        {
+            null or "" => _ubicaciones,
+            FueraDeRack => _ubicaciones.Where(o => o.Rack is null).ToList(),
+            var r => _ubicaciones.Where(o => o.Rack == r).ToList()
+        };
+    }
+
+    // ── Elegir rack y ubicación ──────────────────────────────────────────────────
+    /// <summary>El combo Ubicación pasa a listar las del rack nuevo. La ubicación elegida se queda
+    /// solo si es de ese rack; si no, se limpia el lado (con lo escrito en "A mover"), como al
+    /// cambiar de casillero. Si el rack tiene un solo casillero (una zona de 1 × 1), el combo lo
+    /// elige solo (AutoSeleccionarUnico).</summary>
+    private void CambiarRack(Lado lado, string? rack)
+    {
+        lado.Rack = string.IsNullOrWhiteSpace(rack) ? null : rack;
+        ArmarOpciones(lado);
+        if (lado.Ubicacion is not null && !lado.Opciones.Any(o => o.Cod == lado.Ubicacion))
+        {
+            lado.Ubicacion = null; lado.Stock = new(); lado.AMover.Clear();
+        }
+    }
+
+    /// <summary>Desde el combo Ubicación. Sin rack elegido el combo lista todas: al elegir un
+    /// casillero, el rack pasa a ser el suyo, para que la cuadrícula lo muestre marcado.</summary>
+    private async Task ElegirUbicacion(Lado lado, string? ubicacion)
+    {
+        if (lado.Rack is null && _ubicaciones.FirstOrDefault(o => o.Cod == ubicacion) is { } op)
+        {
+            lado.Rack = op.Rack ?? FueraDeRack;
+            ArmarOpciones(lado);
+        }
+        await Elegir(lado, ubicacion);
+    }
+
+    private async Task Elegir(Lado lado, string? ubicacion)
+    {
+        lado.Ubicacion = string.IsNullOrWhiteSpace(ubicacion) ? null : ubicacion;
+        lado.AMover.Clear();
+        lado.Stock = new();
+        if (lado.Ubicacion is null || _codAlmacen is null) return;
+        lado.Cargando = true;
+        StateHasChanged();
+        try
+        {
+            lado.Stock = (await LeerAsync<List<TrasladoUbicacionesStock>>(
+                ApiRoutes.Logistica.TrasladosUbicacionesStock(_codAlmacen, lado.Ubicacion))).Data ?? new();
+        }
+        finally { lado.Cargando = false; }
+    }
+
+    /// <summary>Lo que todavía se puede mover de una clave: el disponible menos lo que ya está en
+    /// el traslado en preparación saliendo de esa misma clave.</summary>
+    private decimal Restante(TrasladoUbicacionesStock s)
+        => (s.CAN_DISPONIBLE ?? 0) + (_conReservado ? (s.CAN_RESERVADA ?? 0) : 0) - _lineas.Where(l => Clave(l.Stock) == Clave(s)).Sum(l => l.Cantidad);
+
+    /// <summary>De lo que se mueve de una clave, cuánto es reservado: primero se mueve lo reservado y el resto
+    /// sale del disponible. Se reparte en el orden de las líneas.</summary>
+    private Dictionary<LineaVm, decimal> ReservadoPorLinea()
+    {
+        var r = new Dictionary<LineaVm, decimal>();
+        var queda = new Dictionary<string, decimal>();
+        foreach (var l in _lineas)
+        {
+            var k = Clave(l.Stock);
+            if (!queda.TryGetValue(k, out var q)) q = _conReservado ? (l.Stock.CAN_RESERVADA ?? 0) : 0;
+            var x = Math.Min(l.Cantidad, q);
+            r[l] = x;
+            queda[k] = q - x;
+        }
+        return r;
+    }
+
+    private void MoverTodo()
+    {
+        foreach (var s in _origen.Stock)
+        {
+            var r = Restante(s);
+            _origen.AMover[Clave(s)] = r > 0 ? r : null;
+        }
+    }
+
+    // ── Agregar al traslado ──────────────────────────────────────────────────────
+    private IEnumerable<(TrasladoUbicacionesStock Stock, decimal Cantidad)> AMover()
+        => _origen.Stock
+            .Select(s => (Stock: s, Cantidad: _origen.AMover.GetValueOrDefault(Clave(s)) ?? 0))
+            .Where(x => x.Cantidad > 0);
+
+    /// <summary>Por qué la flecha está apagada (null: se puede agregar).</summary>
+    private string? MotivoNoAgregar
+    {
+        get
+        {
+            if (_origen.Ubicacion is null) return "Elige el origen.";
+            if (_destino.Ubicacion is null) return "Elige el destino.";
+            if (_origen.Ubicacion == _destino.Ubicacion) return "El origen y el destino son la misma ubicación.";
+            var mover = AMover().ToList();
+            if (mover.Count == 0) return "Escribe cuánto mover en el origen.";
+            if (mover.Any(x => x.Cantidad > Restante(x.Stock))) return "Hay cantidades mayores que el disponible.";
+            return null;
+        }
+    }
+
+    private void AgregarAlTraslado()
+    {
+        if (MotivoNoAgregar is { } motivo) { Snackbar.Add(motivo, Severity.Warning); return; }
+        foreach (var (s, cantidad) in AMover().ToList())
+        {
+            // La misma clave hacia el mismo destino se junta en una sola línea.
+            var existente = _lineas.FirstOrDefault(l => Clave(l.Stock) == Clave(s) && l.Destino == _destino.Ubicacion);
+            if (existente is not null) existente.Cantidad += cantidad;
+            else _lineas.Add(new LineaVm { Stock = s, Destino = _destino.Ubicacion!, Cantidad = cantidad });
+        }
+        _origen.AMover.Clear();
+    }
+
+    // ── Confirmar ────────────────────────────────────────────────────────────────
+    private async Task Confirmar()
+    {
+        if (_lineas.Count == 0 || _codAlmacen is null) return;
+        if (string.IsNullOrWhiteSpace(_codTipo)) { Snackbar.Add("Elige el tipo de movimiento.", Severity.Warning); return; }
+
+        var reservado = ReservadoPorLinea();
+        var dto = new TrasladoUbicacionesRegistraDto
+        {
+            COD_ALMACEN           = _codAlmacen,
+            COD_CLASE_MOVIMIENTO  = _claseMovimiento,
+            COD_TIPO_MOVIMIENTO   = _codTipo,
+            FEC_MOVIMENTO_ALMACEN = _fecha ?? DateTime.Today,
+            DES_OBSERVACION       = _observacion,
+            Lineas = _lineas.Select(l => new TrasladoUbicacionesLinea
+            {
+                COD_PRODUCTO                = l.Stock.COD_PRODUCTO,
+                NUM_LOTE_CONTROL            = l.Stock.NUM_LOTE_CONTROL,
+                COD_PROCESO                 = l.Stock.COD_PROCESO,
+                NUM_ORDEN_PRODUCCION        = l.Stock.NUM_ORDEN_PRODUCCION,
+                NUM_ORDEN_PRODUCCION_ITEM   = l.Stock.NUM_ORDEN_PRODUCCION_ITEM,
+                NUM_ORDEN_PRODUCCION_UNIDAD = l.Stock.NUM_ORDEN_PRODUCCION_UNIDAD,
+                COD_UBICACION_ORIGEN        = l.Stock.COD_UBICACION_ALMACEN,
+                COD_UBICACION_DESTINO       = l.Destino,
+                CAN_PRODUCTO                = l.Cantidad,
+                CAN_RESERVADA_MOVER         = reservado.GetValueOrDefault(l)
+            }).ToList()
+        };
+
+        _grabando = true;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.TrasladosUbicacionesRegistra, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TransferenciasUbicaciones), nameof(Confirmar), "No se pudo grabar el traslado");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<TrasladoUbicacionesResultado>>();
+            Snackbar.Add($"Traslado grabado: salida N° {r?.Data?.NUM_MOVIMIENTO_SALIDA} e ingreso N° {r?.Data?.NUM_MOVIMIENTO_INGRESO}.", Severity.Success);
+            _lineas.Clear();
+            _observacion = null;
+            // El stock cambió en los dos lados: se relee todo lo que se ve.
+            await RecargarMapa();
+            await Elegir(_origen, _origen.Ubicacion);
+            await Elegir(_destino, _destino.Ubicacion);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransferenciasUbicaciones), nameof(Confirmar));
+            Snackbar.Add("No se pudo grabar el traslado. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally { _grabando = false; }
+    }
+
+    // ── Historial ────────────────────────────────────────────────────────────────
+    private async Task CargarHistorial()
+    {
+        if (_codAlmacen is null) return;
+        _cargandoHist = true;
+        try
+        {
+            _historial = (await LeerAsync<List<TrasladoUbicacionesHistorial>>(
+                ApiRoutes.Logistica.TrasladosUbicacionesHistorial(_codAlmacen, _histDesde, _histHasta))).Data ?? new();
+            _histConsultado = true;
+        }
+        finally { _cargandoHist = false; }
+    }
+
+    // ── Llamadas a la API ────────────────────────────────────────────────────────
+    /// <summary>GET que devuelve ApiResponse. A diferencia de SafeGetAsync, no se traga el error:
+    /// si la API responde con error, muestra su mensaje y lo devuelve en Error (el aviso de los
+    /// tipos lo usa); si la llamada misma falla, lo deja en el log.</summary>
+    private async Task<(T? Data, string? Error)> LeerAsync<T>(string url) where T : class
+    {
+        try
+        {
+            var r = await Http.GetAsync(url);
+            ApiResponse<T>? cuerpo = null;
+            // Un 401/403/404 puede venir sin cuerpo JSON: entonces se informa el código HTTP.
+            try { cuerpo = await r.Content.ReadFromJsonAsync<ApiResponse<T>>(); }
+            catch (System.Text.Json.JsonException) { }
+            if (cuerpo is { Success: true }) return (cuerpo.Data, null);
+            var msg = !string.IsNullOrWhiteSpace(cuerpo?.Message) ? cuerpo!.Message
+                    : r.IsSuccessStatusCode ? "La API no devolvió datos."
+                    : $"La API respondió {(int)r.StatusCode} ({r.ReasonPhrase}).";
+            Snackbar.Add(msg, Severity.Warning);
+            return (null, msg);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransferenciasUbicaciones), nameof(LeerAsync), url);
+            Snackbar.Add("No se pudo consultar. Ver detalle en el log de errores.", Severity.Error);
+            return (null, ex.Message);
+        }
+    }
+
+    // ── El panel de un lado ──────────────────────────────────────────────────────
+    private TrasladoUbicacionesRack? RackDe(Lado l) => _mapa.Racks.FirstOrDefault(r => r.COD_CONTENEDOR == l.Rack);
+
+    /// <summary>Origen o destino: el rack con su cuadrícula de casilleros (o una ubicación suelta)
+    /// y el stock de la ubicación elegida. En el origen se escribe cuánto mover; en el destino se
+    /// ve con qué se va a juntar.</summary>
+    private RenderFragment Panel(Lado lado) => __builder =>
+    {
+        var rack = RackDe(lado);
+        var colorCab = lado.EsOrigen ? "background:var(--grilla-cab-fondo,#163a5f);color:var(--grilla-cab-texto,#ffd54f);" : "background:#1565c0;color:#fff;";
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);border-radius:8px;overflow:hidden;min-width:0;">
+            <div class="pa-2 px-3 d-flex align-center gap-2" style="@($"{colorCab}font-weight:800;")">
+                <span class="tu-num" style="@(lado.EsOrigen ? "" : "background:#fff;color:#1565c0;")">@(lado.EsOrigen ? "1" : "2")</span>
+                @(lado.EsOrigen ? "Origen — de dónde sale" : "Destino — a dónde entra")
+            </div>
+            <div class="pa-3">
+                <div class="d-flex gap-2 mb-2" style="flex-wrap:wrap;">
+                    @* AriaCombo y no MudSelect: mismo alto que el resto de la pantalla. *@
+                    <div style="flex:1 1 200px;min-width:0;">
+                        <AriaCombo TItem="TrasladoUbicacionesRack" Items="_racksCombo"
+                                   TextFunc="@(r => r.COD_CONTENEDOR == FueraDeRack ? $"{r.DES_CONTENEDOR} ({_mapa.Sueltas.Count})" : $"{r.DES_CONTENEDOR} ({r.NUM_FILAS} × {r.NUM_COLUMNAS})")"
+                                   ValueFunc="@(r => r.COD_CONTENEDOR ?? "")"
+                                   Value="@lado.Rack" ValueChanged="@(v => CambiarRack(lado, v))"
+                                   Label="Rack" Disabled="@(_racksCombo.Count == 0)" Class="" />
+                    </div>
+                    <div style="flex:2 1 260px;min-width:0;">
+                        @* Las ubicaciones vinculadas al rack elegido (sus casilleros); sin rack, todas.
+                           Muestra siempre la ubicación elegida, sea desde aquí o con clic en la
+                           cuadrícula. Si el rack tiene un solo casillero, lo elige solo. *@
+                        <AriaCombo TItem="OpcionUbicacion" Items="lado.Opciones"
+                                   TextFunc="@(o => $"{o.Cod} - {o.Texto}{(o.Productos > 0 ? $" · {o.Productos} prod." : "")}")"
+                                   ValueFunc="@(o => o.Cod)"
+                                   Value="@lado.Ubicacion"
+                                   ValueChanged="@(v => ElegirUbicacion(lado, v))" AutoSeleccionarUnico="true"
+                                   Label="Ubicación" Disabled="@(lado.Opciones.Count == 0)" Class="" />
+                    </div>
+                </div>
+
+                @if (rack is not null)
+                {
+                    var filas = rack.NUM_FILAS ?? 0;
+                    var cols = rack.NUM_COLUMNAS ?? 0;
+                    var casilleros = _mapa.Casilleros.Where(c => c.COD_CONTENEDOR == rack.COD_CONTENEDOR).ToList();
+                    <div class="d-flex mono" style="font-size:.68rem;opacity:.6;margin-bottom:2px;">
+                        <span>@rack.DES_CONTENEDOR · @(lado.EsOrigen ? "verde = tiene disponible" : "verde = tiene stock") · clic para elegir</span>
+                    </div>
+                    <div class="tu-rack" style="@($"grid-template-columns:repeat({Math.Max(cols, 1)},minmax(54px,1fr));")">
+                        @for (var f = 1; f <= filas; f++)
+                        {
+                            for (var c = 1; c <= cols; c++)
+                            {
+                                var fila = f; var col = c;
+                                var cas = casilleros.FirstOrDefault(x => x.NUM_FILA == fila && x.NUM_COLUMNA == col);
+                                if (cas is null)
+                                {
+                                    <div class="tu-celda sin-casillero"></div>
+                                }
+                                else
+                                {
+                                    var conStock = lado.EsOrigen ? (cas.CAN_PRODUCTOS_DISPONIBLES ?? 0) > 0 : (cas.CAN_PRODUCTOS ?? 0) > 0;
+                                    var elegida = cas.COD_UBICACION_ALMACEN == lado.Ubicacion;
+                                    var clase = "tu-celda" + (conStock ? " con-stock" : "") + (elegida ? (lado.EsOrigen ? " elegida-origen" : " elegida-destino") : "");
+                                    <div class="@clase" title="@($"{cas.DES_UBICACION_ALMACEN ?? cas.DES_CASILLERO} · ubicación {cas.COD_UBICACION_ALMACEN}")"
+                                         @onclick="@(() => Elegir(lado, cas.COD_UBICACION_ALMACEN))">
+                                        <b>F-@fila C-@col</b>
+                                        <span>@((cas.CAN_PRODUCTOS ?? 0) > 0 ? $"{cas.CAN_PRODUCTOS} prod." : "vacío")</span>
+                                    </div>
+                                }
+                            }
+                        }
+                    </div>
+                }
+                else if (lado.Rack == FueraDeRack || _mapa.Racks.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Style="opacity:.7;">Ubicaciones que no son casillero de ningún rack: elige la ubicación en el combo.</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Style="opacity:.7;">Elige un rack para ver sus casilleros, o busca cualquier ubicación en el combo.</MudText>
+                }
+
+                @* ── El stock de la ubicación elegida ── *@
+                @if (lado.Ubicacion is { } ub)
+                {
+                    <div class="d-flex align-center gap-2 mt-3 mb-1" style="flex-wrap:wrap;">
+                        <span style="@($"font-weight:700;color:{(lado.EsOrigen ? "var(--ink)" : "#1565c0")};")">
+                            @(lado.EsOrigen ? "Stock en " : "Ya hay en ")@Rotulo(ub)
+                        </span>
+                        <span class="mono" style="font-size:.7rem;opacity:.6;">(ubicación @ub)</span>
+                        @if (!lado.EsOrigen && SeMezcla)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">se mezclará con otro producto</MudChip>
+                        }
+                    </div>
+                    @if (lado.Cargando)
+                    {
+                        <MudProgressLinear Indeterminate="true" />
+                    }
+                    else if (lado.Stock.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Style="opacity:.6;">Vacía.</MudText>
+                    }
+                    else
+                    {
+                        <table class="tabla-simple-editable" style="width:100%;font-size:.78rem;">
+                            <thead>
+                                <tr>
+                                    <th>Producto</th>
+                                    <th style="width:130px;">Lote / OP</th>
+                                    <th style="width:120px;text-align:right;">@(lado.EsOrigen ? (_conReservado ? "Disp. + reserv." : "Disponible") : "Stock")</th>
+                                    @if (lado.EsOrigen)
+                                    {
+                                        <th style="width:240px;text-align:right;">A mover</th>
+                                    }
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var s in lado.Stock)
+                                {
+                                    var clave = Clave(s);
+                                    var restante = Restante(s);
+                                    var valor = lado.AMover.GetValueOrDefault(clave);
+                                    var excede = valor > restante;
+                                    <tr>
+                                        <td>
+                                            <div class="mono" style="font-size:.68rem;opacity:.6;">@s.COD_PRODUCTO</div>
+                                            <div>@s.DES_PRODUCTO</div>
+                                        </td>
+                                        <td class="mono" style="font-size:.7rem;">@LoteOrden(s)</td>
+                                        <td class="mono" style="text-align:right;">
+                                            @if (lado.EsOrigen)
+                                            {
+                                                @($"{Num(restante)} {s.COD_UNIDAD_MEDIDA}")
+                                                @if ((s.CAN_RESERVADA ?? 0) > 0)
+                                                {
+                                                    <div style="font-size:.66rem;opacity:.6;">reservado @Num(s.CAN_RESERVADA)</div>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                @($"{Num(s.CAN_PRODUCTO)} {s.COD_UNIDAD_MEDIDA}")
+                                            }
+                                        </td>
+                                        @if (lado.EsOrigen)
+                                        {
+                                            <td>
+                                                <div class="d-flex align-center gap-1">
+                                                    @* input nativo: type=number enlaza siempre con punto decimal. Se
+                                                       enlaza al salir del campo (onchange), no en cada tecla. *@
+                                                    <input type="number" min="0" step="any" disabled="@(restante <= 0)"
+                                                           style="@($"flex:1;min-width:0;padding:4px 6px;border:1px solid {(excede ? "#c62828" : "var(--line)")};border-radius:4px;text-align:right;background:transparent;color:inherit;")"
+                                                           value="@ValorInput(valor)"
+                                                           @onchange="@(e => lado.AMover[clave] = decimal.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var d) && d > 0 ? d : null)" />
+                                                    @* Todo: pasa todo el disponible de ESTA línea (lo que queda después de lo
+                                                       que ya está en el traslado en preparación). Borrar: limpia lo escrito.
+                                                       Con los colores de Configuración General: Todo como Confirmar y
+                                                       Borrar como Cancelar (los mismos colores, invertidos). *@
+                                                    <MudButton Variant="Variant.Filled" Size="Size.Small" Disabled="@(restante <= 0)"
+                                                               Style="@($"{EstilosBoton.Confirmar}min-width:0;padding:1px 8px;")"
+                                                               title="@($"Pasar todo el disponible: {Num(restante)} {s.COD_UNIDAD_MEDIDA}")"
+                                                               OnClick="@(() => lado.AMover[clave] = restante)">Todo</MudButton>
+                                                    <MudButton Variant="Variant.Filled" Size="Size.Small" Disabled="@(valor is null)"
+                                                               Style="@($"{EstilosBoton.Cancelar}min-width:0;padding:1px 8px;")"
+                                                               title="Borrar la cantidad de esta línea"
+                                                               OnClick="@(() => lado.AMover.Remove(clave))">Borrar</MudButton>
+                                                </div>
+                                                @if (excede)
+                                                {
+                                                    <div style="color:#c62828;font-size:.66rem;">Más que el disponible</div>
+                                                }
+                                            </td>
+                                        }
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                        @if (lado.EsOrigen)
+                        {
+                            <div class="d-flex align-center gap-2 mt-2" style="flex-wrap:wrap;">
+                                <MudButton Variant="Variant.Filled" Size="Size.Small" StartIcon="@Icons.Material.Filled.SelectAll"
+                                           Style="@EstilosBoton.Confirmar" Disabled="@(!lado.Stock.Any(s => Restante(s) > 0))"
+                                           OnClick="MoverTodo">Incorporar todo</MudButton>
+                                <MudButton Variant="Variant.Filled" Size="Size.Small" StartIcon="@Icons.Material.Filled.ClearAll"
+                                           Style="@EstilosBoton.Cancelar" Disabled="@(lado.AMover.Values.All(v => v is null))"
+                                           OnClick="@(() => lado.AMover.Clear())">Borrar todo</MudButton>
+                                <MudText Typo="Typo.caption" Style="opacity:.65;">@(_conReservado ? "Se mueve primero lo reservado: su reserva pasa a la ubicación destino." : "Solo se mueve el disponible: lo reservado se queda.")</MudText>
+                            </div>
+                        }
+                    }
+                }
+            </div>
+        </MudPaper>
+    };
+
+    /// <summary>El destino tiene algún producto distinto de los que se van a mover.</summary>
+    private bool SeMezcla
+    {
+        get
+        {
+            var aMover = AMover().Select(x => x.Stock.COD_PRODUCTO).ToHashSet();
+            if (aMover.Count == 0) aMover = _lineas.Where(l => l.Destino == _destino.Ubicacion).Select(l => l.Stock.COD_PRODUCTO).ToHashSet();
+            return aMover.Count > 0 && _destino.Stock.Any(s => !aMover.Contains(s.COD_PRODUCTO));
+        }
+    }
+
+    // ── Presentación ─────────────────────────────────────────────────────────────
+    /// <summary>La clave de stock de una fila: producto, lote, proceso y orden de producción en su
+    /// ubicación.</summary>
+    private static string Clave(TrasladoUbicacionesStock s)
+        => $"{s.COD_UBICACION_ALMACEN}|{s.COD_PRODUCTO}|{s.NUM_LOTE_CONTROL}|{s.COD_PROCESO}|{s.NUM_ORDEN_PRODUCCION}|{s.NUM_ORDEN_PRODUCCION_ITEM}|{s.NUM_ORDEN_PRODUCCION_UNIDAD}";
+
+    /// <summary>"RACK 1 F-1 C-2" para un casillero; la descripción para una ubicación suelta.</summary>
+    private string Rotulo(string? ubicacion)
+    {
+        if (string.IsNullOrWhiteSpace(ubicacion)) return "—";
+        var cas = _mapa.Casilleros.FirstOrDefault(c => c.COD_UBICACION_ALMACEN == ubicacion);
+        if (cas is not null) return cas.DES_CASILLERO ?? cas.DES_UBICACION_ALMACEN ?? ubicacion;
+        var suelta = _mapa.Sueltas.FirstOrDefault(u => u.COD_UBICACION_ALMACEN == ubicacion);
+        return suelta?.DES_UBICACION_ALMACEN ?? ubicacion;
+    }
+
+    private static string Num(decimal? v) => (v ?? 0).ToString("N2");
+
+    /// <summary>El valor del input "A mover": con punto decimal (type=number) y sin los ceros de
+    /// la escala de la base, que llegaban tal cual (149915.00000000 → 149915).</summary>
+    private static string? ValorInput(decimal? v)
+        => v?.ToString("0.##########", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string LoteOrden(TrasladoUbicacionesStock s)
+        => LoteOrden(s.NUM_LOTE_CONTROL, s.COD_PROCESO, s.NUM_ORDEN_PRODUCCION, s.NUM_ORDEN_PRODUCCION_ITEM, s.NUM_ORDEN_PRODUCCION_UNIDAD);
+
+    /// <summary>"Lote 00000 · OP 12-1-1 (TEJ)"; sin orden de producción, sólo el lote.</summary>
+    private static string LoteOrden(string? lote, string? proceso, int? orden, short? item, byte? unidad)
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(lote)) partes.Add($"Lote {lote}");
+        if (orden is > 0) partes.Add($"OP {orden}-{item}-{unidad}{(string.IsNullOrWhiteSpace(proceso) ? "" : $" ({proceso})")}");
+        return partes.Count == 0 ? "—" : string.Join(" · ", partes);
+    }
+}

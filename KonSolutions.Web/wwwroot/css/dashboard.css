@@ -1,0 +1,60 @@
+/* ============================================================================
+   ESTILO DASHBOARD (tarjetas limpias, cifras grandes, botones de pildora)
+   Todo cuelga de la clase .dash: solo cambian las pantallas que la usan.
+   Los colores salen de los de tu marca (los mismos que usan los botones: --boton-backcolor / --boton-forecolor);
+   para cambiar el aspecto de TODAS las pantallas dash se tocan solo estas variables.
+   ============================================================================ */
+.dash{
+    --d-primary: var(--boton-backcolor, #17365a);
+    --d-on-primary: var(--boton-forecolor, #ffffff);
+    --d-card: #ffffff;
+    --d-text: var(--ink, #16130f);
+    --d-muted: rgba(22,19,15,.58);
+    --d-line: rgba(22,19,15,.09);
+    --d-radius: 16px;
+    --d-shadow: 0 1px 2px rgba(22,19,15,.06), 0 6px 18px rgba(22,19,15,.06);
+    --d-ok: #2e7d32; --d-warn: #e67e22; --d-bad: #c0392b;
+}
+.dash-kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin:4px 0 18px}
+.dash-kpi{background:var(--d-card);border-radius:var(--d-radius);box-shadow:var(--d-shadow);padding:16px 18px;display:flex;flex-direction:column;gap:2px;position:relative;overflow:hidden}
+.dash-kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--d-primary)}
+.dash-kpi.ok::before{background:var(--d-ok)}.dash-kpi.warn::before{background:var(--d-warn)}.dash-kpi.bad::before{background:var(--d-bad)}
+.dash-kpi .k-tit{font-size:.82rem;color:var(--d-muted);display:flex;align-items:center;gap:6px}
+.dash-kpi .k-val{font-size:1.9rem;font-weight:700;line-height:1.15;color:var(--d-primary);font-variant-numeric:tabular-nums}
+.dash-kpi.ok .k-val{color:var(--d-ok)}.dash-kpi.warn .k-val{color:var(--d-warn)}.dash-kpi.bad .k-val{color:var(--d-bad)}
+.dash-kpi .k-sub{font-size:.76rem;color:var(--d-muted)}
+.dash-kpi .k-bar{height:6px;border-radius:3px;background:rgba(22,19,15,.09);margin-top:8px;overflow:hidden}
+.dash-kpi .k-bar i{display:block;height:100%;border-radius:3px;background:var(--d-primary)}
+.dash-kpi.ok .k-bar i{background:var(--d-ok)}.dash-kpi.warn .k-bar i{background:var(--d-warn)}.dash-kpi.bad .k-bar i{background:var(--d-bad)}
+
+.dash-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.dash-tools .sp{flex:1}
+
+.dash-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.dash-card{background:var(--d-card);border-radius:var(--d-radius);box-shadow:var(--d-shadow);padding:18px 20px;display:flex;flex-direction:column;gap:10px;border:1px solid transparent;transition:box-shadow .15s,border-color .15s}
+.dash-card:hover{border-color:color-mix(in srgb,var(--d-primary) 35%,transparent);box-shadow:0 2px 4px rgba(22,19,15,.08),0 10px 24px rgba(22,19,15,.10)}
+.dash-card .c-top{display:flex;align-items:flex-start;gap:10px}
+.dash-card .c-num{font-size:.78rem;color:var(--d-muted)}
+.dash-card .c-tit{font-size:1.05rem;font-weight:700;color:var(--d-text);line-height:1.25}
+.dash-card .c-sub{font-size:.78rem;color:var(--d-muted)}
+.dash-card .c-av{display:flex;align-items:center;gap:10px}
+.dash-card .c-av .big{font-size:1.7rem;font-weight:700;color:var(--d-primary);min-width:64px;font-variant-numeric:tabular-nums}
+.dash-card .c-trk{flex:1;height:10px;border-radius:5px;background:rgba(22,19,15,.09);overflow:hidden}
+.dash-card .c-trk i{display:block;height:100%;border-radius:5px;background:var(--d-primary)}
+.dash-card .c-trk i.ok{background:var(--d-ok)}.dash-card .c-trk i.warn{background:var(--d-warn)}.dash-card .c-trk i.bad{background:var(--d-bad)}
+.dash-card .c-datos{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;border-top:1px solid var(--d-line);padding-top:10px}
+.dash-card .c-datos span{display:block;font-size:.7rem;color:var(--d-muted);text-transform:uppercase;letter-spacing:.04em}
+.dash-card .c-datos b{font-size:.92rem;font-weight:600;font-variant-numeric:tabular-nums}
+.dash-card .c-datos b.bad{color:var(--d-bad)}
+.dash-card .c-pie{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;margin-top:auto;padding-top:4px}
+/* los botones de la opcion (muchos) van en su propia fila y se parten en lineas: nunca salen de la tarjeta */
+.dash-card .c-acc{flex:1 1 100%;min-width:0;max-width:100%;display:flex;flex-wrap:wrap;gap:2px}
+.dash-card .c-acc div{flex-wrap:wrap;max-width:100%;min-width:0}
+.dash-card .c-pie .sp{flex:1}
+.dash-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:7px 18px;font-weight:600;font-size:.84rem;cursor:pointer;border:2px solid var(--d-primary);background:transparent;color:var(--d-primary)}
+.dash-pill:hover{background:color-mix(in srgb,var(--d-primary) 10%,transparent)}
+.dash-pill.lleno{background:var(--d-primary);color:var(--d-on-primary)}
+.dash-pill.lleno:hover{filter:brightness(1.12)}
+.dash-vacio{background:var(--d-card);border-radius:var(--d-radius);box-shadow:var(--d-shadow);padding:40px;text-align:center;color:var(--d-muted)}
+.dash .dash-tabla{background:var(--d-card);border-radius:var(--d-radius);box-shadow:var(--d-shadow);overflow:hidden}
+.dash-card .c-datos>div:first-child{grid-column:1/-1}

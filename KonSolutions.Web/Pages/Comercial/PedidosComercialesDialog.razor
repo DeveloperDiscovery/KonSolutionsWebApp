@@ -1,0 +1,574 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@*
+    Fase 1: solo cabecera de COMERCIAL.PEDIDOS_COMERCIALES. Varios campos FK todavía no tienen
+    un endpoint de combobox confirmado en ApiRoutes.cs (ver comentarios "// TODO combo" abajo)
+    — quedan como campo numérico/texto plano hasta que se confirme la ruta correcta, para no
+    inventar un endpoint que no existe.
+*@
+
+<MudDialog Style="width:min(1400px,95vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_PEDIDO_COMERCIAL" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-3" @bind-ActivePanelIndex="_tabActiva">
+                <MudTabPanel Text="General">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposOperacion"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_OPERACION" ValueChanged="CambiarTipoOperacionAsync"
+                                       Label="Tipo de operación" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <MudTextField T="decimal?" Value="_model.NUM_PEDIDO_COMERCIAL" ReadOnly="true"
+                                          Label="N° Pedido" Disabled="true" Class="mb-3"
+                                          HelperText="@(_esNuevo ? "Se asigna al guardar" : "")" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="DES_PEDIDO_COMERCIAL"
+                                        @bind-Value="_model.DES_PEDIDO_COMERCIAL" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.COD_ENTIDAD?.ToString())"
+                                       ValueChanged="@(v => _model.COD_ENTIDAD = decimal.TryParse(v, out var n) ? n : null)"
+                                       SearchFunc="BuscarEntidadAsync" MinCharacters="2" TextoInicial="@_textoEntidadInicial"
+                                       Label="Entidad (cliente/proveedor)" Obligatorio="true" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposEntidad"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_ENTIDAD" ValueChanged="@(v => _model.COD_TIPO_ENTIDAD = v)"
+                                       Label="Tipo de entidad" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.COD_ENTIDAD_VENDEDOR?.ToString())"
+                                       ValueChanged="@(v => _model.COD_ENTIDAD_VENDEDOR = decimal.TryParse(v, out var n) ? n : null)"
+                                       SearchFunc="BuscarEntidadAsync" MinCharacters="2" TextoInicial="@_textoEntidadVendedorInicial"
+                                       Label="Entidad vendedor" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker Label="Fecha de pedido" @bind-Date="_fecPedido" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker Label="Fecha de vencimiento" @bind-Date="_fecVencimiento" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker Label="Fecha de entrega" @bind-Date="_fecEntrega" Editable="true" Disabled="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="6">
+                            @* El Tipo de Estado NO sale de una tabla fija: cada Tipo de Operación
+                               define su propio COD_TIPO_ESTADO_RELACIONADO (ESTANDAR.TIPOS_OPERACION)
+                               — igual patrón que Periodos con su Tipo de Periodo padre. *@
+                            <EstadoCombo CodTipoEstado="@_codTipoEstadoDesdeOperacion"
+                                         @bind-Value="_model.COD_ESTADO"
+                                         CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                         Disabled="@(_readonly || _codTipoEstadoDesdeOperacion is null)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="DES_OBSERVACION"
+                                        @bind-Value="_model.DES_OBSERVACION" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                    </MudGrid>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Comercial">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_MONEDA" ValueChanged="@(v => _model.COD_MONEDA = v)"
+                                       Label="Moneda" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <MudNumericField T="decimal?" @bind-Value="_model.FAC_TIPO_CAMBIO" Label="Tipo de cambio" Format="@Decimales.FormatoFactor" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_formasPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_FORMA_PAGO" ValueChanged="@(v => _model.COD_FORMA_PAGO = v)"
+                                       Label="Forma de pago" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_condicionesPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_CONDICION_PAGO" ValueChanged="@(v => _model.COD_CONDICION_PAGO = v)"
+                                       Label="Condición de pago" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposDescuento"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_DESCUENTO" ValueChanged="@(v => _model.COD_TIPO_DESCUENTO = v)"
+                                       Label="Tipo de descuento" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_model.TAS_DESCUENTO" Label="Tasa de descuento (%)" Format="@Decimales.FormatoPorcentual" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_model.VAL_TOTAL" Label="Total" Format="@Decimales.FormatoPrecio" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        @* TODO combo: no hay endpoint de combobox confirmado para
+                           COMERCIAL.TIPOS_COMPROBANTE_PAGO / ESTANDAR fuera de
+                           SucursalesTiposComprobantePago (filtrado por sucursal, no directo) —
+                           queda como texto libre hasta confirmar la ruta correcta. *@
+                        <MudItem xs="12" md="4">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="COD_TIPO_COMPROBANTE_PAGO"
+                                        @bind-Value="_model.COD_TIPO_COMPROBANTE_PAGO" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="NUM_DOCUMENTO"
+                                        @bind-Value="_model.NUM_DOCUMENTO" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        @* TODO combo: sin endpoint confirmado para PROYECTOS.PROYECTOS. *@
+                        <MudItem xs="12" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_PROYECTO" Label="N° Proyecto" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                    </MudGrid>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Logística / Otros">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_sucursales"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_SUCURSAL" ValueChanged="@(v => _model.COD_SUCURSAL = v)"
+                                       Label="Sucursal" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_incoterms"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_INCOTERM" ValueChanged="@(v => _model.COD_INCOTERM = v)"
+                                       Label="Incoterm" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_paises"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_PAIS_DESTINO" ValueChanged="@(v => _model.COD_PAIS_DESTINO = v)"
+                                       Label="País destino" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        @* TODO combo: sin endpoint de combobox confirmado para
+                           CONTABILIDAD.CENTROS_COSTO (existe la ruta base, no "/combobox"). *@
+                        <MudItem xs="12" md="6">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="COD_CENTRO_COSTO_SOLICITANTE"
+                                        @bind-Value="_model.COD_CENTRO_COSTO_SOLICITANTE" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="COD_CENTRO_COSTO_DESTINO"
+                                        @bind-Value="_model.COD_CENTRO_COSTO_DESTINO" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposMotivo"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_TIPO_MOTIVO" ValueChanged="CambiarTipoMotivoAsync"
+                                       Label="Tipo de motivo" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_motivos"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_model.COD_MOTIVO" ValueChanged="@(v => _model.COD_MOTIVO = v)"
+                                       Label="Motivo" Disabled="@(_readonly || string.IsNullOrWhiteSpace(_model.COD_TIPO_MOTIVO))" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_lotesControl"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_model.NUM_LOTE_CONTROL?.ToString())"
+                                       ValueChanged="@(v => _model.NUM_LOTE_CONTROL = decimal.TryParse(v, out var n) ? n : null)"
+                                       Label="Lote de control" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        @* TODO combo: sin endpoint confirmado para NUM_RENDICION_CUENTAS. *@
+                        <MudItem xs="12" md="3">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_RENDICION_CUENTAS" Label="N° Rendición de cuentas" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        @* TODO combo: sin endpoint confirmado para COMERCIAL.UNIDADES_COMERCIALES,
+                           NUM_SECUENCIA_DIRECCION (depende de la entidad elegida) ni
+                           COMERCIAL.ENTIDADES_PURCHARSE_ORDERS (NUM_PURCHASE_ORDER). *@
+                        <MudItem xs="12" md="3">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_UNIDAD_COMERCIAL" Label="N° Unidad comercial" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_SECUENCIA_DIRECCION" Label="N° Secuencia dirección" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="NUM_PURCHASE_ORDER"
+                                        @bind-Value="_model.NUM_PURCHASE_ORDER" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <CampoTexto Tabla="COMERCIAL.PEDIDOS_COMERCIALES" Columna="NUM_TRACKING"
+                                        @bind-Value="_model.NUM_TRACKING" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_TEMPORADA" Label="N° Temporada" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudNumericField T="decimal?" @bind-Value="_model.NUM_PEDIDO_COMERCIAL_RELACIONADO" Label="Pedido relacionado" Disabled="_readonly" Class="mb-3" />
+                        </MudItem>
+                    </MudGrid>
+                </MudTabPanel>
+            </MudTabs>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public PedidoComercial? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    // Fijado por Pedidos Comerciales.razor desde el Parámetro de la opción — igual mecanismo
+    // que Entidades/Clientes/Proveedores (ver DES_PARAMETRO en SEGURIDAD.APLICACIONES_OPCIONES).
+    [Parameter] public string? CodClaseOperacion { get; set; }
+    // Tipo de operación seleccionado en el filtro de la grilla — solo un valor por defecto al
+    // Crear, el usuario lo puede cambiar (COD_TIPO_OPERACION SÍ se elige en el módulo, no
+    // queda fijo por Parámetro — así lo pidió el usuario).
+    [Parameter] public string? CodTipoOperacionSugerido { get; set; }
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private PedidoComercial _model = new();
+    private bool _saving;
+    private bool _esNuevo;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private int _tabActiva;
+
+    private DateTime? _fecPedido, _fecVencimiento, _fecEntrega;
+    private string? _textoEntidadInicial, _textoEntidadVendedorInicial;
+
+    private List<ComboboxItem> _tiposOperacion = new();
+    private List<ComboboxItem> _entidades = new();
+    private List<ComboboxItem> _tiposEntidad = new();
+    private List<ComboboxItem> _monedas = new();
+    private List<ComboboxItem> _formasPago = new();
+    private List<ComboboxItem> _condicionesPago = new();
+    private List<ComboboxItem> _tiposDescuento = new();
+    private List<ComboboxItem> _sucursales = new();
+    private List<ComboboxItem> _incoterms = new();
+    private List<ComboboxItem> _paises = new();
+    private List<ComboboxItem> _tiposMotivo = new();
+    private List<ComboboxItem> _motivos = new();
+    private List<ComboboxItem> _lotesControl = new();
+
+    private class TipoOperacionLite
+    {
+        public string COD_TIPO_OPERACION { get; set; } = "";
+        public string DES_TIPO_OPERACION { get; set; } = "";
+        public int? COD_TIPO_ESTADO_RELACIONADO { get; set; }
+    }
+    // COD_TIPO_OPERACION → COD_TIPO_ESTADO_RELACIONADO, para resolver el Tipo de Estado del
+    // EstadoCombo sin tener que volver a pedir el tipo de operación cada vez que cambia.
+    private readonly Dictionary<string, int?> _tipoEstadoPorTipoOperacion = new();
+    private int? _codTipoEstadoDesdeOperacion;
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Item is null;
+        if (Item is not null)
+        {
+            _model = Item;
+            _fecPedido = Item.FEC_PEDIDO;
+            _fecVencimiento = Item.FEC_VECIMIENTO;
+            _fecEntrega = Item.FEC_ENTREGA;
+            _textoEntidadInicial = string.IsNullOrWhiteSpace(Item.DES_COMERCIAL) ? Item.DES_NOMBRE_COMPLETO : Item.DES_COMERCIAL;
+        }
+        else
+        {
+            _model = new PedidoComercial
+            {
+                COD_CLASE_OPERACION = CodClaseOperacion ?? "",
+                COD_TIPO_OPERACION = CodTipoOperacionSugerido ?? "",
+                FEC_PEDIDO = DateTime.Today
+            };
+            _fecPedido = DateTime.Today;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // OnInitialized (arriba) ya dejó la pantalla pintada con la fila que trajo la grilla,
+        // que es el snapshot de la última carga del listado. Acá se relee del SHOWBYID para
+        // que lo que se ve sea el estado real de la base —es lo que hacía que el Estado
+        // quedara viejo después de que un botón del documento lo cambiara—. Si la lectura
+        // falla se conserva lo que ya estaba, sin dejar la pantalla en blanco.
+        if (Item is not null)
+        {
+            var fresco = await Http.SafeGetAsync<PedidoComercial>(
+                $"{ApiRoutes.Comercial.PedidosComerciales}/{Uri.EscapeDataString(Item.COD_CLASE_OPERACION)}" +
+                $"/{Uri.EscapeDataString(Item.COD_TIPO_OPERACION)}/{Item.NUM_PEDIDO_COMERCIAL}");
+            if (fresco is not null)
+            {
+                _model = fresco;
+                _fecPedido = fresco.FEC_PEDIDO;
+                _fecVencimiento = fresco.FEC_VECIMIENTO;
+                _fecEntrega = fresco.FEC_ENTREGA;
+                _textoEntidadInicial = string.IsNullOrWhiteSpace(fresco.DES_COMERCIAL) ? fresco.DES_NOMBRE_COMPLETO : fresco.DES_COMERCIAL;
+            }
+        }
+
+        var tareas = new List<Task>
+        {
+            CargarTiposOperacionAsync(),
+            CargarComboAsync(ApiRoutes.Estandar.TiposEntidadesCombobox, l => _tiposEntidad = l),
+            CargarComboAsync(ApiRoutes.Estandar.MonedasCombobox, l => _monedas = l),
+            CargarComboAsync(ApiRoutes.Comercial.FormasPagoCombobox, l => _formasPago = l),
+            CargarComboAsync(ApiRoutes.Comercial.CondicionesPagoCombobox, l => _condicionesPago = l),
+            CargarComboAsync(ApiRoutes.Comercial.TiposDescuentoCombobox, l => _tiposDescuento = l),
+            CargarComboAsync(ApiRoutes.Estandar.SucursalesCombobox, l => _sucursales = l),
+            CargarComboAsync(ApiRoutes.Comercial.IncotermsCombobox, l => _incoterms = l),
+            CargarComboAsync(ApiRoutes.Estandar.PaisesCombobox, l => _paises = l),
+            CargarComboAsync(ApiRoutes.Estandar.TiposMotivosCombobox, l => _tiposMotivo = l),
+            CargarComboAsync(ApiRoutes.Logistica.LotesControlCombobox, l => _lotesControl = l),
+        };
+        await Task.WhenAll(tareas);
+
+        if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_MOTIVO))
+            await CargarMotivosAsync(_model.COD_TIPO_MOTIVO);
+
+        if (!string.IsNullOrWhiteSpace(_model.COD_ENTIDAD_VENDEDOR?.ToString()))
+            _textoEntidadVendedorInicial = await ResolverTextoEntidadAsync(_model.COD_ENTIDAD_VENDEDOR!.Value);
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url);
+            asignar(r?.Data ?? new());
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidosComercialesDialog), nameof(CargarComboAsync)); }
+    }
+
+    private async Task CargarTiposOperacionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodClaseOperacion)) return;
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.TiposOperacion}?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<TipoOperacionLite>>>(url);
+            var lista = r?.Data ?? new();
+            _tiposOperacion = lista.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION }).ToList();
+            _tipoEstadoPorTipoOperacion.Clear();
+            foreach (var t in lista) _tipoEstadoPorTipoOperacion[t.COD_TIPO_OPERACION] = t.COD_TIPO_ESTADO_RELACIONADO;
+
+            // Ya sea el sugerido por la grilla (Crear) o el que traía el registro (Editar/Ver),
+            // hay que resolver el Tipo de Estado ahora que ya se cargaron los tipos de operación.
+            if (!string.IsNullOrWhiteSpace(_model.COD_TIPO_OPERACION))
+                _codTipoEstadoDesdeOperacion = _tipoEstadoPorTipoOperacion.GetValueOrDefault(_model.COD_TIPO_OPERACION);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidosComercialesDialog), nameof(CargarTiposOperacionAsync)); }
+    }
+
+    private void CambiarTipoOperacionAsync(string? codTipoOperacion)
+    {
+        _model.COD_TIPO_OPERACION = codTipoOperacion ?? "";
+        _codTipoEstadoDesdeOperacion = string.IsNullOrWhiteSpace(codTipoOperacion)
+            ? null
+            : _tipoEstadoPorTipoOperacion.GetValueOrDefault(codTipoOperacion);
+        // Cambió el Tipo de Estado disponible: el Estado elegido antes puede no pertenecer a
+        // este nuevo tipo — se limpia para que el usuario elija de nuevo (evita guardar un
+        // COD_ESTADO que no corresponde a COD_TIPO_ESTADO).
+        _model.COD_ESTADO = null;
+    }
+
+    private async Task CambiarTipoMotivoAsync(string? codTipoMotivo)
+    {
+        _model.COD_TIPO_MOTIVO = codTipoMotivo;
+        _model.COD_MOTIVO = null;
+        _motivos = new();
+        if (!string.IsNullOrWhiteSpace(codTipoMotivo)) await CargarMotivosAsync(codTipoMotivo);
+    }
+
+    private async Task CargarMotivosAsync(string codTipoMotivo)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.MotivosPorTipo}?codTipoMotivo={Uri.EscapeDataString(codTipoMotivo)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url);
+            _motivos = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidosComercialesDialog), nameof(CargarMotivosAsync)); }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarEntidadAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.Entidades}/search?search={Uri.EscapeDataString(texto)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(url, ct);
+            var lista = (r?.Data ?? new()).Select(e => new ComboboxItem
+            {
+                Id = e.COD_ENTIDAD?.ToString() ?? "",
+                Texto = string.IsNullOrWhiteSpace(e.DES_COMERCIAL) ? e.DES_NOMBRE_COMPLETO : e.DES_COMERCIAL
+            }).ToList();
+            _entidades = lista;
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ComboboxItem>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(PedidosComercialesDialog), nameof(BuscarEntidadAsync)); return Enumerable.Empty<ComboboxItem>(); }
+    }
+
+    private async Task<string?> ResolverTextoEntidadAsync(decimal codEntidad)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<KONSolutions.Shared.Models.Estandar.Entidad>>($"{ApiRoutes.Estandar.Entidades}/{codEntidad}");
+            var e = r?.Data;
+            return e is null ? null : (string.IsNullOrWhiteSpace(e.DES_COMERCIAL) ? e.DES_NOMBRE_COMPLETO : e.DES_COMERCIAL);
+        }
+        catch { return null; }
+    }
+
+    private async Task Submit()
+    {
+        _model.FEC_PEDIDO = _fecPedido;
+        _model.FEC_VECIMIENTO = _fecVencimiento;
+        _model.FEC_ENTREGA = _fecEntrega;
+        _model.COD_CLASE_OPERACION = CodClaseOperacion ?? _model.COD_CLASE_OPERACION;
+
+        _saving = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var url = $"{ApiRoutes.Comercial.PedidosComerciales}/{Uri.EscapeDataString(_model.COD_CLASE_OPERACION)}/{Uri.EscapeDataString(_model.COD_TIPO_OPERACION)}/{_model.NUM_PEDIDO_COMERCIAL}";
+                var resp = await Http.DeleteAsync(url);
+                if (resp.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PedidosComercialesDialog), nameof(Submit), "No se pudo eliminar el registro");
+                return;
+            }
+
+            if (_esNuevo)
+            {
+                var dto = new PedidoComercialInsertDto
+                {
+                    COD_CLASE_OPERACION = _model.COD_CLASE_OPERACION,
+                    COD_TIPO_OPERACION = _model.COD_TIPO_OPERACION,
+                    DES_PEDIDO_COMERCIAL = _model.DES_PEDIDO_COMERCIAL,
+                    COD_TIPO_COMPROBANTE_PAGO = _model.COD_TIPO_COMPROBANTE_PAGO,
+                    NUM_DOCUMENTO = _model.NUM_DOCUMENTO,
+                    NUM_PROYECTO = _model.NUM_PROYECTO,
+                    COD_TIPO_PEDIDO_COMERCIAL = _model.COD_TIPO_PEDIDO_COMERCIAL,
+                    FEC_PEDIDO = _model.FEC_PEDIDO,
+                    FEC_VECIMIENTO = _model.FEC_VECIMIENTO,
+                    FEC_ENTREGA = _model.FEC_ENTREGA,
+                    COD_TIPO_ENTIDAD = _model.COD_TIPO_ENTIDAD,
+                    COD_ENTIDAD = _model.COD_ENTIDAD,
+                    NUM_TEMPORADA = _model.NUM_TEMPORADA,
+                    COD_MONEDA = _model.COD_MONEDA,
+                    FAC_TIPO_CAMBIO = _model.FAC_TIPO_CAMBIO,
+                    NUM_UNIDAD_COMERCIAL = _model.NUM_UNIDAD_COMERCIAL,
+                    NUM_SECUENCIA_DIRECCION = _model.NUM_SECUENCIA_DIRECCION,
+                    COD_CENTRO_COSTO_SOLICITANTE = _model.COD_CENTRO_COSTO_SOLICITANTE,
+                    COD_CENTRO_COSTO_DESTINO = _model.COD_CENTRO_COSTO_DESTINO,
+                    COD_SUCURSAL = _model.COD_SUCURSAL,
+                    COD_FORMA_PAGO = _model.COD_FORMA_PAGO,
+                    COD_CONDICION_PAGO = _model.COD_CONDICION_PAGO,
+                    COD_TIPO_DESCUENTO = _model.COD_TIPO_DESCUENTO,
+                    TAS_DESCUENTO = _model.TAS_DESCUENTO,
+                    VAL_TOTAL = _model.VAL_TOTAL,
+                    COD_ENTIDAD_VENDEDOR = _model.COD_ENTIDAD_VENDEDOR,
+                    NUM_PURCHASE_ORDER = _model.NUM_PURCHASE_ORDER,
+                    COD_PAIS_DESTINO = _model.COD_PAIS_DESTINO,
+                    NUM_LOTE_CONTROL = _model.NUM_LOTE_CONTROL,
+                    NUM_RENDICION_CUENTAS = _model.NUM_RENDICION_CUENTAS,
+                    COD_TIPO_MOTIVO = _model.COD_TIPO_MOTIVO,
+                    COD_MOTIVO = _model.COD_MOTIVO,
+                    DES_OBSERVACION = _model.DES_OBSERVACION,
+                    NUM_PEDIDO_COMERCIAL_RELACIONADO = _model.NUM_PEDIDO_COMERCIAL_RELACIONADO,
+                    NUM_TRACKING = _model.NUM_TRACKING,
+                    COD_INCOTERM = _model.COD_INCOTERM,
+                    COD_TIPO_ESTADO = _model.COD_TIPO_ESTADO,
+                    COD_ESTADO = _model.COD_ESTADO,
+                };
+                var resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.PedidosComerciales, dto);
+                if (resp.IsSuccessStatusCode) { Snackbar.Add("Creado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PedidosComercialesDialog), nameof(Submit));
+            }
+            else
+            {
+                var dto = new PedidoComercialUpdateDto
+                {
+                    COD_CLASE_OPERACION = _model.COD_CLASE_OPERACION,
+                    COD_TIPO_OPERACION = _model.COD_TIPO_OPERACION,
+                    NUM_PEDIDO_COMERCIAL = _model.NUM_PEDIDO_COMERCIAL ?? 0,
+                    DES_PEDIDO_COMERCIAL = _model.DES_PEDIDO_COMERCIAL,
+                    COD_TIPO_COMPROBANTE_PAGO = _model.COD_TIPO_COMPROBANTE_PAGO,
+                    NUM_DOCUMENTO = _model.NUM_DOCUMENTO,
+                    NUM_PROYECTO = _model.NUM_PROYECTO,
+                    COD_TIPO_PEDIDO_COMERCIAL = _model.COD_TIPO_PEDIDO_COMERCIAL,
+                    FEC_PEDIDO = _model.FEC_PEDIDO,
+                    FEC_VECIMIENTO = _model.FEC_VECIMIENTO,
+                    FEC_ENTREGA = _model.FEC_ENTREGA,
+                    COD_TIPO_ENTIDAD = _model.COD_TIPO_ENTIDAD,
+                    COD_ENTIDAD = _model.COD_ENTIDAD,
+                    NUM_TEMPORADA = _model.NUM_TEMPORADA,
+                    COD_MONEDA = _model.COD_MONEDA,
+                    FAC_TIPO_CAMBIO = _model.FAC_TIPO_CAMBIO,
+                    NUM_UNIDAD_COMERCIAL = _model.NUM_UNIDAD_COMERCIAL,
+                    NUM_SECUENCIA_DIRECCION = _model.NUM_SECUENCIA_DIRECCION,
+                    COD_CENTRO_COSTO_SOLICITANTE = _model.COD_CENTRO_COSTO_SOLICITANTE,
+                    COD_CENTRO_COSTO_DESTINO = _model.COD_CENTRO_COSTO_DESTINO,
+                    COD_SUCURSAL = _model.COD_SUCURSAL,
+                    COD_FORMA_PAGO = _model.COD_FORMA_PAGO,
+                    COD_CONDICION_PAGO = _model.COD_CONDICION_PAGO,
+                    COD_TIPO_DESCUENTO = _model.COD_TIPO_DESCUENTO,
+                    TAS_DESCUENTO = _model.TAS_DESCUENTO,
+                    VAL_TOTAL = _model.VAL_TOTAL,
+                    COD_ENTIDAD_VENDEDOR = _model.COD_ENTIDAD_VENDEDOR,
+                    NUM_PURCHASE_ORDER = _model.NUM_PURCHASE_ORDER,
+                    COD_PAIS_DESTINO = _model.COD_PAIS_DESTINO,
+                    NUM_LOTE_CONTROL = _model.NUM_LOTE_CONTROL,
+                    NUM_RENDICION_CUENTAS = _model.NUM_RENDICION_CUENTAS,
+                    COD_TIPO_MOTIVO = _model.COD_TIPO_MOTIVO,
+                    COD_MOTIVO = _model.COD_MOTIVO,
+                    DES_OBSERVACION = _model.DES_OBSERVACION,
+                    NUM_PEDIDO_COMERCIAL_RELACIONADO = _model.NUM_PEDIDO_COMERCIAL_RELACIONADO,
+                    NUM_TRACKING = _model.NUM_TRACKING,
+                    COD_INCOTERM = _model.COD_INCOTERM,
+                    COD_TIPO_ESTADO = _model.COD_TIPO_ESTADO,
+                    COD_ESTADO = _model.COD_ESTADO,
+                };
+                var resp = await Http.PutAsJsonAsync(ApiRoutes.Comercial.PedidosComerciales, dto);
+                if (resp.IsSuccessStatusCode) { Snackbar.Add("Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PedidosComercialesDialog), nameof(Submit));
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PedidosComercialesDialog), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo guardar. Ver detalle en el log de errores.", DialogService, nameof(PedidosComercialesDialog));
+        }
+        finally { _saving = false; }
+    }
+}

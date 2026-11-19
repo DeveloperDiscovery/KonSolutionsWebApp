@@ -1,0 +1,148 @@
+@using AsientoContableModel = KONSolutions.Shared.Models.Contabilidad.AsientoContable
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_ASIENTO_CONTABLE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es parte de la PK: solo se fija al crear. *@
+                    <CampoTexto Tabla="CONTABILIDAD.ASIENTOS_CONTABLES" Columna="COD_ASIENTO_CONTABLE"
+                                @bind-Value="_model.COD_ASIENTO_CONTABLE"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="CONTABILIDAD.ASIENTOS_CONTABLES" Columna="DES_ASIENTO_CONTABLE"
+                                @bind-Value="_model.DES_ASIENTO_CONTABLE" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* Código del Libro/Registro Electrónico según la tabla de códigos de SUNAT
+                       (PLE) — ej. 5.1 Registro de Compras, 14.1 Registro de Ventas e Ingresos.
+                       No hay catálogo propio para este dato: es un código externo fijado por SUNAT. *@
+                    <CampoTexto Tabla="CONTABILIDAD.ASIENTOS_CONTABLES" Columna="COD_LIBRO_CONTABLE_SUNAT"
+                                @bind-Value="_model.COD_LIBRO_CONTABLE_SUNAT" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <EstadoCombo DesTabla="CONTABILIDAD.ASIENTOS_CONTABLES" @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_ASIENTO_APERTURA" Disabled="_readonly"
+                               Color="Color.Primary" Label="Asiento de apertura" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_ASIENTO_CIERRE" Disabled="_readonly"
+                               Color="Color.Primary" Label="Asiento de cierre" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_APERTURA" Disabled="_readonly"
+                               Color="Color.Primary" Label="Genera en apertura" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_MENSUAL" Disabled="_readonly"
+                               Color="Color.Primary" Label="Genera mensual" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_CIERRE" Disabled="_readonly"
+                               Color="Color.Primary" Label="Genera en cierre" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public AsientoContableModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private AsientoContableModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(AsientoContableModel m)
+    {
+        _model = new AsientoContableModel
+        {
+            COD_ASIENTO_CONTABLE = m.COD_ASIENTO_CONTABLE,
+            DES_ASIENTO_CONTABLE = m.DES_ASIENTO_CONTABLE,
+            FLG_ASIENTO_APERTURA = m.FLG_ASIENTO_APERTURA,
+            FLG_ASIENTO_CIERRE = m.FLG_ASIENTO_CIERRE,
+            COD_LIBRO_CONTABLE_SUNAT = m.COD_LIBRO_CONTABLE_SUNAT,
+            FLG_APERTURA = m.FLG_APERTURA,
+            FLG_MENSUAL = m.FLG_MENSUAL,
+            FLG_CIERRE = m.FLG_CIERRE,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            COD_ESTADO = m.COD_ESTADO
+        };
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<AsientoContableModel>(
+            $"{ApiRoutes.Contabilidad.AsientosContables}/{Uri.EscapeDataString(_model.COD_ASIENTO_CONTABLE)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Contabilidad.AsientosContables;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_ASIENTO_CONTABLE)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(AsientosContablesDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP INSERT no es upsert.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(AsientosContablesDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,676 @@
+@*
+    AccionesBotones.razor
+    --------------------------------------------------------------------------
+    Renderiza los botones de acción configurados para esta opción y el rol activo
+    (MenuService). Íconos 100 % Material Design — sin imágenes de BD.
+
+    Zona  Header → MudButton con ícono + texto, color por acción.
+    Zona  Grilla → MudIconButton pequeño con tooltip, color por acción.
+    Zona  Dialog → MudButton con ícono + texto en el pie del documento abierto, y con la
+                   validación de flujo resuelta DE ENTRADA: el botón se ve deshabilitado
+                   cuando el estado del registro no admite la acción, en vez de dejar que
+                   el usuario lo toque y recién ahí avisarle.
+
+    Resolución de ícono/color: primero por nombre del botón (DES_BOTON_OPCION),
+    luego por flags HTTP (FLG_ACCION_PUT/POST/DELETE/GET).
+
+    Reportes: si el botón tiene un diseño asignado en Reportes › Asignación a botones, al tocarlo lo
+    atiende el reporteador (diálogo de filtros, vista previa, descarga) y NO se llama a OnAccion. Para
+    que los parámetros se llenen solos, la pantalla pasa la fila (o los datos de la pantalla) en Fila.
+*@
+@inject MenuService MenuService
+@inject KONSolutions.Web.Services.ConfigService ConfigSvc
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+@inject SeguridadContextService SeguridadCtx
+@inject ReportesWebService Reportes
+@using KONSolutions.Shared.Models.Diagnostico
+
+@if (Zona == ZonaBotones.Dialog)
+{
+    @foreach (var boton in Botones)
+    {
+        var b = boton;
+        var motivoPantalla = MotivoDeshabilitar?.Invoke(b);
+        var habilitado = EstaHabilitado(b) && motivoPantalla is null;
+        <MudTooltip Text="@(habilitado ? (b.DES_TOOLTIPTEXT ?? b.DES_BOTON_OPCION ?? "") : (motivoPantalla ?? MotivoDeshabilitado(b)))">
+            <span @oncontextmenu="@(e => MostrarFichaAsync(b))" @oncontextmenu:preventDefault="true">
+                <MudButton Variant="Variant.Filled" Size="Size.Small"
+                           Color="@ColorEstandar(b)" Disabled="@(!habilitado)"
+                           Style="@EstiloBotonDialog(b, habilitado)"
+                           OnClick="@(() => EjecutarAccion(b))">
+                    @* Mismo criterio que Header: si el botón tiene ícono propio cargado en
+                       la BD se muestra ese; si no, el que se deduce del nombre o los flags. *@
+                    @if (!string.IsNullOrEmpty(b.IMG_ICONO_BOTON))
+                    {
+                        <span class="icono-accion-mask" style="@EstiloMaskIcono(b, 18, conMargen: true)"></span>
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@IconoEstandar(b)" Size="Size.Small" Class="@ClaseColorIcono(b)" Style="margin-right:6px;vertical-align:middle;" />
+                    }
+                    @(b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "")
+                </MudButton>
+            </span>
+        </MudTooltip>
+    }
+}
+else if (Zona == ZonaBotones.Header)
+{
+    @foreach (var boton in Botones)
+    {
+        var b = boton;
+        @* El span existe solo para capturar el clic derecho: MudButton no expone
+           @oncontextmenu. display:inline-flex para no alterar el contenedor flex. *@
+        <span @oncontextmenu="@(e => MostrarFichaAsync(b))" @oncontextmenu:preventDefault="true"
+              style="display:inline-flex;">
+        <MudButton Variant="Variant.Filled"
+                   Color="@ColorEstandar(b)"
+                   Style="@EstiloBotonHeader(b)"
+                   OnClick="@(() => EjecutarAccion(b))">
+            @* Ícono propio del botón (BD, cargado aparte en segundo plano) si existe;
+               si no (o todavía no llegó), el calculado por nombre/flags. *@
+            @if (!string.IsNullOrEmpty(b.IMG_ICONO_BOTON))
+            {
+                <span class="icono-accion-mask" style="@EstiloMaskIcono(b, 20, conMargen: true)"></span>
+            }
+            else
+            {
+                <MudIcon Icon="@IconoEstandar(b)" Size="Size.Small" Class="@ClaseColorIcono(b)" Style="margin-right:6px;vertical-align:middle;" />
+            }
+            @(b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "")
+        </MudButton>
+        </span>
+    }
+}
+else
+{
+    @* ── EN LA GRILLA NO VA MudTooltip, VA title ────────────────────────────────
+       Cada MudTooltip dibuja un MudPopover y lo registra en el proveedor de popovers
+       de MudBlazor, exista o no el mouse encima. En una grilla eso no es "un
+       tooltip": es UNO POR BOTÓN POR FILA.
+
+       Con 50 filas y 4 botones son 200 popovers vivos. Cada vez que algo redibuja la
+       grilla, el proveedor de popovers rehace esa colección entera. Eso es lo que
+       hacía que un clic costara segundos, y explica por qué pasaba igual en Usuarios,
+       Entidades y Estados: las tres tienen este componente en cada fila.
+
+       El atributo title da el mismo texto al pasar el mouse, lo dibuja el navegador y
+       no cuesta nada. Se pierde el estilo del tooltip de MudBlazor; en la cabecera y
+       en los diálogos —donde hay UNO, no doscientos— se mantiene MudTooltip. *@
+    @foreach (var boton in Botones)
+    {
+        var b = boton;
+        <span title="@(b.DES_TOOLTIPTEXT ?? b.DES_BOTON_OPCION ?? "")"
+              @oncontextmenu="@(e => MostrarFichaAsync(b))" @oncontextmenu:preventDefault="true"
+              style="display:inline-flex;">
+            <MudIconButton Size="Size.Small"
+                           Color="@ColorEstandar(b)"
+                           OnClick="@(() => EjecutarAccion(b))">
+                @if (!string.IsNullOrEmpty(b.IMG_ICONO_BOTON))
+                {
+                    <span class="icono-accion-mask" style="@EstiloMaskIcono(b, 18)"></span>
+                }
+                else
+                {
+                    <MudIcon Icon="@IconoEstandar(b)" Size="Size.Small" Class="@ClaseColorIcono(b)" />
+                }
+            </MudIconButton>
+        </span>
+    }
+}
+
+@code {
+    public enum ZonaBotones { Grilla, Header, Dialog }
+
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcionAplicacion { get; set; } = "";
+    [Parameter] public ZonaBotones Zona { get; set; } = ZonaBotones.Grilla;
+    [Parameter] public EventCallback<BotonTreeviewItem> OnAccion { get; set; }
+
+    /// <summary>Filtro opcional para dejar afuera botones puntuales en UNA pantalla, sin
+    /// tocar la configuración de BD (que es global a la opción y la comparten todas las
+    /// zonas). Caso real: la pestaña "A Requerir" de Punto de Reorden es de solo lectura y
+    /// necesita los mismos botones de proceso que las otras, menos "Nuevo".
+    /// Nulo = se muestran todos, que es como se comportaba antes de existir este parámetro:
+    /// las 135 pantallas que ya lo usan no cambian en nada.</summary>
+    [Parameter] public Func<BotonTreeviewItem, bool>? Filtro { get; set; }
+
+    /// <summary>Sólo zona Dialog: la pantalla apaga un botón por una regla suya, que no es del
+    /// flujo de estados. Devuelve el motivo (va al tooltip) o null si el botón queda como lo
+    /// deje el flujo. Caso real: Confirmación de Recepción de Transferencias enciende CONFIRMAR
+    /// RECEPCIÓN recién cuando todas las líneas están marcadas como conformes.
+    /// Nulo = como siempre: las pantallas que ya usan el componente no cambian.</summary>
+    [Parameter] public Func<BotonTreeviewItem, string?>? MotivoDeshabilitar { get; set; }
+
+    /// <summary>Toma los botones de la opción sin mirar en qué zona están marcados (cabecera,
+    /// diálogo o grilla) y los dibuja con el estilo de la zona elegida. Es para las pantallas
+    /// que no son un CRUD con grilla y documento, donde la zona marcada en Seguridad → Botones
+    /// no dice nada útil y lo que importa es que el botón esté en la opción y el rol lo tenga
+    /// habilitado. Falso = como siempre.</summary>
+    [Parameter] public bool TodasLasZonas { get; set; }
+
+    /// <summary>La fila de la grilla, el registro del documento o un diccionario con los datos de la
+    /// pantalla (en la cabecera: la clase y el tipo de operación elegidos, por ejemplo). Solo lo usan los
+    /// botones que tienen un reporte asignado: sus campos llenan los parámetros del SP que se llaman igual.
+    /// Nulo = como siempre; un botón con reporte igual funciona, pidiendo todo en el diálogo.</summary>
+    [Parameter] public object? Fila { get; set; }
+
+    /// <summary>Reconoce el botón de alta por su NOMBRE y no por FLG_ACCION_POST: los
+    /// botones de proceso (generar requerimiento, recalcular stock) también son POST, así
+    /// que filtrar por el verbo se llevaría puestos a ellos también. Mismo criterio de
+    /// nombres que usa IconoEstandar para elegir el ícono de "Nuevo".</summary>
+    public static bool EsNuevo(BotonTreeviewItem b)
+    {
+        var n = ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+        return n.Contains("NUEVO") || n.Contains("CREAR") || n.Contains("AGREG")
+            || n.Contains("INSERT") || n.Contains("NEW") || n.Contains("ADD");
+    }
+
+    // ── Validación de flujo por estado (PROC_ESTANDAR_OPCIONES_PROCESOS_ESTADOS_FLUJOS_
+    // DEPENDENCIA_VALIDA), centralizada aquí para que aplique a CUALQUIER botón de acción de
+    // la app sin repetir la llamada en cada página: el caller pasa el estado actual DEL
+    // REGISTRO de la fila (CodTipoEstado/CodEstadoActual) y, antes de invocar OnAccion, se
+    // valida contra esa BD. Si el registro no tiene esos dos datos (entidad sin estado, o
+    // botones de Header sin fila puntual), quedan null y no se valida nada — comportamiento
+    // de siempre, sin romper pantallas que todavía no los pasan.
+    [Parameter] public int? CodTipoEstado { get; set; }
+    [Parameter] public int? CodEstadoActual { get; set; }
+
+    // ── Validación anticipada, sólo para la zona Dialog ──────────────────────────
+    // En Grilla y Header la validación corre al hacer clic: son muchos botones por
+    // pantalla (uno por fila) y adelantarla sería una llamada por fila por botón.
+    // En el diálogo son pocos y están a la vista todo el tiempo, así que conviene
+    // resolverla al abrir: el usuario ve de una qué puede hacer, en vez de descubrirlo
+    // tocando y recibiendo un cartel.
+    private readonly Dictionary<string, (bool Valido, string? Mensaje)> _validacionDialog = new();
+
+    private bool EstaHabilitado(BotonTreeviewItem b)
+        => string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION)
+        || !_validacionDialog.TryGetValue(b.COD_BOTON_OPCION, out var v) || v.Valido;
+
+    private string MotivoDeshabilitado(BotonTreeviewItem b)
+        => (!string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION)
+            && _validacionDialog.TryGetValue(b.COD_BOTON_OPCION, out var v)
+            && !string.IsNullOrWhiteSpace(v.Mensaje))
+            ? v.Mensaje!
+            : "El registro no está en un estado que permita esta acción.";
+
+    /// <summary>Pregunta por cada botón del diálogo si el estado del registro admite la
+    /// acción. Ante cualquier falla el botón queda HABILITADO: si el servicio de validación
+    /// no responde, es preferible dejar que el usuario intente —y que la validación del
+    /// clic lo frene con un mensaje concreto— antes que bloquearle el documento sin
+    /// explicación.</summary>
+    private async Task ValidarBotonesDialogAsync()
+    {
+        _validacionDialog.Clear();
+        if (Zona != ZonaBotones.Dialog || CodTipoEstado is null || CodEstadoActual is null) return;
+
+        foreach (var b in Botones)
+        {
+            if (string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION)) continue;
+            try
+            {
+                var r = await Http.SafeGetAsync<KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosDependenciaValidaResult>(
+                    UrlValidar(b));
+                if (r is not null) _validacionDialog[b.COD_BOTON_OPCION] = (r.FLG_VALIDO, r.DES_MENSAJE);
+            }
+            catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(AccionesBotones), nameof(ValidarBotonesDialogAsync)); }
+        }
+        StateHasChanged();
+    }
+
+    private string UrlValidar(BotonTreeviewItem b)
+        => $"{KONSolutions.Web.Services.ApiRoutes.Estandar.OpcionesProcesosEstadosFlujosDependenciaValidar}" +
+           $"?codAplicacion={Uri.EscapeDataString(CodAplicacion)}&codOpcionAplicacion={Uri.EscapeDataString(CodOpcionAplicacion)}" +
+           $"&codBotonOpcion={Uri.EscapeDataString(b.COD_BOTON_OPCION!)}" +
+           $"&codTipoEstado={CodTipoEstado}&codEstadoActual={CodEstadoActual}";
+
+    // ── Ficha técnica por clic derecho (Clase / Método / SP) ─────────────────────
+    // Vive acá y no en cada pantalla a propósito: este componente dibuja TODOS los botones
+    // de acción de la aplicación, en las tres zonas, así que ponerlo una vez lo habilita en
+    // las 135+ pantallas sin tocar ningún otro .razor.
+
+    /// <summary>null = todavía no se preguntó. Se resuelve una sola vez por instancia.</summary>
+    private bool? _perfilTecnico;
+
+    /// <summary>
+    /// Verbo HTTP del botón, deducido de los FLG_ACCION_*. Mismo orden de prioridad que usan
+    /// las pantallas para despachar (DELETE, PUT, GET): un botón de Modificar suele traer
+    /// GET y PUT marcados a la vez, y preguntando por GET primero se resolvería como consulta.
+    /// Devuelve null cuando no hay ningún flag: son los botones de proceso, que la pantalla
+    /// despacha por nombre — y el endpoint lo dice explícitamente en vez de inventar un SP.
+    /// </summary>
+    private static string? VerboDe(BotonTreeviewItem b)
+        => b.FLG_ACCION_DELETE == true ? "DELETE"
+         : b.FLG_ACCION_PUT    == true ? "PUT"
+         : b.FLG_ACCION_POST   == true ? "POST"
+         : b.FLG_ACCION_GET    == true ? "GET"
+         : null;
+
+    /// <summary>
+    /// Abre la ficha técnica del botón. Sólo para perfiles de Seguridad, Auditoría o
+    /// Developer — y esa comprobación es apenas cosmética: la de verdad la hace el endpoint,
+    /// porque este código corre en el navegador del usuario. Si el perfil no corresponde no
+    /// pasa nada: no se abre nada ni se avisa, para no delatar que la opción existe.
+    /// </summary>
+    private async Task MostrarFichaAsync(BotonTreeviewItem b)
+    {
+        _perfilTecnico ??= await SeguridadCtx.EsPerfilTecnicoAsync();
+        if (_perfilTecnico != true) return;
+
+        // El formulario NO se toma del botón: el SP de botones por opción lo devuelve nulo
+        // (viene del LEFT JOIN hacia la tabla de botones). El dato vive en la OPCIÓN, que es
+        // de donde ya lo lee el resto de la aplicación — sin esto la ficha salía vacía con el
+        // mensaje "la opción no tiene DES_FORMULARIO configurado", aunque en la configuración
+        // sí estuviera cargado.
+        var formulario = !string.IsNullOrWhiteSpace(b.DES_FORMULARIO)
+            ? b.DES_FORMULARIO
+            : MenuService.FormularioOpcion(CodAplicacion, CodOpcionAplicacion);
+
+        var url = $"{ApiRoutes.Diagnostico.Accion}"
+                + $"?formulario={Uri.EscapeDataString(formulario ?? "")}"
+                + $"&verbo={Uri.EscapeDataString(VerboDe(b) ?? "")}"
+                + $"&boton={Uri.EscapeDataString(b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "")}";
+
+        AccionTecnica? info = null;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<AccionTecnica>>(url);
+            info = r?.Data;
+        }
+        catch (Exception ex)
+        {
+            // Un 403 acá es lo esperado si el perfil no corresponde (el servidor manda), así
+            // que no se muestra un cartel de error: simplemente no se abre la ficha.
+            await ErrorLog.LogAsync(ex, nameof(AccionesBotones), nameof(MostrarFichaAsync));
+            return;
+        }
+        if (info is null) return;
+
+        await DialogService.ShowAsync<AccionTecnicaDialog>("",
+            new DialogParameters { ["Info"] = info },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true });
+    }
+
+    private async Task EjecutarAccion(BotonTreeviewItem b)
+    {
+        if (CodTipoEstado is null || CodEstadoActual is null || string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION))
+        {
+            await Despachar(b);
+            return;
+        }
+        try
+        {
+            var url = UrlValidar(b);
+
+            await ErrorLog.TraceAsync(
+                $"VALIDAR FLUJO — PROC_ESTANDAR_OPCIONES_PROCESOS_ESTADOS_FLUJOS_DEPENDENCIA_VALIDA " +
+                $"@COD_APLICACION={CodAplicacion} @COD_OPCION_APLICACION={CodOpcionAplicacion} " +
+                $"@COD_BOTON_OPCION={b.COD_BOTON_OPCION} @COD_TIPO_ESTADO={CodTipoEstado} @COD_ESTADO_ACTUAL={CodEstadoActual}");
+
+            var r = await Http.SafeGetAsync<KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosDependenciaValidaResult>(url);
+
+            await ErrorLog.TraceAsync(
+                $"VALIDAR FLUJO — resultado @COD_BOTON_OPCION={b.COD_BOTON_OPCION} " +
+                $"FLG_VALIDO={(r?.FLG_VALIDO.ToString() ?? "null (sin respuesta)")} DES_MENSAJE={r?.DES_MENSAJE}");
+
+            if (r is null || !r.FLG_VALIDO)
+            {
+                await ErrorDialogHelper.MostrarMensajeAsync(
+                    r?.DES_MENSAJE ?? "El registro no está en un estado válido para esta acción.",
+                    DialogService, nameof(AccionesBotones), "Acción no permitida");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(AccionesBotones), nameof(EjecutarAccion));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo validar la acción. Ver detalle en el log de errores.", DialogService, nameof(AccionesBotones), "Error de validación");
+            return;
+        }
+        await Despachar(b);
+    }
+
+    /// <summary>Un botón con reporte asignado lo atiende el reporteador; los demás, la pantalla (OnAccion).
+    /// Va después de la validación de flujo: un reporte también respeta el estado del registro si el botón
+    /// está en el flujo.</summary>
+    private async Task Despachar(BotonTreeviewItem b)
+    {
+        if (!string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION)
+            && await Reportes.BotonAsync(CodAplicacion, CodOpcionAplicacion, b.COD_BOTON_OPCION) is { } reporte)
+        {
+            await Reportes.AbrirAsync(DialogService, CodAplicacion, CodOpcionAplicacion, reporte, Fila, b.DES_BOTON_OPCION ?? b.DES_ALIAS);
+            return;
+        }
+        await OnAccion.InvokeAsync(b);
+    }
+
+    // Refresca en vivo los botones de ESTA opción contra la BD al entrar a la pantalla (ver
+    // MenuService.AsegurarBotonesFrescosAsync) — sin esto, una opción/botón recién configurado
+    // en Seguridad no se ve hasta relogueo o vencimiento del caché completo (60 min).
+    protected override async Task OnInitializedAsync()
+    {
+        await MenuService.AsegurarBotonesFrescosAsync(CodAplicacion, CodOpcionAplicacion);
+        // Esto puede TRAER botones que antes no estaban, así que hay que soltar la lista
+        // memorizada: si no, se quedaría con la foto vieja de antes de refrescar.
+        _botonesCache = null;
+        await ValidarBotonesDialogAsync();
+    }
+
+    // El estado del registro cambia mientras el diálogo está abierto (se graba, se aprueba,
+    // se anula), y con él cambia qué acciones son válidas. Se revalida cuando cambia.
+    private int? _ultTipoEstado, _ultEstado;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Zona != ZonaBotones.Dialog) return;
+        if (CodTipoEstado == _ultTipoEstado && CodEstadoActual == _ultEstado) return;
+        _ultTipoEstado = CodTipoEstado; _ultEstado = CodEstadoActual;
+        await ValidarBotonesDialogAsync();
+    }
+
+    // Nota: este componente se instancia una vez por botón por fila (decenas por grilla),
+    // así que NO se suscribe a ConfigSvc.OnChange — con MudDataGrid reciclando celdas al
+    // paginar/filtrar, cientos de suscripciones sin garantía de Dispose confiable volvían
+    // la app cada vez más lenta con el uso. El color de ClaseColorIcono/EstiloMaskIcono se
+    // lee en vivo de ConfigSvc.Current en cada render normal (selección de fila, paginación,
+    // etc.), que ya ocurre naturalmente en el uso real de una grilla.
+
+    // La lista se arma UNA vez por instancia y no en cada acceso. Era una propiedad
+    // con dos Where, dos OrderBy y un ToList, y este componente existe una vez por
+    // FILA: en una grilla de 50 filas eso se rehacía 50 veces por cada redibujado.
+    // Se recalcula si cambia la opción o la zona, que es lo único que puede cambiarla.
+    private List<BotonTreeviewItem>? _botonesCache;
+    private string? _botonesClave;
+
+    private List<BotonTreeviewItem> Botones
+    {
+        get
+        {
+            var clave = $"{CodAplicacion}|{CodOpcionAplicacion}|{Zona}|{TodasLasZonas}";
+            if (_botonesCache is not null && _botonesClave == clave) return _botonesCache;
+            _botonesClave = clave;
+            _botonesCache = CalcularBotones();
+            return _botonesCache;
+        }
+    }
+
+    private List<BotonTreeviewItem> CalcularBotones() =>
+        MenuService.GetBotonesPorOpcion(CodAplicacion, CodOpcionAplicacion)
+            .Where(b => TodasLasZonas || Zona switch
+            {
+                ZonaBotones.Header => b.FLG_HEADER == true,
+                ZonaBotones.Dialog => b.FLG_DIALOG == true,
+                _                  => b.FLG_GRILLA == true
+            })
+            // NUM_ORDEN_PRESENTACION manda cuando está configurado (Seguridad → Botones); sin
+            // orden asignado, se manda al final y se desempata por código, mismo criterio de
+            // siempre — así un botón recién creado sin orden no reordena los ya existentes.
+            .Where(b => Filtro is null || Filtro(b))
+            .OrderBy(b => b.NUM_ORDEN_PRESENTACION ?? int.MaxValue)
+            .ThenBy(b => b.COD_BOTON_OPCION)
+            .ToList();
+
+    // Color configurable (Configuración General → DES_ICONCOLOR_ACTIONS) para los íconos
+    // de acción; el de Eliminar siempre queda rojo, sin importar este color. Se aplica vía
+    // clase + variable CSS (--icono-acciones-color, ver app.css) en vez de style en línea:
+    // el hover/foco de fila fuerza "color" con !important sobre la celda (ancestro), y esa
+    // regla le ganaba en algunos navegadores al style en línea del ícono.
+    private string ClaseColorIcono(BotonTreeviewItem b)
+        => EsEliminar(b) || string.IsNullOrWhiteSpace(ConfigSvc.Current.IconoAccionesColor)
+            ? "" : "icono-accion-color";
+
+    // Mismo criterio que ColorEstandar/IconoEstandar: un botón de "eliminar" lo es por el
+    // flag HTTP DELETE o por su nombre/alias/tooltip — antes esto solo miraba el flag, así
+    // que un botón llamado "Eliminar..." sin el flag marcado en BD (ej. porque el admin no
+    // tocó esa casilla) se pintaba con el color configurado genérico en vez de rojo.
+    // ── Lo que sigue se calculaba EN CADA RENDER, POR BOTÓN, POR FILA ───────────
+    //
+    // Este componente existe una vez por fila. Con 50 filas y 4 botones son 200
+    // instancias por grilla, y todo lo de abajo se rehacía entero en cada redibujado.
+    //
+    // Nada de esto depende de la fila ni del momento: depende del BOTÓN, que es el
+    // mismo objeto para todas las filas porque sale de la caché de MenuService. Así
+    // que se calcula una vez por botón y se recuerda.
+    //
+    // ConditionalWeakTable y no un Dictionary estático: la clave es el objeto del
+    // botón. Cuando MenuService recarga los botones, los objetos viejos quedan sin
+    // referencias y sus entradas se liberan solas. Un diccionario estático se
+    // quedaría con todos los íconos de todas las opciones visitadas hasta cerrar el
+    // navegador, y además serviría el ícono viejo después de un refresco.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BotonTreeviewItem, Memo> _memo = new();
+
+    private sealed class Memo
+    {
+        public bool? Eliminar;
+        public readonly Dictionary<string, string> Mascaras = new();
+    }
+
+    private static Memo MemoDe(BotonTreeviewItem b) => _memo.GetValue(b, _ => new Memo());
+
+    private static bool EsEliminar(BotonTreeviewItem b)
+    {
+        var m = MemoDe(b);
+        if (m.Eliminar is bool v) return v;
+        m.Eliminar = Calcular();
+        return m.Eliminar.Value;
+
+        bool Calcular()
+        {
+            if (b.FLG_ACCION_DELETE == true) return true;
+            var n = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant()
+                  + " " + (b.DES_TOOLTIPTEXT ?? "").ToUpperInvariant();
+            return n.Contains("ELIM") || n.Contains("BORR") || n.Contains("DELETE") || n.Contains("REMOV");
+        }
+    }
+
+    // Íconos propios subidos a BD (IMG_ICONO_BOTON): son un PNG fijo, no un ícono Material,
+    // así que no se pueden recolorear con "color" ni con clases CSS normales. Se pintan como
+    // máscara: el PNG define la forma (alfa) y el "background-color" (el color configurado,
+    // o rojo si es Eliminar) rellena esa forma — igual que un ícono de fuente, pero con la
+    // imagen que subió el usuario a la BD.
+    /// <summary>ESTE ERA EL COSTO GRANDE que quedaba.
+    ///
+    /// La cadena que devuelve lleva el PNG del ícono ENTERO en base64, y DOS VECES
+    /// (-webkit-mask-image y mask-image). Se armaba de cero en cada render, por botón y
+    /// por fila: con 200 botones en pantalla y un ícono de unos pocos KB, eso es más de
+    /// un megabyte de texto construido y después comparado por Blazor contra el anterior,
+    /// en cada redibujado.
+    ///
+    /// El ícono no cambia. Se arma una vez por (botón, tamaño, margen) y se recuerda.</summary>
+    private string EstiloMaskIcono(BotonTreeviewItem b, int size, bool conMargen = false)
+    {
+        var m = MemoDe(b);
+        var clave = size + (conMargen ? "m" : "");
+        if (m.Mascaras.TryGetValue(clave, out var listo)) return listo;
+
+        var color = EsEliminar(b) ? "var(--mud-palette-error, #d32f2f)" : "var(--icono-acciones-color, #16130f)";
+        var url = $"url('data:image/png;base64,{b.IMG_ICONO_BOTON}')";
+        var margen = conMargen ? "margin-right:6px;" : "";
+        // El color va como variable CSS, no resuelto: así el estilo memorizado sigue
+        // siendo válido si mañana se cambia el color en Configuración — lo resuelve el
+        // navegador, no esta cadena.
+        var estilo =
+               $"display:inline-block;width:{size}px;height:{size}px;vertical-align:middle;{margen}" +
+               $"background-color:{color};" +
+               $"-webkit-mask-image:{url};mask-image:{url};" +
+               $"-webkit-mask-size:contain;mask-size:contain;" +
+               $"-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;" +
+               $"-webkit-mask-position:center;mask-position:center;";
+
+        m.Mascaras[clave] = estilo;
+        return estilo;
+    }
+
+    // ── Mapeo de ícono por nombre del botón (DES_BOTON_OPCION / DES_ALIAS / tooltip) ──
+    // Se incluye DES_TOOLTIPTEXT porque hay botones donde el nombre interno no describe
+    // la acción (ej. queda en blanco o genérico) y solo el tooltip visible la identifica
+    // ("Asignar a Usuario" caía en el ícono de Editar por el flag PUT hasta este fix).
+    private static string IconoEstandar(BotonTreeviewItem b)
+    {
+        var n = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant()
+              + " " + (b.DES_TOOLTIPTEXT ?? "").ToUpperInvariant();
+
+        // El flag HTTP DELETE manda sobre el nombre: así el botón de borrado siempre
+        // muestra el basurero, sin importar si en BD lo llamaron "Eliminar", "Anular",
+        // "Borrar", etc. (antes "Anular" caía en el ícono de bloqueo/"no" más abajo).
+        if (b.FLG_ACCION_DELETE == true)
+            return Icons.Material.Filled.Delete;
+
+        // Botones de las bandejas de XML recibidos (por método; el nombre/tooltip los confundía con
+        // «Consultar» → ojo, «Descartar» → descarga o «datos» → nuevo): cada uno con su ícono.
+        switch ((b.DES_METODO ?? "").Trim().ToUpperInvariant())
+        {
+            case "VALIDARSUNAT":    return Icons.Material.Filled.VerifiedUser;
+            case "COMPLETARDATOS":  return Icons.Material.Filled.AutoFixHigh;
+            case "DESCARTAR":       return Icons.Material.Filled.Block;
+        }
+        if (n.Contains("VALIDAR CON SUNAT")) return Icons.Material.Filled.VerifiedUser;
+        if (n.Contains("COMPLETAR DATOS"))   return Icons.Material.Filled.AutoFixHigh;
+
+        // CRUD principal
+        if (n.Contains("NUEVO") || n.Contains("CREAR") || n.Contains("AGREG") ||
+            n.Contains("INSERT") || n.Contains("NEW")  || n.Contains("ADD"))
+            return Icons.Material.Filled.NoteAdd;
+        if (n.Contains("MODIF") || n.Contains("EDIT") || n.Contains("ACTUALIZ"))
+            return Icons.Material.Filled.Edit;
+        if (n.Contains("ELIM") || n.Contains("BORR") || n.Contains("DELETE") || n.Contains("REMOV"))
+            return Icons.Material.Filled.Delete;
+        if (n.Contains("ASIGNAR") || n.Contains("ASIGNAC") || n.Contains("ASSIGN") ||
+            n.Contains("RESPONSABLE") || n.Contains("VER ASIG"))
+            return Icons.Material.Filled.Badge;
+        // Antes que "VER..." genérico: "VERSION" contiene "VER" y caía en el ojo de
+        // Consultar en vez de un ícono propio (Diseños → Versiones).
+        if (n.Contains("VERSION"))
+            return Icons.Material.Filled.Layers;
+        if (n.Contains("VER") || n.Contains("DETALL") || n.Contains("CONSULT") ||
+            n.Contains("VIEW")  || n.Contains("MOST"))
+            return Icons.Material.Filled.Visibility;
+
+        // Operaciones comunes
+        if (n.Contains("COPIAR") || n.Contains("COPI") || n.Contains("DUPLIC") || n.Contains("COPY"))
+            return Icons.Material.Filled.ContentCopy;
+        if (n.Contains("IMPRIM") || n.Contains("PRINT"))
+            return Icons.Material.Filled.Print;
+        if (n.Contains("EXPORT") || n.Contains("DESCAR") || n.Contains("DOWNLOAD"))
+            return Icons.Material.Filled.FileDownload;
+        if (n.Contains("IMPORT") || n.Contains("SUBIR") || n.Contains("UPLOAD") || n.Contains("CARGAR"))
+            return Icons.Material.Filled.Upload;
+        if (n.Contains("BUSCAR") || n.Contains("SEARCH") || n.Contains("FILTRAR"))
+            return Icons.Material.Filled.Search;
+        if (n.Contains("GUARDAR") || n.Contains("SAVE") || n.Contains("GRABAR"))
+            return Icons.Material.Filled.Save;
+        if (n.Contains("CANCEL") || n.Contains("CERRAR") || n.Contains("SALIR"))
+            return Icons.Material.Filled.Cancel;
+        if (n.Contains("APROB") || n.Contains("CONFIRM") || n.Contains("VALID"))
+            return Icons.Material.Filled.CheckCircle;
+        if (n.Contains("RECHAZ") || n.Contains("ANULAR") || n.Contains("REJECT"))
+            return Icons.Material.Filled.Block;
+        if (n.Contains("REFRESH") || n.Contains("REFRES"))
+            return Icons.Material.Filled.Refresh;
+
+        // Seguridad / usuarios — las específicas (password/intentos) van antes que el
+        // "reset" genérico, porque "RESETEAR PASSWORD" y "RESET INTENTOS" contienen
+        // ambas la palabra RESET y antes caían las dos en el mismo ícono (LockReset).
+        // "Cambiar password" (el propio usuario define una nueva) vs "resetear password"
+        // (el admin la resetea a una temporal) — íconos distintos aunque ambos hablen de
+        // password, para no confundirlos en la grilla.
+        if (n.Contains("CAMBIAR") && (n.Contains("PASSWORD") || n.Contains("CONTRASE") || n.Contains("CLAVE")))
+            return Icons.Material.Filled.Password;
+        if (n.Contains("PASSWORD") || n.Contains("CONTRASE") || n.Contains("CLAVE"))
+            return Icons.Material.Filled.Key;
+        // Ícono deliberadamente distinto al de password (no relacionado a candados/llaves)
+        // porque Key y LockOpen se ven casi idénticos en tamaño pequeño y mismo color.
+        if (n.Contains("INTENTOS"))
+            return Icons.Material.Filled.RestartAlt;
+        if (n.Contains("BLOQUE"))
+            return Icons.Material.Filled.LockOpen;
+        if (n.Contains("RESET") || n.Contains("RESETEAR"))
+            return Icons.Material.Filled.LockReset;
+        if (n.Contains("ROL") || n.Contains("PERMISO"))
+            return Icons.Material.Filled.ManageAccounts;
+        if (n.Contains("ESTADO"))
+            return Icons.Material.Filled.ToggleOn;
+
+        // Fallback por flags HTTP
+        if (b.FLG_ACCION_POST   == true) return Icons.Material.Filled.NoteAdd;
+        if (b.FLG_ACCION_PUT    == true) return Icons.Material.Filled.Edit;
+        if (b.FLG_ACCION_DELETE == true) return Icons.Material.Filled.Delete;
+        if (b.FLG_ACCION_GET    == true) return Icons.Material.Filled.Visibility;
+        return Icons.Material.Filled.SmartButton;
+    }
+
+    // Botones de cabecera (Nuevo/Modificar/etc.): mismo color configurable que los
+    // botones de diálogo (Configuración General → Botones de Diálogo y Acciones de
+    // Cabecera). Eliminar mantiene siempre su rojo de peligro, sin tomar el color
+    // configurado — igual que en los diálogos.
+    private static string EstiloBotonHeader(BotonTreeviewItem b) => ColorEstandar(b) == Color.Error
+        ? EstilosBoton.Eliminar
+        : EstilosBoton.Confirmar;
+
+    // Los botones del pie del diálogo usan los MISMOS colores configurados que el botón
+    // de confirmar (Configuración General → DES_BUTTON_BACKCOLOR / DES_BUTTON_FORECOLOR),
+    // igual que los de cabecera: es la misma familia de botón con texto, y que el pie
+    // mezclara colores propios con los de Grabar quedaría desprolijo.
+    // Eliminar conserva su rojo de peligro, sin tomar el color configurado.
+    // Deshabilitado: se baja la opacidad en vez de dejar el color plano de MudBlazor, que
+    // con un fondo configurado oscuro se veía casi igual que el habilitado.
+    private static string EstiloBotonDialog(BotonTreeviewItem b, bool habilitado)
+    {
+        var baseEstilo = ColorEstandar(b) == Color.Error
+            ? EstilosBoton.Eliminar
+            : EstilosBoton.Confirmar;
+        return habilitado ? baseEstilo : baseEstilo + "opacity:.45;filter:grayscale(.6);";
+    }
+
+    // ── Mapeo de color por nombre del botón ─────────────────────────────────
+    private static Color ColorEstandar(BotonTreeviewItem b)
+    {
+        var n = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant()
+              + " " + (b.DES_TOOLTIPTEXT ?? "").ToUpperInvariant();
+
+        // Mismo criterio que IconoEstandar: el flag DELETE manda sobre el nombre.
+        if (b.FLG_ACCION_DELETE == true)
+            return Color.Error;
+
+        if (n.Contains("NUEVO") || n.Contains("CREAR") || n.Contains("AGREG") ||
+            n.Contains("INSERT") || n.Contains("NEW")  || n.Contains("ADD"))
+            return Color.Success;
+        if (n.Contains("MODIF") || n.Contains("EDIT") || n.Contains("ACTUALIZ"))
+            return Color.Primary;
+        if (n.Contains("ELIM") || n.Contains("BORR") || n.Contains("DELETE") || n.Contains("REMOV"))
+            return Color.Error;
+        if (n.Contains("APROB") || n.Contains("CONFIRM") || n.Contains("VALID"))
+            return Color.Success;
+        if (n.Contains("RECHAZ") || n.Contains("ANULAR") || n.Contains("REJECT"))
+            return Color.Error;
+        if (n.Contains("GUARDAR") || n.Contains("SAVE") || n.Contains("GRABAR"))
+            return Color.Primary;
+        if (n.Contains("RESET") || n.Contains("RESETEAR"))
+            return Color.Warning;
+        if (n.Contains("PASSWORD") || n.Contains("CONTRASE") || n.Contains("CLAVE"))
+            return Color.Warning;
+        if (n.Contains("INTENTOS") || n.Contains("BLOQUE"))
+            return Color.Warning;
+        if (n.Contains("ESTADO"))
+            return Color.Info;
+        if (n.Contains("ASIGNAC") || n.Contains("ASIGNAR") || n.Contains("RESPONSABLE") ||
+            n.Contains("ROL")     || n.Contains("PERMISO"))
+            return Color.Tertiary;
+        // "Ver/Consultar/Detalle" (mismo criterio que IconoEstandar para el ícono de ojo):
+        // antes caía en Color.Default, que hereda el color de texto de la fila y se volvía
+        // casi invisible sin foco/hover — ahora usa un color semántico propio, como el
+        // resto de acciones, para que siempre contraste sin depender del estado de la fila.
+        if (n.Contains("VER") || n.Contains("DETALL") || n.Contains("CONSULT") ||
+            n.Contains("VIEW")  || n.Contains("MOST"))
+            return Color.Info;
+
+        // Fallback por flags HTTP
+        if (b.FLG_ACCION_DELETE == true) return Color.Error;
+        if (b.FLG_ACCION_PUT    == true) return Color.Primary;
+        if (b.FLG_ACCION_POST   == true) return Color.Success;
+        if (b.FLG_ACCION_GET    == true) return Color.Info;
+        return Color.Default;
+    }
+}

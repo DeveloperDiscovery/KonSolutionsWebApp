@@ -1,0 +1,55 @@
+@* Edita una operacion de la ruta o de la matriz (script SQL 136): cuantas veces ocurre por unidad de producto, si va en paralelo con la anterior y la categoria ocupacional que la hace.
+   El tiempo (SAM) no se cambia aqui: viene del catalogo, o se fija con "SAM propio". *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.75;">@(Nodo?.DES_OPERACION ?? Nodo?.COD_OPERACION) · SAM @OperacionesApi.Min(Nodo?.VAL_SAM_PROPIO) min</MudText>
+        <MudNumericField T="decimal" @bind-Value="_veces" Label="Veces por unidad" Min="0.001m" Max="9999m" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" data-campo="veces" />
+        <MudSelect T="string" @bind-Value="_categoria" Label="Categoría ocupacional" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" data-campo="categoria">
+            @foreach (var c in _categorias) { <MudSelectItem T="string" Value="@c.COD">@c.COD · @c.DES</MudSelectItem> }
+        </MudSelect>
+        <MudSwitch T="bool" @bind-Value="_paralelo" Label="En paralelo con la anterior" Color="Color.Primary" data-campo="paralelo" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RutaTiempoResumen? Ruta { get; set; }
+    [Parameter] public RutaNodo? Nodo { get; set; }
+
+    private List<CatalogoOperacionItem> _categorias = new();
+    private decimal _veces = 1;
+    private string? _categoria;
+    private bool _paralelo, _guardando;
+    private string _error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Nodo is not null) { _veces = Nodo.VAL_FRECUENCIA > 0 ? Nodo.VAL_FRECUENCIA : 1; _categoria = string.IsNullOrWhiteSpace(Nodo.COD_CATEGORIA_OCUPACIONAL) ? null : Nodo.COD_CATEGORIA_OCUPACIONAL.Trim(); _paralelo = Nodo.FLG_PARALELO; }
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.OperacionesCombos);
+        _categorias = c.Data?.GetValueOrDefault("categorias") ?? new();
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (Ruta is null || Nodo is null) return;
+        if (_veces <= 0) { _error = "Las veces por unidad deben ser mayores que cero."; return; }
+        _guardando = true;
+        var r = await OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/editar",
+            new RutaOperacionEditarDto { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_ESTRUCTURA_RUTA_PROCESO = Nodo.NUM_ESTRUCTURA_RUTA_PROCESO, VAL_FRECUENCIA = _veces, FLG_PARALELO = _paralelo, COD_CATEGORIA_OCUPACIONAL = _categoria });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add("Operación actualizada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

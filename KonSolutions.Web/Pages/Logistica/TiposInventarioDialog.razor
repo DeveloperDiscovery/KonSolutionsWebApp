@@ -1,0 +1,165 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.TiposInventario
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@Item?.COD_TIPO_INVENTARIO" Descripcion="@Item?.DES_TIPO_INVENTARIO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_INVENTARIO" Columna="COD_TIPO_INVENTARIO"
+                                @bind-Value="_model.COD_TIPO_INVENTARIO"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_INVENTARIO" Columna="DES_TIPO_INVENTARIO"
+                                @bind-Value="_model.DES_TIPO_INVENTARIO"
+                                Disabled="_readonly" />
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    @* Muestreo: inventario por muestreo (sí/no) vs. conteo completo. *@
+                    <div class="d-flex align-center gap-2" style="height:40px;">
+                        <MudIcon Icon="@Icons.Material.Filled.Science"
+                                 Color="@(_model.FLG_MUESTREO == true ? Color.Primary : Color.Default)"
+                                 Style="@(_model.FLG_MUESTREO == true ? "" : "opacity:.35;")" />
+                        <MudSwitch T="bool?" @bind-Value="_model.FLG_MUESTREO" Disabled="_readonly"
+                                   Color="Color.Primary" Label="Muestreo" />
+                    </div>
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* ABC Aleatorio: el muestreo, cuando aplica, elige productos al azar en vez
+                       de seguir la clasificación ABC. *@
+                    <div class="d-flex align-center gap-2" style="height:40px;">
+                        <MudIcon Icon="@Icons.Material.Filled.Shuffle"
+                                 Color="@(_model.FLG_ABC_ALEATORIO == true ? Color.Primary : Color.Default)"
+                                 Style="@(_model.FLG_ABC_ALEATORIO == true ? "" : "opacity:.35;")" />
+                        <MudSwitch T="bool?" @bind-Value="_model.FLG_ABC_ALEATORIO" Disabled="_readonly"
+                                   Color="Color.Primary" Label="ABC Aleatorio" />
+                    </div>
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_areas"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_AREA_RESPONSABLE?.ToString())"
+                               ValueChanged="@(v => _model.COD_AREA_RESPONSABLE = byte.TryParse(v, out var b) ? b : null)"
+                               Label="Área responsable" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_cargos"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_CARGO_RESPONSABLE?.ToString())"
+                               ValueChanged="@(v => _model.COD_CARGO_RESPONSABLE = byte.TryParse(v, out var b) ? b : null)"
+                               Label="Cargo responsable" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_areas"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_AREA_ALMACEN?.ToString())"
+                               ValueChanged="@(v => _model.COD_AREA_ALMACEN = byte.TryParse(v, out var b) ? b : null)"
+                               Label="Área de almacén" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_cargos"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_CARGO_ALMACEN?.ToString())"
+                               ValueChanged="@(v => _model.COD_CARGO_ALMACEN = byte.TryParse(v, out var b) ? b : null)"
+                               Label="Cargo de almacén" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _areas = new();
+    private List<ComboboxItem> _cargos = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        _areas  = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Administracion.AreasCombobox)) ?? new();
+        _cargos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Administracion.CargosCombobox)) ?? new();
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_TIPO_INVENTARIO   = m.COD_TIPO_INVENTARIO,
+            DES_TIPO_INVENTARIO   = m.DES_TIPO_INVENTARIO,
+            FLG_MUESTREO          = m.FLG_MUESTREO,
+            FLG_ABC_ALEATORIO     = m.FLG_ABC_ALEATORIO,
+            COD_AREA_RESPONSABLE  = m.COD_AREA_RESPONSABLE,
+            COD_CARGO_RESPONSABLE = m.COD_CARGO_RESPONSABLE,
+            COD_AREA_ALMACEN      = m.COD_AREA_ALMACEN,
+            COD_CARGO_ALMACEN     = m.COD_CARGO_ALMACEN,
+        };
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre datos que la grilla
+    /// puede tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{ApiRoutes.Logistica.TiposInventario}/{Uri.EscapeDataString(_model.COD_TIPO_INVENTARIO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Logistica.TiposInventario;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_INVENTARIO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposInventarioDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP de alta es estricto y rechaza la clave repetida.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposInventarioDialog), nameof(Submit));
+    }
+}

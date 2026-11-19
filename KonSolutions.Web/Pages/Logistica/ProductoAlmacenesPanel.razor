@@ -1,0 +1,475 @@
+@* Parámetros de reposición de un producto por almacén (LOGISTICA.PRODUCTOS_ALMACENES).
+
+   Es un componente y no una pantalla suelta a propósito: los SP de esta tabla exigen
+   @COD_PRODUCTO en TODAS sus consultas (SHOWALL, SEARCH y SHOWCOMBOX), o sea que nunca se
+   listan "todos los productos" — siempre se entra desde un producto. Así se puede montar
+   tanto en la ficha del producto como en cualquier otra pantalla que trabaje sobre un
+   producto, pasándole el código por parámetro.
+
+   Grilla editable, mismo patrón que EntidadProductoTiposPreciosPanel: se agrega una fila
+   vacía, se completa y se graba con el tilde de la propia fila. *@
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="pa-2" style="background:var(--grilla-fila-par, rgba(0,0,0,.02));">
+    <div class="d-flex align-center justify-space-between gap-3 mb-2">
+        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;">
+            @(_marcados.Count > 0 ? $"{_marcados.Count} seleccionado(s) · " : "")
+            @Visibles.Count almacén(es) configurado(s) para @(DesProducto ?? CodProducto)
+        </MudText>
+        @if (!SoloLectura)
+        {
+            <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                       Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                       OnClick="Agregar">Agregar almacén</MudButton>
+        }
+    </div>
+
+    @if (_cargando)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mb-2" />
+    }
+    else if (_filas.Count == 0 && SoloLectura)
+    {
+        <MudText Typo="Typo.caption" Style="opacity:.5;">Sin almacenes configurados.</MudText>
+    }
+    else
+    {
+        <div style="overflow-x:auto;">
+        <table class="tabla-simple-editable" style="width:100%;min-width:1224px;">
+            <thead>
+                <tr>
+                    <th style="width:44px;text-align:center;">
+                        @* Marca/desmarca todo lo que se está viendo. Las filas nuevas sin grabar
+                           no entran: todavía no existen en la BD, así que mandarlas a un proceso
+                           no tendría a qué aplicarse. *@
+                        <MudCheckBox T="bool" Value="@TodosMarcados" ValueChanged="MarcarTodos"
+                                     Dense="true" Class="mb-0" />
+                    </th>
+                    <th style="width:240px;">Almacén</th>
+                    <th style="width:130px;text-align:right;">Stock mínimo</th>
+                    <th style="width:130px;text-align:right;">Stock máximo</th>
+                    <th style="width:110px;text-align:right;">Lead time (días)</th>
+                    <th style="width:130px;text-align:right;">Consumo diario</th>
+                    <th style="width:130px;text-align:right;">Cant. a requerir</th>
+                    <th style="width:130px;text-align:right;">N° Requerimiento</th>
+                    <th style="width:110px;text-align:center;">Req. automático</th>
+                    <th style="width:150px;">Estado</th>
+                    <th style="width:130px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in Visibles)
+                {
+                    <tr>
+                        <td style="text-align:center;">
+                            <MudCheckBox T="bool" Value="@_marcados.Contains(f.CodAlmacen ?? "")"
+                                         ValueChanged="@(v => Marcar(f, v))"
+                                         Disabled="f.EsNueva" Dense="true" Class="mb-0" />
+                        </td>
+                        <td>
+                            @* El almacén es parte de la clave junto con el producto: en una
+                               fila ya grabada, cambiarlo sería crear otra fila y dejar
+                               huérfana la anterior. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_almacenes"
+                                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@f.CodAlmacen"
+                                       ValueChanged="@(v => f.CodAlmacen = v)"
+                                       Disabled="@(SoloLectura || !f.EsNueva)" Class="mb-0" Style="margin-top:0;" />
+                        </td>
+                        <td>
+                            <MudNumericField T="decimal?" @bind-Value="f.CanStockMinimo" Variant="Variant.Outlined"
+                                             Format="@Decimales.FormatoConsumo" Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                             Disabled="SoloLectura" Margin="Margin.None" Class="mb-0 campo-numerico-derecha" />
+                        </td>
+                        <td>
+                            <MudNumericField T="decimal?" @bind-Value="f.CanStockMaximo" Variant="Variant.Outlined"
+                                             Format="@Decimales.FormatoConsumo" Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                             Disabled="SoloLectura" Margin="Margin.None" Class="mb-0 campo-numerico-derecha" />
+                        </td>
+                        <td>
+                            <MudNumericField T="int?" @bind-Value="f.CanLeadTimeDias" Variant="Variant.Outlined"
+                                             Disabled="SoloLectura" Margin="Margin.None" Class="mb-0 campo-numerico-derecha" />
+                        </td>
+                        <td>
+                            @* Editable, a diferencia de "Cant. a requerir": el consumo diario
+                               es un dato de planificación que carga el usuario, no un
+                               resultado que calcule el sistema. *@
+                            <MudNumericField T="decimal?" @bind-Value="f.CanConusmoDiario" Variant="Variant.Outlined"
+                                             Format="@Decimales.FormatoConsumo" Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                             Disabled="SoloLectura" Margin="Margin.None" Class="mb-0 campo-numerico-derecha" />
+                        </td>
+                        @* Cantidad a requerir y N° de requerimiento son de SOLO LECTURA: los
+                           escribe el proceso de reposición automática, no el usuario. Se
+                           muestran como texto y no como input deshabilitado para que se lea
+                           claro que son un resultado, no un campo que quedó bloqueado. *@
+                        <td style="text-align:right;" class="mono">@f.CanStockRequerir?.ToString("N4")</td>
+                        <td style="text-align:right;" class="mono">@f.NumRequerimientoStock</td>
+                        <td style="text-align:center;">
+                            <MudSwitch T="bool?" @bind-Value="f.FlgRequerimientoAutomatico" Color="Color.Primary"
+                                       Disabled="SoloLectura" Class="mb-0" />
+                        </td>
+                        <td>
+                            @* Estado del REQUERIMIENTO, no de esta fila. Mismo chip y mismos
+                               colores configurados que el resto de las grillas de la app. *@
+                            <EstadoChip Estado="@f.DesEstado" BackColor="@f.DesBackColor" ForeColor="@f.DesForeColor" />
+                        </td>
+                        <td>
+                            @if (!SoloLectura)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                               Disabled="@(f.Guardando || string.IsNullOrWhiteSpace(f.CodAlmacen))"
+                                               OnClick="@(() => GuardarAsync(f))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               Disabled="f.Guardando" OnClick="@(() => EliminarAsync(f))" />
+                                @* Botón "Borrar requerimiento de producto": manda almacén Y
+                                   producto, o sea limpia solo esta fila. No borra el registro,
+                                   pone en 0 la cantidad a requerir si todavía no se generó el
+                                   requerimiento. *@
+                                @* Los botones de proceso NO se dibujan a mano: se piden a
+                                   AccionesBotones, que los trae de la configuración de la
+                                   opción (ícono propio de BD o el deducido del nombre, color,
+                                   tooltip y orden). Antes acá había dos MudIconButton con
+                                   íconos elegidos por mí, y por eso no coincidían con los que
+                                   se ven en Seguridad › Botones.
+                                   El filtro deja solo los que actúan sobre UNA fila: los demás
+                                   (generar, resetear masivo) viven en la cabecera. *@
+                                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                                 Zona="@AccionesBotones.ZonaBotones.Grilla"
+                                                 Filtro="@(b => EsAccionDeFila(b, f))"
+                                                 OnAccion="@(b => OnAccionFilaAsync(f, b))" />
+                            }
+                            @if (!f.EsNueva)
+                            {
+                                <PanelAuditoria CodUsuarioRegistro="@f.CodUsuarioRegistro"
+                                                CodEstacionRegistro="@f.CodEstacionRegistro"
+                                                FecRegistro="@f.FecRegistro"
+                                                CodUsuarioActualizacion="@f.CodUsuarioActualizacion"
+                                                CodEstacionActualizacion="@f.CodEstacionActualizacion"
+                                                FecActualizacion="@f.FecActualizacion" />
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string CodProducto { get; set; } = "";
+    [Parameter] public string? DesProducto { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>Códigos de la opción de menú, para que los botones de fila salgan de la
+    /// configuración en BD y no de íconos elegidos a mano acá.</summary>
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+    /// <summary>Para que la pantalla contenedora pueda refrescar su contador al agregar o
+    /// borrar (por ejemplo, el título de una pestaña).</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private class Fila
+    {
+        public string? CodAlmacen { get; set; }
+        public decimal? CanStockMinimo { get; set; }
+        public decimal? CanStockMaximo { get; set; }
+        public int? CanLeadTimeDias { get; set; }
+        public decimal? CanConusmoDiario { get; set; }
+        public decimal? CanStockRequerir { get; set; }
+        public int? NumRequerimientoStock { get; set; }
+        public string? DesEstado { get; set; }
+        public string? DesBackColor { get; set; }
+        public string? DesForeColor { get; set; }
+        public bool? FlgRequerimientoAutomatico { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+
+    private List<Fila> _filas = new();
+    private List<ComboboxItem> _almacenes = new();
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // El combo sale del catálogo general de almacenes, NO de
+        // PRODUCTOS_ALMACENES_SHOWCOMBOX: ese último devuelve los almacenes que el producto
+        // YA tiene configurados, justo los que no se pueden volver a agregar.
+        await CargarComboAsync(ApiRoutes.Logistica.AlmacenesCombobox, l => _almacenes = l);
+        await CargarAsync();
+        _cargando = false;
+    }
+
+    /// <summary>Si la pantalla contenedora cambia de producto (por ejemplo, al moverse de
+    /// fila en la grilla padre) hay que recargar: el componente sigue montado.</summary>
+    private string? _ultProducto;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CodProducto == _ultProducto) return;
+        _ultProducto = CodProducto;
+        if (!_cargando) await CargarAsync();
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProductoAlmacenesPanel), nameof(CargarComboAsync)); }
+    }
+
+    private async Task CargarAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodProducto)) { _filas = new(); return; }
+
+        var url = $"{ApiRoutes.Logistica.ProductosAlmacenes}?codProducto={Uri.EscapeDataString(CodProducto)}";
+        var datos = await Http.SafeGetAsync<List<ProductoAlmacen>>(url) ?? new();
+        _filas = datos.Select(x => new Fila
+        {
+            CodAlmacen                 = x.COD_ALMACEN,
+            CanStockMinimo             = x.CAN_STOCK_MINIMO,
+            CanStockMaximo             = x.CAN_STOCK_MAXIMO,
+            CanLeadTimeDias            = x.CAN_LEAD_TIME_DIAS,
+            CanConusmoDiario           = x.CAN_CONUSMO_DIARIO,
+            CanStockRequerir           = x.CAN_STOCK_REQUERIR,
+            NumRequerimientoStock      = x.NUM_REQUERIMIENTO_STOCK,
+            DesEstado                  = x.DES_ESTADO,
+            DesBackColor               = x.DES_BACKCOLOR,
+            DesForeColor               = x.DES_FORECOLOR,
+            FlgRequerimientoAutomatico = x.FLG_REQUERIMIENTO_AUTOMATICO,
+            CodUsuarioRegistro         = x.COD_USUARIO_REGISTRO,
+            CodEstacionRegistro        = x.COD_ESTACION_REGISTRO,
+            FecRegistro                = x.FEC_REGISTRO,
+            CodUsuarioActualizacion    = x.COD_USUARIO_ACTUALIZACION,
+            CodEstacionActualizacion   = x.COD_ESTACION_ACTUALIZACION,
+            FecActualizacion           = x.FEC_ACTUALIZACION
+        }).ToList();
+    }
+
+    private void Agregar() => _filas.Add(new Fila { EsNueva = true, FlgRequerimientoAutomatico = false });
+
+    private async Task GuardarAsync(Fila f)
+    {
+        if (f.Guardando) return;
+
+        // El SP de alta rechaza la clave repetida con su propio mensaje, pero avisar acá
+        // evita el viaje al servidor y deja el foco donde está el error.
+        if (f.EsNueva && _filas.Any(o => o != f && string.Equals(o.CodAlmacen, f.CodAlmacen, StringComparison.OrdinalIgnoreCase)))
+        {
+            Snackbar.Add("Ese almacén ya está configurado para este producto.", Severity.Warning);
+            return;
+        }
+
+        f.Guardando = true;
+        try
+        {
+            var dto = new ProductoAlmacenSaveDto
+            {
+                COD_PRODUCTO                 = CodProducto,
+                COD_ALMACEN                  = f.CodAlmacen ?? "",
+                CAN_STOCK_MINIMO             = f.CanStockMinimo,
+                CAN_STOCK_MAXIMO             = f.CanStockMaximo,
+                CAN_LEAD_TIME_DIAS           = f.CanLeadTimeDias,
+                CAN_CONUSMO_DIARIO           = f.CanConusmoDiario,
+                CAN_STOCK_REQUERIR           = f.CanStockRequerir,
+                // Se reenvía tal cual vino: el SP lo exige y no es editable en pantalla, así
+                // que mandarlo en null lo borraría de la BD sin que nadie lo haya pedido.
+                NUM_REQUERIMIENTO_STOCK      = f.NumRequerimientoStock,
+                FLG_REQUERIMIENTO_AUTOMATICO = f.FlgRequerimientoAutomatico ?? false
+            };
+            var resp = await Http.GuardarAsync(ApiRoutes.Logistica.ProductosAlmacenes, dto, f.EsNueva);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add(f.EsNueva ? "Creado." : "Modificado.", Severity.Success);
+                if (f.EsNueva) { await CargarAsync(); await OnCambio.InvokeAsync(); } else f.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductoAlmacenesPanel), nameof(GuardarAsync));
+        }
+        finally { f.Guardando = false; }
+    }
+
+    private async Task EliminarAsync(Fila f)
+    {
+        // Fila que nunca se grabó: se descarta sin preguntar, no hay nada que borrar.
+        if (f.EsNueva) { _filas.Remove(f); return; }
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            "¿Quitar la configuración de este almacén?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        f.Guardando = true;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.ProductosAlmacenes}" +
+                      $"/{Uri.EscapeDataString(CodProducto)}/{Uri.EscapeDataString(f.CodAlmacen ?? "")}";
+            var resp = await Http.DeleteAsync(url);
+            if (resp.IsSuccessStatusCode) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductoAlmacenesPanel), nameof(EliminarAsync), "No se pudo eliminar el registro");
+        }
+        finally { f.Guardando = false; }
+    }
+
+    /// <summary>Botón "Borrar requerimiento de producto" de la fila: llama al RESET con
+    /// almacén Y producto, o sea acota el efecto a esta única combinación. Ojo que el SP solo
+    /// limpia las filas cuyo NUM_REQUERIMIENTO_STOCK sigue vacío: si ya se generó el
+    /// requerimiento, no toca nada — por eso después se recarga, para que se vea si cambió.</summary>
+    private async Task BorrarRequerimientoAsync(Fila f)
+    {
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            "¿Borrar la cantidad a requerir de esta línea?", yesText: "Borrar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        f.Guardando = true;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.ProductosAlmacenesReset}" +
+                      $"?codAlmacen={Uri.EscapeDataString(f.CodAlmacen ?? "")}" +
+                      $"&codProducto={Uri.EscapeDataString(CodProducto)}";
+            var resp = await Http.PostAsync(url, null);
+            if (resp.IsSuccessStatusCode) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductoAlmacenesPanel), nameof(BorrarRequerimientoAsync), "No se pudo borrar el requerimiento");
+        }
+        finally { f.Guardando = false; }
+    }
+
+    /// <summary>Relectura desde afuera: la pantalla contenedora la llama después de ejecutar
+    /// un proceso de reposición, que cambia en la BD la cantidad a requerir y el número de
+    /// requerimiento de estas mismas filas.</summary>
+    public async Task RecargarAsync()
+    {
+        await CargarAsync();
+        StateHasChanged();
+    }
+
+    // ── Selección ────────────────────────────────────────────────────────────
+    // Se guardan los CÓDIGOS y no las filas: al recargar después de un proceso las
+    // instancias de Fila se reemplazan por otras nuevas, y una selección guardada por
+    // referencia se habría perdido justo cuando el usuario quiere seguir trabajando sobre
+    // lo mismo. Por código sobrevive a la recarga.
+    private readonly HashSet<string> _marcados = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Los códigos marcados, para que la pantalla arme la lista separada por "_"
+    /// que esperan los SP de proceso.</summary>
+    public IReadOnlyCollection<string> Seleccionados => _marcados;
+
+    // Sobre lo VISIBLE, no sobre todo lo cargado: con un filtro puesto, marcar todo y que
+    // se marcara también lo que no se ve sería una trampa.
+    private bool TodosMarcados => Visibles.Count > 0
+        && Visibles.Where(x => !x.EsNueva).All(x => _marcados.Contains(x.CodAlmacen ?? ""));
+
+    private void Marcar(Fila f, bool marcado)
+    {
+        var cod = f.CodAlmacen;
+        if (string.IsNullOrWhiteSpace(cod)) return;
+        if (marcado) _marcados.Add(cod); else _marcados.Remove(cod);
+    }
+
+    private void MarcarTodos(bool marcado)
+    {
+        _marcados.Clear();
+        if (!marcado) return;
+        foreach (var f in Visibles.Where(x => !x.EsNueva && !string.IsNullOrWhiteSpace(x.CodAlmacen)))
+            _marcados.Add(f.CodAlmacen!);
+    }
+
+    /// <summary>Texto de búsqueda. Vive en la PANTALLA y no acá: la cabecera de la pestaña
+    /// se ve siempre, mientras que este panel recién se monta cuando hay algo elegido — con
+    /// el buscador adentro, en las pestañas editables no aparecía hasta elegir producto o
+    /// almacén, que es justo cuando uno quiere buscar.</summary>
+    [Parameter] public string Busqueda { get; set; } = "";
+
+    /// <summary>Filtro en memoria. El SEARCH del SP existe pero solo entra por producto y
+    /// devuelve lo mismo que el Showall: para una grilla de esta escala (los almacenes de un
+    /// producto) ir al servidor por cada tecla no aporta nada y agrega latencia.
+    /// Las filas NUEVAS sin grabar nunca se filtran: esconder lo que el usuario está
+    /// cargando, justo mientras lo carga, sería la peor forma de "ayudar" a buscar.</summary>
+    private List<Fila> Visibles
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Busqueda)) return _filas;
+            var t = Busqueda.Trim();
+            return _filas.Where(f => f.EsNueva
+                || (f.CodAlmacen ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                || (Descripcion(f) ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+
+    /// <summary>La descripción que se ve en el combo de la fila, para que la búsqueda
+    /// encuentre por nombre y no solo por código.</summary>
+    private string? Descripcion(Fila f)
+        => _almacenes.FirstOrDefault(x => x.Id == f.CodAlmacen)?.Texto;
+
+    /// <summary>Botón "Revertir": anula el requerimiento generado para esta línea. OJO — el
+    /// SP no anula solo ese: busca la FEC_ACTUALIZACION del número recibido y revierte TODOS
+    /// los requerimientos generados en esa misma corrida. Por eso el cartel lo avisa: desde
+    /// una fila se puede estar deshaciendo el trabajo de varias.</summary>
+    private async Task RevertirAsync(Fila f)
+    {
+        if (f.NumRequerimientoStock is not int num || num <= 0) return;
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            $"Se va a anular el requerimiento N° {num} y todos los generados en la misma corrida. ¿Continuar?",
+            yesText: "Revertir", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        f.Guardando = true;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.ProductosAlmacenesReversion}?numRequerimientoStock={num}";
+            var resp = await Http.PostAsync(url, null);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Requerimiento revertido.", Severity.Success);
+                await CargarAsync();
+                await OnCambio.InvokeAsync();
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductoAlmacenesPanel), nameof(RevertirAsync), "No se pudo revertir el requerimiento");
+        }
+        finally { f.Guardando = false; }
+    }
+
+    // ── Botones de fila configurados en BD ───────────────────────────────────
+    // Se reconocen por NOMBRE y no por los verbos HTTP: los cuatro procesos son POST,
+    // así que el verbo no distingue nada. Mismo criterio que usa AccionesBotones
+    // internamente para elegir ícono y color.
+    private static string TextoBoton(BotonTreeviewItem b)
+        => ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+
+    private static bool EsRevertir(BotonTreeviewItem b)
+    { var n = TextoBoton(b); return n.Contains("REVERTIR") || n.Contains("REVERSION") || n.Contains("REVERSIÓN"); }
+
+    private static bool EsBorrarRequerimiento(BotonTreeviewItem b)
+        => TextoBoton(b).Contains("BORRAR REQUERIMIENTO");
+
+    /// <summary>Qué botones tienen sentido EN ESTA FILA. Los de alcance masivo (generar,
+    /// resetear todo) quedan afuera: viven en la cabecera. Y "Revertir" solo se ofrece si la
+    /// línea tiene un requerimiento que revertir — un botón que no puede hacer nada confunde
+    /// más de lo que ayuda.</summary>
+    private bool EsAccionDeFila(BotonTreeviewItem b, Fila f)
+    {
+        if (SoloLectura) return false;
+        if (EsRevertir(b)) return f.NumRequerimientoStock is int n && n > 0 && !f.EsNueva;
+        if (EsBorrarRequerimiento(b)) return !f.EsNueva;
+        return false;
+    }
+
+    private async Task OnAccionFilaAsync(Fila f, BotonTreeviewItem b)
+    {
+        if (EsRevertir(b)) { await RevertirAsync(f); return; }
+        if (EsBorrarRequerimiento(b)) { await BorrarRequerimientoAsync(f); return; }
+    }
+
+    /// <summary>Los N° de requerimiento distintos que están A LA VISTA (respetando el filtro
+    /// de búsqueda). Lo usa la pantalla cuando "Revertir" se dispara desde la cabecera: el SP
+    /// recibe un número por vez, así que hay que saber cuáles hay para recorrerlos.</summary>
+    public IReadOnlyCollection<int> RequerimientosVisibles
+        => Visibles.Where(f => f.NumRequerimientoStock is int n && n > 0).Select(f => f.NumRequerimientoStock!.Value).Distinct().ToList();
+}

@@ -1,0 +1,56 @@
+@*
+    GridImage.razor
+    --------------------------------------------------------------------------
+    Muestra una imagen (byte[]) dentro de una celda de grilla, con el tamaño
+    configurado en Configuración (ImagenGrillaAncho / ImagenGrillaAlto).
+    Aplica a TODOS los campos IMG_ de grilla (IMG_ICONO, IMG_PICTURE, IMG_FOTO,
+    IMG_FIRMA, etc.). Punto 4.
+
+    EL base64 YA NO SE CALCULA ACÁ. Antes se hacía en el render, o sea una vez por
+    fila y por cada redibujado de la grilla: en Usuarios, con una foto por fila, un
+    solo render volvía a codificar todas las fotos de la página y armaba cadenas un
+    tercio más grandes que cada foto, que Blazor después compara contra las
+    anteriores. Ahora lo resuelve ImagenDataUri, que lo recuerda por imagen.
+
+    ShouldRender: la celda solo se redibuja si cambió la imagen o el tamaño
+    configurado. Sin esto, cada render de la grilla vuelve a pasar por acá aunque no
+    haya nada distinto que mostrar.
+*@
+@inject ConfigService ConfigSvc
+
+@if (Image is { Length: > 0 })
+{
+    <img src="@ImagenDataUri.De(Image)"
+         style="@($"width:{_ancho}px;height:{_alto}px;object-fit:contain;border-radius:4px;")" />
+}
+else
+{
+    <span style="@($"display:inline-flex;align-items:center;justify-content:center;width:{_ancho}px;height:{_alto}px;opacity:.2;")">
+        <MudIcon Icon="@Icons.Material.Filled.Image" />
+    </span>
+}
+
+@code {
+    /// <summary>Bytes de la imagen a mostrar.</summary>
+    [Parameter] public byte[]? Image { get; set; }
+
+    private int _ancho => ConfigSvc.Current.ImagenGrillaAncho;
+    private int _alto  => ConfigSvc.Current.ImagenGrillaAlto;
+
+    // Lo último que se dibujó. Se compara por REFERENCIA a propósito: dos arreglos con
+    // los mismos bytes son la misma foto, y compararlos byte a byte para averiguarlo
+    // costaría más que volver a dibujar.
+    private byte[]? _ultimaImagen;
+    private int _ultimoAncho = -1, _ultimoAlto = -1;
+
+    protected override bool ShouldRender()
+    {
+        if (ReferenceEquals(_ultimaImagen, Image) && _ultimoAncho == _ancho && _ultimoAlto == _alto)
+            return false;
+
+        _ultimaImagen = Image;
+        _ultimoAncho  = _ancho;
+        _ultimoAlto   = _alto;
+        return true;
+    }
+}

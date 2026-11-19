@@ -1,0 +1,363 @@
+@page "/logistica/movimientos-almacen"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.MovimientosAlmacen
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+<PageTitle>Movimientos de Almacén · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* Dos solapas que nunca están habilitadas a la vez: o se está mirando la lista, o se está
+   trabajando sobre un documento. Es lo que evita navegar el listado con una edición a medio
+   hacer detrás. Mismo criterio que Reservas y Requerimientos. *@
+<MudTabs Elevation="0" ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)"
+         Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4">
+
+    <MudTabPanel Text="Movimientos" Icon="@Icons.Material.Filled.SwapHoriz" Disabled="@_enDocumento">
+        <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+            <div class="grid-header-titulo">
+                <TituloPagina Fallback="Movimientos de Almacén" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+                <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_visibles.Count de @_items.Count documentos</MudText>
+            </div>
+            <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar por número, almacén, tipo, entidad o documento..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+            <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f=>f.Value is not null))" />
+            <div class="grid-header-divider"></div>
+            <div class="d-flex gap-2">
+                <GridRefreshButton OnRefresh="Load" />
+                <GridPrintButton Titulo="Movimientos de Almacén" Headers="@_printHeaders" Rows="@PrintRows()" />
+                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                 Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+            </div>
+        </div>
+
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div data-resizable-grid="movimientos-almacen" style="position:relative;">
+            <MudDataGrid T="Modelo" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                         Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+                <Columns>
+                    <TemplateColumn Sortable="false" Title="N°" Width="90px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <HeaderTemplate><EncabezadoOrdenable Campo="N°" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" /></HeaderTemplate>
+                        <CellTemplate><span class="mono">@context.Item.NUM_MOVIMIENTO_ALMACEN</span></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Fecha" Width="110px" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="Fecha" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(1)" ValorDe="@(x=>x.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy") ?? "")"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><span class="mono">@context.Item.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy")</span></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Almacén"
+                                    Width="@Limites.ColWidth("LOGISTICA.MOVIMIENTOS_ALMACEN","DES_ALMACEN",140,260)">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ALMACEN" Activo="@(_ordenColumna == 2)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(2))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(2)" ValorDe="@(x=>x.DES_ALMACEN ?? "")"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v=>Filtro(2,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_ALMACEN</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Tipo de Movimiento"
+                                    Width="@Limites.ColWidth("LOGISTICA.MOVIMIENTOS_ALMACEN","DES_TIPO_MOVIMIENTO",160,300)">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_TIPO_MOVIMIENTO" Activo="@(_ordenColumna == 3)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(3))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(3)" ValorDe="@(x=>x.DES_TIPO_MOVIMIENTO ?? "")"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v=>Filtro(3,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_TIPO_MOVIMIENTO</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Entidad"
+                                    Width="@Limites.ColWidth("LOGISTICA.MOVIMIENTOS_ALMACEN","DES_COMERCIAL",150,280)">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="Entidad" Activo="@(_ordenColumna == 4)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(4))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(4)" ValorDe="@(x=>Entidad(x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v=>Filtro(4,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@Entidad(context.Item)</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Documento" Width="150px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="Documento" Activo="@(_ordenColumna == 5)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(5))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(5)" ValorDe="@(x=>Documento(x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v=>Filtro(5,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><span class="mono">@Documento(context.Item)</span></CellTemplate>
+                    </TemplateColumn>
+
+                    @* Estado antes de Acciones, y Acciones al final: la regla que fijamos
+                       para todas las grillas de la aplicación. *@
+                    <TemplateColumn Title="Estado" Sortable="false" Width="130px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ESTADO" Activo="@(_ordenColumna == 6)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(6))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(6)" ValorDe="@(x=>x.DES_ESTADO ?? "")"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v=>Filtro(6,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>
+                            <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                        BackColor="@context.Item.DES_BACKCOLOR"
+                                        ForeColor="@context.Item.DES_FORECOLOR" />
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="Acciones" Sortable="false">
+                        <CellTemplate>
+                            @* Con el estado de la fila, AccionesBotones valida el flujo de cada botón
+                               antes de ejecutarlo: MODIFICAR en un movimiento TRANSFERIDO avisa en vez
+                               de abrirlo para editar, y TRANSFERIR solo corre desde su estado. *@
+                            @* Fila: el botón IMPRIMIR FORMATO (reporteador) toma de la fila el N° de movimiento. *@
+                            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                             Zona="@AccionesBotones.ZonaBotones.Grilla" Fila="@context.Item"
+                                             CodTipoEstado="@context.Item.COD_TIPO_ESTADO" CodEstadoActual="@context.Item.COD_ESTADO"
+                                             OnAccion="@(b => OnAccionGrilla(context.Item, b))" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+            </MudDataGrid>
+            </div>
+        </MudPaper>
+    </MudTabPanel>
+
+    @* Arranca deshabilitada: se enciende sólo cuando hay un documento abierto. *@
+    <MudTabPanel Text="@_tituloDocumento" Icon="@Icons.Material.Filled.Description" Disabled="@(!_enDocumento)">
+        @if (_enDocumento)
+        {
+            <MovimientoAlmacenDocumento Item="_docItem" Modo="_docModo" OnCerrar="CerrarDocumento"
+                                        CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna = 0;
+    private bool _ordenAscendente = false;   // el movimiento más reciente primero
+
+    /// <summary>El SP devuelve el nombre de la entidad repartido en varias columnas según sea
+    /// empresa o persona. Se prioriza igual que en el resto de la aplicación.</summary>
+    private static string Entidad(Modelo x) =>
+        new[] { x.DES_COMERCIAL, x.DES_NOMBRE_COMPLETO, x.DES_NOMBRE, x.DES_ABREVIADA }
+            .FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "";
+
+    private static string Documento(Modelo x) =>
+        string.IsNullOrWhiteSpace(x.NUM_COMPROBANTE_PAGO)
+            ? "—"
+            : $"{x.COD_TIPO_COMPROBANTE_PAGO} {x.NUM_COMPROBANTE_PAGO}".Trim();
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private List<Modelo> Ordenar(List<Modelo> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.NUM_MOVIMIENTO_ALMACEN).ToList() : items.OrderByDescending(x => x.NUM_MOVIMIENTO_ALMACEN).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.FEC_MOVIMENTO_ALMACEN).ToList()  : items.OrderByDescending(x => x.FEC_MOVIMENTO_ALMACEN).ToList(),
+        2 => _ordenAscendente ? items.OrderBy(x => x.DES_ALMACEN).ToList()            : items.OrderByDescending(x => x.DES_ALMACEN).ToList(),
+        3 => _ordenAscendente ? items.OrderBy(x => x.DES_TIPO_MOVIMIENTO).ToList()    : items.OrderByDescending(x => x.DES_TIPO_MOVIMIENTO).ToList(),
+        4 => _ordenAscendente ? items.OrderBy(Entidad).ToList()                       : items.OrderByDescending(Entidad).ToList(),
+        5 => _ordenAscendente ? items.OrderBy(Documento).ToList()                     : items.OrderByDescending(Documento).ToList(),
+        6 => _ordenAscendente ? items.OrderBy(x => x.DES_ESTADO).ToList()             : items.OrderByDescending(x => x.DES_ESTADO).ToList(),
+        _ => items
+    };
+
+    private List<Modelo> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<Modelo> Base(int col) => Aplicar(_items, col);
+
+    private List<Modelo> Aplicar(List<Modelo> src, int ex)
+    {
+        // Salida temprana: sin filtros activos no hay nada que recorrer, y ese es el caso
+        // normal. Cada encabezado llama a este método en CADA redibujado.
+        var hayFiltro = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltro = true; break; }
+        if (!hayFiltro) return src;
+
+        IEnumerable<Modelo> q = src;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                1 => q.Where(x => v.Contains(x.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy") ?? "")),
+                2 => q.Where(x => v.Contains(x.DES_ALMACEN ?? "")),
+                3 => q.Where(x => v.Contains(x.DES_TIPO_MOVIMIENTO ?? "")),
+                4 => q.Where(x => v.Contains(Entidad(x))),
+                5 => q.Where(x => v.Contains(Documento(x))),
+                6 => q.Where(x => v.Contains(x.DES_ESTADO ?? "")),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros() { foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null; StateHasChanged(); }
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    private readonly List<string> _printHeaders = new() { "N°", "Fecha", "Almacén", "Tipo de Movimiento", "Entidad", "Documento", "Estado" };
+    private List<List<string>> PrintRows() => _visibles.Select(x => new List<string>
+    {
+        x.NUM_MOVIMIENTO_ALMACEN?.ToString() ?? "",
+        x.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy") ?? "",
+        x.DES_ALMACEN ?? "", x.DES_TIPO_MOVIMIENTO ?? "",
+        Entidad(x), Documento(x), x.DES_ESTADO ?? ""
+    }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "MovimientosAlmacen");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.MOVIMIENTOS_ALMACEN", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(
+                ApiRoutes.Logistica.MovimientosAlmacen);
+            var todos = r?.Data ?? new();
+            _items = string.IsNullOrWhiteSpace(_search)
+                ? todos
+                : todos.Where(x =>
+                       (x.NUM_MOVIMIENTO_ALMACEN?.ToString() ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || (x.DES_ALMACEN ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || (x.DES_TIPO_MOVIMIENTO ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || Entidad(x).Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || Documento(x).Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientosAlmacen), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(MovimientosAlmacen));
+            _items = new();
+        }
+    }
+
+    /// <summary>El botón «Traer guía recibida» (lo deja el script 44): también es POST como «Nuevo», así que se reconoce por su método antes de mirar el verbo.</summary>
+    public const string MetodoTraerGuiaRecibida = "TraerGuiaRecibida";
+
+    private async Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if ((b.DES_METODO ?? "").Trim() == MetodoTraerGuiaRecibida) { await TraerGuiaRecibidaAsync(); return; }
+        if (b.FLG_ACCION_POST == true) await Abrir(null, CrudModo.Create);
+    }
+
+    /// <summary>Elegir una de las guías de remisión que bajó el servicio del correo y generar con ella el ingreso a almacén.</summary>
+    private async Task TraerGuiaRecibidaAsync()
+    {
+        var dlg = await DialogService.ShowAsync<MovimientoGuiaRecibidaDialog>("", new DialogParameters(),
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false } && res.Data is decimal) await Load();
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico: un botón de Modificar suele traer GET y PUT a
+        // la vez, y un Eliminar suele traer GET y DELETE. Preguntando por GET primero, esos
+        // dos abrían en sólo lectura.
+        // TRANSFERIR va primero: no abre el documento, ejecuta la acción sobre la fila.
+        if (MovimientoAlmacenDocumento.EsBotonTransferir(b)) return TransferirAsync(item, b);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        // Un botón sin acción HTTP (por ejemplo, TRANSFERIR) todavía no tiene nada conectado:
+        // se avisa en vez de no hacer nada al tocarlo.
+        return AvisarBotonSinConectar(item, b);
+    }
+
+    /// <summary>TRANSFERIR desde la grilla. El flujo de estados del botón ya lo validó
+    /// AccionesBotones con el estado de la fila; acá, la misma confirmación y el mismo endpoint
+    /// que el documento.</summary>
+    private async Task TransferirAsync(Modelo item, BotonTreeviewItem b)
+    {
+        if (item.NUM_MOVIMIENTO_ALMACEN is not { } num) return;
+        if (!await MovimientoAlmacenDocumento.ConfirmarTransferenciaAsync(DialogService, num)) return;
+        var resp = await Http.PostAsync(ApiRoutes.Logistica.MovimientosAlmacenTransferir(num), null);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add($"Movimiento N° {num} transferido.", Severity.Success);
+            await Load();
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientosAlmacen), nameof(TransferirAsync), "No se pudo transferir");
+        }
+    }
+
+    private async Task AvisarBotonSinConectar(Modelo item, BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE GRILLA — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre el movimiento {item.NUM_MOVIMIENTO_ALMACEN}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(MovimientosAlmacen), "Acción pendiente");
+    }
+
+    private int _tab;
+    private bool _enDocumento;
+    private Modelo? _docItem;
+    private CrudModo _docModo = CrudModo.Create;
+
+    private string _tituloDocumento => !_enDocumento ? "Documento" : _docModo switch
+    {
+        CrudModo.Create => "Nuevo",
+        CrudModo.Delete => $"Eliminar N° {_docItem?.NUM_MOVIMIENTO_ALMACEN}",
+        CrudModo.Read   => $"Consultar N° {_docItem?.NUM_MOVIMIENTO_ALMACEN}",
+        _               => $"Editar N° {_docItem?.NUM_MOVIMIENTO_ALMACEN}"
+    };
+
+    private Task Abrir(Modelo? item, CrudModo modo)
+    {
+        _docItem = item;
+        _docModo = modo;
+        _enDocumento = true;
+        _tab = 1;
+        return Task.CompletedTask;
+    }
+
+    private async Task CerrarDocumento(bool huboCambios)
+    {
+        _enDocumento = false;
+        _docItem = null;
+        _tab = 0;
+        if (huboCambios) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.MOVIMIENTOS_ALMACEN", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

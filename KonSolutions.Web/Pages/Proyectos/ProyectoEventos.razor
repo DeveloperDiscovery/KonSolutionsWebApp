@@ -1,0 +1,98 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject ConfigService ConfigSvc
+
+@* Eventos del proyecto: cada uno dice si fue un retraso o no, desde que fecha y hora hasta cual, y quien es el responsable. Pueden colgar del proyecto, de una fase o de una tarea. *@
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly) { <MudButton OnClick="@(() => Editar(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.EventBusy">Nuevo evento</MudButton> }
+    <MudSpacer />
+    <MudText Class="mono" Style="opacity:.6;font-size:.82rem;">@_items.Count eventos · @_items.Count(e => e.FLG_RETRASO) de retraso · @_items.Where(e => e.FLG_RETRASO).Sum(e => e.HORAS ?? 0).ToString("0.##") h de retraso</MudText>
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <MudDataGrid T="ExpedienteEvento" Items="_items" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+        <Columns>
+            <TemplateColumn Title="Retraso" SortBy="x => x.FLG_RETRASO" Filterable="false" HeaderStyle="width:90px;">
+                <CellTemplate>
+                    @if (context.Item.FLG_RETRASO) { <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Retraso</MudChip> }
+                    else { <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">Sin retraso</MudChip> }
+                </CellTemplate>
+            </TemplateColumn>
+            <PropertyColumn Property="x => x.DES_EVENTO" Title="Evento" />
+            <PropertyColumn Property="x => x.FEC_HORA_INICIO" Title="Desde" Format="dd/MM/yyyy HH:mm" />
+            <TemplateColumn Title="Hasta" SortBy="x => x.FEC_HORA_FINAL"><CellTemplate>@(context.Item.FEC_HORA_FINAL?.ToString("dd/MM/yyyy HH:mm") ?? "abierto")</CellTemplate></TemplateColumn>
+            <PropertyColumn Property="x => x.HORAS" Title="Horas" Format="0.##" CellStyle="text-align:right;" />
+            <TemplateColumn Title="Fase / tarea" SortBy="x => x.DES_TAREA"><CellTemplate>@(context.Item.DES_TAREA ?? context.Item.DES_FASE ?? "Proyecto")</CellTemplate></TemplateColumn>
+            <PropertyColumn Property="x => x.DES_RESPONSABLE" Title="Responsable" />
+            @if (!ReadOnly)
+            {
+                <TemplateColumn Title="Acciones" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                    <CellTemplate>
+                        <MudIconButton Icon="@Icons.Material.Filled.Notes" Size="Size.Small" OnClick="@(() => NuevaMemoria(context.Item))" title="@($"Registrar memoria de este evento ({context.Item.NUM_MEMORIAS} registradas)")" />
+                        @if (context.Item.NUM_MEMORIAS > 0) { <span class="mono" style="font-size:.72rem;opacity:.7;margin-right:4px;">@context.Item.NUM_MEMORIAS</span> }
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(context.Item))" title="Editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(context.Item))" title="Quitar" />
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Todavía no hay eventos.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="ExpedienteEvento" /></PagerContent>
+    </MudDataGrid>
+</MudPaper>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private List<ExpedienteEvento> _items = new();
+    private ExpedientePlanificacion _plan = new();
+    private List<ComboboxItem> _entidades = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _entidades = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.Exp(NumProyecto, "entidades-elegibles")) ?? new();
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _items = await Http.SafeGetAsync<List<ExpedienteEvento>>(ApiRoutes.Proyectos.Exp(NumProyecto, "eventos")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoEventos), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los eventos. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Editar(ExpedienteEvento? e)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoEventoDialog>(e is null ? "Nuevo evento" : "Editar evento",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = e, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas, ["Entidades"] = _entidades },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task NuevaMemoria(ExpedienteEvento ev)
+    {
+        var memorias = await Http.SafeGetAsync<List<ExpedienteMemoria>>(ApiRoutes.Proyectos.Exp(NumProyecto, "memorias")) ?? new();
+        var dlg = await DialogService.ShowAsync<ProyectoMemoriaDialog>($"Nueva memoria · {ev.DES_EVENTO}",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = null, ["Notas"] = memorias, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas, ["Eventos"] = _items, ["EventoInicial"] = (int?)ev.NUM_SECUENCIA },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task Quitar(ExpedienteEvento e)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar evento", $"¿Quitar el evento «{e.DES_EVENTO}»?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"eventos/{e.NUM_SECUENCIA}"));
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el evento.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

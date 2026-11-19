@@ -1,0 +1,62 @@
+@* EntidadesConfigurarDialog.razor
+   -----------------------------------------------------------------------
+   Alta manual de un registro en ENTORNO.ENTIDADES_CONFIGURAR (clave DES_TABLE +
+   DES_COLUMN). El SHOWALL de la pantalla ya autogenera estas filas detectando
+   columnas COD_ENTIDAD% de toda la base — este diálogo cubre el caso borde de
+   agregar una a mano (ej. una columna que el detector todavía no vio). *@
+@using Modelo = KONSolutions.Shared.Models.Entorno.EntidadesConfigurar
+@using EntornoRoute = KONSolutions.Web.Services.ApiRoutes.Entorno
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="CrudModo.Create" Codigo="@_model.DES_COLUMN" Descripcion="@_model.DES_TABLE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+
+            <CampoTexto Tabla="ENTORNO.ENTIDADES_CONFIGURAR" Columna="DES_TABLE"
+                        @bind-Value="_model.DES_TABLE" Obligatorio="true" />
+
+            <CampoTexto Tabla="ENTORNO.ENTIDADES_CONFIGURAR" Columna="DES_COLUMN"
+                        @bind-Value="_model.DES_COLUMN" Obligatorio="true" />
+
+            <MudTextField T="string" @bind-Value="_model.DES_COMMANDSQL" Label="Sentencia SQL" Lines="4"
+                          Variant="Variant.Outlined" Class="mb-3" />
+
+            <CrudDialogActions Modo="CrudModo.Create" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    private Modelo _model = new();
+    private bool _saving;
+
+    private Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        return DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var resp = await Http.PostAsJsonAsync(EntornoRoute.EntidadesConfigurar, _model);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Registro agregado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesConfigurarDialog), nameof(Submit));
+    }
+}

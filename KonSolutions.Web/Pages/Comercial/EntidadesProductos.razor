@@ -1,0 +1,246 @@
+@* COMERCIAL.ENTIDADES_PRODUCTOS — qué producto vende cada proveedor.
+
+   Dos pestañas sobre la MISMA tabla, cambiando sólo por dónde se entra:
+     · Productos por proveedor → se elige un proveedor y se ven sus productos
+     · Proveedores por producto → se elige un producto y se ven sus proveedores
+
+   El SHOWALL resuelve las dos con el mismo procedimiento: ignora el parámetro que venga
+   en null. Por eso la grilla es una sola, parametrizada, y no dos escritas por separado.
+
+   Dentro de cada fila, la subgrilla de tipos de precio (el chevron de la izquierda). Esa
+   también es un único componente compartido: es la misma información mirada desde los
+   dos lados. *@
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+
+<div class="d-flex align-center justify-space-between mb-3">
+    <TituloPagina Fallback="Productos por Proveedor" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+    <div class="d-flex align-center gap-2">
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudTabs Elevation="0" ApplyEffectsToContainer="true" Rounded="false" Border="false"
+         ActivePanelIndex="_tab" ActivePanelIndexChanged="CambiarTabAsync">
+
+    @* ─────────────── Pestaña 1: productos de un proveedor ─────────────── *@
+    <MudTabPanel Text="Productos por Proveedor" Icon="@Icons.Material.Filled.Inventory2">
+        <div class="d-flex align-center gap-2 mb-3" style="max-width:640px;">
+            <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                       Value="@_codEntidadSel" ValueChanged="CambiarEntidadAsync"
+                       Label="Proveedor" Class="mb-0" Style="flex:1;" />
+        </div>
+
+        @if (string.IsNullOrWhiteSpace(_codEntidadSel))
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">Elegí un proveedor para ver sus productos.</MudAlert>
+        }
+        else
+        {
+            @RenderGrilla(porProveedor: true)
+        }
+    </MudTabPanel>
+
+    @* ─────────────── Pestaña 2: proveedores de un producto ─────────────── *@
+    <MudTabPanel Text="Proveedores por Producto" Icon="@Icons.Material.Filled.LocalShipping">
+        <div class="d-flex align-center gap-2 mb-3" style="max-width:640px;">
+            <AriaCombo TItem="ComboboxItem" Items="_productos"
+                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       Value="@_codProductoSel" ValueChanged="CambiarProductoAsync"
+                       Label="Producto" Class="mb-0" Style="flex:1;" />
+        </div>
+
+        @if (string.IsNullOrWhiteSpace(_codProductoSel))
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">Elegí un producto para ver qué proveedores lo venden.</MudAlert>
+        }
+        else
+        {
+            @RenderGrilla(porProveedor: false)
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private int _tab;
+    private string? _codEntidadSel, _codProductoSel;
+    private List<ComboboxItem> _entidades = new(), _productos = new();
+    private List<EntidadProducto> _items = new();
+    private bool _cargando;
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(
+            CargarComboAsync(ApiRoutes.Estandar.EntidadesCombobox, l => _entidades = l),
+            CargarComboAsync(ApiRoutes.Estandar.ProductosCombobox, l => _productos = l));
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadesProductos), nameof(CargarComboAsync)); }
+    }
+
+    private async Task CambiarTabAsync(int i)
+    {
+        _tab = i;
+        await CargarAsync();
+    }
+
+    private async Task CambiarEntidadAsync(string? cod)
+    {
+        _codEntidadSel = cod;
+        await CargarAsync();
+    }
+
+    private async Task CambiarProductoAsync(string? cod)
+    {
+        _codProductoSel = cod;
+        await CargarAsync();
+    }
+
+    /// <summary>Una sola carga para las dos pestañas: manda el filtro que corresponde según
+    /// cuál esté activa y deja el otro sin mandar, que es lo que el SP espera.</summary>
+    private async Task CargarAsync()
+    {
+        _items = new();
+        var porProveedor = _tab == 0;
+        if (porProveedor && string.IsNullOrWhiteSpace(_codEntidadSel)) return;
+        if (!porProveedor && string.IsNullOrWhiteSpace(_codProductoSel)) return;
+
+        _cargando = true;
+        try
+        {
+            var url = porProveedor
+                ? $"{ApiRoutes.Comercial.EntidadesProductos}?codEntidad={_codEntidadSel}"
+                : $"{ApiRoutes.Comercial.EntidadesProductos}?codProducto={Uri.EscapeDataString(_codProductoSel!)}";
+            _items = await Http.SafeGetAsync<List<EntidadProducto>>(url) ?? new();
+        }
+        finally { _cargando = false; }
+    }
+
+    private RenderFragment RenderGrilla(bool porProveedor) => __builder =>
+    {
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        <div data-resizable-grid="entidades-productos" style="position:relative;">
+        @* Hierarchy + HierarchyColumn: la expansión la maneja la propia grilla, igual que en
+           ClasesOperacion.razor. Un chevron propio pinta la flecha pero no despliega nada. *@
+        <MudDataGrid T="EntidadProducto" Items="_items" Dense="true" Hover="true" Striped="true"
+                     Hierarchy="true"
+                     Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+            <Columns>
+                <HierarchyColumn T="EntidadProducto" Width="48px" />
+
+                @if (porProveedor)
+                {
+                    <TemplateColumn Sortable="false" Title="Producto" Width="260">
+                        <CellTemplate>@($"{context.Item.COD_PRODUCTO} - {context.Item.DES_PRODUCTO}")</CellTemplate>
+                    </TemplateColumn>
+                }
+                else
+                {
+                    <TemplateColumn Sortable="false" Title="Proveedor" Width="280">
+                        <CellTemplate>@TextoProveedor(context.Item)</CellTemplate>
+                    </TemplateColumn>
+                }
+
+                <TemplateColumn Sortable="false" Title="Código del proveedor" Width="170">
+                    <CellTemplate>@context.Item.COD_PRODUCTO_ENTIDAD</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Nombre del proveedor" Width="260">
+                    <CellTemplate>@context.Item.DES_PRODUCTO_ENTIDAD</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="U.M. atención" Width="140">
+                    <CellTemplate>@context.Item.DES_UNIDAD_MEDIDA</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Moneda" Width="120">
+                    <CellTemplate>@context.Item.DES_MONEDA</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Precio" Width="140" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                    <CellTemplate><span class="mono">@(context.Item.VAL_PRECIO_ENTIDAD?.ToString("N6"))</span></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Desc. %" Width="110" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                    <CellTemplate><span class="mono">@(context.Item.TAS_DESCUENTO?.ToString("N3"))</span></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Title="Días atención" Width="130" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                    <CellTemplate><span class="mono">@context.Item.CAN_DIAS_ATENCION</span></CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Acciones" Sortable="false">
+                    <CellTemplate>
+                        @{ var it = context.Item; }
+                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla"
+                                         OnAccion="@(b => OnAccionGrilla(it, b))" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+
+            @* La subgrilla se pinta como una fila extra debajo de la suya. *@
+            @* MudDataGrid ya arma la fila y la celda que ocupa todo el ancho, así que acá
+               va el contenido pelado — un <td> propio sobraría y rompe el armado. *@
+            <ChildRowContent Context="filaProd">
+                <EntidadProductoTiposPrecioPanel CodEntidad="@(filaProd.Item.COD_ENTIDAD ?? 0)"
+                                                 CodProducto="@filaProd.Item.COD_PRODUCTO"
+                                                 DesProducto="@filaProd.Item.DES_PRODUCTO" />
+            </ChildRowContent>
+
+            <NoRecordsContent>
+                <MudText Class="pa-6 mono" Style="opacity:.5;">
+                    @(_cargando ? "Cargando…" : "Sin registros.")
+                </MudText>
+            </NoRecordsContent>
+            <PagerContent><MudDataGridPager T="EntidadProducto" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+        </div>
+        </MudPaper>
+    };
+
+    private static string TextoProveedor(EntidadProducto x)
+        => string.IsNullOrWhiteSpace(x.DES_COMERCIAL) ? (x.DES_NOMBRE_COMPLETO ?? "") : x.DES_COMERCIAL;
+
+    // ── Acciones ────────────────────────────────────────────────────────────
+    private Task OnAccionHeader(BotonTreeviewItem b)
+        => b.FLG_ACCION_POST == true ? Abrir(null, CrudModo.Create) : Task.CompletedTask;
+
+    private Task OnAccionGrilla(EntidadProducto item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico, mismo criterio que el resto de las pantallas:
+        // un botón de Modificar suele traer GET y PUT a la vez.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(EntidadProducto? item, CrudModo modo)
+    {
+        var parametros = new DialogParameters { ["Modo"] = modo, ["Item"] = item, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion };
+
+        // En alta, el lado por el que se entró viene fijo: desde la pestaña del proveedor se
+        // elige el producto, y desde la del producto se elige el proveedor.
+        if (item is null)
+        {
+            if (_tab == 0 && decimal.TryParse(_codEntidadSel, out var e)) parametros["CodEntidadFija"] = e;
+            if (_tab == 1 && !string.IsNullOrWhiteSpace(_codProductoSel)) parametros["CodProductoFijo"] = _codProductoSel;
+        }
+
+        var dlg = await DialogService.ShowAsync<EntidadProductoDialog>(
+            modo == CrudModo.Create ? "Nuevo producto del proveedor" : "Producto del proveedor",
+            parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();
+    }
+}

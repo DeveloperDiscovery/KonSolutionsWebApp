@@ -1,0 +1,353 @@
+@page "/estandar/tipos-periodo"
+@attribute [Authorize]
+@using TipoPeriodoModel = KONSolutions.Shared.Models.Estandar.TiposPeriodo
+@using PeriodoModel = KONSolutions.Shared.Models.Estandar.Periodos
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@inject MenuService MenuSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+<PageTitle>Tipos de Periodo · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Tipos de Periodo" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema ESTANDAR · @_tipos.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_searchTipo" OnSearch="BuscarTipos" Placeholder="Buscar tipo de periodo..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="LoadTipos" />
+        <AccionesBotones CodAplicacion="@_codApTipos" CodOpcionAplicacion="@_codOpTipos"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeaderTipo" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);margin-bottom:16px;">
+    <div data-resizable-grid="tipos-periodo" data-default-height="280" style="position:relative;">
+    <MudDataGrid T="TipoPeriodoModel" Items="_tipos" Dense="true" Hover="true" Striped="true"
+                 RowClick="OnTipoRowClick"
+                 RowClassFunc="@((t, i) => t.COD_TIPO_PERIODO == _tipoSel?.COD_TIPO_PERIODO ? "fila-seleccionada" : "")"
+                 RowStyleFunc="@((t, i) => "cursor:pointer;")"
+                 FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false"><CellTemplate>@context.Item.COD_TIPO_PERIODO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate>@context.Item.DES_TIPO_PERIODO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Prefijo" Sortable="false" Width="100"><CellTemplate>@context.Item.DES_PREFIJO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Tipo de Estado" Sortable="false" Width="150"><CellTemplate>@context.Item.DES_TIPO_ESTADO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Duración" Sortable="false">
+                <CellTemplate>
+                    <div class="d-flex align-center gap-1 flex-wrap">
+                        @foreach (var (icono, texto) in FlagsDuracion(context.Item))
+                        {
+                            <span title="@texto" style="display:inline-flex;align-items:center;"><MudIcon Icon="@icono" Size="Size.Small" Style="opacity:.8;" /></span>
+                        }
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Módulos" Sortable="false">
+                <CellTemplate>
+                    <div class="d-flex align-center gap-1 flex-wrap">
+                        @foreach (var (icono, texto) in FlagsModulo(context.Item))
+                        {
+                            <span title="@texto" style="display:inline-flex;align-items:center;"><MudIcon Icon="@icono" Size="Size.Small" Style="opacity:.8;" /></span>
+                        }
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div @onclick:stopPropagation="true">
+                        <AccionesBotones CodAplicacion="@_codApTipos" CodOpcionAplicacion="@_codOpTipos"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrillaTipo(item,b))" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="TipoPeriodoModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div class="d-flex align-center gap-3 pa-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <MudText Typo="Typo.h6">Periodos</MudText>
+            <MudText Class="mono" Style="opacity:.6;font-size:.78rem;">
+                @(_tipoSel is null ? "Ningún tipo de periodo seleccionado" : $"Tipo: {_tipoSel.COD_TIPO_PERIODO} – {_tipoSel.DES_TIPO_PERIODO}")
+            </MudText>
+        </div>
+        <BarraBusqueda @bind-Value="_searchPeriodo" OnSearch="BuscarPeriodos" Placeholder="Buscar periodo..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+        @if (_periodosSeleccionados.Count > 0)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Secondary" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="AbrirCopiarPeriodos">
+                Copiar (@_periodosSeleccionados.Count)
+            </MudButton>
+        }
+        @if (_tipoSel is not null)
+        {
+            <div class="grid-header-divider"></div>
+            <AccionesBotones CodAplicacion="@_codApPeriodos" CodOpcionAplicacion="@_codOpPeriodos"
+                             Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeaderPeriodo" />
+        }
+    </div>
+    <div data-resizable-grid="periodos" data-default-height="320" style="position:relative;">
+    <MudDataGrid T="PeriodoModel" Items="_periodos" Dense="true" Hover="true" Striped="true"
+                 MultiSelection="true" @bind-SelectedItems="_periodosSeleccionados"
+                 FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false" Width="110"><CellTemplate>@context.Item.COD_PERIODO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate>@context.Item.DES_PERIODO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Inicio" Sortable="false" Width="110">
+                <CellTemplate>@(context.Item.FEC_INICIO?.ToString("dd/MM/yyyy"))</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Fin" Sortable="false" Width="110">
+                <CellTemplate>@(context.Item.FEC_FINAL?.ToString("dd/MM/yyyy"))</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Año" Sortable="false" Width="80"><CellTemplate>@context.Item.NUM_ANO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Mes" Sortable="false" Width="70"><CellTemplate>@context.Item.NUM_MES</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@_codApPeriodos" CodOpcionAplicacion="@_codOpPeriodos"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrillaPeriodo(item,b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent>
+            <MudText Class="pa-6 mono" Style="opacity:.5;">
+                @(_tipoSel is null ? "Seleccione un tipo de periodo arriba." : "Sin periodos para este tipo.")
+            </MudText>
+        </NoRecordsContent>
+        <PagerContent><MudDataGridPager T="PeriodoModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambioTipos;
+    private Func<Task>? _onCambioPeriodos;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private string _codApTipos = "", _codOpTipos = "";
+    private string _codApPeriodos = "", _codOpPeriodos = "";
+
+    private void ResolverCodigosPorSeccion()
+    {
+        (_codApTipos, _codOpTipos)       = ResolverCod("Estandar/TiposPeriodo.razor");
+        (_codApPeriodos, _codOpPeriodos) = ResolverCod("Estandar/Periodos.razor");
+    }
+
+    private (string App, string Opcion) ResolverCod(string formulario)
+    {
+        var r = MenuSvc.BuscarCodigosPorFormulario(formulario);
+        return r is null ? (CodAplicacion, CodOpcionAplicacion) : (r.Value.CodAplicacion, r.Value.CodOpcionAplicacion);
+    }
+
+    private List<TipoPeriodoModel> _tipos = new();
+    private List<PeriodoModel> _periodos = new();
+    private TipoPeriodoModel? _tipoSel;
+    private string _searchTipo = "";
+    private string _searchPeriodo = "";
+    private HashSet<PeriodoModel> _periodosSeleccionados = new();
+
+    private static IEnumerable<(string Icono, string Texto)> FlagsDuracion(TipoPeriodoModel t)
+    {
+        if (t.FLG_QUINQUENAL == true) yield return (Icons.Material.Filled.CalendarViewMonth, "Quinquenal");
+        if (t.FLG_BIANUAL == true)    yield return (Icons.Material.Filled.CalendarViewMonth, "Bianual");
+        if (t.FLG_ANUAL == true)      yield return (Icons.Material.Filled.CalendarToday, "Anual");
+        if (t.FLG_SEMESTRAL == true)  yield return (Icons.Material.Filled.DateRange, "Semestral");
+        if (t.FLG_TRIMESTRAL == true) yield return (Icons.Material.Filled.DateRange, "Trimestral");
+        if (t.FLG_MENSUAL == true)    yield return (Icons.Material.Filled.CalendarMonth, "Mensual");
+        if (t.FLG_QUINCENAL == true)  yield return (Icons.Material.Filled.ViewWeek, "Quincenal");
+        if (t.FLG_SEMANAL == true)    yield return (Icons.Material.Filled.ViewWeek, "Semanal");
+        if (t.FLG_DIARIO == true)     yield return (Icons.Material.Filled.Today, "Diario");
+    }
+
+    private static IEnumerable<(string Icono, string Texto)> FlagsModulo(TipoPeriodoModel t)
+    {
+        if (t.FLG_MODULO_CONTABLE == true)      yield return (Icons.Material.Filled.AccountBalance, "Contable");
+        if (t.FLG_MODULO_COSTOS == true)        yield return (Icons.Material.Filled.RequestQuote, "Costos");
+        if (t.FLG_MODULO_RRHH_NOMINA == true)    yield return (Icons.Material.Filled.Groups, "RRHH / Nómina");
+        if (t.FLG_MODULO_COMERCIAL == true)      yield return (Icons.Material.Filled.PointOfSale, "Comercial");
+        if (t.FLG_MODULO_NETWORKING == true)     yield return (Icons.Material.Filled.Hub, "Networking");
+        if (t.FLG_MODULO_PLANEAMIENTO == true)   yield return (Icons.Material.Filled.Engineering, "Planeamiento");
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        ResolverCodigosPorSeccion();
+        await AccessLog.LogNavegacionAsync("ESTANDAR", "TiposPeriodo");
+        await LoadTipos();
+
+        _tipoSel = _tipos.FirstOrDefault();
+        if (_tipoSel is not null) await LoadPeriodosDeTipoSel();
+
+        _onCambioTipos = async () => await InvokeAsync(async () => { await LoadTipos(); StateHasChanged(); });
+        Cambios.Suscribir("ESTANDAR.TIPOS_PERIODO", _onCambioTipos);
+        _onCambioPeriodos = async () => await InvokeAsync(async () => { await LoadPeriodosDeTipoSel(); StateHasChanged(); });
+        Cambios.Suscribir("ESTANDAR.PERIODOS", _onCambioPeriodos);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => AbrirTipo(null, CrudModo.Create));
+
+    private async Task LoadTipos()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_searchTipo))
+            {
+                var rs = await Http.GetFromJsonAsync<ApiResponse<List<TipoPeriodoModel>>>(
+                    $"{ApiRoutes.Estandar.TiposPeriodo}/search?search={Uri.EscapeDataString(_searchTipo)}");
+                _tipos = rs?.Data ?? new();
+                return;
+            }
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<TipoPeriodoModel>>>(ApiRoutes.Estandar.TiposPeriodo);
+            _tipos = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TiposPeriodo), nameof(LoadTipos));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(TiposPeriodo));
+            _tipos = new();
+        }
+    }
+
+    private Task BuscarTipos() => LoadTipos();
+
+    private async Task LoadPeriodosDeTipoSel()
+    {
+        if (_tipoSel is null) { _periodos = new(); return; }
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_searchPeriodo))
+            {
+                var rs = await Http.GetFromJsonAsync<ApiResponse<List<PeriodoModel>>>(
+                    $"{ApiRoutes.Estandar.PeriodosSearch}?codTipoPeriodo={Uri.EscapeDataString(_tipoSel.COD_TIPO_PERIODO)}&search={Uri.EscapeDataString(_searchPeriodo)}");
+                _periodos = rs?.Data ?? new();
+                return;
+            }
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<PeriodoModel>>>(
+                $"{ApiRoutes.Estandar.Periodos}?codTipoPeriodo={Uri.EscapeDataString(_tipoSel.COD_TIPO_PERIODO)}");
+            _periodos = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TiposPeriodo), nameof(LoadPeriodosDeTipoSel));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(TiposPeriodo));
+            _periodos = new();
+        }
+    }
+
+    private Task BuscarPeriodos() => LoadPeriodosDeTipoSel();
+
+    private async Task OnTipoRowClick(DataGridRowClickEventArgs<TipoPeriodoModel> args)
+    {
+        _tipoSel = args.Item;
+        _searchPeriodo = "";
+        _periodosSeleccionados = new();
+        await LoadPeriodosDeTipoSel();
+    }
+
+    private async Task AbrirCopiarPeriodos()
+    {
+        var dlg = await DialogService.ShowAsync<CopiarPeriodosDialog>("Copiar periodos a otro Tipo de Periodo",
+            new DialogParameters
+            {
+                ["Periodos"] = _periodosSeleccionados.ToList(),
+                ["TiposDisponibles"] = _tipos
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false })
+        {
+            _periodosSeleccionados = new();
+            Snackbar.Add("Periodos copiados.", Severity.Success);
+        }
+    }
+
+    // ── Tipos de Periodo ──
+    private Task OnAccionHeaderTipo(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return AbrirTipo(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrillaTipo(TipoPeriodoModel item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_GET    == true) return AbrirTipo(item, CrudModo.Read);
+        if (b.FLG_ACCION_PUT    == true) return AbrirTipo(item, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return AbrirTipo(item, CrudModo.Delete);
+        return Task.CompletedTask;
+    }
+
+    private async Task AbrirTipo(TipoPeriodoModel? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo tipo de periodo",
+            CrudModo.Delete => $"Eliminar · {item?.DES_TIPO_PERIODO}",
+            _               => $"Editar · {item?.DES_TIPO_PERIODO}"
+        };
+        var dlg = await DialogService.ShowAsync<TiposPeriodoDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = _codApTipos, ["CodOpcionAplicacion"] = _codOpTipos },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false })
+        {
+            var codSel = _tipoSel?.COD_TIPO_PERIODO;
+            await LoadTipos();
+            _tipoSel = _tipos.FirstOrDefault(t => t.COD_TIPO_PERIODO == codSel) ?? _tipos.FirstOrDefault();
+            await LoadPeriodosDeTipoSel();
+        }
+    }
+
+    // ── Periodos ──
+    private Task OnAccionHeaderPeriodo(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return AbrirPeriodo(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrillaPeriodo(PeriodoModel item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_GET    == true) return AbrirPeriodo(item, CrudModo.Read);
+        if (b.FLG_ACCION_PUT    == true) return AbrirPeriodo(item, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return AbrirPeriodo(item, CrudModo.Delete);
+        return Task.CompletedTask;
+    }
+
+    private async Task AbrirPeriodo(PeriodoModel? item, CrudModo modo)
+    {
+        if (_tipoSel is null) return;
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo periodo",
+            CrudModo.Delete => $"Eliminar · {item?.DES_PERIODO}",
+            _               => $"Editar · {item?.DES_PERIODO}"
+        };
+        var dlg = await DialogService.ShowAsync<PeriodosDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodTipoPeriodo"] = _tipoSel.COD_TIPO_PERIODO, ["CodTipoEstadoPadre"] = _tipoSel.COD_TIPO_ESTADO, ["CodAplicacion"] = _codApPeriodos, ["CodOpcionAplicacion"] = _codOpPeriodos },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await LoadPeriodosDeTipoSel();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("ESTANDAR.TIPOS_PERIODO", _onCambioTipos ?? (() => Task.CompletedTask));
+        Cambios.Desuscribir("ESTANDAR.PERIODOS", _onCambioPeriodos ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

@@ -1,0 +1,490 @@
+@using KONSolutions.Shared.Models.Reportes
+@using System.Globalization
+@inject ReportesWebService Reportes
+@inject MenuService MenuService
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@implements IAsyncDisposable
+
+@* REPORTE: DIÁLOGO DE FILTROS, VISTA PREVIA Y DESCARGA.
+
+   Lo abre AccionesBotones al tocar un botón que tiene un reporte asignado (o la pantalla de diseños, para la
+   vista previa de un diseño). Se arma solo con los parámetros de la fuente:
+     - Los que salen de la fila o de la pantalla (mismo nombre, o el campo que diga la asignación del botón), los
+       fijos y los de sistema no se piden.
+     - Los demás se piden con su control (fecha, número, texto, combo, sí/no) y su valor por defecto.
+     - Un combo recibe los demás valores del diálogo: cuando uno cambia, los combos se vuelven a pedir (los tipos de
+       operación siguen a la clase). PRIMERO: el combo toma su primer ítem si queda vacío.
+   Si no hay nada que pedir y el botón no deja elegir formato, genera de una.
+
+   El PDF con vista previa se ve aquí mismo; desde la vista previa se puede descargar en los otros formatos del
+   diseño. Los demás formatos se descargan directamente. Si el botón guarda una copia de lo que genera, avisa dónde
+   quedó (o por qué no se pudo). Todos los permisos los valida la API (el del botón, por el
+   rol); este diálogo no decide nada de seguridad. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@(_dialogo?.COD_TIPO_DISENO == "FIC" ? Icons.Material.Filled.Article : _dialogo?.COD_TIPO_DISENO == "BAN" ? Icons.Material.Filled.Dashboard : Icons.Material.Filled.ListAlt)" Size="Size.Medium" />
+            <MudText Typo="Typo.h6">@(Titulo ?? _dialogo?.DES_DISENO ?? "Reporte")</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (_dialogo is null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">@(_error ?? "No se pudo leer el reporte.")</MudAlert>
+        }
+        else if (_paso == Paso.Vista && _url is not null)
+        {
+            @* Ampliado: el visor de PDF ajusta la página al ancho (#view=FitH). @key lo vuelve a crear al cambiar, para que tome el ajuste.
+               El alto no va en vh: lo llena el diálogo (ver .rep-visor abajo).
+               El iframe va dentro de un div y con la escala del zoom de la aplicación compensada (EstiloVisor): ver abajo. *@
+            <div class="rep-visor">
+                <iframe @key="_ampliado" src="@(_ampliado ? _url + "#view=FitH" : _url)" style="@EstiloVisor"></iframe>
+            </div>
+            <MudText Typo="Typo.caption" Class="d-block mt-1" Style="opacity:.6;">
+                @($"{_archivo?.DES_NOMBRE_ARCHIVO} · {_archivo?.NUM_FILAS:N0} fila{(_archivo?.NUM_FILAS == 1 ? "" : "s")} de datos")
+                @if (!string.IsNullOrWhiteSpace(_archivo?.DES_RUTA_GUARDADA))
+                {
+                    <span>@($" · Copia en {_archivo.DES_RUTA_GUARDADA}")</span>
+                }
+            </MudText>
+            @* Solo en la vista previa de la pantalla de diseños: quien usa el reporte desde un botón no necesita saberlo. *@
+            @if (NumDiseno is not null && _archivo?.COLUMNAS_NUEVAS is { Count: > 0 } nuevas)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-1">
+                    El procedimiento trae columnas nuevas y ya se agregaron a la fuente: @string.Join(", ", nuevas).
+                    Para que salgan, ponlas en el diseño al cerrar esta vista previa.
+                </MudAlert>
+            }
+        }
+        else
+        {
+            @if (Pedidos.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+                    @(_generando ? "Generando el reporte..." : "Este reporte no necesita filtros: toma los datos del registro.")
+                </MudText>
+            }
+            else
+            {
+                <div class="rep-filtros">
+                    @foreach (var p in Pedidos)
+                    {
+                        var x = p;
+                        <div class="@(x.COD_CONTROL == "CHK" ? "rep-chk" : "")">
+                            @switch (x.COD_CONTROL)
+                            {
+                                case "FEC":
+                                    <MudDatePicker Label="@Etiqueta(x)" Date="@Fecha(x)" DateChanged="@(d => PonerFecha(x, d))"
+                                                   DateFormat="dd/MM/yyyy" Editable="true" Variant="Variant.Outlined" Clearable="@(!x.FLG_OBLIGATORIO)"
+                                                   Disabled="_generando" />
+                                    break;
+                                case "FEH":
+                                    <MudTextField T="string" Label="@Etiqueta(x)" Value="@Valor(x)" ValueChanged="@(v => Poner(x, v))"
+                                                  InputType="InputType.DateTimeLocal" Variant="Variant.Outlined" Disabled="_generando" />
+                                    break;
+                                case "NUM":
+                                    <MudTextField T="string" Label="@Etiqueta(x)" Value="@Valor(x)" ValueChanged="@(v => Poner(x, v))"
+                                                  InputMode="@(InputMode.@decimal)" Variant="Variant.Outlined" Clearable="true" Immediate="true" Disabled="_generando" />
+                                    break;
+                                case "CHK":
+                                    <MudCheckBox T="bool" Value="@(Valor(x) == "1")" ValueChanged="@(v => Poner(x, v ? "1" : "0"))"
+                                                 Label="@Etiqueta(x)" Color="Color.Primary" Disabled="_generando" />
+                                    break;
+                                case "CMB":
+                                    <AriaCombo TItem="ComboboxItem" Items="@Items(x)"
+                                               TextFunc="@(i => i.Texto)" ValueFunc="@(i => i.Id)"
+                                               Value="@Valor(x)" ValueChanged="@(v => Poner(x, v))"
+                                               Label="@Etiqueta(x)" Obligatorio="@x.FLG_OBLIGATORIO" Disabled="_generando" Class="" />
+                                    break;
+                                default:
+                                    <MudTextField T="string" Label="@Etiqueta(x)" Value="@Valor(x)" ValueChanged="@(v => Poner(x, v))"
+                                                  Variant="Variant.Outlined" Clearable="true" Immediate="true" Disabled="_generando" />
+                                    break;
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (_dialogo.Formatos.Count > 1 && (_dialogo.FLG_ELEGIR_FORMATO || Pedidos.Count > 0))
+            {
+                <MudText Typo="Typo.caption" Class="d-block mt-3 mb-1" Style="font-weight:700;letter-spacing:.4px;">FORMATO</MudText>
+                <div class="d-flex gap-2" style="flex-wrap:wrap;">
+                    @foreach (var f in _dialogo.Formatos)
+                    {
+                        var ff = f;
+                        <MudButton Variant="@(_formato == ff ? Variant.Filled : Variant.Outlined)" Size="Size.Small"
+                                   StartIcon="@ReportesWebService.IconoFormato(ff)" Disabled="_generando"
+                                   Style="@(_formato == ff ? EstilosBoton.Confirmar : "")"
+                                   OnClick="@(() => _formato = ff)">@ReportesWebService.NombreFormato(ff)</MudButton>
+                    }
+                </div>
+            }
+            @if (_generando)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mt-3" />
+            }
+        }
+        @if (_error is not null && _dialogo is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <div class="d-flex align-center gap-2 pa-2" style="flex-wrap:wrap;">
+            @if (_paso == Paso.Vista)
+            {
+                <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Disabled="_generando"
+                           StartIcon="@Icons.Material.Filled.Close" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+                <MudButton Variant="Variant.Outlined" StartIcon="@(_ampliado ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+                           OnClick="Ampliar">@(_ampliado ? "Tamaño normal" : "Ampliar")</MudButton>
+                @if (Pedidos.Count > 0)
+                {
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.FilterAlt" Disabled="_generando"
+                               OnClick="VolverAFiltros">Cambiar filtros</MudButton>
+                }
+                @foreach (var f in _dialogo?.Formatos ?? new List<string>())
+                {
+                    var ff = f;
+                    <MudButton Variant="Variant.Filled" Style="@(ff == "PDF" ? EstilosBoton.Confirmar : EstilosBoton.Cancelar)" Disabled="_generando"
+                               StartIcon="@ReportesWebService.IconoFormato(ff)"
+                               OnClick="@(() => Descargar(ff))">@($"Descargar {ReportesWebService.NombreFormato(ff)}")</MudButton>
+                }
+            }
+            else if (_dialogo is not null)
+            {
+                <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Disabled="_generando"
+                           StartIcon="@Icons.Material.Filled.Close" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+                @if (_dialogo.Formatos.Contains("PDF") && _formato != "PDF")
+                {
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Visibility" Disabled="_generando"
+                               OnClick="@(() => Generar("PDF", vista: true))">Vista previa</MudButton>
+                }
+                <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" Disabled="@(_generando || _formato is null)"
+                           StartIcon="@ReportesWebService.IconoFormato(_formato)"
+                           OnClick="@(() => Generar(_formato!, vista: _formato == "PDF" && _dialogo.FLG_VISTA_PREVIA))">
+                    @(_generando ? "Generando..." : _formato == "PDF" && _dialogo.FLG_VISTA_PREVIA ? "Ver" : "Generar")
+                </MudButton>
+            }
+        </div>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .rep-filtros { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px 14px; align-items:start; }
+    /* Vista previa: el visor llena el diálogo entre el título y los botones. Sin vh: el zoom propio de la aplicación
+       (appZoom.js, transform:scale sobre #app) los achica y el PDF quedaba cortado, con un hueco debajo. Los porcentajes
+       del contenedor del diálogo, en cambio, ya vienen compensados. El diálogo ocupa el 88 % del alto, o todo al ampliar. */
+    .mud-dialog:has(.rep-visor):not(.mud-dialog-fullscreen) { height:88%; max-height:88%; }
+    .mud-dialog:has(.rep-visor) .mud-dialog-content { display:flex; flex-direction:column; min-height:0; }
+    .rep-visor { flex:1 1 auto; min-height:240px; width:100%; border:1px solid var(--line); border-radius:6px; background:#525659;
+                 position:relative; overflow:hidden; }
+    .rep-visor > iframe { position:absolute; left:0; top:0; width:100%; height:100%; border:0; transform-origin:top left; }
+    .rep-chk { display:flex; align-items:center; min-height:56px; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>Por botón (lo normal, desde cualquier pantalla).</summary>
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    [Parameter] public string? CodBotonOpcion { get; set; }
+    /// <summary>Por diseño: la vista previa de la pantalla de diseños (sin botón).</summary>
+    [Parameter] public int? NumDiseno { get; set; }
+    /// <summary>Los campos de la fila o de la pantalla, como texto (ver ReportesWebService.Contexto).</summary>
+    [Parameter] public Dictionary<string, string?> Contexto { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    [Parameter] public string? Titulo { get; set; }
+
+    private enum Paso { Filtros, Vista }
+    private Paso _paso = Paso.Filtros;
+    private ReporteDialogo? _dialogo;
+    private readonly Dictionary<string, string?> _valores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<ComboboxItem>> _combos = new(StringComparer.OrdinalIgnoreCase);
+    private string? _formato;
+    private string? _error;
+    private string? _url;
+    private ReporteArchivo? _archivo;
+    private bool _cargando = true, _generando;
+    private CancellationTokenSource? _recarga;
+    // La vista previa sale ampliada a toda la ventana. «Tamaño normal» la achica, y eso se recuerda mientras no se recargue
+    // la página: quien la achica una vez suele querer ver así las siguientes.
+    private static bool _ampliadoSesion = true;
+    private bool _ampliado = _ampliadoSesion;
+    private DialogOptions? _opcionesIniciales;
+    private bool _reubicar;
+    /// <summary>La escala del zoom propio de la aplicación (appZoom.js) al abrir la vista previa.</summary>
+    private double _escala = 1;
+
+    /// <summary>El zoom de la aplicación es un transform:scale sobre #app. Al visor de PDF del navegador eso no le sirve: lo
+    /// dibuja a su tamaño y después lo estira como una imagen, y el PDF se ve borroso con cualquier zoom del visor. Por eso
+    /// el iframe se agranda en la misma proporción y se le aplica la escala inversa: su escala final es 1 y se dibuja nítido.
+    /// Ocupa lo mismo en pantalla; sus botones (página, zoom, descargar) se ven al tamaño normal del navegador.</summary>
+    private string? EstiloVisor => Math.Abs(_escala - 1) < 0.001 ? null
+        : string.Create(CultureInfo.InvariantCulture, $"width:{100 * _escala:0.###}%;height:{100 * _escala:0.###}%;transform:scale({1 / _escala:0.######});");
+
+    private async Task LeerEscala()
+    {
+        try { var s = await JS.InvokeAsync<double>("appZoom.getScale"); _escala = s > 0 ? s : 1; }
+        catch { _escala = 1; }   // index.html anterior sin appZoom: sin compensar
+    }
+
+    private void Ampliar()
+    {
+        _ampliadoSesion = _ampliado = !_ampliado;
+        AplicarTamano();
+    }
+
+    private void VolverAFiltros()
+    {
+        _paso = Paso.Filtros;
+        _error = null;
+        AplicarTamano();
+    }
+
+    /// <summary>El tamaño del diálogo según el paso: filtros, vista previa (más ancha) o vista previa a toda la ventana.
+    /// MudBlazor toma el Style del diálogo una sola vez, al abrirlo: por eso el tamaño va por SetOptions. Después de
+    /// dibujarlo se le quita la posición que deja el arrastre de la cabecera (index.html): un diálogo arrastrado
+    /// conserva su left/top en línea y, al crecer, se saldría de la ventana.</summary>
+    private void AplicarTamano()
+    {
+        _reubicar = true;
+        var b = _opcionesIniciales ??= MudDialog.Options;
+        var vista = _paso == Paso.Vista;
+        MudDialog.SetOptions(new DialogOptions
+        {
+            CloseButton = b.CloseButton,
+            BackdropClick = b.BackdropClick,
+            CloseOnEscapeKey = b.CloseOnEscapeKey,
+            Position = b.Position,
+            MaxWidth = vista ? MaxWidth.Large : b.MaxWidth,
+            FullWidth = true,
+            FullScreen = vista && _ampliado
+        });
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_reubicar) return;
+        _reubicar = false;
+        try { await JS.InvokeVoidAsync("dialogArrastre.reiniciar", "_" + MudDialog.Id.ToString("N")); }
+        catch (JSException) { /* index.html anterior en caché: el diálogo queda donde estaba */ }
+    }
+
+    private static readonly ComboboxItem Todos = new() { Id = "", Texto = "(todos)" };
+
+    /// <summary>Los parámetros que el usuario tiene que llenar: visibles y que no salen de la fila, de un valor fijo
+    /// ni del sistema.</summary>
+    private List<ReporteDialogoParametro> Pedidos => _dialogo?.Parametros.Where(Pedir).ToList() ?? new();
+
+    private bool Pedir(ReporteDialogoParametro p)
+        => p.FLG_VISIBLE && (p.COD_ORIGEN == "DLG" || (p.COD_ORIGEN == "AUT" && string.IsNullOrWhiteSpace(DeContexto(p.DES_CAMPO))));
+
+    private string? DeContexto(string? campo)
+        => campo is not null && Contexto.TryGetValue(campo, out var v) ? v : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var (d, err) = NumDiseno is { } n
+            ? await Reportes.GetAsync<ReporteDialogo>(ApiRoutes.Reportes.DisenoDialogo(n))
+            : await Reportes.GetAsync<ReporteDialogo>(ApiRoutes.Reportes.Dialogo(CodAplicacion ?? "", CodOpcionAplicacion ?? "", CodBotonOpcion ?? "", MenuService.RolActivo));
+        _dialogo = d;
+        _error = err;
+        if (d is null) { _cargando = false; return; }
+        if (d.Formatos.Count == 0) { _error = "El diseño no tiene formatos habilitados."; _cargando = false; return; }
+        _formato = d.Formatos.Contains(d.COD_FORMATO_DEFECTO) ? d.COD_FORMATO_DEFECTO : d.Formatos[0];
+
+        // Valores iniciales: el de la fila (si el parámetro se pide en el diálogo igual) o el valor por defecto.
+        foreach (var p in d.Parametros.Where(Pedir))
+            _valores[p.DES_CAMPO] = DeContexto(p.DES_CAMPO) is { Length: > 0 } c ? Normalizar(p, c) : Defecto(p);
+        await CargarCombos();
+        _cargando = false;
+        StateHasChanged();
+
+        // Nada que pedir ni formato que elegir: se genera de una.
+        if (Pedidos.Count == 0 && !(d.FLG_ELEGIR_FORMATO && d.Formatos.Count > 1))
+            await Generar(_formato!, vista: _formato == "PDF" && d.FLG_VISTA_PREVIA, cerrarAlDescargar: true);
+    }
+
+    /// <summary>Pide los ítems de los combos en el orden de los parámetros: así un combo que depende de otro (los tipos
+    /// de operación, de la clase) recibe el valor que el anterior acaba de tomar. "excepto": el combo que el usuario
+    /// acaba de cambiar. Un valor que ya no está en la lista nueva se borra; un combo con valor por defecto PRIMERO que
+    /// queda vacío toma el primer ítem.</summary>
+    private async Task CargarCombos(string? excepto = null, CancellationToken ct = default)
+    {
+        foreach (var p in Pedidos.Where(x => x.COD_CONTROL == "CMB" && !string.Equals(x.DES_CAMPO, excepto, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (ct.IsCancellationRequested) return;
+            var dto = new ReporteComboDto
+            {
+                COD_APLICACION = CodAplicacion, COD_OPCION_APLICACION = CodOpcionAplicacion, COD_BOTON_OPCION = CodBotonOpcion,
+                COD_ROL_USUARIO = MenuService.RolActivo, DES_PARAMETRO = p.DES_PARAMETRO,
+                Valores = new(_valores, StringComparer.OrdinalIgnoreCase), Contexto = Contexto
+            };
+            var url = NumDiseno is { } n ? ApiRoutes.Reportes.DisenoCombo(n) : ApiRoutes.Reportes.Combo;
+            var (items, err) = await Reportes.PostAsync<List<ComboboxItem>>(url, dto);
+            var lista = new List<ComboboxItem>();
+            if (!p.FLG_OBLIGATORIO) lista.Add(Todos);
+            lista.AddRange(items ?? new());
+            _combos[p.DES_CAMPO] = lista;
+            if (err is not null) { _error = $"{Etiqueta(p)}: {err}"; continue; }
+            var actual = Valor(p);
+            if (!string.IsNullOrEmpty(actual) && !(items ?? new()).Any(i => i.Id == actual)) _valores[p.DES_CAMPO] = actual = null;
+            if (string.IsNullOrEmpty(actual) && string.Equals(p.COD_VALOR_DEFECTO, "PRIMERO", StringComparison.OrdinalIgnoreCase) && items is { Count: > 0 })
+                _valores[p.DES_CAMPO] = items[0].Id;
+        }
+    }
+
+    /// <summary>Al cambiar un valor se vuelven a pedir los demás combos (reciben los valores del diálogo por nombre).
+    /// Espera un momento antes, para no pedirlos en cada tecla.</summary>
+    private async Task RecargarCombos(string cambiado)
+    {
+        if (!Pedidos.Any(x => x.COD_CONTROL == "CMB" && !string.Equals(x.DES_CAMPO, cambiado, StringComparison.OrdinalIgnoreCase))) return;
+        _recarga?.Cancel();
+        var cts = _recarga = new CancellationTokenSource();
+        try { await Task.Delay(350, cts.Token); }
+        catch (TaskCanceledException) { return; }
+        await CargarCombos(cambiado, cts.Token);
+        if (!cts.IsCancellationRequested) StateHasChanged();
+    }
+
+    private List<ComboboxItem> Items(ReporteDialogoParametro p) => _combos.TryGetValue(p.DES_CAMPO, out var l) ? l : new() { Todos };
+    private string Etiqueta(ReporteDialogoParametro p) => (p.DES_ETIQUETA ?? ReportesWebService.EtiquetaDesdeNombre(p.DES_CAMPO)) + (p.FLG_OBLIGATORIO ? " *" : "");
+    private string? Valor(ReporteDialogoParametro p) => _valores.TryGetValue(p.DES_CAMPO, out var v) ? v : null;
+    private void Poner(ReporteDialogoParametro p, string? v)
+    {
+        var nuevo = string.IsNullOrWhiteSpace(v) ? null : v;
+        var cambio = !string.Equals(Valor(p), nuevo, StringComparison.Ordinal);
+        _valores[p.DES_CAMPO] = nuevo;
+        _error = null;
+        if (cambio) _ = RecargarCombos(p.DES_CAMPO);
+    }
+
+    private DateTime? Fecha(ReporteDialogoParametro p)
+        => DateTime.TryParseExact(Valor(p) ?? "", new[] { "yyyy-MM-dd", "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm" }, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : null;
+    private void PonerFecha(ReporteDialogoParametro p, DateTime? d) => Poner(p, d?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+    /// <summary>Un valor de la fila llevado al formato del control (la fila trae fechas con hora).</summary>
+    private static string? Normalizar(ReporteDialogoParametro p, string v)
+        => p.COD_CONTROL == "FEC" && v.Length >= 10 ? v[..10]
+         : p.COD_CONTROL == "FEH" && v.Length >= 16 ? v[..16]
+         : v;
+
+    /// <summary>El valor por defecto (misma regla que la API: HOY, INIMES... o FIJO).</summary>
+    private static string? Defecto(ReporteDialogoParametro p)
+    {
+        var hoy = DateTime.Today;
+        var ini = new DateTime(hoy.Year, hoy.Month, 1);
+        DateTime? f = (p.COD_VALOR_DEFECTO ?? "").ToUpperInvariant() switch
+        {
+            "HOY" => hoy, "AYER" => hoy.AddDays(-1), "INIMES" => ini, "FINMES" => ini.AddMonths(1).AddDays(-1),
+            "INIMESANT" => ini.AddMonths(-1), "FINMESANT" => ini.AddDays(-1), "INIANO" => new DateTime(hoy.Year, 1, 1),
+            "HACE7" => hoy.AddDays(-7), "HACE30" => hoy.AddDays(-30), _ => null
+        };
+        if (f is not null) return p.COD_CONTROL == "FEH" ? f.Value.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) : f.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        if (string.Equals(p.COD_VALOR_DEFECTO, "FIJO", StringComparison.OrdinalIgnoreCase)) return p.DES_VALOR_DEFECTO;
+        return p.COD_CONTROL == "CHK" ? "0" : null;
+    }
+
+    /// <summary>Lo que se ve de cada filtro, para el pie del reporte ("Proveedor: TEXTILES DEL SUR").</summary>
+    private Dictionary<string, string?> Textos()
+    {
+        var t = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in Pedidos)
+        {
+            var v = Valor(p);
+            if (string.IsNullOrWhiteSpace(v)) continue;
+            t[p.DES_CAMPO] = p.COD_CONTROL switch
+            {
+                "CMB" => Items(p).FirstOrDefault(i => i.Id == v)?.Texto ?? v,
+                "CHK" => v == "1" ? "Sí" : "No",
+                "FEC" => Fecha(p)?.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture) ?? v,
+                _     => v
+            };
+        }
+        return t;
+    }
+
+    private async Task Generar(string formato, bool vista, bool cerrarAlDescargar = false)
+    {
+        if (_dialogo is null || _generando) return;
+        var falta = Pedidos.FirstOrDefault(p => p.FLG_OBLIGATORIO && string.IsNullOrWhiteSpace(Valor(p)));
+        if (falta is not null) { _error = $"Falta {Etiqueta(falta).TrimEnd(' ', '*')}."; return; }
+        _generando = true;
+        _error = null;
+        StateHasChanged();
+        try
+        {
+            var dto = new ReporteGenerarDto
+            {
+                COD_APLICACION = CodAplicacion, COD_OPCION_APLICACION = CodOpcionAplicacion, COD_BOTON_OPCION = CodBotonOpcion,
+                COD_ROL_USUARIO = MenuService.RolActivo, COD_FORMATO = formato,
+                Valores = new(_valores, StringComparer.OrdinalIgnoreCase), Contexto = Contexto, Textos = Textos()
+            };
+            var url = NumDiseno is { } n ? ApiRoutes.Reportes.DisenoGenerar(n) : ApiRoutes.Reportes.Generar;
+            var (a, err) = await Reportes.PostAsync<ReporteArchivo>(url, dto);
+            if (a is null) { _error = err ?? "No se pudo generar el reporte."; return; }
+            if (vista && formato == "PDF")
+            {
+                await Liberar();
+                await LeerEscala();
+                _url = await JS.InvokeAsync<string>("blobViewer.crear", a.CONTENIDO, "application/pdf");
+                _archivo = a;
+                _paso = Paso.Vista;
+                AplicarTamano();
+                AvisarCopia(a);
+                return;
+            }
+            await Reportes.DescargarAsync(a);
+            Snackbar.Add($"Se descargó {a.DES_NOMBRE_ARCHIVO}.", Severity.Success);
+            AvisarCopia(a);
+            if (cerrarAlDescargar && _paso == Paso.Filtros) MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ReporteEjecutarDialog), nameof(Generar));
+            _error = "No se pudo generar el reporte. Ver detalle en el log de errores.";
+        }
+        finally
+        {
+            _generando = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Si el botón guarda una copia de lo que genera (su ruta en Reportes en botones): dónde quedó, o por qué no
+    /// se pudo. El aviso se queda hasta que lo cierren.</summary>
+    private void AvisarCopia(ReporteArchivo a)
+    {
+        if (!string.IsNullOrWhiteSpace(a.DES_RUTA_GUARDADA))
+            Snackbar.Add($"Copia guardada en {a.DES_RUTA_GUARDADA}", Severity.Info, c => c.VisibleStateDuration = 8000);
+        if (!string.IsNullOrWhiteSpace(a.DES_AVISO_GUARDADO))
+            Snackbar.Add(a.DES_AVISO_GUARDADO, Severity.Warning, c => c.RequireInteraction = true);
+    }
+
+    /// <summary>Desde la vista previa: el PDF ya está generado; los demás formatos se piden con los mismos filtros.</summary>
+    private async Task Descargar(string formato)
+    {
+        if (formato == "PDF" && _archivo is not null) { await Reportes.DescargarAsync(_archivo); return; }
+        await Generar(formato, vista: false);
+    }
+
+    private async Task Liberar()
+    {
+        if (_url is null) return;
+        try { await JS.InvokeVoidAsync("blobViewer.liberar", _url); } catch { /* el circuito ya se cerró */ }
+        _url = null;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _recarga?.Cancel();
+        await Liberar();
+    }
+}

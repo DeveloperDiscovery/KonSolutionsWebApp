@@ -1,0 +1,56 @@
+@* Copia una version completa (sectores, componentes, insumos y formulas) a una version nueva del mismo diseno o de otro.
+   La copia nace Registrada y sin bloqueo. No copia imagenes ni especificaciones tecnicas. *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(640px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">Copiar versión @NumVersion</MudText></TitleContent>
+    <DialogContent>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Style="opacity:.7;">Origen</MudText>
+            <MudText data-origen="1"><b>@CodDiseno</b> @(string.IsNullOrEmpty(DesDiseno) ? "" : "– " + DesDiseno) · versión @(NumVersion)</MudText>
+        </MudPaper>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">Destino</MudText>
+            <AriaCombo TItem="ComboboxItem" Items="_disenos" TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)" @bind-Value="_destino" Label="Diseño destino (la nueva versión se crea ahí)" />
+            <MudTextField T="string" @bind-Value="_descripcion" Label="Descripción de la nueva versión (opcional)" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="descripcion" />
+        </MudPaper>
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">Se crea con el siguiente número libre del diseño destino, Registrada y sin bloqueo. Para mezclar solo una parte en una versión que ya existe, use «Copiar segmento».</MudAlert>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex justify-end gap-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ContentCopy" Disabled="@(_copiando || string.IsNullOrEmpty(_destino))" OnClick="CopiarAsync" data-accion="copiar">
+                @(_copiando ? "Copiando..." : "Copiar versión")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public string? DesDiseno { get; set; }
+    [Parameter] public int NumVersion { get; set; }
+    private List<ComboboxItem> _disenos = new();
+    private string? _destino; private string? _descripcion; private string _error = ""; private bool _copiando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _disenos = await Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.DisenosCombobox) ?? new();
+        _destino = CodDiseno;
+    }
+
+    private async Task CopiarAsync()
+    {
+        _copiando = true; _error = "";
+        var r = await Http.PostAsync<DisenosVersionCopiarResultado>(IngenieriaRoute.DisenosEstructuraCopiarVersion, new DisenosVersionCopiarDto
+        { COD_DISENO_ORIGEN = CodDiseno, NUM_VERSION_ORIGEN = NumVersion, COD_DISENO_DESTINO = _destino, DES_VERSION = string.IsNullOrWhiteSpace(_descripcion) ? null : _descripcion.Trim() });
+        _copiando = false;
+        if (!r.Ok || r.Data is null) { _error = r.Mensaje; return; }
+        Snackbar.Add($"Versión {r.Data.NUM_VERSION_NUEVA} creada en {_destino}: {r.Data.SECTORES} sector(es), {r.Data.COMPONENTES} componente(s), {r.Data.INSUMOS} insumo(s).", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(r.Data));
+    }
+}

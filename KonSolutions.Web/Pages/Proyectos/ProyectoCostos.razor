@@ -1,0 +1,279 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+@if (_c.Resumen is { } r)
+{
+    <div class="d-flex gap-2 flex-wrap mb-3">
+        <div class="pk"><b class="mono">@Mon(r.VAL_PRESUPUESTO_PROYECTO)</b><span>Presupuesto del proyecto</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_PRESUPUESTO_TAREAS)</b><span>Suma de las tareas</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_PRESUPUESTO_MATERIALES)</b><span>Materiales presupuestados</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_PRESUPUESTO_RECURSOS)</b><span>Recursos presupuestados (horas)</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_PRESUPUESTO_HIJOS)</b><span>Presupuesto consolidado (hijas)</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_GASTO_ASIGNADO)</b><span>Facturas sin impuestos (costo)</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_MATERIAL_CONSUMIDO)</b><span>Materiales consumidos</span></div>
+        <div class="pk"><b class="mono">@Mon(r.VAL_MANO_OBRA)</b><span>Mano de obra (horas efectivas)</span></div>
+        @if (r.VAL_UTILIDAD_PROPIOS > 0) { <div class="pk"><b class="mono">@Mon(r.VAL_UTILIDAD_PROPIOS)</b><span>Utilidad del personal propio</span></div> }
+        <div class="pk"><b class="mono">@Mon(r.VAL_ADICIONAL_PRESUPUESTADO)</b><span>Gastos adicionales presupuestados</span></div>
+        <div class="pk"><b class="mono" style="color:@(r.VAL_DISPONIBLE < 0 ? "var(--mud-palette-error)" : "inherit");">@Mon(r.VAL_COSTO_REAL)</b><span>Costo real</span></div>
+        <div class="pk"><b class="mono" style="color:@(r.VAL_DISPONIBLE < 0 ? "var(--mud-palette-error)" : "var(--mud-palette-success)");">@Mon(r.VAL_DISPONIBLE)</b><span>@(r.VAL_DISPONIBLE < 0 ? "Excedido" : "Disponible")</span></div>
+    </div>
+    @if (r.VAL_PRESUPUESTO_TAREAS > (r.VAL_PRESUPUESTO_PROYECTO ?? 0) && (r.VAL_PRESUPUESTO_PROYECTO ?? 0) > 0)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">Las tareas suman más que el presupuesto del proyecto.</MudAlert>
+    }
+}
+
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly) { <MudButton OnClick="Asignar" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.ReceiptLong">Asignar comprobante</MudButton> }
+    @if (!ReadOnly) { <MudButton OnClick="@(() => EditarAdicional(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AddCard">Gasto adicional presupuestado</MudButton> }
+    <MudSpacer />
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);flex:1 1 380px;min-width:0;">
+        <MudText Typo="Typo.subtitle2" Class="pa-2">Por fase</MudText>
+        <div>
+            <MudDataGrid T="ExpedienteCostoFase" Items="_c.PorFase" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+                <Columns>
+                    <PropertyColumn Property="x => x.DES_FASE" Title="Fase" />
+                    <PropertyColumn Property="x => x.VAL_PRESUPUESTO" Title="Presupuesto" Format="N2" CellStyle="text-align:right;" />
+                    <PropertyColumn Property="x => x.VAL_ADICIONAL" Title="Adicional" Format="N2" CellStyle="text-align:right;" />
+                    <TemplateColumn Title="Gasto" SortBy="x => x.VAL_GASTO" CellStyle="text-align:right;">
+                        <CellTemplate><span style="@(context.Item.VAL_PRESUPUESTO > 0 && context.Item.VAL_GASTO > context.Item.VAL_PRESUPUESTO ? "color:var(--mud-palette-error);font-weight:600;" : "")">@context.Item.VAL_GASTO.ToString("N2")</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="width:110px;">
+                        <CellTemplate><div class="prog-mini"><i style="width:@(Pct(context.Item).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%;@(context.Item.VAL_PRESUPUESTO > 0 && context.Item.VAL_GASTO > context.Item.VAL_PRESUPUESTO ? "background:#c0392b;" : "")"></i></div></CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin datos.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="ExpedienteCostoFase" /></PagerContent>
+            </MudDataGrid>
+                    </div>
+    </MudPaper>
+
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);flex:2 1 560px;min-width:0;">
+        <MudText Typo="Typo.subtitle2" Class="pa-2">Comprobantes asignados</MudText>
+        <div>
+            <MudDataGrid T="ExpedienteGasto" Items="_c.Gastos" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+                <Columns>
+                    <PropertyColumn Property="x => x.NUM_REGISTRO_COMPROBANTE" Title="Registro" Format="0" />
+                    <TemplateColumn Title="Comprobante" SortBy="x => x.NUM_COMPROBANTE_PAGO"><CellTemplate>@context.Item.COD_TIPO_COMPROBANTE_PAGO @context.Item.NUM_COMPROBANTE_PAGO</CellTemplate></TemplateColumn>
+                    <PropertyColumn Property="x => x.DES_ENTIDAD" Title="Proveedor" />
+                    <TemplateColumn Title="Fase / tarea" SortBy="x => x.DES_TAREA"><CellTemplate>@(context.Item.DES_TAREA ?? context.Item.DES_FASE ?? "—")</CellTemplate></TemplateColumn>
+                    <PropertyColumn Property="x => x.VAL_TOTAL" Title="Total" Format="N2" CellStyle="text-align:right;" />
+                    <PropertyColumn Property="x => x.VAL_GASTO_ASIGNADO" Title="Asignado" Format="N2" CellStyle="text-align:right;" />
+                    <TemplateColumn Title="Acciones" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                        <CellTemplate>
+                            <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" OnClick="@(() => VerComprobante(context.Item.NUM_REGISTRO_COMPROBANTE, context.Item.COD_TIPO_COMPROBANTE_PAGO, context.Item.NUM_COMPROBANTE_PAGO))" title="Ver el comprobante de pago" />
+                            @if (!ReadOnly) { <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(context.Item))" title="Quitar la asignación" /> }
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Todavía no hay comprobantes asignados.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="ExpedienteGasto" /></PagerContent>
+            </MudDataGrid>
+                    </div>
+        <MudText Typo="Typo.subtitle2" Class="pa-2 mt-2">Gastos adicionales presupuestados</MudText>
+        <div>
+            <MudDataGrid T="ExpedienteGastoAdicional" Items="_c.Adicionales" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+                <Columns>
+                    <TemplateColumn Title="Gasto" SortBy="x => x.DES_GASTO"><CellTemplate><span title="@context.Item.DES_OBSERVACION">@context.Item.DES_GASTO</span></CellTemplate></TemplateColumn>
+                    <TemplateColumn Title="Se presupuesta a" SortBy="x => x.DES_FASE"><CellTemplate>@(context.Item.COD_FASE is null ? "Proyecto principal" : $"Etapa {context.Item.COD_FASE} — {context.Item.DES_FASE}")</CellTemplate></TemplateColumn>
+                    <PropertyColumn Property="x => x.VAL_PRESUPUESTADO" Title="Presupuestado" Format="N2" CellStyle="text-align:right;" />
+                    @if (!ReadOnly)
+                    {
+                        <TemplateColumn Title="Acciones" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                            <CellTemplate>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditarAdicional(context.Item))" title="Editar" />
+                                <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => QuitarAdicional(context.Item))" title="Quitar" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    }
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">No hay gastos adicionales presupuestados.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="ExpedienteGastoAdicional" /></PagerContent>
+            </MudDataGrid>
+                    </div>
+        @if (_c.Adicionales.Count > 0) { <MudText Typo="Typo.caption" Class="pa-2" Style="font-weight:600;">Total presupuestado: @_c.Adicionales.Sum(x => x.VAL_PRESUPUESTADO).ToString("N2")</MudText> }
+    </MudPaper>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mt-3">
+    <MudText Typo="Typo.subtitle2" Class="pa-2">Facturas del proyecto (valor sin impuestos)</MudText>
+    <div>
+        <MudDataGrid T="ExpedienteComprobante" Items="_c.Comprobantes" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+            <Columns>
+                <PropertyColumn Property="x => x.NUM_REGISTRO" Title="Registro" Format="0" />
+                <TemplateColumn Title="Comprobante" SortBy="x => x.NUM_COMPROBANTE_PAGO"><CellTemplate>@context.Item.COD_TIPO_COMPROBANTE_PAGO @context.Item.NUM_COMPROBANTE_PAGO</CellTemplate></TemplateColumn>
+                <PropertyColumn Property="x => x.DES_ENTIDAD" Title="Proveedor" />
+                <PropertyColumn Property="x => x.COD_MONEDA" Title="Moneda" />
+                <PropertyColumn Property="x => x.VAL_TOTAL" Title="Total" Format="N2" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_SIN_IMPUESTOS" Title="Sin impuestos" Format="N2" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_ASIGNADO" Title="Asignado" Format="N2" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_COSTO_PROYECTO" Title="Suma al costo" Format="N2" CellStyle="text-align:right;font-weight:600;" />
+                <TemplateColumn Title="Acciones" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                    <CellTemplate><MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" OnClick="@(() => VerComprobante(context.Item.NUM_REGISTRO, context.Item.COD_TIPO_COMPROBANTE_PAGO, context.Item.NUM_COMPROBANTE_PAGO))" title="Ver el comprobante de pago" /></CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Este proyecto no tiene facturas asociadas.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="ExpedienteComprobante" /></PagerContent>
+        </MudDataGrid>
+            </div>
+    @if (_c.Comprobantes.Count > 0) { <MudText Typo="Typo.caption" Class="pa-2" Style="font-weight:600;">Total facturas que suman al costo: @_c.Comprobantes.Sum(x => x.VAL_COSTO_PROYECTO).ToString("N2")</MudText> }
+    <MudText Typo="Typo.caption" Class="pa-2" Style="opacity:.75;">Se asocian al poner el proyecto en la cabecera del comprobante de pago, o con "Asignar comprobante" (si hay gasto asignado, cuenta lo asignado).</MudText>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mt-3 pa-2">
+    <MudText Typo="Typo.subtitle2" Class="mb-1">Costo de los recursos asignados (general, por fase y tarea)</MudText>
+    <MudText Typo="Typo.caption" Style="opacity:.7;">Horas efectivas × costo por hora, más la utilidad del personal propio.</MudText>
+    @if (_recursos.Count == 0)
+    {
+        <MudText Class="mono pa-3" Style="opacity:.5;">Todavía no hay recursos asignados.</MudText>
+    }
+    else
+    {
+        <div class="d-flex align-center mono mt-2" style="gap:12px;padding:4px 8px 4px 44px;font-size:.8rem;opacity:.7;border-bottom:1px solid var(--line);">
+            <span style="flex:1;">Proyecto / fase / tarea / persona</span><span style="width:90px;text-align:right;">Horas</span><span style="width:110px;text-align:right;">Costo</span><span style="width:110px;text-align:right;">Utilidad</span><span style="width:120px;text-align:right;">Total</span>
+        </div>
+        <MudTreeView T="string" Dense="true">
+            <MudTreeViewItem T="string" Value="@("P")" Expanded="true">
+                <BodyContent>@FilaArbol("Proyecto — costo general de recursos", _recursos, true)</BodyContent>
+                <ChildContent>
+                    @foreach (var f in _plan.Fases.Where(x => x.COD_FASE_PADRE is null).OrderBy(x => x.COD_FASE)) { @NodoFase(f) }
+                    @{ var sueltas = _plan.Tareas.Where(t => t.COD_FASE is null).OrderBy(t => t.COD_TAREA).ToList(); }
+                    @foreach (var t in sueltas) { @NodoTarea(t) }
+                </ChildContent>
+            </MudTreeViewItem>
+        </MudTreeView>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+
+    [Inject] private ConfigService ConfigSvc { get; set; } = default!;
+    [Inject] private MenuService MenuService { get; set; } = default!;
+    [Inject] private WorkspaceTabService TabService { get; set; } = default!;
+    private List<ExpedienteRecurso> _recursos = new();
+
+    // ---- árbol de costo de recursos: proyecto > fase (con sus subfases) > tarea > persona ----
+    private IEnumerable<ExpedienteRecurso> RecursosDeTarea(int cod) => _recursos.Where(r => r.COD_TAREA == cod);
+    private IEnumerable<int> FasesDescendientes(int cod)
+    {
+        yield return cod;
+        foreach (var h in _plan.Fases.Where(x => x.COD_FASE_PADRE == cod))
+            foreach (var d in FasesDescendientes(h.COD_FASE)) yield return d;
+    }
+    private List<ExpedienteRecurso> RecursosDeFase(int cod)
+    {
+        var fases = FasesDescendientes(cod).ToHashSet();
+        var tareas = _plan.Tareas.Where(t => t.COD_FASE is int f && fases.Contains(f)).Select(t => t.COD_TAREA).ToHashSet();
+        return _recursos.Where(r => tareas.Contains(r.COD_TAREA)).ToList();
+    }
+
+    private RenderFragment FilaArbol(string texto, IEnumerable<ExpedienteRecurso> rs, bool fuerte = false) => __b =>
+    {
+        var l = rs.ToList();
+        var horas = l.Sum(r => r.NUM_HORAS_EFECTIVAS ?? 0); var costo = l.Sum(r => r.VAL_COSTO); var util = l.Sum(r => r.VAL_UTILIDAD); var total = l.Sum(r => r.VAL_TOTAL);
+        var peso = fuerte ? "font-weight:600;" : "";
+        __b.AddMarkupContent(0, $"<div class=\"d-flex align-center\" style=\"width:100%;gap:12px;{peso}\"><span style=\"flex:1;min-width:0;\">{System.Net.WebUtility.HtmlEncode(texto)}</span>" +
+            $"<span class=\"mono\" style=\"width:90px;text-align:right;opacity:.7;\">{horas:0.##} h</span>" +
+            $"<span class=\"mono\" style=\"width:110px;text-align:right;\">{costo:N2}</span>" +
+            $"<span class=\"mono\" style=\"width:110px;text-align:right;\">{util:N2}</span>" +
+            $"<span class=\"mono\" style=\"width:120px;text-align:right;font-weight:600;\">{total:N2}</span></div>");
+    };
+
+    private RenderFragment NodoFase(ExpedienteFase f) => @<MudTreeViewItem T="string" Value="@($"F{f.COD_FASE}")" Expanded="false" Icon="@Icons.Material.Filled.AccountTree">
+        <BodyContent>@FilaArbol($"{f.COD_FASE}. {f.DES_FASE}", RecursosDeFase(f.COD_FASE), true)</BodyContent>
+        <ChildContent>
+            @foreach (var h in _plan.Fases.Where(x => x.COD_FASE_PADRE == f.COD_FASE).OrderBy(x => x.COD_FASE)) { @NodoFase(h) }
+            @foreach (var t in _plan.Tareas.Where(t => t.COD_FASE == f.COD_FASE).OrderBy(t => t.COD_TAREA)) { @NodoTarea(t) }
+        </ChildContent>
+    </MudTreeViewItem>;
+
+    private RenderFragment NodoTarea(ExpedienteTarea t) => @<MudTreeViewItem T="string" Value="@($"T{t.COD_TAREA}")" Expanded="false" Icon="@Icons.Material.Filled.TaskAlt">
+        <BodyContent>@FilaArbol($"{t.COD_TAREA}. {t.DES_TAREA}", RecursosDeTarea(t.COD_TAREA))</BodyContent>
+        <ChildContent>
+            @foreach (var r in RecursosDeTarea(t.COD_TAREA).OrderBy(r => r.DES_ENTIDAD))
+            {
+                <MudTreeViewItem T="string" Value="@($"R{t.COD_TAREA}-{r.COD_ENTIDAD_ASIGNADA:0}-{r.COD_ROL_TAREA}")" Icon="@Icons.Material.Filled.Person">
+                    <BodyContent>@FilaArbol($"{r.DES_ENTIDAD} ({r.DES_ROL_TAREA})", new[] { r })</BodyContent>
+                </MudTreeViewItem>
+            }
+        </ChildContent>
+    </MudTreeViewItem>;
+
+    // abre el comprobante de pago en Registro de Compras (solo lectura)
+    private void VerComprobante(decimal? numRegistro, string? tipo, string? numero)
+    {
+        if (numRegistro is null) return;
+        var cod = MenuService.BuscarCodigosPorFormulario("Comercial/RegistroCompras.razor");
+        if (cod is null) { Snackbar.Add("No se encontró la opción Registro de Compras en tu menú: no se puede abrir el comprobante.", Severity.Warning); return; }
+        var info = WorkspaceRegistry.PorRuta("/comercial/registro-compras");
+        if (info is null) { Snackbar.Add("La pantalla Registro de Compras no está registrada.", Severity.Warning); return; }
+        TabService.Abrir($"Comprobante {tipo} {numero}".Trim(), info.Icono, info.ComponentType, info.Ruta,
+            new Dictionary<string, object> { ["CodAplicacion"] = cod.Value.CodAplicacion, ["CodOpcionAplicacion"] = cod.Value.CodOpcionAplicacion, ["NumRegistroInicial"] = numRegistro.Value },
+            clave: $"{info.Ruta}#reg{numRegistro:0}");
+    }
+
+    private ExpedienteCostos _c = new();
+    private ExpedientePlanificacion _plan = new();
+
+    private string Mon(decimal? v) => $"{_c.Resumen?.COD_MONEDA_VALORIZACION} {(v ?? 0):N2}".Trim();
+    private static double Pct(ExpedienteCostoFase f) => f.VAL_PRESUPUESTO <= 0 ? (f.VAL_GASTO > 0 ? 100 : 0) : Math.Min(100, (double)(f.VAL_GASTO / f.VAL_PRESUPUESTO * 100));
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _c = await Http.SafeGetAsync<ExpedienteCostos>(ApiRoutes.Proyectos.Exp(NumProyecto, "costos")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+            _recursos = await Http.SafeGetAsync<List<ExpedienteRecurso>>(ApiRoutes.Proyectos.Exp(NumProyecto, "recursos")) ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoCostos), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los costos. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Asignar()
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoGastoDialog>("Asignar comprobante",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Comprobantes"] = _c.Comprobantes, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task EditarAdicional(ExpedienteGastoAdicional? a)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoGastoAdicionalDialog>(a is null ? "Gasto adicional" : "Editar gasto adicional",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = a, ["Fases"] = _c.PorFase, ["Existentes"] = _c.Adicionales },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task QuitarAdicional(ExpedienteGastoAdicional a)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar gasto adicional", $"¿Quitar «{a.DES_GASTO}» ({a.VAL_PRESUPUESTADO:N2})?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.GastosAdicionales}/{NumProyecto}/{a.NUM_SECUENCIA}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el gasto adicional.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+
+    private async Task Quitar(ExpedienteGasto g)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar asignación", $"¿Quitar la asignación de {g.VAL_GASTO_ASIGNADO:N2} del comprobante {g.COD_TIPO_COMPROBANTE_PAGO} {g.NUM_COMPROBANTE_PAGO}?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.Gastos}/{NumProyecto}/{g.NUM_SECUENCIA}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar la asignación.", Severity.Warning); return; }
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

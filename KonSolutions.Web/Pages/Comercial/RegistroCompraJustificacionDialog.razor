@@ -1,0 +1,60 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Pide la justificación y la manda con el verbo PUT a la ruta que se le indique: enviar a aprobación, aprobar (si está bloqueado o es una excepción) y anular.
+   Obligatoria o no según la acción: el servidor la vuelve a exigir, aquí solo se evita el viaje. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@Titulo</MudText></TitleContent>
+    <DialogContent>
+        <EditForm Model="_forma" OnValidSubmit="Submit">
+            @if (!string.IsNullOrWhiteSpace(Aviso))
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3" data-aviso="justificacion">@Aviso</MudAlert>
+            }
+            <MudTextField T="string" Label="@Etiqueta" Variant="Variant.Outlined" Lines="4" MaxLength="500" @bind-Value="_texto" Immediate="true"
+                          Required="@Obligatoria" RequiredError="Escribe la justificación." Class="mb-3" data-campo="justificacion" />
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-2">
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_saving" data-accion="cancelar">Cancelar</MudButton>
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="@ColorConfirmar" Disabled="@(_saving || (Obligatoria && string.IsNullOrWhiteSpace(_texto)))" data-accion="confirmar">@Confirmar</MudButton>
+            </MudStack>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>Ruta PUT completa (por ejemplo «…/registro-compras/12/anular»).</summary>
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter] public string Titulo { get; set; } = "Justificación";
+    [Parameter] public string? Aviso { get; set; }
+    [Parameter] public string Etiqueta { get; set; } = "Justificación";
+    [Parameter] public string Confirmar { get; set; } = "Aceptar";
+    [Parameter] public Color ColorConfirmar { get; set; } = Color.Primary;
+    [Parameter] public bool Obligatoria { get; set; } = true;
+    [Parameter] public string ExitoMensaje { get; set; } = "Listo.";
+    /// <summary>Lo que ya estaba escrito (por ejemplo, la justificación con la que se envió a aprobación).</summary>
+    [Parameter] public string? TextoInicial { get; set; }
+
+    private readonly object _forma = new();
+    private string? _texto;
+    private bool _saving;
+
+    protected override void OnInitialized() => _texto = TextoInicial;
+
+    private async Task Submit()
+    {
+        if (Obligatoria && string.IsNullOrWhiteSpace(_texto)) { Snackbar.Add("Escribe la justificación.", Severity.Warning); return; }
+        _saving = true;
+        try
+        {
+            var resp = await Http.GuardarAsync(Url, new RegistroCompraJustificacionDto { DES_JUSTIFICACION = string.IsNullOrWhiteSpace(_texto) ? null : _texto.Trim() }, false);
+            if (resp.IsSuccessStatusCode) { Snackbar.Add(ExitoMensaje, Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraJustificacionDialog), nameof(Submit), Titulo);
+        }
+        finally { _saving = false; }
+    }
+}

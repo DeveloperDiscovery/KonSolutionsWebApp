@@ -1,0 +1,126 @@
+@* InventariosAlmacenesPuntoTomaEquiposAsignadosDialog.razor
+   -----------------------------------------------------------------------
+   Alta/edición de UN equipo asignado a un punto de conteo
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA_EQUIPOS_ASIGNADOS, clave compuesta
+   NUM_INVENTARIO + COD_ALMACEN + NUM_PUNTO_TOMA_INVENTARIO + COD_PRODUCTO_EQUIPO). El código
+   de equipo lo elige el usuario (combo de Productos) — a diferencia de Conteo, NO es
+   automático, y el alta es pura (si ya existe la clave, el SP rechaza con
+   KEY_REGISTRO_EXISTENTE), así que el combo de producto solo se edita en modo Create. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaEquiposAsignados
+@using ProductoModelo = KONSolutions.Shared.Models.Estandar.Productos
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Class="dialog-ancho-ampliado">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@_model.COD_PRODUCTO_EQUIPO" Descripcion="@_model.DES_PRODUCTO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+
+            <AriaCombo TItem="ProductoModelo" Items="_productos"
+                       TextFunc="@(p => $"{p.COD_PRODUCTO} — {p.DES_PRODUCTO}")" ValueFunc="@(p => p.COD_PRODUCTO)"
+                       Value="@_model.COD_PRODUCTO_EQUIPO" ValueChanged="OnProductoChanged"
+                       Label="Equipo (producto)" Disabled="@(_readonly || !_esNuevo)" Class="mb-3" />
+
+            <MudNumericField T="decimal?" @bind-Value="_model.CAN_PRODUCTO" Label="Cantidad"
+                             Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter, EditorRequired] public byte NumPuntoTomaInventario { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ProductoModelo> _productos = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else { _model.NUM_INVENTARIO = NumInventario; _model.COD_ALMACEN = CodAlmacen; _model.NUM_PUNTO_TOMA_INVENTARIO = NumPuntoTomaInventario; }
+
+        var r = await Http.SafeGetAsync<List<ProductoModelo>>(EstandarRoute.Productos);
+        _productos = r ?? new();
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            NUM_INVENTARIO             = m.NUM_INVENTARIO,
+            COD_ALMACEN                = m.COD_ALMACEN,
+            NUM_PUNTO_TOMA_INVENTARIO  = m.NUM_PUNTO_TOMA_INVENTARIO,
+            COD_PRODUCTO_EQUIPO        = m.COD_PRODUCTO_EQUIPO,
+            CAN_PRODUCTO               = m.CAN_PRODUCTO,
+            DES_PRODUCTO               = m.DES_PRODUCTO,
+        };
+    }
+
+    private void OnProductoChanged(string? codProducto)
+    {
+        _model.COD_PRODUCTO_EQUIPO = codProducto ?? "";
+        _model.DES_PRODUCTO = _productos.FirstOrDefault(p => p.COD_PRODUCTO == codProducto)?.DES_PRODUCTO;
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = LogisticaRoute.InventariosAlmacenesPuntoTomaEquiposAsignados;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_INVENTARIO}/{_model.COD_ALMACEN}/{_model.NUM_PUNTO_TOMA_INVENTARIO}/{_model.COD_PRODUCTO_EQUIPO}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaEquiposAsignadosDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Equipo asignado." : "Equipo actualizado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaEquiposAsignadosDialog), nameof(Submit));
+    }
+}

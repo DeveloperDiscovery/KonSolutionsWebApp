@@ -1,0 +1,224 @@
+@page "/entorno/entidades-configurar"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Entorno.EntidadesConfigurar
+@using EntornoRoute = KONSolutions.Web.Services.ApiRoutes.Entorno
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@inject ConfigService ConfigSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+@* Treelist: el padre de cada nodo es DES_TABLE (la tabla detectada con columnas COD_ENTIDAD%);
+   los hijos son cada DES_COLUMN de esa tabla, con DES_COMMANDSQL editable en la propia fila.
+   El SHOWALL autogenera las filas nuevas (no hace falta un Insert manual para el caso normal),
+   así que "Agregar" cubre solo el alta a mano de un registro que el detector no haya visto. *@
+
+<PageTitle>Entidades a Configurar · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Entidades a Configurar" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">@_grupos.Count tabla(s) · @_items.Count columna(s)</MudText>
+    </div>
+    @* Sin SP _SEARCH multi-tabla — el filtro de texto es local sobre lo ya cargado. *@
+    <BarraBusqueda @bind-Value="_searchTerm" OnSearch="@(() => StateHasChanged())" Placeholder="Buscar tabla o columna..." MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add" OnClick="Agregar" Style="@EstilosBoton.Confirmar">
+            Agregar
+        </MudButton>
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-2" Style="border:1px solid var(--line);">
+    @if (_loading)
+    {
+        <MudText Class="pa-6 mono" Style="opacity:.5;">Cargando...</MudText>
+    }
+    else if (_gruposVisibles.Count == 0)
+    {
+        <MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText>
+    }
+    else
+    {
+        <MudTreeView T="object" Class="entidades-configurar-tree">
+            @foreach (var grupo in _gruposVisibles)
+            {
+                <MudTreeViewItem Value="@((object)grupo)" Icon="@Icons.Material.Filled.TableChart" @bind-Expanded="grupo.Expandido">
+                    <BodyContent>
+                        <div class="d-flex align-center gap-2" style="width:100%;">
+                            <span class="mono" style="font-weight:700;">@grupo.DesTable</span>
+                            <MudSpacer />
+                            <MudText Class="mono" Style="opacity:.5;font-size:.72rem;">@grupo.Columnas.Count columna(s)</MudText>
+                        </div>
+                    </BodyContent>
+                    <ChildContent>
+                        @foreach (var fila in grupo.Columnas)
+                        {
+                            <MudTreeViewItem Value="@((object)fila)" Icon="@Icons.Material.Filled.ViewColumn">
+                                <BodyContent>
+                                    <div class="d-flex align-center gap-2" style="width:100%;">
+                                        <span class="mono" style="min-width:180px;">@fila.DES_COLUMN</span>
+                                        <span @onclick:stopPropagation="true" style="flex:1;min-width:280px;">
+                                            <MudTextField T="string" @bind-Value="fila.DES_COMMANDSQL" Placeholder="Sentencia SQL (opcional)"
+                                                          Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Class="flex-1" Style="width:100%;" />
+                                        </span>
+                                        <span @onclick:stopPropagation="true">
+                                            @* Arma el EXEC eligiendo un SP + completando sus parámetros, en vez de
+                                               tipear la sentencia a mano — ver GeneradorSentenciaSqlDialog.razor. *@
+                                            <MudIconButton Icon="@Icons.Material.Filled.AutoFixHigh" Size="Size.Small" Color="Color.Secondary"
+                                                           OnClick="@(() => AbrirGeneradorAsync(fila))" Title="Generar sentencia SQL" />
+                                        </span>
+                                        <span @onclick:stopPropagation="true">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Primary"
+                                                           OnClick="@(() => GuardarAsync(fila))" Title="Grabar" />
+                                        </span>
+                                        <span @onclick:stopPropagation="true">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                           OnClick="@(() => EliminarAsync(fila))" Title="Eliminar" />
+                                        </span>
+                                    </div>
+                                </BodyContent>
+                            </MudTreeViewItem>
+                        }
+                    </ChildContent>
+                </MudTreeViewItem>
+            }
+        </MudTreeView>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+
+    private class GrupoTabla
+    {
+        public string DesTable { get; set; } = "";
+        public List<Modelo> Columnas { get; set; } = new();
+        public bool Expandido { get; set; } = true;
+    }
+
+    private List<Modelo> _items = new();
+    private List<GrupoTabla> _grupos = new();
+    private string _searchTerm = string.Empty;
+    private bool _loading = true;
+
+    private List<GrupoTabla> _gruposVisibles
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_searchTerm)) return _grupos;
+            var t = _searchTerm.Trim();
+            return _grupos
+                .Select(g => new GrupoTabla
+                {
+                    DesTable = g.DesTable,
+                    Expandido = true,
+                    Columnas = g.Columnas.Where(c =>
+                        c.DES_COLUMN.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                        g.DesTable.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                        (c.DES_COMMANDSQL ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)).ToList()
+                })
+                .Where(g => g.Columnas.Count > 0)
+                .ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ENTORNO", "EntidadesConfigurar");
+        await Load();
+        Cambios.Suscribir("ENTORNO.ENTIDADES_CONFIGURAR", RefrescarPorCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(Agregar);
+
+    private async Task Load()
+    {
+        _loading = true;
+        try
+        {
+            // El propio SHOWALL detecta y da de alta las columnas COD_ENTIDAD% nuevas antes de
+            // devolver el listado — puede tardar un poco más que un SELECT simple.
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(EntornoRoute.EntidadesConfigurar);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(EntidadesConfigurar), nameof(Load));
+            _items = new();
+        }
+
+        _grupos = _items
+            .GroupBy(x => x.DES_TABLE)
+            .OrderBy(g => g.Key)
+            .Select(g => new GrupoTabla { DesTable = g.Key, Columnas = g.OrderBy(c => c.DES_COLUMN).ToList() })
+            .ToList();
+        _loading = false;
+    }
+
+    private async Task Agregar()
+    {
+        var dlg = await DialogService.ShowAsync<EntidadesConfigurarDialog>("Agregar entidad a configurar", new DialogParameters(),
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task GuardarAsync(Modelo item)
+    {
+        var resp = await Http.PutAsJsonAsync(EntornoRoute.EntidadesConfigurar, item);
+        if (resp.IsSuccessStatusCode) Snackbar.Add("Guardado.", Severity.Success);
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesConfigurar), nameof(GuardarAsync));
+    }
+
+    /// <summary>Abre el generador de EXEC (elegir SP + completar parámetros) y, si el usuario
+    /// confirma, reemplaza DES_COMMANDSQL de la fila y graba directo — sin esto habrea que
+    /// copiar/pegar el texto generado a mano.</summary>
+    private async Task AbrirGeneradorAsync(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<GeneradorSentenciaSqlDialog>("Generador de sentencia SQL", new DialogParameters(),
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var resultado = await dlg.Result;
+        if (resultado is { Canceled: false } && resultado.Data is string sentencia)
+        {
+            item.DES_COMMANDSQL = sentencia;
+            await GuardarAsync(item);
+        }
+    }
+
+    private async Task EliminarAsync(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar registro",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar registro",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar la columna {item.DES_COLUMN} de {item.DES_TABLE}?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync(EntornoRoute.EntidadesConfigurarDelete(item.DES_TABLE, item.DES_COLUMN));
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesConfigurar), nameof(EliminarAsync));
+    }
+
+    private async Task RefrescarPorCambio() => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("ENTORNO.ENTIDADES_CONFIGURAR", RefrescarPorCambio);
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

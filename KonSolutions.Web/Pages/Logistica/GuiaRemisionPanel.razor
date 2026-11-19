@@ -1,0 +1,438 @@
+@using System.Globalization
+@using System.Text
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject MenuService MenuService
+@inject IDialogService DialogService
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   PESTAÑA "GUÍA DE REMISIÓN" DEL MOVIMIENTO
+
+   Hace tres cosas:
+     1. Si el movimiento ya tiene su guía, muestra cuál es, en qué estado está, qué respondió
+        SUNAT y deja bajar el XML y la constancia (CDR).
+     2. Si todavía no (o fue rechazada), REVISA el movimiento y dice qué le falta para poder
+        emitirla, sección por sección: configuración, destinatario, puntos de partida y
+        llegada, transporte y mercadería.
+     3. EMITE: Emitir guía (la crea, arma y firma el XML, lo manda a SUNAT y espera su respuesta),
+        Consultar en SUNAT (una guía enviada que SUNAT todavía procesaba) y Reintentar (una guía
+        rechazada, con el mismo número, después de corregir lo que dijo SUNAT).
+
+   Los botones son los de Seguridad › Botones de esta opción (EMITIR GUIA, CONSULTAR GUIA y REINTENTAR GUIA): el
+   que el rol no tiene habilitado no se dibuja. Ejecutar el script 07_GUIAS_REMISION_EMISION_BOTONES.sql los crea.
+
+   La revisión no emite nada ni gasta un número: es la misma que hará la emisión antes de
+   tomar el correlativo. Por eso se vuelve a pedir cada vez que se abre la pestaña (MudTabs
+   no dibuja las pestañas que no están a la vista) y con el botón "Revisar de nuevo", para
+   quien corrige algo en otra pestaña o en otra pantalla y quiere ver el resultado.
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+<MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);">
+    <div class="d-flex align-center justify-space-between mb-3 flex-wrap gap-2">
+        <MudText Typo="Typo.h6">Guía de remisión electrónica</MudText>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            @if (PuedeEmitir)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Send"
+                           OnClick="Emitir" Disabled="@(_trabajando || _cargando || !EmisionHabilitada)" id="gre-emitir"
+                           title="@(EmisionHabilitada ? "" : MotivoSinEmision)">@(_res?.GuiaVigente is { FLG_VIGENTE: true } ? "Continuar emisión" : "Emitir guía")</MudButton>
+            }
+            @if (PuedeConsultar)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.CloudSync"
+                           OnClick="Consultar" Disabled="@(_trabajando || _cargando)" id="gre-consultar">Consultar en SUNAT</MudButton>
+            }
+            @if (PuedeReintentar)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Warning" Size="Size.Small" StartIcon="@Icons.Material.Filled.Replay"
+                           OnClick="Reintentar" Disabled="@(_trabajando || _cargando || !_res!.PuedeEmitir)" id="gre-reintentar"
+                           title="@(_res!.PuedeEmitir ? "" : "Todavía hay puntos por corregir en el movimiento")">Reintentar</MudButton>
+            }
+            @* Sin guía imprime un borrador sin validez, para revisar cómo saldrá antes de emitir. El botón solo aparece si el
+               reporteador tiene un diseño asignado al botón de la opción y el rol lo puede usar. *@
+            <GuiaRemisionImprimir CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" CodBoton="IG"
+                                  NumMovimiento="@NumMovimiento" Texto="@(_res?.GuiaVigente is null ? "Imprimir borrador" : "Imprimir guía")" />
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Refresh"
+                       OnClick="@(() => Revisar())" Disabled="@(_cargando || _trabajando)">Revisar de nuevo</MudButton>
+        </div>
+    </div>
+
+    @if (_cargando || _trabajando)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" />
+    }
+    @if (_trabajando)
+    {
+        <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.7;">@_textoTrabajo</MudText>
+    }
+
+    @* Cómo terminó lo último que se hizo. Una respuesta de SUNAT —aceptada, rechazada o en proceso— no es un error de la pantalla. *@
+    @if (_resultado is { } rs)
+    {
+        <MudAlert Severity="@SeveridadDe(rs.COD_RESULTADO)" Variant="Variant.Filled" Class="mb-3" id="gre-resultado">@rs.DES_MENSAJE</MudAlert>
+    }
+    @if (_errorEmision is not null)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-3" id="gre-error-emision">@_errorEmision</MudAlert>
+    }
+
+    @if (_error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-2">No se pudo revisar el movimiento. @_error</MudAlert>
+    }
+    else if (_res is not null)
+    {
+        @if (_res.GuiaVigente is { } g)
+        {
+            @* Todo se pide por el número del movimiento: quien ve el movimiento ve SU guía, no las demás. *@
+            <GuiaRemisionFicha Guia="g"
+                               RutaEnvios="@ApiRoutes.Logistica.GuiaRemisionEnviosPorMovimiento(g.NUM_MOVIMIENTO_ALMACEN)"
+                               RutaXml="@ApiRoutes.Logistica.GuiaRemisionXmlPorMovimiento(g.NUM_MOVIMIENTO_ALMACEN)"
+                               RutaCdr="@ApiRoutes.Logistica.GuiaRemisionCdrPorMovimiento(g.NUM_MOVIMIENTO_ALMACEN)" />
+        }
+
+        @* Las opciones con las que se emitió, cuando ya no se pueden cambiar (la guía está en SUNAT). *@
+        @if (!OpcionesEditables && ResumenOpciones() is { Length: > 0 } resumen)
+        {
+            <MudText Typo="Typo.caption" Class="mb-3" Style="display:block;opacity:.75;" id="gre-opciones-resumen">Opciones de la emisión: @resumen</MudText>
+        }
+
+        @* Con una guía en curso o aceptada el movimiento ya no se revisa: la guía es un documento legal
+           y no cambia aunque el movimiento se toque después. Vuelve a revisarse si no hay guía, si la última
+           ya no está vigente (anulada: se podría emitir otra) o si fue rechazada (se corrige y se reintenta). *@
+        @if (_res.GuiaVigente is null || !_res.GuiaVigente.FLG_VIGENTE || _res.GuiaVigente.COD_ESTADO_ALIAS == "REC")
+        {
+            @if (_res.PuedeEmitir)
+            {
+                <MudAlert Severity="@(_res.NumAvisos > 0 ? Severity.Warning : Severity.Success)" Variant="Variant.Outlined" Class="mb-3">
+                    <b>El movimiento está listo para emitir su guía.</b>
+                    @if (_res.NumAvisos > 0) { <span> Hay @_res.NumAvisos aviso@(_res.NumAvisos == 1 ? "" : "s") para mirar antes.</span> }
+                </MudAlert>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-3">
+                    <b>Todavía no se puede emitir la guía.</b> Falta corregir @_res.NumErrores punto@(_res.NumErrores == 1 ? "" : "s")@(_res.NumAvisos > 0 ? $" (y hay {_res.NumAvisos} aviso{(_res.NumAvisos == 1 ? "" : "s")})" : "").
+                </MudAlert>
+            }
+
+            @foreach (var grupo in Grupos())
+            {
+                <div class="mb-3">
+                    <div class="mono" style="font-size:.78rem;opacity:.6;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">@grupo.Key</div>
+                    @foreach (var it in grupo)
+                    {
+                        <div class="d-flex align-start gap-2 mb-1" style="font-size:.9rem;">
+                            @if (it.EsError)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" Size="Size.Small" Title="Error: impide emitir" />
+                            }
+                            else
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Color="Color.Warning" Size="Size.Small" Title="Aviso: se puede emitir, conviene revisarlo" />
+                            }
+                            <span style="flex:1;">@it.Mensaje</span>
+                            <span class="mono" style="opacity:.4;font-size:.72rem;white-space:nowrap;">@it.Codigo</span>
+                        </div>
+                    }
+                </div>
+            }
+
+            <MudText Typo="Typo.caption" Style="opacity:.6;">
+                Esta revisión no emite nada ni gasta un número de guía: eso lo hace «Emitir guía» (o «Reintentar», si la guía fue rechazada).
+            </MudText>
+        }
+
+        @* Las opciones de la emisión: lo que no sale del movimiento. Se editan mientras la guía no esté en SUNAT. *@
+        @if (OpcionesEditables && PuedeEmitirOReintentar)
+        {
+            <div class="pa-3 mb-3" style="border:1px dashed var(--line);border-radius:8px;" id="gre-opciones">
+                <div class="mono" style="font-size:.78rem;opacity:.6;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Opciones de la emisión</div>
+                <MudGrid Spacing="2">
+                    @if (MuestraSerie)
+                    {
+                        <MudItem xs="12" sm="4">
+                            <MudSelect T="string" Label="Serie" Variant="Variant.Outlined" Dense="true" @bind-Value="_serie" Required="true"
+                                       HelperText="Hay más de una serie que sirve: elige con cuál se emite">
+                                @foreach (var s in _series)
+                                {
+                                    <MudSelectItem T="string" Value="@s.Id">@s.Texto</MudSelectItem>
+                                }
+                            </MudSelect>
+                        </MudItem>
+                    }
+                    <MudItem xs="12" sm="@(MuestraSerie ? 8 : 12)">
+                        <div class="d-flex flex-wrap gap-4">
+                            <MudCheckBox T="bool" Value="@_opciones.FLG_TRASLADO_M1L" ValueChanged="CambioM1L" Dense="true" Label="Traslado en vehículos de categoría M1 o L"
+                                         id="gre-m1l" />
+                            <MudCheckBox T="bool" @bind-Value="_opciones.FLG_TRANSBORDO_PROGRAMADO" Dense="true" Label="Transbordo programado" id="gre-transbordo" />
+                        </div>
+                        <MudText Typo="Typo.caption" Style="opacity:.65;">
+                            M1 o L (autos y motos): SUNAT no exige los datos del vehículo ni del conductor. Transbordo: la carga cambia de vehículo en el camino.
+                        </MudText>
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.caption" Style="opacity:.75;">Documento relacionado (opcional): una factura, una orden de entrega, etc. Va completo o no va.</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="2">
+                        <MudTextField T="string" @bind-Value="_opciones.COD_TIPO_DOCUMENTO_RELACIONADO" Label="Tipo (código)" Variant="Variant.Outlined" Dense="true" MaxLength="2"
+                                      HelperText="Ej.: 01" id="gre-doc-tipo" />
+                    </MudItem>
+                    <MudItem xs="12" sm="4">
+                        <MudTextField T="string" @bind-Value="_opciones.DES_TIPO_DOCUMENTO_RELACIONADO" Label="Descripción del tipo" Variant="Variant.Outlined" Dense="true" MaxLength="100"
+                                      HelperText="Ej.: Factura" id="gre-doc-descripcion" />
+                    </MudItem>
+                    <MudItem xs="12" sm="3">
+                        <MudTextField T="string" @bind-Value="_opciones.NUM_DOCUMENTO_RELACIONADO" Label="Número" Variant="Variant.Outlined" Dense="true" MaxLength="30"
+                                      HelperText="Ej.: F001-123" id="gre-doc-numero" />
+                    </MudItem>
+                    <MudItem xs="12" sm="3">
+                        <MudTextField T="string" @bind-Value="_opciones.NUM_RUC_EMISOR_RELACIONADO" Label="RUC del emisor" Variant="Variant.Outlined" Dense="true" MaxLength="11"
+                                      HelperText="Opcional" id="gre-doc-ruc" />
+                    </MudItem>
+                </MudGrid>
+            </div>
+        }
+    }
+</MudPaper>
+
+@code {
+    /// <summary>El movimiento cuya guía se muestra. Sin número (movimiento sin grabar) no hay nada que revisar.</summary>
+    [Parameter] public decimal? NumMovimiento { get; set; }
+    /// <summary>La opción de movimientos de almacén: de ahí salen el botón IMPRIMIR GUIA (el diseño y el permiso del rol) y los de la emisión
+    /// (EMITIR GUIA, CONSULTAR GUIA y REINTENTAR GUIA). Sin ellas no hay botones.</summary>
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    /// <summary>Avisa que la guía cambió (se emitió, se consultó o se reintentó): el documento vuelve a ver si el movimiento ya no se puede modificar.</summary>
+    [Parameter] public EventCallback OnGuiaCambiada { get; set; }
+
+    private GuiaValidacionResultado? _res;
+    private bool _cargando, _trabajando;
+    private string? _error, _textoTrabajo;
+    private decimal? _cargadoPara;
+
+    private GuiaRemisionOpcionesDto _opciones = new();
+    /// <summary>De qué guía son las opciones cargadas: su número, 0 si todavía no hay guía y null si no se cargaron.</summary>
+    private int? _opcionesDe;
+    private string? _serie;
+    private List<ComboboxItem> _series = new();
+    private bool _seriesCargadas;
+    private GuiaRemisionEmisionResultado? _resultado;
+    private string? _errorEmision;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (NumMovimiento is null || NumMovimiento == _cargadoPara) return;
+        _cargadoPara = NumMovimiento;
+        // Los botones de la opción, frescos: un permiso cambiado en Seguridad se ve al entrar, sin volver a iniciar sesión.
+        if (!string.IsNullOrWhiteSpace(CodAplicacion) && !string.IsNullOrWhiteSpace(CodOpcionAplicacion))
+        {
+            try { await MenuService.AsegurarBotonesFrescosAsync(CodAplicacion, CodOpcionAplicacion); }
+            catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(GuiaRemisionPanel), nameof(OnParametersSetAsync)); }
+        }
+        await Revisar();
+    }
+
+    // ── Qué botones hay y cuándo valen ───────────────────────────────────────────────────────
+
+    private GuiaRemision? Guia => _res?.GuiaVigente is { FLG_VIGENTE: true } g ? g : null;
+    private string? Estado => Guia?.COD_ESTADO_ALIAS;
+
+    private bool TieneBoton(string nombre)
+    {
+        if (string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion)) return false;
+        return MenuService.GetBotonesPorOpcion(CodAplicacion, CodOpcionAplicacion).Any(b => Normalizar(b.DES_BOTON_OPCION) == nombre);
+    }
+
+    /// <summary>Sin tildes y en mayúsculas: «Emitir guía» y «EMITIR GUIA» son el mismo botón.</summary>
+    private static string Normalizar(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        var sb = new StringBuilder();
+        foreach (var c in s.Trim().Normalize(NormalizationForm.FormD))
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark) sb.Append(char.ToUpperInvariant(c));
+        return sb.ToString();
+    }
+
+    /// <summary>Emitir (la primera vez) o continuar (la guía quedó PENDIENTE a medias, por ejemplo sin conexión).</summary>
+    private bool PuedeEmitir => _res is not null && (Guia is null || Estado == "PEN") && TieneBoton("EMITIR GUIA");
+    private bool PuedeConsultar => _res is not null && Estado == "ENV" && TieneBoton("CONSULTAR GUIA");
+    private bool PuedeReintentar => _res is not null && Estado == "REC" && TieneBoton("REINTENTAR GUIA");
+    private bool PuedeEmitirOReintentar => PuedeEmitir || PuedeReintentar;
+    private bool OpcionesEditables => Guia is null || Estado is "PEN" or "REC";
+
+    /// <summary>La primera emisión pide que el movimiento esté listo; continuar una guía PENDIENTE deja que la emisión vuelva a revisar y diga qué falta.</summary>
+    private bool EmisionHabilitada => Estado == "PEN" || (_res?.PuedeEmitir == true && (!MuestraSerie || !string.IsNullOrWhiteSpace(_serie)));
+    private string MotivoSinEmision => _res?.PuedeEmitir != true ? "Todavía hay puntos por corregir en el movimiento" : "Elige la serie";
+    private bool MuestraSerie => Guia is null && _res is not null && _res.Items.Any(i => i.Codigo == "GRE-016");
+
+    private static Severity SeveridadDe(string r) => r switch
+    {
+        GuiaEmisionResultados.Aceptada => Severity.Success,
+        GuiaEmisionResultados.Rechazada => Severity.Error,
+        _ => Severity.Info
+    };
+
+    private string ResumenOpciones()
+    {
+        var partes = new List<string>();
+        if (_opciones.FLG_TRASLADO_M1L) partes.Add("traslado en vehículos M1 o L");
+        if (_opciones.FLG_TRANSBORDO_PROGRAMADO) partes.Add("transbordo programado");
+        if (_opciones.TieneDocumentoRelacionado)
+            partes.Add($"documento relacionado {_opciones.COD_TIPO_DOCUMENTO_RELACIONADO} {_opciones.NUM_DOCUMENTO_RELACIONADO}".Trim());
+        return string.Join(", ", partes);
+    }
+
+    private IEnumerable<IGrouping<string, GuiaValidacionItem>> Grupos()
+        => (_res?.Items ?? new()).GroupBy(i => i.Seccion);
+
+    // ── Revisar ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>M1 o L cambia lo que se exige del vehículo y del conductor: se vuelve a revisar con esa opción.</summary>
+    private async Task CambioM1L(bool valor)
+    {
+        _opciones.FLG_TRASLADO_M1L = valor;
+        await Revisar();
+    }
+
+    private async Task Revisar(bool recargarOpciones = false)
+    {
+        if (NumMovimiento is not { } num) return;
+        _cargando = true; _error = null;
+        if (recargarOpciones) _opcionesDe = null;
+        StateHasChanged();
+        try
+        {
+            // Una guía que ya existe se revisa tal cual; mientras se puede editar, con la opción M1/L elegida.
+            var resp = await Http.GetAsync(ApiRoutes.Logistica.GuiaRemisionValidar(num, _opciones.FLG_TRASLADO_M1L));
+            if (!resp.IsSuccessStatusCode)
+            {
+                _res = null;
+                _error = await LeerMensaje(resp);
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<GuiaValidacionResultado>>();
+            _res = r?.Data;
+            if (_res is null) { _error = r?.Message; return; }
+            await CargarOpcionesAsync(num);
+            await CargarSeriesAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionPanel), nameof(Revisar));
+            _res = null;
+            _error = "Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Las opciones guardadas de la guía (si la hay): son las que se muestran y las que se mandan de nuevo al reintentar. Se piden
+    /// una vez por guía, no en cada revisión: quien está tildando M1/L no pierde lo que lleva escrito.</summary>
+    private async Task CargarOpcionesAsync(decimal num)
+    {
+        var numGuia = _res?.GuiaVigente is { FLG_VIGENTE: true } g ? g.NUM_GUIA_REMISION : 0;
+        if (_opcionesDe == numGuia) return;
+        _opcionesDe = numGuia;
+        if (numGuia == 0) return;      // todavía no hay guía: las opciones son las que se van eligiendo
+        var guardadas = await Http.SafeGetAsync<GuiaRemisionOpciones>(ApiRoutes.Logistica.GuiaRemisionOpcionesPorMovimiento(num));
+        if (guardadas is not null)
+            _opciones = new GuiaRemisionOpcionesDto
+            {
+                FLG_TRASLADO_M1L = guardadas.FLG_TRASLADO_M1L, FLG_TRANSBORDO_PROGRAMADO = guardadas.FLG_TRANSBORDO_PROGRAMADO,
+                COD_TIPO_DOCUMENTO_RELACIONADO = guardadas.COD_TIPO_DOCUMENTO_RELACIONADO, DES_TIPO_DOCUMENTO_RELACIONADO = guardadas.DES_TIPO_DOCUMENTO_RELACIONADO,
+                NUM_DOCUMENTO_RELACIONADO = guardadas.NUM_DOCUMENTO_RELACIONADO, NUM_RUC_EMISOR_RELACIONADO = guardadas.NUM_RUC_EMISOR_RELACIONADO
+            };
+    }
+
+    /// <summary>Las series activas, solo cuando hay que elegir una (GRE-016). Si el rol no puede verlas, queda sin lista y la emisión lo dirá.</summary>
+    private async Task CargarSeriesAsync()
+    {
+        if (_seriesCargadas || !MuestraSerie) return;
+        _seriesCargadas = true;
+        _series = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.GuiasRemisionSeriesCombobox) ?? new();
+    }
+
+    // ── Emitir, consultar y reintentar ───────────────────────────────────────────────────────
+
+    private async Task Emitir()
+    {
+        if (NumMovimiento is not { } num || _trabajando) return;
+        var continuar = Estado == "PEN";
+        if (!await Confirmar(continuar ? "Continuar emisión" : "Emitir guía",
+                continuar ? $"La guía {Guia!.NUM_GUIA} quedó pendiente. ¿Continuar su emisión? Se arma de nuevo con el mismo número y se envía a SUNAT."
+                          : $"¿Emitir la guía de remisión del movimiento N° {num.ToString(CultureInfo.InvariantCulture)}? Se toma el siguiente número de la serie, se firma y se envía a SUNAT. Un número tomado no se devuelve.",
+                continuar ? "Continuar" : "Emitir")) return;
+        var dto = new GuiaRemisionEmitirDto { NUM_MOVIMIENTO_ALMACEN = num, COD_SERIE = string.IsNullOrWhiteSpace(_serie) ? null : _serie, OPCIONES = _opciones };
+        await Ejecutar("Armando, firmando y enviando la guía a SUNAT… puede tardar unos segundos.",
+            () => Http.PostAsJsonAsync(ApiRoutes.Logistica.GuiaRemisionEmitir, dto));
+    }
+
+    private async Task Consultar()
+    {
+        if (NumMovimiento is not { } num || _trabajando) return;
+        await Ejecutar("Preguntando a SUNAT…", () => Http.PostAsync(ApiRoutes.Logistica.GuiaRemisionConsultarPorMovimiento(num), null));
+    }
+
+    private async Task Reintentar()
+    {
+        if (NumMovimiento is not { } num || _trabajando) return;
+        if (!await Confirmar("Reintentar", $"¿Reintentar la guía {Guia?.NUM_GUIA}? Vuelve a armarse con el mismo número y los datos del movimiento como están ahora, y se envía a SUNAT.", "Reintentar")) return;
+        var cuerpo = new GuiaRemisionReintentarEmisionDto { OPCIONES = _opciones };
+        await Ejecutar("Armando, firmando y enviando la guía a SUNAT… puede tardar unos segundos.",
+            () => Http.PostAsJsonAsync(ApiRoutes.Logistica.GuiaRemisionReintentarPorMovimiento(num), cuerpo));
+    }
+
+    private async Task Ejecutar(string textoTrabajo, Func<Task<HttpResponseMessage>> llamada)
+    {
+        _trabajando = true; _textoTrabajo = textoTrabajo; _resultado = null; _errorEmision = null;
+        StateHasChanged();
+        try
+        {
+            var resp = await llamada();
+            ApiResponse<GuiaRemisionEmisionResultado>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<GuiaRemisionEmisionResultado>>(); }
+            catch { /* el cuerpo no era JSON: abajo se dice el código */ }
+            if (resp.IsSuccessStatusCode && r?.Data is not null) _resultado = r.Data;
+            else _errorEmision = !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : await LeerMensaje(resp);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionPanel), nameof(Ejecutar));
+            _errorEmision = "No se pudo completar la operación. La guía queda como estaba: mira su estado con «Revisar de nuevo». Ver detalle en el log de errores.";
+        }
+        finally { _trabajando = false; }
+        // Haya salido bien o mal, la guía pudo cambiar (se creó, se envió...): se vuelve a leer y el documento se entera.
+        await Revisar(recargarOpciones: true);
+        await OnGuiaCambiada.InvokeAsync();
+    }
+
+    private async Task<bool> Confirmar(string titulo, string mensaje, string textoConfirmar)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>(titulo,
+            new DialogParameters
+            {
+                ["Titulo"] = titulo,
+                ["IconoTitulo"] = Icons.Material.Filled.Send,
+                ["Mensaje"] = mensaje,
+                ["TextoConfirmar"] = textoConfirmar,
+                ["IconoConfirmar"] = Icons.Material.Filled.Send
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        return (await dlg.Result) is { Canceled: false };
+    }
+
+    private static async Task<string> LeerMensaje(HttpResponseMessage resp)
+    {
+        try
+        {
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<object>>();
+            if (!string.IsNullOrWhiteSpace(r?.Message)) return r!.Message;
+        }
+        catch { /* el cuerpo no era JSON: se dice el código */ }
+        return resp.StatusCode == System.Net.HttpStatusCode.Forbidden
+            ? "No tienes permiso para esto en la guía de remisión de este movimiento."
+            : $"El servidor respondió {(int)resp.StatusCode}.";
+    }
+}

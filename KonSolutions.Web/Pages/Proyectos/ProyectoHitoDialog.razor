@@ -1,0 +1,60 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nuevo hito" : $"Hito {Item.COD_HITO_PROYECTO}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_des" Label="Descripción" Variant="Variant.Outlined" MaxLength="100" Required="true" />
+            </MudItem>
+            <MudItem xs="6">
+                <MudDatePicker @bind-Date="_fecha" Label="Fecha programada" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="6">
+                <MudDatePicker @bind-Date="_cumplido" Label="Fecha en que se cumplió" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteHito? Item { get; set; }
+    [Parameter] public List<ExpedienteHito> Hitos { get; set; } = new();
+
+    private string _des = "";
+    private DateTime? _fecha, _cumplido;
+    private bool _guardando;
+
+    protected override void OnInitialized()
+    {
+        if (Item is null) return;
+        _des = Item.DES_HITO_PROYECTO ?? ""; _fecha = Item.FEC_FINAL_PROGRAMADO; _cumplido = Item.FEC_INICIO_EJECUTADO;
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción del hito.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        var cod = esNuevo ? (Hitos.Count == 0 ? 1 : Hitos.Max(h => h.COD_HITO_PROYECTO) + 1) : Item!.COD_HITO_PROYECTO;
+        if (cod > 255) { Snackbar.Add("Un proyecto admite hasta 255 hitos.", Severity.Warning); return; }
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, COD_HITO_PROYECTO = cod, DES_HITO_PROYECTO = _des.Trim(),
+            FEC_FINAL_PROGRAMADO = _fecha, FEC_INICIO_EJECUTADO = _cumplido, COD_TIPO_ESTADO = Item?.COD_TIPO_ESTADO, COD_ESTADO = Item?.COD_ESTADO
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Hitos, cuerpo, esNuevo);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el hito.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

@@ -1,0 +1,235 @@
+@using KONSolutions.Shared.Models.Zonificacion
+@using ZonificacionModel = KONSolutions.Shared.Models.Zonificacion.Zonificacion
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_ZONIFICACION" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                @* El código lo arma el SP (padre + correlativo): solo se muestra si ya existe. *@
+                @if (!_esNuevo)
+                {
+                    <MudItem xs="12" sm="4">
+                        <CampoTexto Tabla="ZONIFICACION.ZONIFICACION" Columna="COD_ZONIFICACION"
+                                    @bind-Value="_model.COD_ZONIFICACION" Disabled="true" />
+                    </MudItem>
+                }
+                <MudItem xs="12" sm="@(_esNuevo ? 12 : 8)">
+                    <CampoTexto Tabla="ZONIFICACION.ZONIFICACION" Columna="DES_ZONIFICACION"
+                                @bind-Value="_model.DES_ZONIFICACION" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    @* Zona padre: solo las de la misma sucursal, y nunca ella misma
+                       (una zona no puede colgar de sí misma). *@
+                    <AriaCombo TItem="ComboboxItem" Items="_zonasPadre"
+                               TextFunc="@(x => $"{x.Id} - {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               @bind-Value="_model.COD_ZONIFICACION_PADRE"
+                               Label="Zona padre" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                               TextFunc="@(x => $"{x.Id} - {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               @bind-Value="_model.COD_TIPO_ZONIFICACION"
+                               Label="Tipo de zonificación" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+
+                <MudItem xs="12" sm="3">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_NIVEL" Label="Nivel / piso"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_NIVEL_ORDEN" Label="Orden en el nivel"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                @* Ancho y largo son la escala real del plano: sin ellos el dibujo no es medible. *@
+                <MudItem xs="12" sm="3">
+                    <MudNumericField T="int?" @bind-Value="_model.VAL_ANCHO_METROS" Label="Ancho (m)"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudNumericField T="int?" @bind-Value="_model.VAL_LARGO_METROS" Label="Largo (m)"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    <div class="d-flex align-center gap-2" style="height:100%;">
+                        <MudIcon Icon="@Icons.Material.Filled.AccountTree" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool?" @bind-Value="_model.FLG_MOSTRAR_DESCENDENTE" Color="Color.Primary"
+                                   Disabled="_readonly" Label="Mostrar descendientes" />
+                    </div>
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* Estado: viaja bundleado en /loadcombos junto con Tipos de Zonificación y
+                       Zona padre (mismo query que usaba el EstadoCombo genérico para esta tabla). *@
+                    <div class="estado-combo-wrap @(!string.IsNullOrEmpty(_colorEstadoActual) ? "estado-combo-con-punto" : "") mb-3">
+                        @if (!string.IsNullOrEmpty(_colorEstadoActual))
+                        {
+                            <div class="estado-combo-dot" style="background:@_colorEstadoActual;"></div>
+                        }
+                        <AriaCombo TItem="EstadoItem" Items="_estados"
+                                   TextFunc="@(e => e.DesEstado)" ValueFunc="@(e => e.CodEstado.ToString())"
+                                   Value="@(_model.COD_ESTADO?.ToString())" ValueChanged="OnEstadoChanged"
+                                   Label="Estado" Disabled="_readonly">
+                            <OptionTemplate Context="e">
+                                <div class="d-flex align-center gap-2">
+                                    @if (!string.IsNullOrEmpty(e.BackColor))
+                                    {
+                                        <div style="width:10px;height:10px;border-radius:50%;background:@e.BackColor;flex-shrink:0;"></div>
+                                    }
+                                    <span>@e.DesEstado</span>
+                                </div>
+                            </OptionTemplate>
+                        </AriaCombo>
+                    </div>
+                </MudItem>
+
+                <MudItem xs="12">
+                    @* Vista previa grande: un plano a 96px es ilegible. Se acota con
+                       max-width:100% dentro del ImagePicker, así que no rompe el diálogo. *@
+                    <ImagePicker Image="_model.IMG_PLANO" ImageChanged="@(v => _model.IMG_PLANO = v)"
+                                 Label="Plano del nivel" PreviewSize="960" ReadOnly="_readonly" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public ZonificacionModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    /// <summary>Sucursal padre — obligatoria: la PK es compuesta y los SP filtran por ella.</summary>
+    [Parameter] public string CodSucursal { get; set; } = "";
+
+    private ZonificacionModel _model = new();
+    private List<ComboboxItem> _tipos = new();
+    private List<ComboboxItem> _zonasPadre = new();
+    private List<EstadoItem> _estados = new();
+    private string? _colorEstadoActual => _estados.FirstOrDefault(e => e.CodEstado == _model.COD_ESTADO)?.BackColor;
+    private bool _esNuevo, _saving;
+
+    private void OnEstadoChanged(string? v)
+    {
+        _model.COD_ESTADO = int.TryParse(v, out var n) ? n : null;
+    }
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        _model.COD_SUCURSAL = CodSucursal;
+        await CargarCombosAsync();
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(ZonificacionModel m)
+    {
+        _model = new ZonificacionModel
+        {
+            COD_SUCURSAL            = m.COD_SUCURSAL,
+            COD_ZONIFICACION        = m.COD_ZONIFICACION,
+            DES_ZONIFICACION        = m.DES_ZONIFICACION,
+            COD_ZONIFICACION_PADRE  = m.COD_ZONIFICACION_PADRE,
+            COD_TIPO_ZONIFICACION   = m.COD_TIPO_ZONIFICACION,
+            NUM_NIVEL               = m.NUM_NIVEL,
+            NUM_NIVEL_ORDEN         = m.NUM_NIVEL_ORDEN,
+            VAL_ANCHO_METROS        = m.VAL_ANCHO_METROS,
+            VAL_LARGO_METROS        = m.VAL_LARGO_METROS,
+            FLG_MOSTRAR_DESCENDENTE = m.FLG_MOSTRAR_DESCENDENTE,
+            IMG_PLANO               = m.IMG_PLANO,
+            COD_TIPO_ESTADO         = m.COD_TIPO_ESTADO,
+            COD_ESTADO              = m.COD_ESTADO
+        };
+    }
+
+    // PROC_ZONIFICACION_ZONIFICACION_LOADCOMBOS: Tipos de Zonificación + Zonas de la sucursal
+    // (para el combo "Zona padre") + Estado en un solo viaje (mismo patrón que
+    // AreaDialog.razor / PROC_ADMINISTRACION_AREAS_LOADCOMBOS). La lista de zonas de la
+    // sucursal sigue siendo la misma para cualquier valor de los otros combos —el filtro
+    // "nunca ella misma" se aplica en el cliente, como antes— así que sigue siendo un combo
+    // independiente a efectos de bundling.
+    private async Task CargarCombosAsync()
+    {
+        try
+        {
+            var url = ApiRoutes.Zonificacion.ZonificacionesLoadcombos(CodSucursal) + $"?codTipoEstado={_model.COD_TIPO_ESTADO ?? 0}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<ZonificacionLoadCombosResult>>(url);
+
+            _tipos = r?.Data?.TiposZonificacion ?? new();
+            var todas = r?.Data?.Zonificaciones ?? new();
+            // Se excluye a sí misma para no permitir un ciclo padre→hijo→padre.
+            _zonasPadre = todas.Where(z => z.Id != _model.COD_ZONIFICACION).ToList();
+            _estados = r?.Data?.Estados ?? new();
+            if (_esNuevo && _model.COD_ESTADO is null or 0)
+                _model.COD_ESTADO = _estados.FirstOrDefault(e => e.EsDefault)?.CodEstado;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ZonificacionDialog), nameof(CargarCombosAsync));
+            _tipos = new();
+            _zonasPadre = new();
+            _estados = new();
+        }
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID — evita mostrar datos desactualizados
+    /// de la grilla al Modificar/Eliminar/Ver.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<ZonificacionModel>(
+            $"{ApiRoutes.Zonificacion.Zonificaciones}/{Uri.EscapeDataString(_model.COD_SUCURSAL)}/{Uri.EscapeDataString(_model.COD_ZONIFICACION)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Zonificacion.Zonificaciones;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_SUCURSAL)}/{Uri.EscapeDataString(_model.COD_ZONIFICACION)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(ZonificacionDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // El SP INSERT hace upsert: Crear y Modificar usan el mismo POST.
+        var resp = await Http.PostAsJsonAsync(ruta, _model);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ZonificacionDialog), nameof(Submit));
+    }
+}

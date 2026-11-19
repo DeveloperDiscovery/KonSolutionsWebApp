@@ -1,0 +1,209 @@
+@* Subgrilla de tipos de precio de un par (entidad, producto).
+
+   Está en su propio componente y no escrita dentro de cada pestaña a propósito: las dos
+   pestañas del módulo miran la MISMA tabla —una entra por el proveedor y la otra por el
+   producto— así que la subgrilla es idéntica en ambas. Escribirla dos veces garantizaba
+   que se fueran separando con el primer cambio.
+
+   Grilla editable, mismo patrón que las fichas de Entidades: se agrega una fila vacía, se
+   completa y se graba con el tilde de la propia fila. *@
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="pa-2" style="background:var(--grilla-fila-par, rgba(0,0,0,.02));">
+    <div class="d-flex align-center justify-space-between mb-2">
+        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;">
+            @_filas.Count precio(s) para @(DesProducto ?? CodProducto)
+        </MudText>
+        @if (!SoloLectura)
+        {
+            <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                       Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                       OnClick="Agregar">Agregar precio</MudButton>
+        }
+    </div>
+
+    @if (_cargando)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mb-2" />
+    }
+    else if (_filas.Count == 0 && SoloLectura)
+    {
+        <MudText Typo="Typo.caption" Style="opacity:.5;">Sin tipos de precio cargados.</MudText>
+    }
+    else
+    {
+        <table class="tabla-simple-editable" style="width:100%;">
+            <thead>
+                <tr>
+                    <th style="width:240px;">Tipo de precio</th>
+                    <th style="width:180px;">Moneda</th>
+                    <th style="width:160px;">Precio</th>
+                    <th style="width:130px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in _filas)
+                {
+                    <tr>
+                        <td>
+                            @* Tipo de precio y moneda forman parte de la clave junto con la
+                               entidad y el producto: en una fila ya grabada, cambiarlos sería
+                               crear otra fila y dejar huérfana la anterior. *@
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposPrecio"
+                                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@(f.CodTipoPrecio?.ToString())"
+                                       ValueChanged="@(v => f.CodTipoPrecio = int.TryParse(v, out var n) ? n : null)"
+                                       Disabled="@(SoloLectura || !f.EsNueva)" Class="mb-0" Style="margin-top:0;" />
+                        </td>
+                        <td>
+                            <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       Value="@f.CodMoneda"
+                                       ValueChanged="@(v => f.CodMoneda = v)"
+                                       Disabled="@(SoloLectura || !f.EsNueva)" Class="mb-0" Style="margin-top:0;" />
+                        </td>
+                        <td>
+                            <MudNumericField T="decimal?" @bind-Value="f.ValPrecio" Variant="Variant.Outlined"
+                                             Format="@Decimales.FormatoCantidad" Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                             Disabled="SoloLectura" Margin="Margin.None" Class="mb-0" />
+                        </td>
+                        <td>
+                            @if (!SoloLectura)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                               Disabled="@(f.Guardando || f.CodTipoPrecio is null || string.IsNullOrWhiteSpace(f.CodMoneda))"
+                                               OnClick="@(() => GuardarAsync(f))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               Disabled="f.Guardando" OnClick="@(() => EliminarAsync(f))" />
+                            }
+                            @if (!f.EsNueva)
+                            {
+                                <PanelAuditoria CodUsuarioRegistro="@f.CodUsuarioRegistro"
+                                                CodEstacionRegistro="@f.CodEstacionRegistro"
+                                                FecRegistro="@f.FecRegistro"
+                                                CodUsuarioActualizacion="@f.CodUsuarioActualizacion"
+                                                CodEstacionActualizacion="@f.CodEstacionActualizacion"
+                                                FecActualizacion="@f.FecActualizacion" />
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public decimal CodEntidad { get; set; }
+    [Parameter, EditorRequired] public string CodProducto { get; set; } = "";
+    [Parameter] public string? DesProducto { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>Para que la fila padre pueda refrescar su contador al agregar o borrar.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private class Fila
+    {
+        public int? CodTipoPrecio { get; set; }
+        public string? CodMoneda { get; set; }
+        public decimal? ValPrecio { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+
+    private List<Fila> _filas = new();
+    private List<ComboboxItem> _tiposPrecio = new(), _monedas = new();
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(
+            CargarComboAsync(ApiRoutes.Comercial.TiposPrecioCombobox, l => _tiposPrecio = l),
+            CargarComboAsync(ApiRoutes.Estandar.MonedasCombobox,      l => _monedas = l));
+        await CargarAsync();
+        _cargando = false;
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadProductoTiposPrecioPanel), nameof(CargarComboAsync)); }
+    }
+
+    private async Task CargarAsync()
+    {
+        var url = $"{ApiRoutes.Comercial.EntidadesProductosTiposPrecios}" +
+                  $"?codEntidad={CodEntidad}&codProducto={Uri.EscapeDataString(CodProducto)}";
+        var datos = await Http.SafeGetAsync<List<EntidadProductoTipoPrecio>>(url) ?? new();
+        _filas = datos.Select(x => new Fila
+        {
+            CodTipoPrecio = x.COD_TIPO_PRECIO,
+            CodMoneda     = x.COD_MONEDA,
+            ValPrecio     = x.VAL_PRECIO,
+            CodUsuarioRegistro = x.COD_USUARIO_REGISTRO,
+            CodEstacionRegistro = x.COD_ESTACION_REGISTRO,
+            FecRegistro = x.FEC_REGISTRO,
+            CodUsuarioActualizacion = x.COD_USUARIO_ACTUALIZACION,
+            CodEstacionActualizacion = x.COD_ESTACION_ACTUALIZACION,
+            FecActualizacion = x.FEC_ACTUALIZACION
+        }).ToList();
+    }
+
+    private void Agregar() => _filas.Add(new Fila { EsNueva = true });
+
+    private async Task GuardarAsync(Fila f)
+    {
+        if (f.Guardando) return;
+        f.Guardando = true;
+        try
+        {
+            var dto = new EntidadProductoTipoPrecioSaveDto
+            {
+                COD_ENTIDAD     = CodEntidad,
+                COD_PRODUCTO    = CodProducto,
+                COD_TIPO_PRECIO = f.CodTipoPrecio,
+                COD_MONEDA      = f.CodMoneda ?? "",
+                VAL_PRECIO      = f.ValPrecio
+            };
+            var resp = await Http.GuardarAsync(ApiRoutes.Comercial.EntidadesProductosTiposPrecios, dto, f.EsNueva);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add(f.EsNueva ? "Creado." : "Modificado.", Severity.Success);
+                if (f.EsNueva) { await CargarAsync(); await OnCambio.InvokeAsync(); } else f.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadProductoTiposPrecioPanel), nameof(GuardarAsync));
+        }
+        finally { f.Guardando = false; }
+    }
+
+    private async Task EliminarAsync(Fila f)
+    {
+        // Fila que nunca se grabó: se descarta sin preguntar, no hay nada que borrar.
+        if (f.EsNueva) { _filas.Remove(f); return; }
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            "¿Eliminar este tipo de precio?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        f.Guardando = true;
+        try
+        {
+            // La clave lleva la moneda: sin ella el SP no encuentra la fila.
+            var url = $"{ApiRoutes.Comercial.EntidadesProductosTiposPrecios}/{CodEntidad}" +
+                      $"/{Uri.EscapeDataString(CodProducto)}/{f.CodTipoPrecio}/{Uri.EscapeDataString(f.CodMoneda ?? "")}";
+            var resp = await Http.DeleteAsync(url);
+            if (resp.IsSuccessStatusCode) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadProductoTiposPrecioPanel), nameof(EliminarAsync), "No se pudo eliminar el registro");
+        }
+        finally { f.Guardando = false; }
+    }
+}

@@ -1,0 +1,86 @@
+@* Pantalla propia de Purchase Orders.
+   COMERCIAL.ENTIDADES_PURCHARSE_ORDERS
+
+   Quedó delgada a propósito: elige el cliente y delega todo lo demás en
+   PurchaseOrdersPanel, que es el mismo componente que usa la pestaña dentro de
+   Temporadas por Entidad.
+
+   Se conserva esta pantalla —en vez de mudar el módulo y darla de baja— para que la opción
+   de menú de PURCHASE ORDER siga abriendo algo. Quien entra por el menú de Purchase Orders
+   ve solo eso; quien entra por Temporadas las ve junto a las temporadas del mismo cliente.
+   Las dos muestran exactamente lo mismo porque es el mismo componente. *@
+@page "/comercial/entidades-purchase-orders"
+@attribute [Authorize]
+@using System.Globalization
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Purchase Orders · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* mb-2 en vez de mb-4: al quedar una fila menos abajo, el aire de antes era demasiado.
+
+   El "· sin cliente" del subtítulo se fue: ahora el propio combo de cliente está a la
+   vista en la barra, y el panel ya dice "Sin cliente" ahí mismo. Repetirlo tres veces en
+   la misma pantalla no informaba nada. *@
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Purchase Orders" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+            Schema COMERCIAL
+        </MudText>
+    </div>
+</div>
+
+@* Cliente: sin esto no hay nada que listar — ningún SP del módulo lista sin COD_ENTIDAD.
+
+   YA NO VA EN UN RECUADRO APARTE. Antes este combo tenía una fila entera para él solo,
+   dentro de un MudPaper con su borde y su relleno: unos 90 píxeles de alto gastados en un
+   control, y justo debajo otra fila con la búsqueda y los botones medio vacía.
+
+   Ahora se lo pasamos al panel y entra al principio de SU barra. Una fila en vez de dos, y
+   la de arriba, que estaba casi vacía, se aprovecha.
+
+   El combo sigue viviendo ACÁ —el estado del cliente es de esta pantalla, no del panel—;
+   lo único que viaja es el marcado. *@
+<PurchaseOrdersPanel CodEntidad="_codEntidad" DesEntidad="@DesEntidadSeleccionada"
+                     CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+    <SelectorCliente>
+        <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                   TextFunc="@(e => e.Texto)" ValueFunc="@(e => e.Id)"
+                   Value="@_codEntidadTexto" ValueChanged="OnClienteChanged"
+                   Label="Cliente" />
+    </SelectorCliente>
+</PurchaseOrdersPanel>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<ComboboxItem> _entidades = new();
+    private string _codEntidadTexto = "";
+    private decimal? _codEntidad;
+
+    private string DesEntidadSeleccionada
+        => _entidades.FirstOrDefault(e => e.Id == _codEntidadTexto)?.Texto ?? _codEntidadTexto;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("COMERCIAL", "EntidadesPurchaseOrders");
+        try { _entidades = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.EntidadesCombobox)) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(EntidadesPurchaseOrders), nameof(OnInitializedAsync));
+        }
+    }
+
+    /// <summary>Solo resuelve el código. Recargar es del panel: se entera por el parámetro.</summary>
+    private void OnClienteChanged(string? valor)
+    {
+        _codEntidadTexto = valor ?? "";
+        _codEntidad = decimal.TryParse(_codEntidadTexto, NumberStyles.Any,
+                                       CultureInfo.InvariantCulture, out var n) ? n : null;
+    }
+}

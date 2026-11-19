@@ -1,0 +1,97 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly) { <MudButton OnClick="@(() => Editar(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.PersonAdd">Asignar recurso</MudButton> }
+    <MudSpacer />
+    <MudText Class="mono" Style="opacity:.6;font-size:.82rem;">@_items.Count asignaciones · @_items.Select(i => i.COD_ENTIDAD_ASIGNADA).Distinct().Count() personas · @_items.Sum(i => i.NUM_HORAS_EFECTIVAS ?? 0).ToString("0.##") h efectivas · costo @_items.Sum(i => i.VAL_COSTO).ToString("N2") · utilidad @_items.Sum(i => i.VAL_UTILIDAD).ToString("N2") · total @_items.Sum(i => i.VAL_TOTAL).ToString("N2")</MudText>
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="proy-recursos" style="position:relative;">
+        <MudDataGrid T="ExpedienteRecurso" Items="_items" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="25">
+            <Columns>
+                <PropertyColumn Property="x => x.DES_TAREA" Title="Tarea" />
+                <PropertyColumn Property="x => x.DES_ENTIDAD" Title="Persona" />
+                <PropertyColumn Property="x => x.DES_ROL_TAREA" Title="Rol" />
+                <PropertyColumn Property="x => x.FEC_INICIO_PROGRAMADO" Title="Inicio prog." Format="dd/MM/yyyy" />
+                <PropertyColumn Property="x => x.FEC_FINAL_PROGRAMADO" Title="Fin prog." Format="dd/MM/yyyy" />
+                <PropertyColumn Property="x => x.FEC_INICIO_EJECUTADO" Title="Inicio ejec." Format="dd/MM/yyyy" />
+                <PropertyColumn Property="x => x.FEC_FINAL_EJECUTADO" Title="Fin ejec." Format="dd/MM/yyyy" />
+                <PropertyColumn Property="x => x.NUM_HORAS_EFECTIVAS" Title="Horas efect." Format="0.##" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_COSTO_HORA" Title="Costo/hora" Format="N2" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_COSTO" Title="Costo" Format="N2" CellStyle="text-align:right;" />
+                <TemplateColumn Title="Utilidad %" Sortable="false" Filterable="false" CellStyle="text-align:right;">
+                    <CellTemplate>@(context.Item.FLG_PROPIO ? (context.Item.TAS_UTILIDAD ?? 0).ToString("0.##") + " %" : "—")</CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.VAL_UTILIDAD" Title="Utilidad" Format="N2" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_TOTAL" Title="Total" Format="N2" CellStyle="text-align:right;font-weight:600;" />
+                <TemplateColumn Title="Estado" Sortable="false" Filterable="false">
+                    <CellTemplate><EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /></CellTemplate>
+                </TemplateColumn>
+                @if (!ReadOnly)
+                {
+                    <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                        <CellTemplate>
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(context.Item))" title="Editar" />
+                            <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(context.Item))" title="Quitar" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Todavía no hay personas asignadas a las tareas.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="ExpedienteRecurso" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private List<ExpedienteRecurso> _items = new();
+    private List<ExpedienteTarea> _tareas = new();
+    private List<ComboboxItem> _entidades = new();
+    private HashSet<decimal> _propios = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _entidades = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.Exp(NumProyecto, "entidades-elegibles")) ?? new();
+        _propios = (await Http.SafeGetAsync<List<decimal>>(ApiRoutes.Proyectos.Exp(NumProyecto, "entidades-propias")) ?? new()).ToHashSet();
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _items = await Http.SafeGetAsync<List<ExpedienteRecurso>>(ApiRoutes.Proyectos.Exp(NumProyecto, "recursos")) ?? new();
+            _tareas = (await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")))?.Tareas ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoRecursos), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los recursos. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Editar(ExpedienteRecurso? r)
+    {
+        if (_tareas.Count == 0) { Snackbar.Add("Primero crea las tareas del proyecto (pestaña Planificación).", Severity.Info); return; }
+        var dlg = await DialogService.ShowAsync<ProyectoRecursoDialog>(r is null ? "Asignar" : "Editar",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = r, ["Tareas"] = _tareas, ["Existentes"] = _items, ["Entidades"] = _entidades, ["Propios"] = _propios },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task Quitar(ExpedienteRecurso r)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar asignación", $"¿Quitar a {r.DES_ENTIDAD} ({r.DES_ROL_TAREA}) de la tarea «{r.DES_TAREA}»?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"recursos/{r.COD_TAREA}/{r.COD_ENTIDAD_ASIGNADA:0}/{Uri.EscapeDataString(r.COD_ROL_TAREA)}"));
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar la asignación.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

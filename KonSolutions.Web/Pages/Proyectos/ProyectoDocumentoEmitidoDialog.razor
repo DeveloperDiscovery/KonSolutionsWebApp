@@ -1,0 +1,89 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+@* Edita el título, la fase y el TEXTO del documento del proyecto (la plantilla solo dio el texto de partida). *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Documento" : $"{Item.DES_PLANTILLA_DOCUMENTO} · v{Item.NUM_VERSION}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="8">
+                <MudTextField T="string" @bind-Value="_titulo" Label="Título" Variant="Variant.Outlined" MaxLength="100" Required="true" RequiredError="Escribe el título." />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <AriaCombo TItem="ComboboxItem" Items="_fasesCombo" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_fase" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12">
+                <CampoDocumentoTexto @bind-Value="_texto" Label="Texto del documento" Lineas="16" />
+            </MudItem>
+            <MudItem xs="12">
+                <div class="d-flex align-center gap-2">
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Visibility" OnClick="VerTexto" Disabled="_cargando">Ver el texto con los datos del proyecto</MudButton>
+                </div>
+                @if (_resuelto is not null)
+                {
+                    <MudPaper Elevation="0" Class="pa-3 mt-2" Style="border:1px solid var(--line);white-space:pre-wrap;font-size:.85rem;max-height:260px;overflow:auto;">@_resuelto</MudPaper>
+                }
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public DocumentoEmitido? Item { get; set; }
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+
+    private string? _titulo, _texto, _fase, _resuelto;
+    private List<ComboboxItem> _fasesCombo = new();
+    private bool _guardando, _cargando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _fasesCombo = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        if (Item is null) return;
+        // el texto no viene en la lista: se pide el documento completo
+        var d = await Http.SafeGetAsync<DocumentoEmitido>(ApiRoutes.Proyectos.Exp(NumProyecto, $"documentos-emitidos/{Item.NUM_SECUENCIA}"));
+        _titulo = d?.DES_TITULO ?? Item.DES_TITULO;
+        _texto = d?.DES_CONTENIDO;
+        _fase = (d?.COD_FASE ?? Item.COD_FASE)?.ToString();
+    }
+
+    private async Task VerTexto()
+    {
+        _cargando = true;
+        try
+        {
+            using var resp = await Http.PostAsJsonAsync(ApiRoutes.Proyectos.Exp(NumProyecto, "documentos-emitidos/texto"), new { Contenido = _texto ?? "" });
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<string?>>();
+            _resuelto = r?.Data;
+            if (!resp.IsSuccessStatusCode) Snackbar.Add(r?.Message ?? "No se pudo armar el texto.", Severity.Warning);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentoEmitidoDialog), nameof(VerTexto)); Snackbar.Add("No se pudo armar el texto. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _cargando = false; }
+    }
+
+    private async Task Guardar()
+    {
+        if (Item is null) return;
+        if (string.IsNullOrWhiteSpace(_titulo)) { Snackbar.Add("Escribe el título.", Severity.Warning); return; }
+        if (string.IsNullOrWhiteSpace(_texto)) { Snackbar.Add("Escribe el texto del documento.", Severity.Warning); return; }
+        _guardando = true;
+        try
+        {
+            var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"documentos-emitidos/{Item.NUM_SECUENCIA}"),
+                new { DesTitulo = _titulo, CodFase = byte.TryParse(_fase, out var f) ? (byte?)f : null, DesContenido = _texto });
+            if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el documento.", Severity.Warning); return; }
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentoEmitidoDialog), nameof(Guardar)); Snackbar.Add("No se pudo grabar. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _guardando = false; }
+    }
+}

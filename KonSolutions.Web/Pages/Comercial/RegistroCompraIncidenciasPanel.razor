@@ -1,0 +1,335 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@*
+    Nota de crédito / débito del Registro de Compras con un tipo de operación de incidencia de producto
+    (ESTANDAR.TIPOS_OPERACION.FLG_INCIDENCIA_PRODUCTO). Se elige la factura que afecta y se ve SU grilla de líneas (la misma que la de
+    Líneas del comprobante: producto, cód. proveedor, cantidad, unidad, precio, desc. %, total) más el saldo y lo que la nota aplica:
+      · devolución: cantidad devuelta, OPCIONAL (si la pones, el importe sale proporcional al total de la línea y se puede ajustar; también se puede devolver solo por importe);
+      · diferencia de precio: el importe de la diferencia.
+    «Adicionar al comprobante» CREA las líneas de la nota con lo elegido y las asocia ítem por ítem a la factura
+    (FINANZAS.COMPROBANTES_PAGO_APLICADOS). En devolución además se adjunta la guía de devolución (movimiento de almacén).
+    La anulación total copia todas las líneas de la factura y las asocia completas.
+    Las reglas (saldo, mismo proveedor, importes) las valida el SQL (scripts 85 y 87); acá solo se arman los datos.
+*@
+
+@if (PermiteGuia && (!SoloLectura || _guiasAdjuntas.Count > 0))
+{
+    <MudText Typo="Typo.subtitle2" Class="mb-1">1. @(EsDevolucion ? "Guía de devolución" : "Guía del proveedor") <span style="opacity:.6;font-weight:400;">(opcional: si la asocias, la factura solo muestra lo que coincide con la guía)</span></MudText>
+    @if (_guiasAdjuntas.Count > 0)
+    {
+        <div class="d-flex flex-column gap-1 mb-2" data-panel="guias-adjuntas">
+            @foreach (var g in _guiasAdjuntas)
+            {
+                <div class="d-flex align-center gap-2">
+                    <MudIcon Icon="@Icons.Material.Filled.LocalShipping" Size="Size.Small" />
+                    <span class="mono">@(g.NUM_GUIA ?? $"Mov. {g.NUM_MOVIMIENTO_ALMACEN:0}")</span>
+                    <span style="opacity:.7;">@g.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy") · @g.DES_TIPO_MOVIMIENTO · @g.NUM_LINEAS_VINCULADAS línea(s) vinculada(s)</span>
+                    @if (!SoloLectura)
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Color="Color.Error" OnClick="@(() => QuitarGuiaAsync(g))" title="Quitar la guía" data-accion="guia-quitar" />
+                    }
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <MudText Class="mono mb-2" Style="opacity:.6;" data-vacio="guias">Sin guía adjunta: trabajas solo con la factura. Si devuelves mercadería, asocia primero la guía (el movimiento de almacén de devolución al proveedor).</MudText>
+    }
+    @if (!SoloLectura)
+    {
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudSelect T="decimal?" @bind-Value="_guiaSel" Label="@(EsDevolucion ? "Guía de devolución" : "Guía del proveedor")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:380px;" Clearable="true" data-campo="guia-disponible">
+                @foreach (var g in _guiasDisponibles.Where(x => !x.FLG_ASOCIADA))
+                {
+                    <MudSelectItem T="decimal?" Value="@((decimal?)g.NUM_MOVIMIENTO_ALMACEN)">@($"{g.NUM_GUIA ?? ("Mov. " + g.NUM_MOVIMIENTO_ALMACEN.ToString("0"))} · {g.FEC_MOVIMENTO_ALMACEN:dd/MM/yyyy} · {g.NUM_LINEAS} línea(s)")</MudSelectItem>
+                }
+            </MudSelect>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AttachFile" Disabled="@(_guiaSel is null || _saving)" OnClick="AdjuntarGuiaAsync" data-accion="guia-adjuntar">Adjuntar guía</MudButton>
+        </div>
+        @if (_guiasDisponibles.Count == 0)
+        {
+            <MudText Class="mono mt-1" Style="opacity:.5;font-size:.8rem;" data-vacio="guias-disponibles">Este proveedor no tiene movimientos de almacén de devolución. Regístralo primero en Movimientos de almacén.</MudText>
+        }
+    }
+    <MudDivider Class="my-3" />
+}
+
+<div class="d-flex align-center gap-2 mb-2 flex-wrap" data-panel="incidencias">
+    <span class="mono" style="opacity:.7;">@(PermiteGuia ? "2. " : "")Factura que afecta esta nota</span>
+    @if (_filas.Count > 0 && _filas.Any(f => f.L.FLG_FILTRADO_POR_GUIA))
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Info" data-aviso="filtrado-por-guia">Solo items que coinciden con la guía</MudChip>
+    }
+</div>
+
+@if (_asociado.Count > 0)
+{
+    <MudText Typo="Typo.subtitle2" Class="mb-1">Asociado actualmente</MudText>
+    <MudDataGrid T="RegistroCompraIncidencia" Items="_asociado" Dense="true" Hover="true" Striped="true" FixedHeader="true">
+        <Columns>
+            <TemplateColumn Title="Línea de la nota" Sortable="false"><CellTemplate>@context.Item.NUM_SECUENCIA_NOTA</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Factura" Sortable="false"><CellTemplate><span class="mono">@context.Item.NUM_COMPROBANTE_PAGO</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Línea" Sortable="false"><CellTemplate>@context.Item.NUM_SECUENCIA_ASOCIADO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Producto" Sortable="false"><CellTemplate>@context.Item.DES_PRODUCTO_COMPROBANTE</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Cant. aplicada" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.CAN_APLICADA?.ToString("0.########")</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Importe aplicado" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.VAL_APLICADO?.ToString("N2")</CellTemplate></TemplateColumn>
+        </Columns>
+    </MudDataGrid>
+}
+else
+{
+    <MudText Class="mono mb-2" Style="opacity:.6;" data-vacio="incidencias">La nota todavía no está asociada a ninguna factura.</MudText>
+}
+
+@if (!SoloLectura)
+{
+    <MudDivider Class="my-3" />
+    <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+        <MudTextField T="string" @bind-Value="_buscar" Label="Buscar factura (número)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:260px;"
+                      Immediate="false" OnKeyDown="@(e => e.Key == "Enter" ? CargarOrigenesAsync() : Task.CompletedTask)" />
+        <MudSelect T="decimal?" Value="_origenSel" ValueChanged="OnOrigenChanged" Label="Factura" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:340px;" Clearable="true">
+            @foreach (var o in _origenes)
+            {
+                <MudSelectItem T="decimal?" Value="@((decimal?)o.NUM_REGISTRO)">@($"{o.NUM_COMPROBANTE_PAGO} · {o.FEC_COMPROBANTE_PAGO:dd/MM/yyyy} · {o.COD_MONEDA} {o.VAL_TOTAL:N2}")</MudSelectItem>
+            }
+        </MudSelect>
+        @if (!EsAnulacion)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.PlaylistAdd" Disabled="@(_origenSel is null || _saving)" OnClick="AdicionarAsync" data-accion="adicionar">@(_saving ? "Adicionando..." : "Adicionar al comprobante")</MudButton>
+        }
+        @if (EsAnulacion)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Error" Size="Size.Small" StartIcon="@Icons.Material.Filled.Block" Disabled="@(_origenSel is null || _saving)" OnClick="AnularPorCompleto" data-accion="anulacion-total">Anular la factura por completo</MudButton>
+        }
+    </div>
+
+    @if (_origenSel is not null && !EsAnulacion)
+    {
+        <MudDataGrid T="Fila" Items="_filas" Dense="true" Hover="true" Striped="true" FixedHeader="true" Height="@AltoGrilla" data-grid="factura-afectada">
+            <Columns>
+                <TemplateColumn Title="N°" Sortable="false" CellStyle="text-align:right;"><CellTemplate><span class="mono">@context.Item.L.NUM_SECUENCIA_ASOCIADO</span></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Producto" Sortable="false"><CellTemplate>@TextoProducto(context.Item.L)</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Cód. proveedor" Sortable="false"><CellTemplate><span class="mono">@context.Item.L.COD_PRODUCTO_ENTIDAD</span></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Cantidad" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.L.CAN_FACTURADA.ToString("0.######")</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Unidad" Sortable="false"><CellTemplate>@context.Item.L.COD_UNIDAD_MEDIDA</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Precio" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.L.PRE_UNITARIO?.ToString("0.00####")</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Desc. %" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.L.TAS_DESCUENTO?.ToString("0.##")</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Total" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.L.VAL_FACTURADO.ToString("N2")</CellTemplate></TemplateColumn>
+                @if (_filas.Any(f => f.L.FLG_FILTRADO_POR_GUIA))
+                {
+                    <TemplateColumn Title="Cant. guía" Sortable="false" CellStyle="text-align:right;"><CellTemplate><span data-celda="cantidad-guia">@context.Item.L.CAN_GUIA?.ToString("0.######")</span></CellTemplate></TemplateColumn>
+                }
+                <TemplateColumn Title="Saldo" Sortable="false" CellStyle="text-align:right;">
+                    <CellTemplate><span title="@($"Ya aplicado por otras notas: {context.Item.L.CAN_APLICADA_OTRAS:0.######} · {context.Item.L.VAL_APLICADO_OTRAS:N2}")">@context.Item.L.CAN_SALDO.ToString("0.######") · @context.Item.L.VAL_SALDO.ToString("N2")</span></CellTemplate>
+                </TemplateColumn>
+                @if (EsDevolucion)
+                {
+                    <TemplateColumn Title="Cant. devuelta" Sortable="false">
+                        <CellTemplate>
+                            @{ var f = context.Item; }
+                            <MudNumericField T="decimal?" Value="@f.Can" ValueChanged="@((decimal? v) => CambiaCantidad(f, v))" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" ReadOnly="@f.L.FLG_FILTRADO_POR_GUIA" HideSpinButtons="true" Style="max-width:120px;" data-campo="cantidad-devuelta" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+                <TemplateColumn Title="Importe de diferencia" Sortable="false">
+                    <CellTemplate><MudNumericField T="decimal?" @bind-Value="context.Item.Val" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" ReadOnly="@(EsDevolucion && context.Item.L.FLG_FILTRADO_POR_GUIA)" HideSpinButtons="true" Format="N2" Style="max-width:130px;" data-campo="importe-diferencia" /></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="" Sortable="false">
+                    <CellTemplate>
+                        @{ var g = context.Item; }
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Style="@(EsDevolucion && g.L.FLG_FILTRADO_POR_GUIA ? "display:none;" : "")" OnClick="@(() => TodoElSaldo(g))" title="Aplicar todo el saldo de la línea">Todo el saldo</MudButton>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">La factura no tiene líneas.</MudText></NoRecordsContent>
+        </MudDataGrid>
+        <div class="d-flex gap-2 mt-2 align-center flex-wrap">
+            <span class="mono" style="opacity:.6;">Elige la cantidad devuelta o el importe en cada línea y pulsa «Adicionar al comprobante» (arriba): crea en las líneas de la nota lo que elegiste arriba y lo asocia a la factura. Si vuelves a adicionar de esta factura, reemplaza lo anterior.</span>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public decimal NumRegistro { get; set; }
+    [Parameter] public string AltoGrilla { get; set; } = "380px";
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>Devolución: la cantidad devuelta es obligatoria y se puede adjuntar la guía de devolución (FLG_DEVOLUCION del tipo de operación).</summary>
+    [Parameter] public bool EsDevolucion { get; set; }
+    /// <summary>Anulación total: se anula la factura completa (FLG_ANULACION del tipo de operación).</summary>
+    [Parameter] public bool EsAnulacion { get; set; }
+    /// <summary>Se pueden asociar guías: FLG_INCIDENCIA_PRODUCTO y (FLG_DEVOLUCION o FLG_CARGO).</summary>
+    [Parameter] public bool PermiteGuia { get; set; }
+    /// <summary>Se avisa cuando algo cambió en la nota (adicionar, anulación total, guía): el documento recarga sus líneas y la validación.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private class Fila
+    {
+        public RegistroCompraIncidenciaLinea L { get; set; } = new();
+        public decimal? Can { get; set; }
+        public decimal? Val { get; set; }
+    }
+
+    private List<RegistroCompraIncidencia> _asociado = new();
+    private List<RegistroCompraIncidenciaOrigen> _origenes = new();
+    private List<RegistroCompraIncidenciaGuia> _guiasDisponibles = new();
+    private List<RegistroCompraIncidenciaGuiaAdjunta> _guiasAdjuntas = new();
+    private List<Fila> _filas = new();
+    private decimal? _origenSel, _guiaSel;
+    private string? _buscar;
+    private bool _saving;
+    private string Url => $"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/incidencias";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (NumRegistro <= 0) return;
+        await CargarAsociadoAsync();
+        if (!SoloLectura && _origenes.Count == 0) await CargarOrigenesAsync();
+        if (PermiteGuia) await CargarGuiasAsync();
+    }
+
+    private async Task CargarAsociadoAsync()
+    {
+        try { _asociado = (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraIncidencia>>>(Url))?.Data ?? new(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraIncidenciasPanel), nameof(CargarAsociadoAsync)); _asociado = new(); }
+    }
+
+    private async Task CargarOrigenesAsync()
+    {
+        try { _origenes = (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraIncidenciaOrigen>>>($"{Url}/origenes?search={Uri.EscapeDataString(_buscar ?? "")}"))?.Data ?? new(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraIncidenciasPanel), nameof(CargarOrigenesAsync)); _origenes = new(); }
+    }
+
+    private async Task CargarGuiasAsync()
+    {
+        try
+        {
+            _guiasAdjuntas = (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraIncidenciaGuiaAdjunta>>>($"{Url}/guias"))?.Data ?? new();
+            _guiasDisponibles = SoloLectura ? new() : (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraIncidenciaGuia>>>($"{Url}/guias/disponibles"))?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraIncidenciasPanel), nameof(CargarGuiasAsync)); _guiasAdjuntas = new(); _guiasDisponibles = new(); }
+    }
+
+    /// <summary>Cambió el conjunto de guías: las facturas (y los items de la elegida) se filtran distinto.</summary>
+    private async Task RefrescarFacturasAsync()
+    {
+        await CargarOrigenesAsync();
+        if (_origenSel is { } o && _origenes.Any(x => x.NUM_REGISTRO == o)) await OnOrigenChanged(o);
+        else { _origenSel = null; _filas = new(); }
+    }
+
+    private async Task OnOrigenChanged(decimal? origen)
+    {
+        _origenSel = origen;
+        _filas = new();
+        if (origen is null || EsAnulacion) return;
+        try
+        {
+            var l = (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraIncidenciaLinea>>>($"{Url}/disponibles?origen={origen.Value:0}"))?.Data ?? new();
+            _filas = l.Select(x => new Fila { L = x, Can = x.CAN_APLICADA, Val = x.VAL_APLICADO }).ToList();
+            // Devolución con guía: la cantidad es la de la guía (sin pasar del saldo) y se incorpora sola, sin digitar; el importe sale de ella.
+            if (EsDevolucion)
+                foreach (var f in _filas.Where(f => f.L.FLG_FILTRADO_POR_GUIA && f.L.CAN_GUIA is > 0))
+                    CambiaCantidad(f, Math.Min(f.L.CAN_GUIA!.Value, f.L.CAN_SALDO));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraIncidenciasPanel), nameof(OnOrigenChanged)); }
+    }
+
+    /// <summary>En devolución el importe de la diferencia sale proporcional al total de la línea (se puede ajustar a mano).</summary>
+    /// <summary>«CÓDIGO · descripción»: la descripción de la línea o, si no tiene, la del producto.</summary>
+    private static string TextoProducto(RegistroCompraIncidenciaLinea l)
+    {
+        var des = l.DES_PRODUCTO ?? l.DES_PRODUCTO_COMPROBANTE;
+        return string.IsNullOrWhiteSpace(l.COD_PRODUCTO) ? des ?? "" : string.IsNullOrWhiteSpace(des) ? l.COD_PRODUCTO : $"{l.COD_PRODUCTO} · {des}";
+    }
+
+    private static void CambiaCantidad(Fila f, decimal? can)
+    {
+        f.Can = can;
+        f.Val = can is > 0 && f.L.CAN_FACTURADA > 0 ? Math.Round(f.L.VAL_FACTURADO * can.Value / f.L.CAN_FACTURADA, 2) : null;
+    }
+
+    private void TodoElSaldo(Fila f)
+    {
+        if (EsDevolucion) CambiaCantidad(f, f.L.CAN_GUIA is > 0 ? Math.Min(f.L.CAN_GUIA.Value, f.L.CAN_SALDO) : f.L.CAN_SALDO);
+        else { f.Can = null; f.Val = f.L.VAL_SALDO; }
+    }
+
+    private async Task AdicionarAsync()
+    {
+        if (_origenSel is not { } origen) return;
+        var elegidas = _filas.Where(f => (f.Can ?? 0) > 0 || (f.Val ?? 0) > 0).ToList();
+        if (elegidas.Count == 0)
+        {
+            Snackbar.Add(EsDevolucion ? "Pon la cantidad devuelta o el importe en alguna línea." : "Pon el importe de la diferencia en alguna línea.", Severity.Warning);
+            return;
+        }
+        var dto = new RegistroCompraIncidenciaAdicionarDto
+        {
+            NUM_REGISTRO_ORIGEN = origen,
+            Items = elegidas.Select(f => new RegistroCompraIncidenciaAdicionarItemDto { NUM_SECUENCIA_ASOCIADO = f.L.NUM_SECUENCIA_ASOCIADO, CAN_APLICADA = EsDevolucion ? f.Can : null, VAL_APLICADO = f.Val }).ToList()
+        };
+        _saving = true;
+        var resp = await Http.PostAsJsonAsync($"{Url}/adicionar", dto);
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Líneas adicionadas al comprobante.", Severity.Success);
+            await CargarAsociadoAsync();
+            await OnOrigenChanged(origen);
+            if (PermiteGuia) await CargarGuiasAsync();
+            await OnCambio.InvokeAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraIncidenciasPanel), nameof(AdicionarAsync), "No se pudo adicionar al comprobante");
+    }
+
+    private async Task AdjuntarGuiaAsync()
+    {
+        if (_guiaSel is not { } g) return;
+        _saving = true;
+        var resp = await Http.PostAsync($"{Url}/guias/{g:0}", null);
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Guía de devolución adjuntada.", Severity.Success);
+            _guiaSel = null;
+            await CargarGuiasAsync();
+            await RefrescarFacturasAsync();
+            await OnCambio.InvokeAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraIncidenciasPanel), nameof(AdjuntarGuiaAsync), "No se pudo adjuntar la guía");
+    }
+
+    private async Task QuitarGuiaAsync(RegistroCompraIncidenciaGuiaAdjunta g)
+    {
+        _saving = true;
+        var resp = await Http.DeleteAsync($"{Url}/guias/{g.NUM_MOVIMIENTO_ALMACEN:0}");
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { await CargarGuiasAsync(); await RefrescarFacturasAsync(); await OnCambio.InvokeAsync(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraIncidenciasPanel), nameof(QuitarGuiaAsync), "No se pudo quitar la guía");
+    }
+
+    private async Task AnularPorCompleto()
+    {
+        if (_origenSel is not { } origen) return;
+        var f = _origenes.FirstOrDefault(o => o.NUM_REGISTRO == origen)?.NUM_COMPROBANTE_PAGO ?? origen.ToString("0");
+        var ok = await DialogService.ShowMessageBox("Anular la factura por completo", $"Se copiarán a la nota todas las líneas de la factura {f} y se asociarán completas. La nota tiene que estar sin líneas. ¿Continuar?", yesText: "Anular", cancelText: "Cancelar");
+        if (ok != true) return;
+        _saving = true;
+        var resp = await Http.PostAsJsonAsync($"{Url}/anulacion-total", new RegistroCompraIncidenciaAnulacionDto { NUM_REGISTRO_ORIGEN = origen });
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Factura anulada por completo: se copiaron y asociaron todas sus líneas.", Severity.Success);
+            await CargarAsociadoAsync();
+            await OnCambio.InvokeAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraIncidenciasPanel), nameof(AnularPorCompleto), "No se pudo anular la factura");
+    }
+}

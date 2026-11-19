@@ -1,0 +1,43 @@
+@page "/estandar/entidades-proveedores"
+@attribute [Authorize]
+@inject MenuService MenuService
+@inject HttpClient Http
+
+@*
+    Reutiliza Entidades.razor (grilla + diálogo) fijando VARIOS tipos de entidad a la vez —
+    mismo método que usa EntidadesClientes.razor con un solo tipo ("CLI"): esta página resuelve
+    su propio DES_PARAMETRO y se lo pasa ya armado a Entidades.razor, que no necesita ir a
+    buscarlo ni parsearlo por su cuenta.
+
+    El Parámetro esperado en SEGURIDAD.APLICACIONES_OPCIONES va en el MISMO formato que ya usa
+    @DES_TIPOS_ENTIDAD en PROC_ESTANDAR_ENTIDADES_SHOWALL/_SEARCH (cada código + guion bajo),
+    ej. "PRV_COS_BOR_EST_HIL_TEJ_" — se pasa tal cual, sin transformarlo.
+
+    Los tipos NO están hardcodeados aquí — salen de ese Parámetro, resuelto por ruta
+    (DES_FORMULARIO) para que sobreviva a que el administrador mueva la opción de carpeta (ver
+    MenuService.BuscarCodigosPorFormulario).
+*@
+<Entidades CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcion" CodTiposEntidadFijoMulti="@_tiposEntidadFijo" />
+
+@code {
+    private string _codAplicacion = "";
+    private string _codOpcion = "";
+    private string? _tiposEntidadFijo;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var codigos = MenuService.BuscarCodigosPorFormulario("Estandar/EntidadesProveedores.razor");
+        if (codigos is null) return;
+
+        _codAplicacion = codigos.Value.CodAplicacion;
+        _codOpcion = codigos.Value.CodOpcionAplicacion;
+
+        try
+        {
+            var url = $"{ApiRoutes.Seguridad.AplicacionesOpciones}/{Uri.EscapeDataString(_codAplicacion)}/{Uri.EscapeDataString(_codOpcion)}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Seguridad.AplicacionesOpcionesFormDto>>(url);
+            _tiposEntidadFijo = string.IsNullOrWhiteSpace(r?.Data?.DES_PARAMETRO) ? null : r!.Data!.DES_PARAMETRO;
+        }
+        catch { /* sin parámetro cargado, la grilla se ve sin filtro fijo (ver comentario arriba) */ }
+    }
+}

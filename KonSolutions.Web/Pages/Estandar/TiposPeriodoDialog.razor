@@ -1,0 +1,267 @@
+@using TipoPeriodoModel = KONSolutions.Shared.Models.Estandar.TiposPeriodo
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_PERIODO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    <CampoTexto Tabla="ESTANDAR.TIPOS_PERIODO" Columna="COD_TIPO_PERIODO"
+                                @bind-Value="_model.COD_TIPO_PERIODO"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="ESTANDAR.TIPOS_PERIODO" Columna="DES_TIPO_PERIODO"
+                                @bind-Value="_model.DES_TIPO_PERIODO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.TIPOS_PERIODO" Columna="DES_PREFIJO"
+                                @bind-Value="_model.DES_PREFIJO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposEstado"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_TIPO_ESTADO?.ToString())"
+                               ValueChanged="@(v => _model.COD_TIPO_ESTADO = int.TryParse(v, out var n) ? n : null)"
+                               Label="Tipo de Estado" Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.subtitle2" Class="mt-2 mb-1" Style="opacity:.7;">Duración del período</MudText>
+            <MudRadioGroup T="string" Value="@_duracionSeleccionada" ValueChanged="OnDuracionChanged" Disabled="_readonly">
+                <MudGrid Spacing="2" Class="mb-2">
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("QUINQUENAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.CalendarViewMonth" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Quinquenal</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("BIANUAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.CalendarViewMonth" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Bianual</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("ANUAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.CalendarToday" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Anual</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("SEMESTRAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.DateRange" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Semestral</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("TRIMESTRAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.DateRange" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Trimestral</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("MENSUAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.CalendarMonth" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Mensual</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("QUINCENAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.ViewWeek" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Quincenal</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("SEMANAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.ViewWeek" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Semanal</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudRadio T="string" Value="@("DIARIO")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Today" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Diario</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                </MudGrid>
+            </MudRadioGroup>
+
+            <MudText Typo="Typo.subtitle2" Class="mt-2 mb-1" Style="opacity:.7;">Módulos donde aplica</MudText>
+            <MudRadioGroup T="string" Value="@_moduloSeleccionado" ValueChanged="OnModuloChanged" Disabled="_readonly">
+                <MudGrid Spacing="2" Class="mb-2">
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("CONTABLE")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.AccountBalance" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Contable</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("COSTOS")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.RequestQuote" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Costos</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("RRHH")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Groups" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">RRHH / Nómina</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("COMERCIAL")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.PointOfSale" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Comercial</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("NETWORKING")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Hub" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Networking</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                    <MudItem xs="6" sm="4">
+                        <MudRadio T="string" Value="@("PLANEAMIENTO")" Color="Color.Primary">
+                            <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Engineering" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">Planeamiento</MudText></div>
+                        </MudRadio>
+                    </MudItem>
+                </MudGrid>
+            </MudRadioGroup>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TipoPeriodoModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TipoPeriodoModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private List<ComboboxItem> _tiposEstado = new();
+    private string? _duracionSeleccionada;
+    private string? _moduloSeleccionado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+
+        _tiposEstado = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.TiposEstadosCombobox) ?? new();
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(TipoPeriodoModel m)
+    {
+        _model = new TipoPeriodoModel
+        {
+            COD_TIPO_PERIODO = m.COD_TIPO_PERIODO,
+            DES_TIPO_PERIODO = m.DES_TIPO_PERIODO,
+            DES_PREFIJO = m.DES_PREFIJO,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            FLG_QUINQUENAL = m.FLG_QUINQUENAL,
+            FLG_BIANUAL = m.FLG_BIANUAL,
+            FLG_ANUAL = m.FLG_ANUAL,
+            FLG_SEMESTRAL = m.FLG_SEMESTRAL,
+            FLG_TRIMESTRAL = m.FLG_TRIMESTRAL,
+            FLG_MENSUAL = m.FLG_MENSUAL,
+            FLG_QUINCENAL = m.FLG_QUINCENAL,
+            FLG_SEMANAL = m.FLG_SEMANAL,
+            FLG_DIARIO = m.FLG_DIARIO,
+            FLG_MODULO_CONTABLE = m.FLG_MODULO_CONTABLE,
+            FLG_MODULO_COSTOS = m.FLG_MODULO_COSTOS,
+            FLG_MODULO_RRHH_NOMINA = m.FLG_MODULO_RRHH_NOMINA,
+            FLG_MODULO_COMERCIAL = m.FLG_MODULO_COMERCIAL,
+            FLG_MODULO_NETWORKING = m.FLG_MODULO_NETWORKING,
+            FLG_MODULO_PLANEAMIENTO = m.FLG_MODULO_PLANEAMIENTO,
+        };
+        _duracionSeleccionada = DuracionDesdeModelo(_model);
+        _moduloSeleccionado = ModuloDesdeModelo(_model);
+    }
+
+    // Duración y Módulo son mutuamente excluyentes (un solo botón activo): se representan
+    // en la UI con MudRadioGroup, pero el modelo/API siguen siendo un FLG_ por opción —
+    // estas dos funciones traducen en ambos sentidos.
+    private static string? DuracionDesdeModelo(TipoPeriodoModel m) =>
+        m.FLG_QUINQUENAL == true ? "QUINQUENAL" :
+        m.FLG_BIANUAL == true ? "BIANUAL" :
+        m.FLG_ANUAL == true ? "ANUAL" :
+        m.FLG_SEMESTRAL == true ? "SEMESTRAL" :
+        m.FLG_TRIMESTRAL == true ? "TRIMESTRAL" :
+        m.FLG_MENSUAL == true ? "MENSUAL" :
+        m.FLG_QUINCENAL == true ? "QUINCENAL" :
+        m.FLG_SEMANAL == true ? "SEMANAL" :
+        m.FLG_DIARIO == true ? "DIARIO" : null;
+
+    private static string? ModuloDesdeModelo(TipoPeriodoModel m) =>
+        m.FLG_MODULO_CONTABLE == true ? "CONTABLE" :
+        m.FLG_MODULO_COSTOS == true ? "COSTOS" :
+        m.FLG_MODULO_RRHH_NOMINA == true ? "RRHH" :
+        m.FLG_MODULO_COMERCIAL == true ? "COMERCIAL" :
+        m.FLG_MODULO_NETWORKING == true ? "NETWORKING" :
+        m.FLG_MODULO_PLANEAMIENTO == true ? "PLANEAMIENTO" : null;
+
+    private void OnDuracionChanged(string? val)
+    {
+        _duracionSeleccionada = val;
+        _model.FLG_QUINQUENAL = val == "QUINQUENAL";
+        _model.FLG_BIANUAL = val == "BIANUAL";
+        _model.FLG_ANUAL = val == "ANUAL";
+        _model.FLG_SEMESTRAL = val == "SEMESTRAL";
+        _model.FLG_TRIMESTRAL = val == "TRIMESTRAL";
+        _model.FLG_MENSUAL = val == "MENSUAL";
+        _model.FLG_QUINCENAL = val == "QUINCENAL";
+        _model.FLG_SEMANAL = val == "SEMANAL";
+        _model.FLG_DIARIO = val == "DIARIO";
+    }
+
+    private void OnModuloChanged(string? val)
+    {
+        _moduloSeleccionado = val;
+        _model.FLG_MODULO_CONTABLE = val == "CONTABLE";
+        _model.FLG_MODULO_COSTOS = val == "COSTOS";
+        _model.FLG_MODULO_RRHH_NOMINA = val == "RRHH";
+        _model.FLG_MODULO_COMERCIAL = val == "COMERCIAL";
+        _model.FLG_MODULO_NETWORKING = val == "NETWORKING";
+        _model.FLG_MODULO_PLANEAMIENTO = val == "PLANEAMIENTO";
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<TipoPeriodoModel>(
+            $"{ApiRoutes.Estandar.TiposPeriodo}/{Uri.EscapeDataString(_model.COD_TIPO_PERIODO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Estandar.TiposPeriodo;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_PERIODO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposPeriodoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposPeriodoDialog), nameof(Submit));
+    }
+}

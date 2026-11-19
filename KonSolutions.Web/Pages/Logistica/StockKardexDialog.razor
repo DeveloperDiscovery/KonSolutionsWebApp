@@ -1,0 +1,371 @@
+@* Kardex de una línea de stock. Se abre desde la celda "Stock" de Consultas de Stock: ahí se
+   ve CUÁNTO hay, y acá CÓMO se llegó a esa cantidad, movimiento por movimiento.
+
+   La línea de stock se identifica con su clave completa (almacén, ubicación, producto, lote,
+   proceso y orden de producción), la misma de LOGISTICA.STOCKS_ALMACEN_UBICACION: con menos
+   campos se mezclarían movimientos de otro lote u otra OP y el saldo no cuadraría.
+
+   Es de sólo lectura. Cada columna se ordena (clic en el título) y se filtra (embudo, estilo
+   Excel), como las grillas de la aplicación. *@
+
+@using Fila = KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionDetalle
+@using Kardex = KONSolutions.Shared.Models.Logistica.StocksAlmacenUbicacionKardex
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* Ancho: 66% más que los 1280px de antes (2125px), sin pasar del 98% de la pantalla.
+   En % y no en vw: el diálogo vive dentro de #app, que appZoom escala con transform; el %
+   se mide contra #app y respeta el zoom, el vw no. El max-width en línea le gana al tope
+   de 1920px que pone MaxWidth.ExtraLarge (clase mud-dialog-width-xl). *@
+<MudDialog Style="width:min(2125px,98%);max-width:98%;">
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.ReceiptLong" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Kardex</MudText>
+        </div>
+    </TitleContent>
+
+    <DialogContent>
+        @* Qué línea de stock es: lo mismo que la fila de la consulta, en una línea. *@
+        <div class="mb-3" style="font-size:.85rem;">
+            <div><b>@Stock.DES_PRODUCTO</b> <span class="mono" style="opacity:.6;">@Stock.COD_PRODUCTO</span></div>
+            <div class="mono" style="font-size:.76rem;opacity:.7;">
+                Almacén @Stock.COD_ALMACEN — @Stock.DES_ALMACEN · Ubicación @Stock.COD_UBICACION_ALMACEN — @Stock.DES_UBICACION_ALMACEN
+            </div>
+            <div class="mono" style="font-size:.76rem;opacity:.7;">
+                Lote @Stock.NUM_LOTE_CONTROL · Proceso @Stock.COD_PROCESO · OP @Stock.NUM_ORDEN_PRODUCCION-@Stock.NUM_ORDEN_PRODUCCION_ITEM-@Stock.NUM_ORDEN_PRODUCCION_UNIDAD
+            </div>
+        </div>
+
+        <div class="d-flex align-end gap-3 mb-3" style="flex-wrap:wrap;">
+            <MudDatePicker @bind-Date="_desde" Label="Desde" Variant="Variant.Outlined" Margin="Margin.Dense"
+                           DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                           Clearable="true" Style="max-width:170px;" />
+            <MudDatePicker @bind-Date="_hasta" Label="Hasta" Variant="Variant.Outlined" Margin="Margin.Dense"
+                           DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                           Clearable="true" Style="max-width:170px;" />
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" Disabled="_cargando"
+                       StartIcon="@Icons.Material.Filled.Search" OnClick="CargarAsync">Consultar</MudButton>
+            <MudSpacer />
+            <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
+        </div>
+
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (!string.IsNullOrEmpty(_error))
+        {
+            <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+        }
+        else if (_filas.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Esta línea de stock no tiene movimientos de almacén@(_desde is null && _hasta is null ? "" : " en ese rango de fechas").
+            </MudAlert>
+        }
+        else
+        {
+            var visibles = Visibles();
+            <div style="overflow:auto;max-height:58vh;">
+                @* data-cols-key: gridColumnas.js le pone el agarre a cada columna (arrastrar el
+                   borde del título; doble clic para volver al ancho original) y recuerda los
+                   anchos en esta máquina, como en las demás grillas. *@
+                <table class="tabla-simple-editable" data-cols-key="stock-kardex" style="width:100%;font-size:.8rem;">
+                    <thead style="position:sticky;top:0;z-index:1;">
+                        <tr>
+                            <th style="width:150px;">@Encabezado(0, "Fecha y hora")</th>
+                            <th style="width:120px;">@Encabezado(1, "Movimiento")</th>
+                            <th>@Encabezado(2, "Tipo")</th>
+                            <th>@Encabezado(3, "Referencia")</th>
+                            <th>@Encabezado(4, "Entidad")</th>
+                            <th style="width:130px;">@Encabezado(5, "Ingreso", derecha: true)</th>
+                            <th style="width:130px;">@Encabezado(6, "Salida", derecha: true)</th>
+                            <th style="width:140px;">@Encabezado(7, "Saldo", derecha: true)</th>
+                            <th style="width:140px;">@Encabezado(8, "Estado")</th>
+                            <th style="width:130px;">@Encabezado(9, "Usuario")</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @* El saldo inicial va siempre primero y no entra en el orden ni en los
+                           filtros: es el punto de partida, no un movimiento. *@
+                        @if (_saldoInicial is { } si)
+                        {
+                            <tr style="font-style:italic;">
+                                <td class="mono">@si.FEC_MOVIMIENTO?.ToString("dd/MM/yyyy")</td>
+                                <td colspan="6"><b>Saldo inicial</b></td>
+                                <td class="mono" style="text-align:right;"><b>@Num(si.CAN_SALDO)</b></td>
+                                <td colspan="2"></td>
+                            </tr>
+                        }
+                        @if (visibles.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="10" style="text-align:center;opacity:.6;">Ningún movimiento cumple los filtros.</td>
+                            </tr>
+                        }
+                        @foreach (var k in visibles)
+                        {
+                            <tr>
+                                <td class="mono" title="@TooltipFecha(k)">@k.FEC_MOVIMIENTO?.ToString("dd/MM/yyyy") <span style="opacity:.65;">@Hora(k)</span></td>
+                                <td class="mono">@k.NUM_MOVIMIENTO_ALMACEN-@k.NUM_SECUENCIA</td>
+                                <td>
+                                    <div class="d-flex align-center gap-1">
+                                        <MudIcon Icon="@(k.FLG_POSITIVO == true ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                                 Color="@(k.FLG_POSITIVO == true ? Color.Success : Color.Error)" Style="font-size:1rem;" />
+                                        <span>@k.DES_TIPO_MOVIMIENTO</span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(k.DES_OBSERVACION))
+                                    {
+                                        <div style="font-size:.72rem;opacity:.6;">@k.DES_OBSERVACION</div>
+                                    }
+                                </td>
+                                <td class="mono" style="font-size:.74rem;">@Referencia(k)</td>
+                                <td>@k.DES_ENTIDAD</td>
+                                <td class="mono" style="text-align:right;color:var(--mud-palette-success);">@(k.CAN_INGRESO > 0 ? Num(k.CAN_INGRESO) : "")</td>
+                                <td class="mono" style="text-align:right;color:var(--mud-palette-error);">@(k.CAN_SALIDA > 0 ? Num(k.CAN_SALIDA) : "")</td>
+                                <td class="mono" style="text-align:right;"><b>@Num(k.CAN_SALDO)</b></td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(k.DES_ESTADO))
+                                    {
+                                        <EstadoChip Estado="@k.DES_ESTADO" BackColor="@k.DES_BACKCOLOR" ForeColor="@k.DES_FORECOLOR" />
+                                    }
+                                </td>
+                                @* El nombre del usuario; el código queda en el tooltip. *@
+                                <td style="font-size:.76rem;" title="@k.COD_USUARIO_REGISTRO">@Usuario(k)</td>
+                            </tr>
+                        }
+                    </tbody>
+                    <tfoot>
+                        @* Ingreso y salida suman lo que se ve (con filtros, sólo las filas
+                           filtradas). El saldo es siempre el final del kardex: el de cada fila es
+                           el acumulado en orden de fecha y no cambia al ordenar ni al filtrar. *@
+                        <tr>
+                            <td colspan="5" style="text-align:right;"><b>@(HayFiltros ? $"Totales de {visibles.Count} fila(s) filtrada(s)" : "Totales")</b></td>
+                            <td class="mono" style="text-align:right;"><b>@Num(visibles.Sum(k => k.CAN_INGRESO ?? 0))</b></td>
+                            <td class="mono" style="text-align:right;"><b>@Num(visibles.Sum(k => k.CAN_SALIDA ?? 0))</b></td>
+                            <td class="mono" style="text-align:right;"><b>@Num(_saldoFinal) @Stock.COD_UNIDAD_MEDIDA</b></td>
+                            <td colspan="2"></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+
+            @* El saldo del kardex sólo es comparable con el stock cuando llega hasta hoy. Si no
+               cuadra, el stock se movió por fuera de los movimientos de almacén (ajuste directo
+               a la tabla, una carga que no pasó por un movimiento, un movimiento anulado que no
+               revirtió el stock…): el kardex lo deja a la vista en vez de esconderlo. *@
+            @if (_hasta is null && Stock.CAN_PRODUCTO is { } stockActual && stockActual != _saldoFinal)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+                    El saldo del kardex (@Num(_saldoFinal)) no coincide con el stock actual (@Num(stockActual)).
+                    Diferencia: @Num(stockActual - _saldoFinal). Hubo cambios de stock que no pasaron por un movimiento de almacén.
+                </MudAlert>
+            }
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>La fila de la consulta de stock: trae la clave completa y el stock actual.</summary>
+    [Parameter] public Fila Stock { get; set; } = new();
+
+    private List<Kardex> _filas = new();
+    // Los movimientos (sin la fila de saldo inicial): sobre ellos se ordena y se filtra.
+    private List<Kardex> _movimientos = new();
+    private Kardex? _saldoInicial;
+    private DateTime? _desde;
+    private DateTime? _hasta;
+    private bool _cargando = true;
+    private string? _error;
+    private decimal _saldoFinal;
+
+    protected override Task OnInitializedAsync() => CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        _cargando = true;
+        _error = null;
+        try
+        {
+            var r = await Http.GetAsync(Url());
+            var cuerpo = await r.Content.ReadFromJsonAsync<ApiResponse<List<Kardex>>>();
+            if (cuerpo is null || !cuerpo.Success)
+            {
+                _error = string.IsNullOrWhiteSpace(cuerpo?.Message) ? "No se pudo consultar el kardex." : cuerpo!.Message;
+                _filas = new();
+            }
+            else
+            {
+                _filas = cuerpo.Data ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(StockKardexDialog), nameof(CargarAsync));
+            _error = "No se pudo consultar el kardex. Ver detalle en el log de errores.";
+            _filas = new();
+        }
+
+        _movimientos  = _filas.Where(k => k.FLG_SALDO_INICIAL != true).ToList();
+        _saldoInicial = _filas.FirstOrDefault(k => k.FLG_SALDO_INICIAL == true);
+        _saldoFinal   = _filas.LastOrDefault()?.CAN_SALDO ?? 0;
+        _cargando = false;
+    }
+
+    /// <summary>La clave completa de la línea de stock y, si se eligieron, las fechas.</summary>
+    private string Url()
+    {
+        var p = new Dictionary<string, string?>
+        {
+            ["COD_ALMACEN"]                 = Stock.COD_ALMACEN,
+            ["COD_UBICACION_ALMACEN"]       = Stock.COD_UBICACION_ALMACEN,
+            ["COD_PRODUCTO"]                = Stock.COD_PRODUCTO,
+            ["NUM_LOTE_CONTROL"]            = Stock.NUM_LOTE_CONTROL,
+            ["COD_PROCESO"]                 = Stock.COD_PROCESO,
+            ["NUM_ORDEN_PRODUCCION"]        = Stock.NUM_ORDEN_PRODUCCION?.ToString(),
+            ["NUM_ORDEN_PRODUCCION_ITEM"]   = Stock.NUM_ORDEN_PRODUCCION_ITEM?.ToString(),
+            ["NUM_ORDEN_PRODUCCION_UNIDAD"] = Stock.NUM_ORDEN_PRODUCCION_UNIDAD?.ToString(),
+            ["FEC_INICIAL"]                 = _desde?.ToString("yyyy-MM-dd"),
+            ["FEC_FINAL"]                   = _hasta?.ToString("yyyy-MM-dd"),
+        };
+        var query = string.Join("&", p.Where(x => x.Value is not null)
+                                      .Select(x => $"{x.Key}={Uri.EscapeDataString(x.Value!)}"));
+        return $"{ApiRoutes.Logistica.StocksAlmacenUbicacionKardex}?{query}";
+    }
+
+    /// <summary>De dónde viene el movimiento: comprobante, requerimiento, reserva, pedido o el
+    /// movimiento enlazado de una transferencia. Sólo lo que tenga dato.</summary>
+    private static string Referencia(Kardex k)
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(k.NUM_COMPROBANTE_PAGO))  partes.Add($"{k.COD_TIPO_COMPROBANTE_PAGO}-{k.NUM_COMPROBANTE_PAGO}");
+        if (k.NUM_REQUERIMIENTO_STOCK_ATENDIDO is { } req)       partes.Add($"Req. {req}");
+        if (k.NUM_RESERVA_STOCK_ATENDIDO is { } res)             partes.Add($"Res. {res}");
+        if (k.MUM_PEDIDO_COMERCIAL is { } ped)                   partes.Add($"Ped. {ped}");
+        if (k.NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO is { } sinc
+            && sinc != k.NUM_MOVIMIENTO_ALMACEN)                 partes.Add($"Mov. {sinc}");
+        return string.Join(" · ", partes);
+    }
+
+    private static string Num(decimal? v) => (v ?? 0).ToString("N2");
+
+    // ── Orden y filtros por columna ─────────────────────────────────────────────
+    // Columnas: 0 Fecha · 1 Movimiento · 2 Tipo · 3 Referencia · 4 Entidad · 5 Ingreso ·
+    // 6 Salida · 7 Saldo · 8 Estado · 9 Usuario. Sin columna elegida, el orden es el del SP
+    // (cronológico), que es el que da sentido al saldo de cada fila.
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenCol;
+    private bool _ordenAsc = true;
+
+    private bool HayFiltros => _filtros.Values.Any(v => v is not null);
+
+    /// <summary>Lo que se ve: los movimientos filtrados por todas las columnas y ordenados.</summary>
+    private List<Kardex> Visibles()
+    {
+        var filtrados = Filtrados(-1);
+        if (_ordenCol is not { } col) return filtrados;
+        return _ordenAsc
+            ? filtrados.OrderBy(k => Clave(k, col), Comparador).ToList()
+            : filtrados.OrderByDescending(k => Clave(k, col), Comparador).ToList();
+    }
+
+    /// <summary>Los movimientos filtrados por todas las columnas MENOS la indicada: es la base
+    /// del filtro de esa columna (en cascada, como en Excel).</summary>
+    private List<Kardex> Filtrados(int excepto)
+    {
+        IEnumerable<Kardex> q = _movimientos;
+        foreach (var (c, valores) in _filtros)
+        {
+            if (c == excepto || valores is null) continue;
+            q = q.Where(k => valores.Contains(Valor(k, c)));
+        }
+        return q.ToList();
+    }
+
+    /// <summary>El nombre del usuario (DES_USUARIO). Si el usuario ya no está en
+    /// SEGURIDAD.USUARIOS, el código, para que la celda no quede vacía.</summary>
+    private static string Usuario(Kardex k)
+        => !string.IsNullOrWhiteSpace(k.DES_USUARIO) ? k.DES_USUARIO! : k.COD_USUARIO_REGISTRO ?? "";
+
+    /// <summary>La hora del movimiento. FEC_MOVIMENTO_ALMACEN es sólo fecha (tipo date): la
+    /// hora sale de FEC_REGISTRO, cuándo se grabó la línea. Si se grabó otro día que la fecha
+    /// del movimiento (un movimiento con fecha atrasada), se muestra también ese día, para no
+    /// pegarle a la fecha del movimiento una hora de otro día.</summary>
+    private static string Hora(Kardex k)
+    {
+        if (k.FEC_REGISTRO is not { } reg) return "";
+        return reg.Date == k.FEC_MOVIMIENTO?.Date ? reg.ToString("HH:mm") : $"(reg. {reg:dd/MM HH:mm})";
+    }
+
+    private static string TooltipFecha(Kardex k)
+        => k.FEC_REGISTRO is { } reg ? $"Grabado el {reg:dd/MM/yyyy HH:mm:ss}" : "";
+
+    /// <summary>El texto de la celda, tal como se ve: es lo que lista el filtro.</summary>
+    private static string Valor(Kardex k, int col) => col switch
+    {
+        // El filtro de la fecha sigue por día: con la hora, cada fila sería un valor distinto.
+        0 => k.FEC_MOVIMIENTO?.ToString("dd/MM/yyyy") ?? "",
+        1 => $"{k.NUM_MOVIMIENTO_ALMACEN}-{k.NUM_SECUENCIA}",
+        2 => k.DES_TIPO_MOVIMIENTO ?? "",
+        3 => Referencia(k),
+        4 => k.DES_ENTIDAD ?? "",
+        5 => k.CAN_INGRESO > 0 ? Num(k.CAN_INGRESO) : "",
+        6 => k.CAN_SALIDA > 0 ? Num(k.CAN_SALIDA) : "",
+        7 => Num(k.CAN_SALDO),
+        8 => k.DES_ESTADO ?? "",
+        9 => Usuario(k),
+        _ => ""
+    };
+
+    /// <summary>Por qué se ordena: fechas y números por su valor, no por el texto (como texto,
+    /// "10-1" quedaría antes que "9-1" y "05/10/2026" antes que "07/09/2026").</summary>
+    private static IComparable? Clave(Kardex k, int col) => col switch
+    {
+        0 => (k.FEC_MOVIMIENTO ?? DateTime.MinValue, k.FEC_REGISTRO ?? DateTime.MinValue),
+        1 => (k.NUM_MOVIMIENTO_ALMACEN ?? 0, (int)(k.NUM_SECUENCIA ?? 0)),
+        5 => k.CAN_INGRESO ?? 0,
+        6 => k.CAN_SALIDA ?? 0,
+        7 => k.CAN_SALDO ?? 0,
+        _ => Valor(k, col)
+    };
+
+    private static readonly IComparer<IComparable?> Comparador = Comparer<IComparable?>.Create((a, b) =>
+        a is null ? (b is null ? 0 : -1)
+      : b is null ? 1
+      : a is string sa && b is string sb ? string.Compare(sa, sb, StringComparison.CurrentCultureIgnoreCase)
+      : a.CompareTo(b));
+
+    private void Ordenar(int col)
+    {
+        if (_ordenCol == col) _ordenAsc = !_ordenAsc;
+        else { _ordenCol = col; _ordenAsc = true; }
+    }
+
+    private void Filtrar(int col, HashSet<string>? valores) { _filtros[col] = valores; StateHasChanged(); }
+
+    private void LimpiarFiltros()
+    {
+        foreach (var c in _filtros.Keys.ToList()) _filtros[c] = null;
+        StateHasChanged();
+    }
+
+    /// <summary>Título ordenable + embudo del filtro, igual que en las grillas de la aplicación.</summary>
+    private RenderFragment Encabezado(int col, string texto, bool derecha = false) => __builder =>
+    {
+        <div class="d-flex align-center gap-1" style="@(derecha ? "justify-content:flex-end;" : "")">
+            <EncabezadoOrdenable Texto="@texto" Activo="@(_ordenCol == col)" Ascendente="_ordenAsc" OnClick="@(() => Ordenar(col))" />
+            <FiltroExcelColumna T="Kardex" ItemsBase="@Filtrados(col)" ValorDe="@(k => Valor(k, col))"
+                                ValoresActivos="@_filtros.GetValueOrDefault(col)" ValoresActivosChanged="@(v => Filtrar(col, v))" />
+        </div>
+    };
+}

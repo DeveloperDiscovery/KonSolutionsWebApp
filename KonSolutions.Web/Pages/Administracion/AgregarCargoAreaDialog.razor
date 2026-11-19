@@ -1,0 +1,78 @@
+@using KONSolutions.Shared.Models.Administracion
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject CatalogoService<Cargo, CargoDto> CargosSvc
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.AddBusiness" Color="Color.Success" />
+            <MudText Typo="Typo.h6">Agregar cargo al área</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.7;">Área: @DesArea</MudText>
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="mb-3" />
+        }
+        <AriaCombo TItem="Cargo" Items="_cargos"
+                   TextFunc="@(c => $"{c.COD_CARGO} — {c.DES_CARGO}")"
+                   ValueFunc="@(c => c.COD_CARGO?.ToString() ?? "")"
+                   @bind-Value="_codCargoTexto"
+                   Label="Cargo" Class="mb-3" />
+        <AriaCombo TItem="EntidadDisponible" Items="_disponibles"
+                   TextFunc="@(e => $"{e.DES_NOMBRE_COMPLETO} — {e.DES_TIPO_DOCUMENTO_IDENTIDAD} {e.NUM_DOCUMENTO_IDENTIDAD}")"
+                   ValueFunc="@(e => e.COD_ENTIDAD.ToString())"
+                   @bind-Value="_codEntidadTexto"
+                   Label="Persona" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Success" Variant="Variant.Filled"
+                   Disabled="@(_saving || string.IsNullOrEmpty(_codCargoTexto) || string.IsNullOrEmpty(_codEntidadTexto))"
+                   OnClick="Submit">
+            Agregar
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int CodArea { get; set; }
+    [Parameter] public string DesArea { get; set; } = "";
+
+    private List<Cargo> _cargos = new();
+    private List<EntidadDisponible> _disponibles = new();
+    private string _codCargoTexto = "";
+    private string _codEntidadTexto = "";
+    private bool _cargando, _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cargando = true;
+        try
+        {
+            _cargos = await CargosSvc.GetAllAsync();
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<EntidadDisponible>>>(ApiRoutes.Administracion.EntidadesDisponibles);
+            _disponibles = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(AgregarCargoAreaDialog), nameof(OnInitializedAsync)); }
+        finally { _cargando = false; }
+    }
+
+    private async Task Submit()
+    {
+        if (!int.TryParse(_codCargoTexto, out var codCargo)) return;
+        if (!decimal.TryParse(_codEntidadTexto, out var codEntidad)) return;
+        _saving = true;
+        var dto = new AreaCargoEntidadDto { COD_AREA = CodArea, COD_CARGO = codCargo, COD_ENTIDAD = codEntidad };
+        var resp = await Http.PostAsJsonAsync(ApiRoutes.Administracion.AreasCargosEntidades, dto);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Cargo agregado al área.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(AgregarCargoAreaDialog), nameof(Submit));
+    }
+}

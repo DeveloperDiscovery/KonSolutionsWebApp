@@ -1,0 +1,366 @@
+@page "/logistica/inventarios"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.Inventarios
+@using ModeloAlmacen = KONSolutions.Shared.Models.Logistica.InventariosAlmacenes
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@implements IWorkspaceCargable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Inventarios · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* Tres solapas que nunca están habilitadas a la vez: mirar la grilla de inventarios, ver el
+   detalle de almacenes de uno puntual, o ver los puntos de conteo de un almacén puntual —
+   mismo mecanismo de exclusión que Requerimientos.razor. *@
+<MudTabs Elevation="0" ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)"
+         Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-1" KeepPanelsAlive="true">
+
+    <MudTabPanel Text="Inventarios" Icon="@Icons.Material.Filled.List" Disabled="@(_enDetalle || _enPuntosConteo)">
+        <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+            <div class="grid-header-titulo">
+                <TituloPagina Fallback="Inventarios" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+                <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_items.Count registros</MudText>
+            </div>
+            <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+            <div class="grid-header-divider"></div>
+            <div class="d-flex gap-2">
+                <GridRefreshButton OnRefresh="Load" />
+                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                 Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+            </div>
+        </div>
+
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div data-resizable-grid="inventarios" style="position:relative;">
+            <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                         Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+                <Columns>
+                    <TemplateColumn Sortable="false" Title="Número" Width="@Limites.ColWidth("LOGISTICA.INVENTARIOS","NUM_INVENTARIO",80,110)" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                        <CellTemplate><span class="mono">@context.Item.NUM_INVENTARIO</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Descripción" Width="@Limites.ColWidth("LOGISTICA.INVENTARIOS","DES_INVENTARIO",180,320)">
+                        <CellTemplate>@context.Item.DES_INVENTARIO</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Tipo de Inventario" Width="180">
+                        <CellTemplate>@context.Item.DES_TIPO_INVENTARIO</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Entidad Responsable" Width="220">
+                        <CellTemplate>@context.Item.DES_NOMBRE_COMPLETO</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Motivo" Width="180">
+                        <CellTemplate>@context.Item.DES_MOTIVO</CellTemplate>
+                    </TemplateColumn>
+                    @* Igual criterio que InventariosAlmacenesGrid.razor: Inicio/Final en la misma
+                       columna (dos líneas), y se agrega "Efectuado" al lado de "Programado". *@
+                    <TemplateColumn Sortable="false" Title="Programado" Width="150">
+                        <CellTemplate>
+                            <span class="mono" style="font-size:.72rem;">
+                                @(context.Item.FEC_INICIO_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")<br />
+                                @(context.Item.FEC_FINAL_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                            </span>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Efectuado" Width="150">
+                        <CellTemplate>
+                            <span class="mono" style="font-size:.72rem;">
+                                @(context.Item.FEC_INICIO_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")<br />
+                                @(context.Item.FEC_FINAL_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                            </span>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Estado" Width="140">
+                        <CellTemplate>
+                            <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                        BackColor="@context.Item.DES_BACKCOLOR"
+                                        ForeColor="@context.Item.DES_FORECOLOR" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Acciones" Sortable="false">
+                        <CellTemplate>
+                            @{ var item = context.Item; }
+                            <div class="d-flex align-center">
+                                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                                 Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))"
+                                                 CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                            </div>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+            </MudDataGrid>
+            <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+    </MudTabPanel>
+
+    @* Arranca deshabilitada: se enciende sólo al abrir el detalle de un inventario puntual, y
+       se apaga de nuevo al volver — mismo mecanismo que Requerimientos.razor. *@
+    <MudTabPanel Text="@_tituloDetalle" Icon="@Icons.Material.Filled.Warehouse" Disabled="@(!_enDetalle || _enPuntosConteo)">
+        @if (_enDetalle && _detalleItem is not null)
+        {
+            <InventariosAlmacenesGrid Inventario="_detalleItem" OnCerrar="CerrarDetalle" OnAbrirPuntosConteo="AbrirPuntosConteo"
+                                       CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                       OnCargado="@(() => { _tab = 1; StateHasChanged(); })" />
+        }
+    </MudTabPanel>
+
+    @* Arranca deshabilitada: se enciende solo al hacer clic en "Puntos de Conteo" desde un
+       almacén de la solapa anterior, y al cerrar vuelve a esa misma solapa (no a la grilla
+       de inventarios) — mismo mecanismo de exclusión que las otras dos solapas. *@
+    <MudTabPanel Text="@_tituloPuntosConteo" Icon="@Icons.Material.Filled.PinDrop" Disabled="@(!_enPuntosConteo)">
+        @if (_enPuntosConteo && _almacenPuntoConteo is not null)
+        {
+            @* Pantalla rediseñada de 4 paneles (Puntos de Inventario / Personal Asignado /
+               Equipos Asignados / Conteo) — reemplaza la grilla ancha InventariosAlmacenesPuntoTomaGrid
+               que se usaba antes aquí. Ver InventariosAlmacenesPuntoTomaPanel.razor para el detalle
+               de la decisión de arquitectura. *@
+            <InventariosAlmacenesPuntoTomaPanel Almacen="_almacenPuntoConteo" Inventario="_detalleItem" OnCerrar="CerrarPuntosConteo"
+                CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                OnCargado="@(() => { _tab = 2; StateHasChanged(); })" />
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+
+    // ── IWorkspaceCargable: la pestaña no se muestra hasta que Load() termina ──
+    public bool EstaCargado { get; private set; }
+    public event Action? OnCargaCompleta;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "Inventarios");
+        await Load();
+        EstaCargado = true;
+        OnCargaCompleta?.Invoke();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.INVENTARIOS", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    /// <summary>Con texto de búsqueda usa el SP _SEARCH; sin texto trae el listado completo por SHOWALL.</summary>
+    private async Task Load()
+    {
+        try
+        {
+            var ruta = string.IsNullOrWhiteSpace(_search)
+                ? ApiRoutes.Logistica.Inventarios
+                : $"{ApiRoutes.Logistica.InventariosSearch}?search={Uri.EscapeDataString(_search)}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(ruta);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Inventarios), nameof(Load));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Inventarios), "Error al cargar");
+            _items = new();
+        }
+    }
+
+    private Task Buscar() => Load();
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+
+        // "Detalle de Inventario" ya está configurado como botón en BotonTreeviewItem (sin
+        // verbo HTTP propio) — se identifica por nombre, mismo criterio que GENERA/REVIERTE
+        // RESERVAS en Requerimientos.razor, en vez de un botón fijo aparte en el markup.
+        var nombre = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant();
+        if (nombre.Contains("DETALLE") && nombre.Contains("INVENTARIO")) return AbrirDetalle(item);
+
+        // Resto de botones de proceso (Enviar a Aprobar/Cerrar/Abrir/Anular/Generar...): antes
+        // de ejecutar lo que corresponda, valida contra PROC_..._FLUJOS_DEPENDENCIA_VALIDA si
+        // el estado actual del registro lo permite.
+        return AccionProceso(b, item);
+    }
+
+    /// <summary>Botones de proceso configurados en la opción (04 a 08). La validación de
+    /// flujo por estado (PROC_ESTANDAR_OPCIONES_PROCESOS_ESTADOS_FLUJOS_DEPENDENCIA_VALIDA)
+    /// ya la hizo AccionesBotones ANTES de invocar OnAccion, así que si llegamos hasta acá el
+    /// registro está en un estado que admite la acción.
+    ///
+    /// El despacho es POR NOMBRE y no por verbo HTTP, porque los cinco son POST. El ORDEN de
+    /// las comparaciones importa: "REVERTIR REQUERIMIENTO" y "GENERAR REQUERIMIENTO DE
+    /// EQUIPOS" contienen las dos la palabra REQUERIMIENTO, así que preguntar por REVERTIR
+    /// primero es lo que evita que revertir termine generando.</summary>
+    private async Task AccionProceso(BotonTreeviewItem b, Modelo item)
+    {
+        var n = ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+        var num = item.NUM_INVENTARIO;
+
+        if (n.Contains("REVERTIR"))
+            await EjecutarProcesoAsync(ApiRoutes.Logistica.InventariosRequerimientoRevierte(num),
+                "Revertir requerimiento",
+                $"Se va a revertir el requerimiento generado para el inventario N° {num}. ¿Continuar?",
+                "Requerimiento revertido.");
+        else if (n.Contains("IMAGEN"))
+            await EjecutarProcesoAsync(ApiRoutes.Logistica.InventariosImagen(num),
+                "Generar imagen", null, "Imagen de inventario generada.");
+        else if (n.Contains("REQUERIMIENTO"))
+            await EjecutarProcesoAsync(ApiRoutes.Logistica.InventariosRequerimiento(num),
+                "Generar requerimiento", null, "Requerimiento generado.");
+        else if (n.Contains("CERRAR"))
+            await EjecutarProcesoAsync(ApiRoutes.Logistica.InventariosCerrar(num),
+                "Cerrar inventario",
+                $"Se va a cerrar el inventario N° {num}. ¿Continuar?",
+                "Inventario cerrado.");
+        else if (n.Contains("ABRIR"))
+            await EjecutarProcesoAsync(ApiRoutes.Logistica.InventariosAbrir(num),
+                "Abrir inventario",
+                $"Se va a reabrir el inventario N° {num}. ¿Continuar?",
+                "Inventario abierto.");
+        else
+            Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+    }
+
+    /// <summary>Para que un doble clic no dispare el proceso dos veces: son procesos que
+    /// escriben, y ejecutarlos dos veces no es inocuo.</summary>
+    private bool _procesando;
+
+    /// <summary>Ejecuta un proceso contra la API y refresca la grilla. Si confirmacion no es
+    /// nula, pregunta antes: los que cambian el estado del inventario o deshacen trabajo ya
+    /// hecho no deberían dispararse de un clic distraído.</summary>
+    private async Task EjecutarProcesoAsync(string url, string titulo, string? confirmacion, string mensajeOk)
+    {
+        if (_procesando) return;
+
+        if (confirmacion is not null)
+        {
+            var ok = await DialogService.ShowMessageBox(titulo, confirmacion,
+                                                        yesText: "Continuar", cancelText: "Cancelar");
+            if (ok != true) return;
+        }
+
+        _procesando = true;
+        StateHasChanged();
+        try
+        {
+            var resp = await Http.PostAsync(url, null);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add(mensajeOk, Severity.Success);
+                await Load();
+            }
+            else
+            {
+                // Muestra el mensaje real del RAISERROR del SP, no un texto genérico.
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(Inventarios), nameof(EjecutarProcesoAsync),
+                    $"No se pudo completar: {titulo.ToLowerInvariant()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Inventarios), nameof(EjecutarProcesoAsync));
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                "No se pudo comunicar con el servidor. Ver detalle en el log de errores.",
+                DialogService, nameof(Inventarios), titulo);
+        }
+        finally
+        {
+            _procesando = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo registro",
+            CrudModo.Delete => $"Eliminar · {item?.DES_INVENTARIO}",
+            CrudModo.Read   => $"Consultar · {item?.DES_INVENTARIO}",
+            _               => $"Editar · {item?.DES_INVENTARIO}"
+        };
+        var dlg = await DialogService.ShowAsync<InventariosDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private int _tab;
+    private bool _enDetalle;
+    private Modelo? _detalleItem;
+    private string _tituloDetalle => !_enDetalle ? "Detalle" : $"Almacenes · N° {_detalleItem?.NUM_INVENTARIO}";
+
+    /// <summary>Monta la solapa de detalle de almacenes del inventario elegido, pero SIN
+    /// activarla todavía — recién se activa (_tab = 1) cuando InventariosAlmacenesGrid avisa
+    /// vía OnCargado que ya terminó de cargar sus datos, para que el usuario nunca vea la
+    /// grilla vacía/a medio cargar mientras la pestaña ya cambió.</summary>
+    private Task AbrirDetalle(Modelo item)
+    {
+        _detalleItem = item;
+        _enDetalle = true;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Vuelve a la grilla y apaga la solapa de detalle.</summary>
+    private Task CerrarDetalle()
+    {
+        _enDetalle = false;
+        _detalleItem = null;
+        _tab = 0;
+        return Task.CompletedTask;
+    }
+
+    private bool _enPuntosConteo;
+    private ModeloAlmacen? _almacenPuntoConteo;
+    private string _tituloPuntosConteo => !_enPuntosConteo ? "Puntos de Conteo" : $"Puntos de Conteo · {_almacenPuntoConteo?.COD_ALMACEN}";
+
+    /// <summary>Monta la solapa de puntos de conteo del almacén elegido (disparado desde el
+    /// botón "Puntos de Conteo" de InventariosAlmacenesGrid), pero SIN activarla todavía —
+    /// mismo mecanismo de "cargar antes de mostrar" que AbrirDetalle, gatillado por el
+    /// OnCargado de InventariosAlmacenesPuntoTomaPanel.</summary>
+    private Task AbrirPuntosConteo(ModeloAlmacen almacen)
+    {
+        _almacenPuntoConteo = almacen;
+        _enPuntosConteo = true;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Vuelve a la solapa de almacenes (no a la grilla de inventarios) y apaga la
+    /// solapa de puntos de conteo.</summary>
+    private Task CerrarPuntosConteo()
+    {
+        _enPuntosConteo = false;
+        _almacenPuntoConteo = null;
+        _tab = 1;
+        return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.INVENTARIOS", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

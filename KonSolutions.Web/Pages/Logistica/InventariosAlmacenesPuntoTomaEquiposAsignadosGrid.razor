@@ -1,0 +1,187 @@
+@* InventariosAlmacenesPuntoTomaEquiposAsignadosGrid.razor
+   -----------------------------------------------------------------------
+   Panel angosto "Equipos Asignados" de UN punto de conteo
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA_EQUIPOS_ASIGNADOS). Vive en el bloque
+   inferior-izquierdo del layout de 4 paneles de InventariosAlmacenesPuntoTomaPanel.razor,
+   junto a InventariosAlmacenesPuntoTomaPersonalGrid.razor — lista simple (no grilla ancha)
+   con alta vía diálogo y quitar por ícono, mismo criterio "grilla + diálogo" que el resto
+   del módulo pero en formato de lista compacta. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaEquiposAsignados
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject MenuService MenuSvc
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);height:100%;">
+    <div class="d-flex align-center justify-space-between pa-2">
+        <MudText Typo="Typo.subtitle2">Equipos Asignados</MudText>
+        <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="@OnAccionHeader" />
+    </div>
+    <div data-resizable-grid="inventarios-puntotoma-equipos" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="10">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Equipo">
+                <CellTemplate>
+                    <div>@context.Item.DES_PRODUCTO</div>
+                    <div class="mono" style="opacity:.55;font-size:.75rem;">@context.Item.COD_PRODUCTO_EQUIPO · @context.Item.CAN_PRODUCTO</div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="90">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin equipos asignados.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter, EditorRequired] public byte NumPuntoTomaInventario { get; set; }
+
+    /// <summary>Códigos del módulo padre (Inventarios) — usados como fallback solo si
+    /// "Equipos Asignados" todavía no está registrado con su propio DES_FORMULARIO en el
+    /// árbol de opciones. Ya está registrado (ver OnInitializedAsync), así que en la práctica
+    /// este submódulo usa sus propios botones (Seleccionar Equipos / Eliminar Equipo
+    /// Asignado) y no los del padre.</summary>
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private string _codAplicacion = "";
+    private string _codOpcionAplicacion = "";
+
+    private List<Modelo> _items = new();
+    private byte _puntoCargado;
+    private string? _almacenCargado;
+    private int? _inventarioCargado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // BuscarCodigosPorFormulario (en memoria) sale del treeview cacheado del rol activo,
+        // que puede no traer una opción recién creada (permiso de rol pendiente, profundidad,
+        // etc.) aunque exista en el árbol de administración. BuscarCodigosPorFormularioAsync
+        // resuelve contra el catálogo completo por aplicación (GET .../by-app), sin depender
+        // del treeview — sigue siendo dinámico por ruta de formulario, solo que confiable.
+        var cod = await MenuSvc.BuscarCodigosPorFormularioAsync(CodAplicacion, "Logistica/InventariosAlmacenesPuntoTomaEquiposAsignados.razor");
+        (_codAplicacion, _codOpcionAplicacion) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+        await Load();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_inventarioCargado != NumInventario || _almacenCargado != CodAlmacen || _puntoCargado != NumPuntoTomaInventario)
+            await Load();
+    }
+
+    public async Task Load()
+    {
+        _inventarioCargado = NumInventario; _almacenCargado = CodAlmacen; _puntoCargado = NumPuntoTomaInventario;
+        try
+        {
+            var ruta = $"{LogisticaRoute.InventariosAlmacenesPuntoTomaEquiposAsignados}?numInventario={NumInventario}&codAlmacen={Uri.EscapeDataString(CodAlmacen)}&numPuntoTomaInventario={NumPuntoTomaInventario}";
+            var resp = await Http.GetAsync(ruta);
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<Modelo>>>();
+                _items = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaEquiposAsignadosGrid), nameof(Load));
+                _items = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaEquiposAsignadosGrid), nameof(Load));
+            _items = new();
+        }
+        StateHasChanged();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        // "Seleccionar Equipos" es un botón de proceso sin verbo HTTP propio en BD (por eso
+        // FLG_ACCION_POST puede venir en false) — se detecta por nombre, mismo criterio que
+        // AccionProceso en InventariosAlmacenesGrid.razor para botones así.
+        var nombre = (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").ToUpperInvariant();
+        if (b.FLG_ACCION_POST == true || nombre.Contains("SELECCIONAR") || nombre.Contains("NUEVO") || nombre.Contains("AGREG"))
+            return Agregar();
+        Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return Editar(item);
+        if (b.FLG_ACCION_DELETE == true) return Eliminar(item);
+        Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    private async Task Agregar()
+    {
+        var parametros = new DialogParameters
+        {
+            ["Modo"] = CrudModo.Create,
+            ["NumInventario"] = NumInventario,
+            ["CodAlmacen"] = CodAlmacen,
+            ["NumPuntoTomaInventario"] = NumPuntoTomaInventario,
+            ["CodAplicacion"] = _codAplicacion,
+            ["CodOpcionAplicacion"] = _codOpcionAplicacion
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaEquiposAsignadosDialog>("Asignar equipo", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Editar(Modelo item)
+    {
+        var parametros = new DialogParameters
+        {
+            ["Item"] = item,
+            ["Modo"] = CrudModo.Update,
+            ["NumInventario"] = NumInventario,
+            ["CodAlmacen"] = CodAlmacen,
+            ["NumPuntoTomaInventario"] = NumPuntoTomaInventario,
+            ["CodAplicacion"] = _codAplicacion,
+            ["CodOpcionAplicacion"] = _codOpcionAplicacion
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaEquiposAsignadosDialog>($"Editar · {item.COD_PRODUCTO_EQUIPO}", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Eliminar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar equipo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar equipo asignado",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el equipo \"{item.DES_PRODUCTO}\" de este punto de conteo?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesPuntoTomaEquiposAsignados}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.NUM_PUNTO_TOMA_INVENTARIO}/{item.COD_PRODUCTO_EQUIPO}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Equipo quitado.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaEquiposAsignadosGrid), nameof(Eliminar));
+    }
+}

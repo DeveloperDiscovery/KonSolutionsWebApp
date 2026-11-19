@@ -1,0 +1,320 @@
+@* InventariosAlmacenesPuntoTomaPanel.razor
+   -----------------------------------------------------------------------
+   Rediseño de la pantalla "Puntos de Conteo" (antes: InventariosAlmacenesPuntoTomaGrid.razor,
+   una grilla ancha con CRUD de puntos de conteo). Layout de 4 paneles, según la referencia
+   visual del usuario:
+
+     ┌───────────────────────────┬───────────────────────────────────────┐
+     │ Puntos de Inventario      │                                       │
+     │ (lista seleccionable)     │              Conteo                   │
+     ├─────────────┬─────────────┤   (del punto de conteo seleccionado   │
+     │ Personal     │ Equipos     │    en el panel de arriba-izquierda)  │
+     │ Asignado     │ Asignados   │                                       │
+     └─────────────┴─────────────┴───────────────────────────────────────┘
+
+   DECISIÓN DE ARQUITECTURA (opción "b" del enunciado — componente contenedor nuevo, en vez
+   de transformar InventariosAlmacenesPuntoTomaGrid.razor por dentro):
+   Se mantiene InventariosAlmacenesPuntoTomaGrid.razor + su Dialog intactos (funcionan, están
+   probados, y la Dialog de alta/edición de puntos de conteo se REUSA tal cual aquí sin
+   duplicar ni un campo). Este componente nuevo solo agrega el estado de "punto de conteo
+   seleccionado" + una lista angosta (en vez de la grilla ancha original) para el panel
+   superior izquierdo, y compone los 3 paneles restantes reutilizando los componentes
+   dedicados ya creados para cada submódulo (…ConteoGrid, …EquiposAsignadosGrid,
+   …PersonalGrid) — ninguno de los 3 duplica lógica entre sí, cada uno resuelve su propio
+   Load()/CRUD. Mantener la Grid ancha original intacta (aunque deje de estar cableada desde
+   Inventarios.razor) evita tocar/arriesgar un componente ya probado solo para angostarlo
+   visualmente, a cambio de ~40 líneas de lista nueva aquí — la opción más chica y más segura
+   de las dos. *@
+@using ModeloPunto = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoToma
+@using ModeloAlmacen = KONSolutions.Shared.Models.Logistica.InventariosAlmacenes
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+@inject MenuService MenuSvc
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h6">Puntos de conteo · Almacén @Almacen?.COD_ALMACEN</MudText>
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">@_puntos.Count punto(s) de conteo</MudText>
+    </div>
+    <div class="grid-header-divider"></div>
+    <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Volver" Style="@EstilosBoton.Cancelar">
+        Volver a Almacenes
+    </MudButton>
+</div>
+
+<div style="display:grid;grid-template-columns:35% 1fr;gap:16px;align-items:start;">
+
+    @* ── Columna izquierda: Puntos de Inventario (arriba) + Personal/Equipos (abajo) ── *@
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div class="d-flex align-center justify-space-between pa-2">
+                <MudText Typo="Typo.subtitle2">Puntos de Inventario</MudText>
+                <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                                 Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="@OnAccionHeader" />
+            </div>
+            <div data-resizable-grid="inventarios-puntotoma-lista" style="position:relative;">
+            <MudDataGrid T="ModeloPunto" Items="_puntos" Dense="true" Hover="true" Striped="true"
+                         Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica"
+                         RowClick="@(r => Seleccionar(r.Item))" RowClassFunc="@FilaSeleccionada">
+                <Columns>
+                    <TemplateColumn Sortable="false" Title="Punto" Width="70">
+                        <CellTemplate><span class="mono">N° @context.Item.NUM_PUNTO_TOMA_INVENTARIO</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Responsable">
+                        <CellTemplate>@(context.Item.DES_NOMBRE_COMPLETO ?? "Sin responsable")</CellTemplate>
+                    </TemplateColumn>
+                    @* Igual criterio que InventariosAlmacenesGrid.razor: Programado/Efectuado
+                       compactos en una sola columna angosta (este panel es 35% del ancho). *@
+                    <TemplateColumn Sortable="false" Title="Fechas" Width="150">
+                        <CellTemplate>
+                            <span class="mono" style="font-size:.66rem;opacity:.8;">
+                                P: @(context.Item.FEC_INICIO_PROGRAMADA?.ToString("dd/MM HH:mm") ?? "—") - @(context.Item.FEC_FINAL_PROGRAMADA?.ToString("dd/MM HH:mm") ?? "—")<br />
+                                E: @(context.Item.FEC_INICIO_EFECTUADA?.ToString("dd/MM HH:mm") ?? "—") - @(context.Item.FEC_FINAL_EFECTUADA?.ToString("dd/MM HH:mm") ?? "—")
+                            </span>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Estado" Width="130">
+                        <CellTemplate>
+                            <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Acciones" Sortable="false" Width="90">
+                        <CellTemplate>
+                            @{ var item = context.Item; }
+                            <div @onclick:stopPropagation="true">
+                                <AccionesBotones CodAplicacion="@_codAplicacion" CodOpcionAplicacion="@_codOpcionAplicacion"
+                                                 Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                                 CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                            </div>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin puntos de conteo agregados.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="ModeloPunto" /></PagerContent>
+            </MudDataGrid>
+            <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;min-height:260px;">
+            @if (_puntoSeleccionado is not null && Almacen is not null)
+            {
+                <InventariosAlmacenesPuntoTomaPersonalGrid @key="_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO"
+                    NumInventario="@((int)Almacen.NUM_INVENTARIO!)" CodAlmacen="@Almacen.COD_ALMACEN"
+                    NumPuntoTomaInventario="@(_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO ?? 0)"
+                    CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+                <InventariosAlmacenesPuntoTomaEquiposAsignadosGrid @key="@($"eq-{_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO}")"
+                    NumInventario="@((int)Almacen.NUM_INVENTARIO!)" CodAlmacen="@Almacen.COD_ALMACEN"
+                    NumPuntoTomaInventario="@(_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO ?? 0)"
+                    CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            }
+            else
+            {
+                <MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);grid-column:span 2;">
+                    <MudText Class="mono" Style="opacity:.5;font-size:.8rem;">Elija un punto de conteo para ver su personal y equipos asignados.</MudText>
+                </MudPaper>
+            }
+        </div>
+    </div>
+
+    @* ── Columna derecha: Conteo del punto seleccionado ── *@
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);min-height:520px;">
+        @if (_puntoSeleccionado is not null && Almacen is not null)
+        {
+            <InventariosAlmacenesPuntoTomaConteoGrid @key="@($"conteo-{_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO}")"
+                NumInventario="@((int)Almacen.NUM_INVENTARIO!)" CodAlmacen="@Almacen.COD_ALMACEN"
+                NumPuntoTomaInventario="@(_puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO ?? 0)"
+                CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                OnGrabado="Load" />
+        }
+        else
+        {
+            <MudText Class="pa-6 mono" Style="opacity:.5;">Elija un punto de conteo en el panel izquierdo para ver/registrar su conteo.</MudText>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ModeloAlmacen? Almacen { get; set; }
+    /// <summary>Inventario dueño del Almacén — sus fechas se muestran solo a modo referencial
+    /// en el diálogo de alta/edición de punto de conteo (ver Agregar/Editar).</summary>
+    [Parameter] public KONSolutions.Shared.Models.Logistica.Inventarios? Inventario { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+    /// <summary>Avisa al padre (Inventarios.razor) que ya terminó de cargar sus datos — mismo
+    /// mecanismo que InventariosAlmacenesGrid.OnCargado.</summary>
+    [Parameter] public EventCallback OnCargado { get; set; }
+
+    private string _codAplicacion = "";
+    private string _codOpcionAplicacion = "";
+
+
+    private List<ModeloPunto> _puntos = new();
+    private ModeloPunto? _puntoSeleccionado;
+    private ModeloAlmacen? _almacenCargado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Igual que en los submódulos hijos (Equipos/Personal/Conteo): resuelve el código
+        // VIGENTE de "Puntos de Conteo" contra el catálogo completo por aplicación, no contra
+        // el treeview cacheado del rol — así trae los 6 botones reales configurados (Nuevo,
+        // Modificar, Eliminar, Consultar, Abrir Conteo, Cerrar Conteo) en vez de caer al
+        // fallback del padre "Inventarios".
+        var cod = await MenuSvc.BuscarCodigosPorFormularioAsync(CodAplicacion, "Logistica/InventariosAlmacenesPuntoToma.razor");
+        (_codAplicacion, _codOpcionAplicacion) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+        await Load();
+        await OnCargado.InvokeAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Almacen is not null && (_almacenCargado is null
+            || _almacenCargado.NUM_INVENTARIO != Almacen.NUM_INVENTARIO || _almacenCargado.COD_ALMACEN != Almacen.COD_ALMACEN))
+        {
+            await Load();
+        }
+    }
+
+    private bool EsSeleccionado(ModeloPunto p) => _puntoSeleccionado?.NUM_PUNTO_TOMA_INVENTARIO == p.NUM_PUNTO_TOMA_INVENTARIO;
+
+    private void Seleccionar(ModeloPunto p) => _puntoSeleccionado = p;
+
+    private string FilaSeleccionada(ModeloPunto item, int _)
+        => EsSeleccionado(item) ? "fila-seleccionada" : "";
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Agregar();
+        return AccionProceso(b, null);
+    }
+
+    private Task OnAccionGrilla(ModeloPunto item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return Editar(item);
+        if (b.FLG_ACCION_DELETE == true) return Eliminar(item);
+        return AccionProceso(b, item);
+    }
+
+    /// <summary>"Consultar" (GET) y "Abrir/Cerrar Conteo" (sin verbo HTTP propio) — todavía
+    /// sin SP/handler asociado en este submódulo.</summary>
+    private Task AccionProceso(BotonTreeviewItem b, ModeloPunto? item)
+    {
+        if (b.FLG_ACCION_GET == true && item is not null) { Seleccionar(item); return Task.CompletedTask; }
+        Snackbar.Add($"\"{b.DES_BOTON_OPCION ?? b.DES_ALIAS}\": funcionalidad pendiente de implementar.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    private async Task Load()
+    {
+        if (Almacen is null) { _puntos = new(); return; }
+        _almacenCargado = Almacen;
+        try
+        {
+            var resp = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenesPuntoToma}?numInventario={Almacen.NUM_INVENTARIO}&codAlmacen={Uri.EscapeDataString(Almacen.COD_ALMACEN)}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<ModeloPunto>>>();
+                _puntos = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaPanel), nameof(Load));
+                _puntos = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaPanel), nameof(Load));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesPuntoTomaPanel), "Error al cargar");
+            _puntos = new();
+        }
+
+        // Conserva la selección si el punto elegido sigue existiendo tras recargar; si no,
+        // selecciona el primero disponible (o ninguno si la lista quedó vacía).
+        if (_puntoSeleccionado is not null)
+            _puntoSeleccionado = _puntos.FirstOrDefault(p => p.NUM_PUNTO_TOMA_INVENTARIO == _puntoSeleccionado.NUM_PUNTO_TOMA_INVENTARIO);
+        _puntoSeleccionado ??= _puntos.FirstOrDefault();
+
+        StateHasChanged();
+    }
+
+    /// <summary>Fechas del Inventario y del Almacén dueños — solo a modo referencial, comunes
+    /// a Agregar/Editar.</summary>
+    private DialogParameters ParametrosFechasReferenciales() => new()
+    {
+        // La misma opción que usan los botones de esta grilla (ver _codOpcionAplicacion).
+        ["CodAplicacion"] = _codAplicacion,
+        ["CodOpcionAplicacion"] = _codOpcionAplicacion,
+        ["InventarioFecInicioProgramada"] = Inventario?.FEC_INICIO_PROGRAMADA,
+        ["InventarioFecFinalProgramada"] = Inventario?.FEC_FINAL_PROGRAMADA,
+        ["InventarioFecInicioEfectuada"] = Inventario?.FEC_INICIO_EFECTUADA,
+        ["InventarioFecFinalEfectuada"] = Inventario?.FEC_FINAL_EFECTUADA,
+        ["AlmacenFecInicioProgramada"] = Almacen?.FEC_INICIO_PROGRAMADA,
+        ["AlmacenFecFinalProgramada"] = Almacen?.FEC_FINAL_PROGRAMADA,
+        ["AlmacenFecInicioEfectuada"] = Almacen?.FEC_INICIO_EFECTUADA,
+        ["AlmacenFecFinalEfectuada"] = Almacen?.FEC_FINAL_EFECTUADA
+    };
+
+    private async Task Agregar()
+    {
+        if (Almacen is null) return;
+        var parametros = ParametrosFechasReferenciales();
+        parametros["Modo"] = CrudModo.Create;
+        parametros["NumInventario"] = (int)Almacen.NUM_INVENTARIO!;
+        parametros["CodAlmacen"] = Almacen.COD_ALMACEN;
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaDialog>("Agregar punto de conteo", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Editar(ModeloPunto item)
+    {
+        if (Almacen is null) return;
+        var parametros = ParametrosFechasReferenciales();
+        parametros["Item"] = item;
+        parametros["Modo"] = CrudModo.Update;
+        parametros["NumInventario"] = (int)Almacen.NUM_INVENTARIO!;
+        parametros["CodAlmacen"] = Almacen.COD_ALMACEN;
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaDialog>($"Editar · Punto {item.NUM_PUNTO_TOMA_INVENTARIO}", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Eliminar(ModeloPunto item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar punto de conteo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar punto de conteo",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el punto de conteo N° {item.NUM_PUNTO_TOMA_INVENTARIO} de este almacén?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesPuntoToma}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.NUM_PUNTO_TOMA_INVENTARIO}");
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Punto de conteo quitado.", Severity.Success);
+            if (EsSeleccionado(item)) _puntoSeleccionado = null;
+            await Load();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaPanel), nameof(Eliminar));
+    }
+
+    private async Task Volver()
+    {
+        if (OnCerrar.HasDelegate) await OnCerrar.InvokeAsync();
+    }
+}

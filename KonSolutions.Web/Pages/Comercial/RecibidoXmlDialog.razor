@@ -1,0 +1,60 @@
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* El XML tal como llegó del proveedor, para revisarlo antes de generar el documento. Sirve para comprobantes y para guías: solo necesita la dirección de la API que lo entrega. *@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6"><MudIcon Icon="@Icons.Material.Filled.Code" Class="mr-1" />@(string.IsNullOrWhiteSpace(_nombre) ? Titulo : _nombre)</MudText>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-height:70vh;min-width:min(900px,90vw);overflow:auto;">
+            @if (_cargando)
+            {
+                <div style="padding:32px;text-align:center;" data-vacio="xml-cargando"><MudProgressCircular Indeterminate="true" Color="Color.Primary" /></div>
+            }
+            else if (_xml is null)
+            {
+                <MudText Class="pa-4" Style="opacity:.7;" data-vacio="xml">@(_error ?? "No se pudo cargar el XML.")</MudText>
+            }
+            else
+            {
+                <pre data-visor="xml" style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0;">@_xml</pre>
+            }
+        </div>
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Close())" data-accion="cerrar">Cerrar</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>La dirección de la API que entrega el XML (…/{num}/xml).</summary>
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter] public string Titulo { get; set; } = "XML recibido";
+
+    private sealed class XmlDto { public string? DES_NOMBRE_ARCHIVO { get; set; } public string? DES_XML { get; set; } }
+
+    private string? _xml, _nombre, _error;
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var resp = await Http.GetAsync(Url);
+            ApiResponse<XmlDto>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<XmlDto>>(); } catch { }
+            if (!resp.IsSuccessStatusCode || r?.Data?.DES_XML is null) { _error = string.IsNullOrWhiteSpace(r?.Message) ? $"No se pudo leer el XML (HTTP {(int)resp.StatusCode})." : r!.Message; return; }
+            _nombre = r.Data.DES_NOMBRE_ARCHIVO; _xml = r.Data.DES_XML;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RecibidoXmlDialog), nameof(OnInitializedAsync));
+            _error = "No se pudo leer el XML. Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+    }
+}

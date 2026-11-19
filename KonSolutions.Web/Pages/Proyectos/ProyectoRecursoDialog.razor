@@ -1,0 +1,116 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Asignar persona a una tarea" : "Editar asignación")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="_tareas" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_tarea" ValueChanged="@(v => CambioTarea(v))" Label="Tarea" Disabled="@(Item is not null)" />
+            </MudItem>
+            <MudItem xs="12" sm="7">
+                <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_persona" ValueChanged="@(v => _persona = v)" Label="Persona" Disabled="@(Item is not null)" />
+            </MudItem>
+            <MudItem xs="12" sm="5">
+                <AriaCombo TItem="ComboboxItem" Items="_roles" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_rol" ValueChanged="@(v => _rol = v)" Label="Rol" Disabled="@(Item is not null)" />
+            </MudItem>
+            <MudItem xs="6"><MudDatePicker @bind-Date="_ini" Label="Inicio programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" /></MudItem>
+            <MudItem xs="6"><MudDatePicker @bind-Date="_fin" Label="Fin programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" /></MudItem>
+            <MudItem xs="12"><MudDivider /><MudText Typo="Typo.subtitle2" Class="mt-2">Horas y costo</MudText></MudItem>
+            <MudItem xs="6" sm="3"><MudNumericField T="decimal?" @bind-Value="_hProg" Label="Horas programadas" Variant="Variant.Outlined" Min="0m" Format="0.##" /></MudItem>
+            <MudItem xs="6" sm="3"><MudNumericField T="decimal?" @bind-Value="_hEfec" Label="Horas efectivas" Variant="Variant.Outlined" Min="0m" Format="0.##" HelperText="las realmente trabajadas" /></MudItem>
+            <MudItem xs="6" sm="3"><MudNumericField T="decimal?" @bind-Value="_costoHora" Label="Costo por hora" Variant="Variant.Outlined" Min="0m" Format="N2" /></MudItem>
+            @if (EsPropio)
+            {
+                <MudItem xs="6" sm="3"><MudNumericField T="decimal?" @bind-Value="_utilidad" Label="Utilidad (%)" Variant="Variant.Outlined" Min="0m" Max="1000m" Format="0.##" HelperText="personal propio" /></MudItem>
+            }
+            <MudItem xs="12">
+                <MudText Typo="Typo.body2" Class="mono">Costo @Costo.ToString("N2")@if (EsPropio) { <span> · utilidad @UtilidadMonto.ToString("N2") · total @((Costo + UtilidadMonto).ToString("N2"))</span> }</MudText>
+                @if (!EsPropio && !string.IsNullOrWhiteSpace(_persona)) { <MudText Typo="Typo.caption" Style="opacity:.7;">La utilidad solo se ingresa para personal propio de la empresa.</MudText> }
+            </MudItem>
+            <MudItem xs="6"><MudDatePicker @bind-Date="_iniE" Label="Inicio ejecutado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" /></MudItem>
+            <MudItem xs="6"><MudDatePicker @bind-Date="_finE" Label="Fin ejecutado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" /></MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteRecurso? Item { get; set; }
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ExpedienteRecurso> Existentes { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+    /// <summary>Códigos de las entidades que son personal propio de la empresa (piden utilidad).</summary>
+    [Parameter] public HashSet<decimal> Propios { get; set; } = new();
+
+    private List<ComboboxItem> _tareas = new(), _roles = new();
+    private string? _tarea, _persona, _rol;
+    private DateTime? _ini, _fin, _iniE, _finE;
+    private bool _guardando;
+    private decimal? _hProg, _hEfec, _costoHora, _utilidad;
+    private bool EsPropio => decimal.TryParse(_persona, out var p) && Propios.Contains(p);
+    private decimal Costo => (_hEfec ?? 0m) * (_costoHora ?? 0m);
+    private decimal UtilidadMonto => Costo * (_utilidad ?? 0m) / 100m;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tareas = Tareas.Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+        _roles = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.Roles + "/combobox") ?? new();
+        if (Item is null) return;
+        _tarea = Item.COD_TAREA.ToString(); _persona = Item.COD_ENTIDAD_ASIGNADA.ToString("0"); _rol = Item.COD_ROL_TAREA;
+        _ini = Item.FEC_INICIO_PROGRAMADO; _fin = Item.FEC_FINAL_PROGRAMADO; _iniE = Item.FEC_INICIO_EJECUTADO; _finE = Item.FEC_FINAL_EJECUTADO;
+        _hProg = Item.NUM_HORAS_PROGRAMADAS; _hEfec = Item.NUM_HORAS_EFECTIVAS; _costoHora = Item.VAL_COSTO_HORA; _utilidad = Item.TAS_UTILIDAD;
+    }
+
+    // al elegir la tarea se proponen sus fechas
+    private void CambioTarea(string? v)
+    {
+        _tarea = v;
+        if (Item is not null || !int.TryParse(v, out var cod)) return;
+        var t = Tareas.FirstOrDefault(x => x.COD_TAREA == cod);
+        if (t is not null && _ini is null && _fin is null) { _ini = t.FEC_INICIO_PROGRAMADO; _fin = t.FEC_FINAL_PROGRAMADO; }
+    }
+
+    private async Task Guardar()
+    {
+        if (!int.TryParse(_tarea, out var tarea)) { Snackbar.Add("Elige la tarea.", Severity.Warning); return; }
+        if (!decimal.TryParse(_persona, out var persona)) { Snackbar.Add("Elige la persona.", Severity.Warning); return; }
+        if (string.IsNullOrWhiteSpace(_rol)) { Snackbar.Add("Elige el rol.", Severity.Warning); return; }
+        if (_ini is not null && _fin is not null && _fin < _ini) { Snackbar.Add("El fin no puede ser anterior al inicio.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        if (esNuevo && Existentes.Any(e => e.COD_TAREA == tarea && e.COD_ENTIDAD_ASIGNADA == persona && e.COD_ROL_TAREA == _rol)) { Snackbar.Add("Esa persona ya tiene ese rol en la tarea.", Severity.Warning); return; }
+        // aviso (no impide): la persona ya tiene otras tareas que se cruzan con estas fechas
+        if (_ini is not null && _fin is not null)
+        {
+            var cruces = Existentes.Where(e => e.COD_ENTIDAD_ASIGNADA == persona && e.COD_TAREA != tarea && e.FEC_INICIO_PROGRAMADO <= _fin && e.FEC_FINAL_PROGRAMADO >= _ini).Select(e => e.COD_TAREA).Distinct().Count();
+            if (cruces > 0) Snackbar.Add($"Aviso: la persona ya tiene {cruces} tarea(s) que se cruzan con estas fechas.", Severity.Info);
+        }
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, COD_TAREA = tarea, COD_ENTIDAD_ASIGNADA = persona, COD_ROL_TAREA = _rol,
+            FEC_INICIO_PROGRAMADO = _ini, FEC_FINAL_PROGRAMADO = _fin, FEC_INICIO_EJECUTADO = _iniE, FEC_FINAL_EJECUTADO = _finE,
+            COD_TIPO_ESTADO = Item?.COD_TIPO_ESTADO, COD_ESTADO = Item?.COD_ESTADO
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.RecursoHumano, cuerpo, esNuevo);
+        if (ok)
+        {
+            // horas, costo por hora y utilidad (la utilidad solo va si la persona es personal propio)
+            var costo = new { CodTarea = tarea, CodEntidad = persona, CodRol = _rol, HorasProgramadas = _hProg, HorasEfectivas = _hEfec, CostoHora = _costoHora, Utilidad = EsPropio ? _utilidad : null };
+            (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, "recursos/costo"), costo);
+            if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        }
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar la asignación.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

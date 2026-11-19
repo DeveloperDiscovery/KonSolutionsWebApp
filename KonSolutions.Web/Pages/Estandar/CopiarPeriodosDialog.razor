@@ -1,0 +1,157 @@
+@using TipoPeriodoModel = KONSolutions.Shared.Models.Estandar.TiposPeriodo
+@using PeriodoModel = KONSolutions.Shared.Models.Estandar.Periodos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Copiar periodos a otro Tipo de Periodo</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2" Class="mb-2">
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="TipoPeriodoModel" Items="TiposDisponibles"
+                           TextFunc="@(t => $"{t.COD_TIPO_PERIODO} - {t.DES_TIPO_PERIODO}")" ValueFunc="@(t => t.COD_TIPO_PERIODO)"
+                           Value="@_codTipoDestino" ValueChanged="OnDestinoChanged"
+                           Label="Tipo de Periodo destino" Obligatorio="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <EstadoCombo CodTipoEstado="@_tipoDestino?.COD_TIPO_ESTADO" @bind-Value="_codEstadoCopias"
+                             CodTipoEstadoChanged="@(v => _codTipoEstadoCopias = v)" />
+            </MudItem>
+        </MudGrid>
+
+        <MudText Typo="Typo.subtitle2" Class="mb-1" Style="opacity:.7;">
+            @Periodos.Count periodo(s) seleccionados — ajusta código, descripción, fechas y año antes de copiar.
+        </MudText>
+        <div style="overflow-x:auto;">
+            <table class="tabla-simple-editable">
+                <thead>
+                    <tr>
+                        <th>Código</th>
+                        <th>Descripción</th>
+                        <th>Inicio</th>
+                        <th>Fin</th>
+                        <th>Año</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var fila in _filas)
+                    {
+                        <tr>
+                            <td><CampoTexto Tabla="ESTANDAR.PERIODOS" Columna="COD_PERIODO" @bind-Value="fila.CodPeriodo" Obligatorio="true" /></td>
+                            <td><CampoTexto Tabla="ESTANDAR.PERIODOS" Columna="DES_PERIODO" @bind-Value="fila.DesPeriodo" Obligatorio="true" /></td>
+                            <td><MudDatePicker @bind-Date="fila.FecInicio" Margin="Margin.Normal" Variant="Variant.Text" Class="aria-combo" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" /></td>
+                            <td><MudDatePicker @bind-Date="fila.FecFinal" Margin="Margin.Normal" Variant="Variant.Text" Class="aria-combo" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" /></td>
+                            <td><MudNumericField T="int?" @bind-Value="fila.NumAno" Margin="Margin.Normal" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-flex align-center gap-2 mt-4 dialog-acciones-fijas">
+            <MudSpacer />
+            @* Cancelar lleva el estilo invertido: los mismos colores que Confirmar pero al revés,
+                   para que contrasten entre si cualquiera sea el par configurado. Sin esto quedaba
+                   con el gris por defecto de MudBlazor, ignorando Configuracion General. *@
+                <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                           Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Cancel">Cancelar</MudButton>
+            <MudButton OnClick="Confirmar" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_guardando || string.IsNullOrEmpty(_codTipoDestino))"
+                       StartIcon="@Icons.Material.Filled.ContentCopy">
+                Copiar @Periodos.Count periodo(s)
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public List<PeriodoModel> Periodos { get; set; } = new();
+    [Parameter] public List<TipoPeriodoModel> TiposDisponibles { get; set; } = new();
+
+    private class FilaCopia
+    {
+        public PeriodoModel Origen { get; set; } = new();
+        public string CodPeriodo { get; set; } = "";
+        public string DesPeriodo { get; set; } = "";
+        public DateTime? FecInicio { get; set; }
+        public DateTime? FecFinal { get; set; }
+        public int? NumAno { get; set; }
+    }
+
+    private List<FilaCopia> _filas = new();
+    private string? _codTipoDestino;
+    private TipoPeriodoModel? _tipoDestino;
+    private int? _codEstadoCopias;
+    private int? _codTipoEstadoCopias;
+    private bool _guardando;
+
+    protected override void OnInitialized()
+    {
+        _filas = Periodos.Select(p => new FilaCopia
+        {
+            Origen = p,
+            CodPeriodo = p.COD_PERIODO,
+            DesPeriodo = p.DES_PERIODO,
+            FecInicio = p.FEC_INICIO,
+            FecFinal = p.FEC_FINAL,
+            NumAno = p.NUM_ANO,
+        }).ToList();
+    }
+
+    private void OnDestinoChanged(string? val)
+    {
+        _codTipoDestino = val;
+        _tipoDestino = TiposDisponibles.FirstOrDefault(t => t.COD_TIPO_PERIODO == val);
+    }
+
+    private async Task Confirmar()
+    {
+        if (string.IsNullOrEmpty(_codTipoDestino)) return;
+        _guardando = true;
+        var errores = new List<string>();
+
+        foreach (var fila in _filas)
+        {
+            var dto = new
+            {
+                NUM_PERIODO = (int?)null,
+                COD_TIPO_PERIODO = _codTipoDestino,
+                COD_PERIODO = fila.CodPeriodo,
+                DES_PERIODO = fila.DesPeriodo,
+                FEC_INICIO = fila.FecInicio,
+                FEC_FINAL = fila.FecFinal,
+                NUM_ANO = fila.NumAno,
+                fila.Origen.NUM_SEMESTRE,
+                fila.Origen.NUM_QUARTER,
+                fila.Origen.NUM_MES,
+                fila.Origen.NUM_SEMANA,
+                fila.Origen.NUM_DIA,
+                COD_TIPO_ESTADO = _codTipoEstadoCopias,
+                COD_ESTADO = _codEstadoCopias,
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.Periodos, dto);
+            if (!resp.IsSuccessStatusCode)
+                errores.Add($"{fila.CodPeriodo}: {await resp.Content.ReadAsStringAsync()}");
+        }
+
+        _guardando = false;
+        if (errores.Count == 0)
+        {
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else
+        {
+            await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+                new DialogParameters
+                {
+                    ["Titulo"]  = "Algunas copias no se pudieron guardar",
+                    ["Mensaje"] = string.Join(" · ", errores)
+                },
+                new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        }
+    }
+}

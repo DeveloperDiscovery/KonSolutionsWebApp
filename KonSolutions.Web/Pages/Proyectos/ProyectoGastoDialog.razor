@@ -1,0 +1,78 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Asignar un comprobante al proyecto</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="_comprobantes" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_comp" ValueChanged="@(v => CambioComprobante(v))" Label="Comprobante del proyecto (Registro de Compras)" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudNumericField T="decimal?" @bind-Value="_registroManual" Label="O escribe el N° de registro de otro comprobante" Variant="Variant.Outlined" Min="0m" Format="0" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fases" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudNumericField T="decimal?" @bind-Value="_valor" Label="Importe a asignar" Variant="Variant.Outlined" Min="0m" Format="N2" />
+                @if (_sinAsignar is not null) { <MudText Typo="Typo.caption" Style="opacity:.7;">Sin asignar del comprobante: @_sinAsignar.Value.ToString("N2")</MudText> }
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Asignar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public List<ExpedienteComprobante> Comprobantes { get; set; } = new();
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+
+    private List<ComboboxItem> _comprobantes = new(), _fases = new();
+    private string? _comp, _fase, _tarea;
+    private decimal? _registroManual, _valor, _sinAsignar;
+    private bool _guardando;
+
+    private List<ComboboxItem> TareasDeFase => Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override void OnInitialized()
+    {
+        _comprobantes = Comprobantes.Select(c => new ComboboxItem { Id = c.NUM_REGISTRO.ToString("0"), Texto = $"{c.NUM_REGISTRO:0} · {c.COD_TIPO_COMPROBANTE_PAGO} {c.NUM_COMPROBANTE_PAGO} · {c.DES_ENTIDAD} · sin asignar {c.VAL_SIN_ASIGNAR:N2}" }).ToList();
+        _fases = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+    }
+
+    private void CambioComprobante(string? v)
+    {
+        _comp = v; _registroManual = null;
+        var c = Comprobantes.FirstOrDefault(x => x.NUM_REGISTRO.ToString("0") == v);
+        _sinAsignar = c?.VAL_SIN_ASIGNAR;
+        if (c is not null && _valor is null) _valor = c.VAL_SIN_ASIGNAR > 0 ? c.VAL_SIN_ASIGNAR : null;
+    }
+
+    private async Task Guardar()
+    {
+        var registro = _registroManual ?? (decimal.TryParse(_comp, out var r) ? r : (decimal?)null);
+        if (registro is null) { Snackbar.Add("Elige un comprobante o escribe su N° de registro.", Severity.Warning); return; }
+        if (_valor is null or <= 0) { Snackbar.Add("El importe debe ser mayor a cero.", Severity.Warning); return; }
+        var cuerpo = new { NumRegistroComprobante = registro.Value, CodFase = int.TryParse(_fase, out var f) ? (int?)f : null, CodTarea = int.TryParse(_tarea, out var t) ? (int?)t : null, Valor = _valor.Value };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.PostAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, "gastos"), cuerpo);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo asignar el comprobante.", Severity.Warning); return; }
+        Snackbar.Add("Comprobante asignado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

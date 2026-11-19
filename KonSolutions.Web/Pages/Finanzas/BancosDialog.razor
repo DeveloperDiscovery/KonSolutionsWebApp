@@ -1,0 +1,404 @@
+@using BancoModel = KONSolutions.Shared.Models.Finanzas.Banco
+@using BancoCuentaBancariaModel = KONSolutions.Shared.Models.Finanzas.BancoCuentaBancaria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(4800px,95vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_BANCO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-3">
+            <MudTabPanel Text="Información Básica">
+            <MudGrid Spacing="2" Class="mt-1">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es parte de la PK: solo se fija al crear. *@
+                    <CampoTexto Tabla="FINANZAS.BANCOS" Columna="COD_BANCO"
+                                @bind-Value="_model.COD_BANCO"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="FINANZAS.BANCOS" Columna="DES_BANCO"
+                                @bind-Value="_model.DES_BANCO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="FINANZAS.BANCOS" Columna="COD_BANCO_SUNAT"
+                                @bind-Value="_model.COD_BANCO_SUNAT" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* ItemSelected actualiza DES_PAIS además de COD_PAIS: TextoInicial está atado a
+                       DES_PAIS, y si no se refresca aquí el combo revierte el texto mostrado apenas
+                       se re-renderiza tras elegir un país nuevo (mismo patrón que EntidadesDialog). *@
+                    <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                               TextFunc="@(x => $"{x.Id} – {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               Value="@_model.COD_PAIS" ValueChanged="@(v => _model.COD_PAIS = v)"
+                               ItemSelected="@(item => _model.DES_PAIS = item?.Texto)"
+                               SearchFunc="BuscarPaisAsync" MinCharacters="2"
+                               TextoInicial="@(_model.DES_PAIS)"
+                               Label="País" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <EstadoCombo DesTabla="FINANZAS.BANCOS" @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+            </MudTabPanel>
+
+            @* FINANZAS.BANCOS_CUENTAS_BANCARIAS — cuentas propias del banco (distinto de
+               FINANZAS.ENTIDADES_CUENTAS_BANCARIAS, que son las cuentas de terceros en ese
+               banco). Sin auditoría visible en la fila: se resuelve solo con COD_USUARIO/
+               COD_ESTACION en el guardado, igual que las otras grillas editables de la app.
+               El INSERT no es upsert: alta con POST, modificación con PUT. *@
+            <MudTabPanel Text="Cuentas Bancarias">
+            <div style="min-height:40vh;padding-top:12px;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda el banco primero para agregar sus cuentas.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_cuentas.Count cuenta(s)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarCuenta">Agregar cuenta bancaria</MudButton>
+                    }
+                </div>
+                <div style="overflow-x:auto;">
+                <table class="tabla-simple-editable" style="width:100%;min-width:1230px;">
+                    <thead>
+                        <tr>
+                            <th style="width:200px;">Número de cuenta</th>
+                            <th style="width:200px;">CCI</th>
+                            <th style="width:150px;">Tipo de cuenta</th>
+                            <th style="width:110px;">Moneda</th>
+                            <th style="width:150px;">Cuenta contable</th>
+                            <th style="width:180px;">Características</th>
+                            <th style="width:150px;">Estado</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _cuentas)
+                        {
+                            <tr>
+                                <td style="vertical-align:bottom;">
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.BANCOS_CUENTAS_BANCARIAS" Columna="NUM_CUENTA_BANCARIA"
+                                                    @bind-Value="row.NumCuenta" Disabled="@(!row.EsNueva || _readonly)" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.BANCOS_CUENTAS_BANCARIAS" Columna="NUM_CUENTA_BANCARIA_CCI"
+                                                    @bind-Value="row.NumCuentaCci" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <AriaCombo TItem="ComboboxItem" Items="_tiposCuentaBancaria"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@row.CodTipoCuenta"
+                                               ValueChanged="@(v => row.CodTipoCuenta = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                               TextFunc="@(m => $"{m.Id} - {m.Texto}")" ValueFunc="@(m => m.Id)"
+                                               Value="@row.CodMoneda"
+                                               ValueChanged="@(v => row.CodMoneda = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.BANCOS_CUENTAS_BANCARIAS" Columna="COD_CUENTA_CONTABLE"
+                                                    @bind-Value="row.CodCuentaContable" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <div class="d-flex gap-1" style="margin-bottom:8px;">
+                                        <MudTooltip Text="Principal">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Star" Size="Size.Small"
+                                                           Color="@(row.FlgPrincipal ? Color.Warning : Color.Default)"
+                                                           Style="@(row.FlgPrincipal ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgPrincipal = !row.FlgPrincipal)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Habilitada">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Small"
+                                                           Color="@(row.FlgHabilitada ? Color.Success : Color.Default)"
+                                                           Style="@(row.FlgHabilitada ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgHabilitada = !row.FlgHabilitada)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Cuenta de la empresa">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Business" Size="Size.Small"
+                                                           Color="@(row.FlgCuentaEmpresa ? Color.Primary : Color.Default)"
+                                                           Style="@(row.FlgCuentaEmpresa ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgCuentaEmpresa = !row.FlgCuentaEmpresa)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Cobros">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CallReceived" Size="Size.Small"
+                                                           Color="@(row.FlgCobros ? Color.Info : Color.Default)"
+                                                           Style="@(row.FlgCobros ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgCobros = !row.FlgCobros)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Pagos">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CallMade" Size="Size.Small"
+                                                           Color="@(row.FlgPagos ? Color.Info : Color.Default)"
+                                                           Style="@(row.FlgPagos ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgPagos = !row.FlgPagos)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Restringida">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Block" Size="Size.Small"
+                                                           Color="@(row.FlgRestringida ? Color.Error : Color.Default)"
+                                                           Style="@(row.FlgRestringida ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgRestringida = !row.FlgRestringida)" />
+                                        </MudTooltip>
+                                    </div>
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    <EstadoCombo DesTabla="FINANZAS.BANCOS_CUENTAS_BANCARIAS" @bind-Value="row.CodEstado"
+                                                 CodTipoEstadoChanged="@(v => row.CodTipoEstado = v)"
+                                                 Disabled="_readonly" Class="mb-0" />
+                                </td>
+                                <td style="vertical-align:bottom;">
+                                    @if (!_readonly)
+                                    {
+                                        <div style="margin-bottom:8px;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || string.IsNullOrWhiteSpace(row.NumCuenta))"
+                                                       OnClick="@(() => GuardarCuentaAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarCuentaAsync(row))" />
+                                        </div>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                </div>
+            }
+            </div>
+            </MudTabPanel>
+            </MudTabs>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public BancoModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private BancoModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        var tTiposCuenta = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Finanzas.TiposCuentasBancariasCombobox);
+        var tMonedas = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.MonedasCombobox);
+        await Task.WhenAll(tTiposCuenta, tMonedas);
+        _tiposCuentaBancaria = await tTiposCuenta ?? new();
+        _monedas = await tMonedas ?? new();
+
+        if (!_esNuevo) await CargarCuentasAsync();
+    }
+
+    private void MapearDesdeModelo(BancoModel m)
+    {
+        _model = new BancoModel
+        {
+            COD_BANCO       = m.COD_BANCO,
+            DES_BANCO       = m.DES_BANCO,
+            COD_BANCO_SUNAT = m.COD_BANCO_SUNAT,
+            COD_PAIS        = m.COD_PAIS,
+            DES_PAIS        = m.DES_PAIS,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            COD_ESTADO      = m.COD_ESTADO
+        };
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarPaisAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Length < 2) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Estandar.PaisesCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID — evita editar sobre datos que la
+    /// grilla pueda tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<BancoModel>(
+            $"{ApiRoutes.Finanzas.Bancos}/{Uri.EscapeDataString(_model.COD_BANCO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Finanzas.Bancos;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_BANCO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(BancosDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP INSERT no es upsert.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(BancosDialog), nameof(Submit));
+    }
+
+    // ── Cuentas Bancarias (pestaña, grilla editable in-place) ──
+    // Clave (COD_BANCO, NUM_CUENTA_BANCARIA): NUM_CUENTA_BANCARIA solo se edita mientras la
+    // fila es nueva, igual que en la pestaña de cuentas bancarias de Entidades.
+    private class CuentaRow
+    {
+        public string NumCuenta { get; set; } = "";
+        public string? NumCuentaCci { get; set; }
+        public string? CodTipoCuenta { get; set; }
+        public string? CodMoneda { get; set; }
+        public string? CodCuentaContable { get; set; }
+        public decimal? ValSaldoInicial { get; set; }
+        public decimal? ValMovimientosIngreso { get; set; }
+        public decimal? ValMovimientosSalida { get; set; }
+        public decimal? ValSaldoFinal { get; set; }
+        public bool FlgPrincipal { get; set; }
+        public bool FlgHabilitada { get; set; }
+        public bool FlgCuentaEmpresa { get; set; }
+        public bool FlgCobros { get; set; }
+        public bool FlgPagos { get; set; }
+        public bool FlgRestringida { get; set; }
+        public int? CodTipoEstado { get; set; }
+        public int? CodEstado { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+    }
+    private List<CuentaRow> _cuentas = new();
+    private List<ComboboxItem> _tiposCuentaBancaria = new();
+    private List<ComboboxItem> _monedas = new();
+
+    private async Task CargarCuentasAsync()
+    {
+        var lista = await Http.SafeGetAsync<List<BancoCuentaBancariaModel>>(
+            $"{ApiRoutes.Finanzas.BancosCuentasBancarias}?codBanco={Uri.EscapeDataString(_model.COD_BANCO)}") ?? new();
+        _cuentas = lista.Select(m => new CuentaRow
+        {
+            NumCuenta = m.NUM_CUENTA_BANCARIA,
+            NumCuentaCci = m.NUM_CUENTA_BANCARIA_CCI,
+            CodTipoCuenta = m.COD_TIPO_CUENTA_BANCARIA,
+            CodMoneda = m.COD_MONEDA,
+            CodCuentaContable = m.COD_CUENTA_CONTABLE,
+            ValSaldoInicial = m.VAL_SALDO_INICIAL,
+            ValMovimientosIngreso = m.VAL_MOVIMIENTOS_INGRESO,
+            ValMovimientosSalida = m.VAL_MOVIMIENTOS_SALIDA,
+            ValSaldoFinal = m.VAL_SALDO_FINAL,
+            FlgPrincipal = m.FLG_PRINCIPAL == true,
+            FlgHabilitada = m.FLG_HABILITADA == true,
+            FlgCuentaEmpresa = m.FLG_CUENTA_EMPRESA == true,
+            FlgCobros = m.FLG_COBROS == true,
+            FlgPagos = m.FLG_PAGOS == true,
+            FlgRestringida = m.FLG_RESTRINGIDA == true,
+            CodTipoEstado = m.COD_TIPO_ESTADO,
+            CodEstado = m.COD_ESTADO,
+            EsNueva = false
+        }).ToList();
+    }
+
+    // Habilitada arranca en true: es el estado normal de una cuenta recién agregada.
+    private void AgregarCuenta() => _cuentas.Add(new CuentaRow { EsNueva = true, FlgHabilitada = true });
+
+    private async Task GuardarCuentaAsync(CuentaRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new
+            {
+                COD_BANCO = _model.COD_BANCO,
+                NUM_CUENTA_BANCARIA = row.NumCuenta,
+                NUM_CUENTA_BANCARIA_CCI = row.NumCuentaCci,
+                COD_TIPO_CUENTA_BANCARIA = row.CodTipoCuenta,
+                COD_MONEDA = row.CodMoneda,
+                COD_CUENTA_CONTABLE = row.CodCuentaContable,
+                VAL_SALDO_INICIAL = row.ValSaldoInicial,
+                VAL_MOVIMIENTOS_INGRESO = row.ValMovimientosIngreso,
+                VAL_MOVIMIENTOS_SALIDA = row.ValMovimientosSalida,
+                VAL_SALDO_FINAL = row.ValSaldoFinal,
+                FLG_PRINCIPAL = row.FlgPrincipal,
+                FLG_HABILITADA = row.FlgHabilitada,
+                FLG_CUENTA_EMPRESA = row.FlgCuentaEmpresa,
+                FLG_COBROS = row.FlgCobros,
+                FLG_PAGOS = row.FlgPagos,
+                FLG_RESTRINGIDA = row.FlgRestringida,
+                COD_TIPO_ESTADO = row.CodTipoEstado,
+                COD_ESTADO = row.CodEstado
+            };
+            // PROC_FINANZAS_BANCOS_CUENTAS_BANCARIAS_INSERT no es upsert: alta con POST,
+            // modificación con PUT.
+            var resp = row.EsNueva
+                ? await Http.PostAsJsonAsync(ApiRoutes.Finanzas.BancosCuentasBancarias, dto)
+                : await Http.PutAsJsonAsync(ApiRoutes.Finanzas.BancosCuentasBancarias, dto);
+            if (resp.IsSuccessStatusCode) { row.EsNueva = false; Snackbar.Add("Guardado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(BancosDialog), nameof(GuardarCuentaAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarCuentaAsync(CuentaRow row)
+    {
+        if (row.EsNueva) { _cuentas.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync(
+                $"{ApiRoutes.Finanzas.BancosCuentasBancarias}/{Uri.EscapeDataString(_model.COD_BANCO)}/{Uri.EscapeDataString(row.NumCuenta)}");
+            if (resp.IsSuccessStatusCode) { _cuentas.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(BancosDialog), nameof(EliminarCuentaAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+}

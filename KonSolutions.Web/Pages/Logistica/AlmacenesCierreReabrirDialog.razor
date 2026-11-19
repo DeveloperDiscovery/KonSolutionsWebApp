@@ -1,0 +1,58 @@
+@using CierreModel = KONSolutions.Shared.Models.Logistica.AlmacenesCierre
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Reabrir un cierre vigente. NO lo borra: queda REABIERTO con quién, cuándo y por qué, y el motivo es obligatorio.
+   Desde que se reabre, el almacén vuelve a admitir movimientos con fecha dentro de ese periodo. *@
+<MudDialog>
+    <TitleContent>
+        <div style="background:var(--dialog-fore,#2b2622);color:var(--dialog-back,#fff);margin:-16px -24px 0;padding:13px 20px;display:flex;align-items:center;gap:6px;font-size:.97rem;font-weight:600;">
+            <MudIcon Icon="@Icons.Material.Filled.LockOpen" Size="Size.Small" Style="opacity:.85;" />
+            <span>Reabrir almacén</span>
+            <span style="opacity:.5;font-weight:300;margin:0 1px;">·</span>
+            <span>@Item?.COD_ALMACEN</span>
+            <span style="opacity:.5;font-weight:300;margin:0 1px;">-</span>
+            <span style="font-weight:400;">@Item?.DES_ALMACEN</span>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" data-resumen="reabrir">
+            Cierre N° @Item?.NUM_CIERRE_ALMACEN · del @Item?.FEC_DESDE?.ToString("dd/MM/yyyy") al @Item?.FEC_HASTA?.ToString("dd/MM/yyyy") (@Item?.NUM_DIAS día(s)).
+        </MudText>
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
+            Al reabrirlo, el almacén vuelve a admitir movimientos, ajustes y transferencias con fecha dentro de ese periodo. El cierre no se borra: queda el motivo, tu usuario y la fecha.
+        </MudAlert>
+        <MudTextField T="string" Label="Motivo de la reapertura" Variant="Variant.Outlined" Lines="3" MaxLength="1000" Required="true" RequiredError="Indica el motivo."
+                      @bind-Value="_motivo" Immediate="true" data-campo="motivo" AutoFocus="true" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Cancel" Style="@EstilosBoton.Cancelar" OnClick="@(() => MudDialog.Cancel())">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.LockOpen" Color="Color.Warning" Disabled="@(_saving || string.IsNullOrWhiteSpace(_motivo))" OnClick="Reabrir" data-accion="reabrir">Reabrir almacén</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public CierreModel? Item { get; set; }
+
+    private string? _motivo;
+    private bool _saving;
+
+    private async Task Reabrir()
+    {
+        if (Item is null || string.IsNullOrWhiteSpace(_motivo)) { Snackbar.Add("Indica el motivo de la reapertura.", Severity.Warning); return; }
+        _saving = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Logistica.AlmacenesCierreReabrir(Item.NUM_CIERRE_ALMACEN), new AlmacenesCierreReabrirDto { DES_MOTIVO_REAPERTURA = _motivo!.Trim() });
+            if (resp.IsSuccessStatusCode) { Snackbar.Add($"Almacén {Item.COD_ALMACEN} reabierto.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(AlmacenesCierreReabrirDialog), nameof(Reabrir), "No se pudo reabrir el almacén");
+        }
+        finally { _saving = false; }
+    }
+}

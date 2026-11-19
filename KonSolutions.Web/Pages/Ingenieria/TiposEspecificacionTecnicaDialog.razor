@@ -1,0 +1,156 @@
+@using TiposEspecificacionTecnicaModel = KONSolutions.Shared.Models.Ingenieria.TiposEspecificacionTecnica
+@using TiposEspecificacionTecnicaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_ESPECIFICACION_TECNICA" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+            <CampoTexto Tabla="INGENIERIA.TIPOS_ESPECIFICACION_TECNICA" Columna="COD_TIPO_ESPECIFICACION_TECNICA"
+                        @bind-Value="_model.COD_TIPO_ESPECIFICACION_TECNICA"
+                        Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+            <CampoTexto Tabla="INGENIERIA.TIPOS_ESPECIFICACION_TECNICA" Columna="DES_TIPO_ESPECIFICACION_TECNICA"
+                        @bind-Value="_model.DES_TIPO_ESPECIFICACION_TECNICA"
+                        Disabled="_readonly" Obligatorio="true" />
+            <MudNumericField T="int?" @bind-Value="_model.NUM_ORDEN_PRESENTACION" Label="Orden de Presentación"
+                              Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3"
+                              Culture="@System.Globalization.CultureInfo.CurrentCulture" />
+            <MudText Typo="Typo.subtitle2" Class="mb-1" Style="opacity:.7;">Tipo de dato</MudText>
+            <MudRadioGroup T="string" Value="@_tipoDatoSeleccionado" ValueChanged="OnTipoDatoChanged" Disabled="_readonly">
+                <div class="d-flex flex-column mb-3">
+                    @{ var opciones = new (string Icon, string Label, string Clave)[]
+                       {
+                           (Icons.Material.Filled.Numbers,      "Entero",     "ENTERO"),
+                           (Icons.Material.Filled.Calculate,    "Numérico",   "NUMERICO"),
+                           (Icons.Material.Filled.TextFields,   "Cadena",     "CADENA"),
+                           (Icons.Material.Filled.EventNote,    "Fecha/Hora", "FECHA_HORA"),
+                           (Icons.Material.Filled.CalendarMonth,"Fecha",      "FECHA"),
+                           (Icons.Material.Filled.Schedule,     "Hora",       "HORA"),
+                           (Icons.Material.Filled.ToggleOn,     "Lógico",     "LOGICO"),
+                           (Icons.Material.Filled.List,         "Es Lista",   "LISTA"),
+                           (Icons.Material.Filled.Palette,      "Es Color",   "COLOR"),
+                       };
+                    }
+                    @foreach (var o in opciones)
+                    {
+                        <div class="d-flex align-center py-1">
+                            <MudRadio T="string" Value="@o.Clave" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@o.Icon" Size="Size.Small" Style="opacity:.6;" /><MudText Typo="Typo.body2">@o.Label</MudText></div>
+                            </MudRadio>
+                        </div>
+                    }
+                </div>
+            </MudRadioGroup>
+            <CrudDialogActions Modo="Modo" Saving="_saving"
+                               OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TiposEspecificacionTecnicaModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TiposEspecificacionTecnicaModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private string? _tipoDatoSeleccionado;
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+    }
+
+    private void MapearDesdeModelo(TiposEspecificacionTecnicaModel m)
+    {
+        _model = new TiposEspecificacionTecnicaModel
+        {
+            COD_TIPO_ESPECIFICACION_TECNICA = m.COD_TIPO_ESPECIFICACION_TECNICA,
+            DES_TIPO_ESPECIFICACION_TECNICA = m.DES_TIPO_ESPECIFICACION_TECNICA,
+            FLG_LISTA              = m.FLG_LISTA,
+            FLG_ENTERO             = m.FLG_ENTERO,
+            FLG_NUMERICO           = m.FLG_NUMERICO,
+            FLG_CADENA             = m.FLG_CADENA,
+            FLG_FECHA_HORA         = m.FLG_FECHA_HORA,
+            FLG_FECHA              = m.FLG_FECHA,
+            FLG_HORA               = m.FLG_HORA,
+            FLG_LOGICO             = m.FLG_LOGICO,
+            FLG_COLOR              = m.FLG_COLOR,
+            NUM_ORDEN_PRESENTACION = m.NUM_ORDEN_PRESENTACION,
+        };
+        _tipoDatoSeleccionado =
+            m.FLG_ENTERO == true ? "ENTERO" :
+            m.FLG_NUMERICO == true ? "NUMERICO" :
+            m.FLG_CADENA == true ? "CADENA" :
+            m.FLG_FECHA_HORA == true ? "FECHA_HORA" :
+            m.FLG_FECHA == true ? "FECHA" :
+            m.FLG_HORA == true ? "HORA" :
+            m.FLG_LOGICO == true ? "LOGICO" :
+            m.FLG_LISTA == true ? "LISTA" :
+            m.FLG_COLOR == true ? "COLOR" : null;
+    }
+
+    private void OnTipoDatoChanged(string? val)
+    {
+        _tipoDatoSeleccionado = val;
+        _model.FLG_ENTERO = val == "ENTERO";
+        _model.FLG_NUMERICO = val == "NUMERICO";
+        _model.FLG_CADENA = val == "CADENA";
+        _model.FLG_FECHA_HORA = val == "FECHA_HORA";
+        _model.FLG_FECHA = val == "FECHA";
+        _model.FLG_HORA = val == "HORA";
+        _model.FLG_LOGICO = val == "LOGICO";
+        _model.FLG_LISTA = val == "LISTA";
+        _model.FLG_COLOR = val == "COLOR";
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<TiposEspecificacionTecnicaModel>>(
+                $"{TiposEspecificacionTecnicaRoute.TiposEspecificacionTecnica}/{Uri.EscapeDataString(_model.COD_TIPO_ESPECIFICACION_TECNICA)}");
+            if (r?.Data is not null) MapearDesdeModelo(r.Data);
+        }
+        catch { }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = TiposEspecificacionTecnicaRoute.TiposEspecificacionTecnica;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_ESPECIFICACION_TECNICA)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposEspecificacionTecnicaDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+        var dto = new { _model.COD_TIPO_ESPECIFICACION_TECNICA, _model.DES_TIPO_ESPECIFICACION_TECNICA,
+                        _model.FLG_LISTA, _model.FLG_ENTERO, _model.FLG_NUMERICO, _model.FLG_CADENA,
+                        _model.FLG_FECHA_HORA, _model.FLG_FECHA, _model.FLG_HORA, _model.FLG_LOGICO,
+                        _model.FLG_COLOR, _model.NUM_ORDEN_PRESENTACION };
+        var resp = await Http.GuardarAsync(ruta, dto, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposEspecificacionTecnicaDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,94 @@
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using FlujoModel = KONSolutions.Shared.Models.Logistica.FlujoAprobacion
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Copiar niveles a otro flujo</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+            Copia los niveles de aprobación (Área / Cargo, con su orden, moneda y montos) de
+            <b>@FlujoOrigenTexto</b> hacia el flujo que elijas.
+        </MudText>
+
+        <AriaCombo TItem="ComboboxItem" Items="_flujosDestino"
+                   TextFunc="@(f => f.Texto)" ValueFunc="@(f => f.Id)"
+                   @bind-Value="_numFlujoDestino"
+                   Label="Flujo de destino" Class="mb-3" />
+
+        @* Por defecto no se destruye nada: se agregan solo los niveles que le falten al
+           destino. El reemplazo es opt-in y se avisa explícitamente. *@
+        <MudSwitch T="bool" @bind-Value="_reemplazar" Color="Color.Warning"
+                   Label="Reemplazar los niveles existentes en el destino" />
+        <MudText Typo="Typo.caption" Style="opacity:.7;">
+            @(_reemplazar
+                ? "Se borran los niveles actuales del destino y queda idéntico al origen."
+                : "No se borra nada: solo se agregan al destino los niveles que le falten.")
+        </MudText>
+
+        <div class="d-flex justify-end gap-2 mt-4">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       Disabled="@(_saving || string.IsNullOrEmpty(_numFlujoDestino))" OnClick="Copiar">
+                @(_saving ? "Copiando..." : "Copiar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public short NumFlujoOrigen { get; set; }
+    [Parameter] public string DesFlujoOrigen { get; set; } = "";
+
+    private string FlujoOrigenTexto => string.IsNullOrWhiteSpace(DesFlujoOrigen)
+        ? NumFlujoOrigen.ToString() : $"{NumFlujoOrigen} - {DesFlujoOrigen}";
+
+    private List<ComboboxItem> _flujosDestino = new();
+    private string? _numFlujoDestino;
+    private bool _reemplazar;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var r = await Http.SafeGetAsync<List<FlujoModel>>(LogisticaRoute.FlujosAprobacion);
+        // El flujo de origen se excluye: copiarlo sobre sí mismo no hace nada y, con
+        // reemplazo activado, borraría sus propios niveles antes de reinsertarlos.
+        _flujosDestino = (r ?? new())
+            .Where(f => f.NUM_FLUJO_APROBACION is not null && f.NUM_FLUJO_APROBACION != NumFlujoOrigen)
+            .Select(f => new ComboboxItem
+            {
+                Id = f.NUM_FLUJO_APROBACION!.Value.ToString(),
+                Texto = $"{f.NUM_FLUJO_APROBACION} - {f.DES_FLUJO_APROBACION}"
+            })
+            .ToList();
+    }
+
+    private async Task Copiar()
+    {
+        if (string.IsNullOrEmpty(_numFlujoDestino)) return;
+        _saving = true;
+        var dto = new
+        {
+            NUM_FLUJO_APROBACION = NumFlujoOrigen,
+            NUM_FLUJO_APROBACION_DESTINO = short.Parse(_numFlujoDestino),
+            FLG_REEMPLAZAR = _reemplazar
+        };
+        var resp = await Http.PostAsJsonAsync(LogisticaRoute.FlujosAprobacionAreaCargoCopy, dto);
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Niveles copiados correctamente.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                nameof(FlujosAprobacionAreaCargoCopyDialog), nameof(Copiar));
+        }
+    }
+}

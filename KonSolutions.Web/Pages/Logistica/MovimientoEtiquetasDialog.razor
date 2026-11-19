@@ -1,0 +1,448 @@
+@* Las lecturas (etiquetas) de UNA línea de un movimiento de almacén.
+
+   Se abre con un clic en la celda «Lecturas» de la grilla del documento (solo cuando la línea tiene lecturas). Es una grilla con
+   todas las columnas que se saben de cada lectura:
+     · de la etiqueta misma —sus segmentos según ESTANDAR.OBJETOS_RFID (si está registrada) o ESTANDAR.ESTRUCTURA_RFID, que el SP guarda en
+       cada lectura—: la etiqueta completa, la serie (solo si alguna lectura la trae), y el lote, el proceso y la orden de producción juntos
+       en UNA columna «Lote / Orden» con el mismo texto que la grilla del detalle del movimiento; su ojo abre el diálogo «Lote y orden de
+       producción» (el mismo del movimiento, en solo lectura);
+     · de la lectura: cantidad, quién la hizo, desde qué estación y cuándo;
+     · de la línea: producto, almacén, ubicación, unidad y lote de la línea.
+   El lote de la etiqueta y el de la línea van en columnas distintas: en una línea que viene de una orden de compra la etiqueta
+   puede traer otro lote que el de la línea.
+
+   Cada columna se ordena con un clic en su título y se filtra con el filtro estilo Excel, igual que la grilla del detalle; el
+   buscador de arriba busca en todas.
+
+   LO ÚNICO QUE SE PUEDE HACER ES ELIMINAR UNA LECTURA (con confirmación). Cambiar un peso o agregar lecturas no se hace desde acá:
+   se lee de nuevo en el panel de lectura. El SP recalcula la línea y el stock después de quitar. En una línea PROPIA, quitar la
+   última lectura elimina la línea (y el stock vuelve); en una línea con origen la línea se queda, porque la pide el documento.
+
+   Con SoloLectura (documento aceptado, enviado o bloqueado) la grilla es solo de consulta.
+
+   EN LA CONFIRMACIÓN DE RECEPCIÓN (parámetro Recibidas): el movimiento es la SALIDA que se está recibiendo y el diálogo es solo de consulta.
+   Lista las etiquetas que leyó la salida en esa línea (GET confirmacion-recepcion/{salida}/etiquetas, con el permiso de la recepción) y,
+   en la columna «Al recibir», cuáles se leyeron en esta recepción y qué pasará con cada una al confirmar:
+     · Leída al recibir ............ queda en el ingreso.
+     · Sin leer, pasa al ingreso ... la línea no se leyó nada: al confirmar pasan todas las de la salida (PROC_..._CONFIRMAR_RECEPCION, paso 5B2).
+     · Sin leer, no pasa ........... la línea sí se leyó en parte: queda solo con lo leído.
+     · Sin leer, falta leerla ...... lectura obligatoria (R): no se puede confirmar hasta leerlas.
+     · Leída, no estaba en la salida: se leyó acá pero la salida no la tenía; queda en el ingreso si se confirma. *@
+@using DetalleModel = KONSolutions.Shared.Models.Logistica.MovimientosAlmacenDetalle
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@(Recepcion ? "Etiquetas de la línea" : "Lecturas de la línea") @Linea.NUM_SECUENCIA · @(Recepcion ? "Salida" : "Movimiento") N° @NumMovimiento</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <div class="mb-2" style="display:flex;flex-direction:column;line-height:1.3;">
+            <span><strong>@Linea.DES_PRODUCTO</strong> <span class="mono" style="font-size:.78rem;opacity:.65;">@Linea.COD_PRODUCTO</span></span>
+            <span style="font-size:.85rem;opacity:.8;" data-resumen="lecturas">
+                @if (Recepcion)
+                {
+                    <text>@EnSalida etiqueta(s) en la salida · etiquetado @_total.ToString("0.######") @Linea.COD_UNIDAD_MEDIDA de @Linea.CAN_PRODUCTO?.ToString("0.######") enviados · @_leidasLinea.Count leída(s) al recibir</text>
+                }
+                else
+                {
+                    <text>@_etiquetas.Count lectura(s) · etiquetado @_total.ToString("0.######") @Linea.COD_UNIDAD_MEDIDA</text>
+                }
+                @if (ConOrigen)
+                {
+                    <text> · el documento de origen pide @Linea.CAN_PRODUCTO?.ToString("0.######") @Linea.COD_UNIDAD_MEDIDA</text>
+                }
+            </span>
+        </div>
+
+        @if (ConOrigen)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                Esta línea viene de otro documento: su cantidad no cambia con las lecturas. Si quitas una lectura, la línea se queda.
+            </MudAlert>
+        }
+
+        @if (Recepcion && !_cargando)
+        {
+            <MudAlert Severity="@(Requisito == "R" && _leidasEnSalida < EnSalida ? Severity.Warning : Severity.Info)" Dense="true" Class="mb-2" data-recepcion-regla="true">@ReglaDeLaLinea</MudAlert>
+        }
+
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (_etiquetas.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Class="pa-4" Style="opacity:.6;">@(Recepcion ? "La salida no leyó etiquetas en esta línea." : "Sin lecturas en esta línea.")</MudText>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-1">
+                <MudTextField T="string" @bind-Value="_buscar" Immediate="true" DebounceInterval="200" Margin="Margin.Dense"
+                              Label="Buscar en todas las columnas" Variant="Variant.Outlined"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Style="max-width:420px;" />
+                <MudSpacer />
+                <MudText Typo="Typo.caption" Style="opacity:.7;" data-resumen="visibles">
+                    @(Visibles.Count == _etiquetas.Count ? $"{_etiquetas.Count} lectura(s)" : $"{Visibles.Count} de {_etiquetas.Count} lectura(s)")
+                </MudText>
+                <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f => f.Value is not null) || !string.IsNullOrWhiteSpace(_buscar))" />
+            </div>
+
+            <MudDataGrid T="MovimientosAlmacenEtiqueta" Items="@Visibles" Dense="true" Hover="true" Striped="true"
+                         FixedHeader="true" Height="min(58vh, 560px)">
+                <Columns>
+                    @if (!Solo)
+                    {
+                        <TemplateColumn Title="Acciones" Sortable="false" CellStyle="text-align:center;">
+                            <CellTemplate>
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                               title="Quitar esta lectura" Disabled="_ocupado"
+                                               OnClick="@(() => QuitarAsync(context.Item))" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    }
+                    @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+                    {
+                        @if (Visible(c))
+                        {
+                        <TemplateColumn Sortable="false" CellStyle="@(c.Derecha ? "text-align:right;" : null)">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1 @(c.Derecha ? "justify-end" : "")">
+                                    <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenCol == idx)" Ascendente="_ordenAsc" OnClick="@(() => AlternarOrden(idx))" />
+                                    <FiltroExcelColumna T="MovimientosAlmacenEtiqueta" ItemsBase="@BaseColumna(idx)" ValorDe="@c.Valor"
+                                                        ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtrar(idx, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @if (c.Chip)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@ColorDe(context.Item)" data-al-recibir="@Txt(context.Item.COD_STICKER_RFID)">@c.Valor(context.Item)</MudChip>
+                                }
+                                else if (c.Ojo && !_fueraDeSalida.Contains(Txt(context.Item.COD_STICKER_RFID)))
+                                {
+                                    @* Igual que en la grilla del detalle: el texto y el ojo; el clic abre el lote y la orden de producción. *@
+                                    <div @onclick="@(() => VerLoteOrdenAsync(context.Item))" data-lote-orden="@context.Item.COD_STICKER_RFID"
+                                         title="Clic para ver el lote y la orden de producción"
+                                         style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;">
+                                        <span class="mono" style="font-size:.78rem;">@c.Valor(context.Item)</span>
+                                        <MudIcon Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Style="opacity:.35;" />
+                                    </div>
+                                }
+                                else if (c.Sub is not null)
+                                {
+                                    @* Código arriba, descripción abajo: igual que en la grilla del detalle. *@
+                                    <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                        <span class="mono" style="font-size:.72rem;opacity:.6;">@c.Valor(context.Item)</span>
+                                        <span>@c.Sub(context.Item)</span>
+                                    </div>
+                                }
+                                else if (c.Mono)
+                                {
+                                    @* Las etiquetas RFID miden 100 caracteres o más: se corta con puntos suspensivos y el título trae la completa. *@
+                                    <span class="mono" style="font-size:.74rem;display:inline-block;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;"
+                                          title="@c.Valor(context.Item)">@c.Valor(context.Item)</span>
+                                }
+                                else
+                                {
+                                    @c.Valor(context.Item)
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                        }
+                    }
+                </Columns>
+                <NoRecordsContent>
+                    <MudText Typo="Typo.body2" Class="pa-4" Style="opacity:.6;">Ninguna lectura coincide con el filtro.</MudText>
+                </NoRecordsContent>
+            </MudDataGrid>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" OnClick="Cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public decimal NumMovimiento { get; set; }
+    [Parameter] public DetalleModel Linea { get; set; } = new();
+    /// <summary>La línea viene de otro documento (orden de compra, requerimiento, reserva, ingreso de transferencia).</summary>
+    [Parameter] public bool ConOrigen { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>Solo en la confirmación de recepción: las etiquetas leídas AL RECIBIR (la lista de la pantalla). Con este parámetro el
+    /// movimiento es la SALIDA que se recibe, las etiquetas se piden con el permiso de la recepción y el diálogo es solo de consulta,
+    /// con la columna «Al recibir». Sin él (null) es el diálogo de siempre.</summary>
+    [Parameter] public List<RecepcionLecturaPanel.EtiquetaLeida>? Recibidas { get; set; }
+    /// <summary>Requisito de lectura del tipo de ingreso que se generará (N, O, R). Solo se usa en la recepción.</summary>
+    [Parameter] public string Requisito { get; set; } = "O";
+    /// <summary>Los lotes del movimiento (la lista del combo «Lote de Control» de la cabecera): de ahí sale la descripción del lote, igual
+    /// que en la grilla del detalle.</summary>
+    [Parameter] public List<ComboboxItem> Lotes { get; set; } = new();
+
+    /// <summary>Una columna de la grilla. Valor es lo que se muestra, se filtra y se busca; Sub es la descripción que va debajo
+    /// del código; Clave es por lo que se ordena cuando no es el texto (números y fechas).</summary>
+    private sealed record Col(string Titulo, Func<MovimientosAlmacenEtiqueta, string> Valor, bool Derecha = false, bool Mono = false,
+                              Func<MovimientosAlmacenEtiqueta, string>? Sub = null, Func<MovimientosAlmacenEtiqueta, IComparable?>? Clave = null,
+                              bool Ojo = false, Func<MovimientosAlmacenEtiqueta, string>? Busqueda = null, bool Chip = false);
+
+    private static string Txt(string? s) => s?.Trim() ?? "";
+    private static string Num(IFormattable? n) => n?.ToString(null, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+
+    private const string TituloSerie = "Serie";
+    private const string TituloAlRecibir = "Al recibir";
+
+    private bool Recepcion => Recibidas is not null;
+    /// <summary>La grilla es de consulta: el documento está cerrado, o se está viendo desde la recepción.</summary>
+    private bool Solo => SoloLectura || Recepcion;
+
+    // Las columnas se arman al abrir: «Lote / Orden» necesita la lista de lotes del movimiento.
+    private Col[] _cols = Array.Empty<Col>();
+
+    private Col[] Columnas()
+    {
+        var cols = ColumnasBase();
+        // En la recepción, junto a la etiqueta: si se leyó al recibir y qué pasará con ella al confirmar.
+        if (Recepcion) cols.Insert(1, new Col(TituloAlRecibir, TextoDe, Chip: true));
+        return cols.ToArray();
+    }
+
+    private List<Col> ColumnasBase() => new List<Col>
+    {
+        new("Etiqueta",       e => Txt(e.COD_STICKER_RFID), Mono: true),
+        new(TituloSerie,      e => Txt(e.NUM_SERIE)),
+        new("Producto",       e => Txt(e.COD_PRODUCTO), Sub: e => Txt(e.DES_PRODUCTO)),
+        // El lote, el proceso y la orden en una celda, con el mismo texto que el detalle del movimiento (LoteOrdenFormato). La búsqueda
+        // también mira los códigos y las descripciones que la celda no muestra.
+        new("Lote / Orden",   e => LoteOrdenFormato.Resumen(e.NUM_LOTE_CONTROL, e.COD_PROCESO, e.NUM_ORDEN_PRODUCCION, e.NUM_ORDEN_PRODUCCION_ITEM, e.NUM_ORDEN_PRODUCCION_UNIDAD, Lotes),
+                              Ojo: true,
+                              Busqueda: e => $"{e.NUM_LOTE_CONTROL} {e.NUM_LOTE_CONTROL_ENTIDAD} {e.COD_PROCESO} {e.DES_PROCESO} {e.NUM_ORDEN_PRODUCCION} {e.DES_ORDEN_PRODUCCION} {e.NUM_ORDEN_PRODUCCION_ITEM} {e.NUM_ORDEN_PRODUCCION_UNIDAD}"),
+        new("Cantidad",       e => e.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "", Derecha: true, Clave: e => e.CAN_PRODUCTO),
+        new("UM",             e => string.IsNullOrWhiteSpace(e.DES_UNIDAD_MEDIDA) ? Txt(e.COD_UNIDAD_MEDIDA) : Txt(e.DES_UNIDAD_MEDIDA)),
+        new("Almacén",        e => Txt(e.COD_ALMACEN), Sub: e => Txt(e.DES_ALMACEN)),
+        new("Ubicación",      e => Txt(e.COD_UBICACION_ALMACEN), Sub: e => Txt(e.DES_UBICACION_ALMACEN)),
+        new("Lote de la línea", e => Txt(e.NUM_LOTE_CONTROL_LINEA)),
+        new("Usuario",        e => Txt(e.COD_USUARIO_REGISTRO)),
+        new("Estación",       e => Txt(e.COD_ESTACION_REGISTRO)),
+        new("Fecha de lectura", e => e.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm:ss") ?? "", Clave: e => e.FEC_REGISTRO),
+    };
+
+    // ── Recepción: qué pasa con cada etiqueta de la salida ───────────────────────────────
+    private enum AlRecibir { Leida, SinLeerPasa, SinLeerNoPasa, SinLeerFalta, FueraDeSalida }
+
+    /// <summary>Las etiquetas leídas al recibir en ESTA línea (por código, sin espacios).</summary>
+    private HashSet<string> _leidasLinea = new(StringComparer.Ordinal);
+    /// <summary>De esas, las que la salida no tenía en esta línea (se agregan a la grilla para que se vean).</summary>
+    private readonly HashSet<string> _fueraDeSalida = new(StringComparer.Ordinal);
+    private int _leidasEnSalida => _leidasLinea.Count - _fueraDeSalida.Count;
+    private int EnSalida => _etiquetas.Count - _fueraDeSalida.Count;
+
+    private AlRecibir EstadoDe(MovimientosAlmacenEtiqueta e)
+    {
+        var cod = Txt(e.COD_STICKER_RFID);
+        if (_fueraDeSalida.Contains(cod)) return AlRecibir.FueraDeSalida;
+        if (_leidasLinea.Contains(cod)) return AlRecibir.Leida;
+        if (Requisito == "R") return AlRecibir.SinLeerFalta;
+        // La regla del SP: una línea sin ninguna lectura al recibir recibe todas las de la salida; una línea leída queda con lo leído.
+        return _leidasLinea.Count == 0 ? AlRecibir.SinLeerPasa : AlRecibir.SinLeerNoPasa;
+    }
+
+    private string TextoDe(MovimientosAlmacenEtiqueta e) => EstadoDe(e) switch
+    {
+        AlRecibir.Leida         => "Leída al recibir",
+        AlRecibir.SinLeerPasa   => "Sin leer · pasa al ingreso",
+        AlRecibir.SinLeerNoPasa => "Sin leer · no pasa",
+        AlRecibir.SinLeerFalta  => "Sin leer · falta leerla",
+        _                       => "Leída · no estaba en la salida"
+    };
+
+    private Color ColorDe(MovimientosAlmacenEtiqueta e) => EstadoDe(e) switch
+    {
+        AlRecibir.Leida         => Color.Success,
+        AlRecibir.SinLeerPasa   => Color.Default,
+        AlRecibir.SinLeerNoPasa => Color.Warning,
+        AlRecibir.SinLeerFalta  => Color.Warning,
+        _                       => Color.Info
+    };
+
+    /// <summary>Lo que va a pasar con esta línea al confirmar, en una frase.</summary>
+    private string ReglaDeLaLinea
+    {
+        get
+        {
+            if (EnSalida == 0) return "La salida no leyó etiquetas en esta línea: no hay etiquetas de la salida que pasen al ingreso.";
+            if (Requisito == "R")
+                return _leidasEnSalida >= EnSalida
+                    ? $"Leíste las {EnSalida} etiquetas de la salida en esta línea."
+                    : $"Lectura obligatoria: leíste {_leidasEnSalida} de las {EnSalida} etiquetas de la salida; hay que leerlas todas para confirmar.";
+            if (_leidasLinea.Count == 0)
+                return $"No leíste ninguna etiqueta de esta línea: al confirmar la recepción pasan al ingreso las {EnSalida} que leyó la salida.";
+            return _leidasEnSalida >= EnSalida
+                ? $"Leíste las {EnSalida} etiquetas de la salida en esta línea: todas quedan en el ingreso."
+                : $"Leíste {_leidasEnSalida} de las {EnSalida} etiquetas de la salida: al confirmar, esta línea queda solo con las que leíste.";
+        }
+    }
+
+    /// <summary>La serie solo es una columna cuando alguna lectura de la línea la trae: si la estructura de etiquetas no tiene un tramo de
+    /// serie, la columna quedaría vacía en todas las filas y solo ocuparía ancho.</summary>
+    private bool Visible(Col c) => c.Titulo != TituloSerie || _etiquetas.Any(e => !string.IsNullOrWhiteSpace(e.NUM_SERIE));
+
+    private List<MovimientosAlmacenEtiqueta> _etiquetas = new();
+    private bool _cargando = true, _ocupado, _huboCambios;
+    private string? _buscar;
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenCol;
+    private bool _ordenAsc = true;
+
+    private decimal _total => _etiquetas.Sum(e => e.CAN_PRODUCTO ?? 0);
+
+    // ── Buscar, filtrar y ordenar (mismo esquema que la grilla del detalle) ──────────
+    private bool Coincide(MovimientosAlmacenEtiqueta e)
+    {
+        var t = _buscar?.Trim();
+        if (string.IsNullOrEmpty(t)) return true;
+        return _cols.Any(c => c.Valor(e).Contains(t, StringComparison.OrdinalIgnoreCase)
+                           || (c.Sub is not null && c.Sub(e).Contains(t, StringComparison.OrdinalIgnoreCase))
+                           || (c.Busqueda is not null && c.Busqueda(e).Contains(t, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>Las lecturas visibles menos el filtro de UNA columna (la que se está abriendo): así el filtro de cada columna
+    /// ofrece los valores que quedan según los demás filtros, no solo los que ya están marcados.</summary>
+    private List<MovimientosAlmacenEtiqueta> BaseColumna(int excepto)
+    {
+        IEnumerable<MovimientosAlmacenEtiqueta> q = _etiquetas.Where(Coincide);
+        foreach (var (col, valores) in _filtros)
+        {
+            if (col == excepto || valores is null) continue;
+            q = q.Where(e => valores.Contains(_cols[col].Valor(e)));
+        }
+        return Ordenar(q).ToList();
+    }
+
+    private List<MovimientosAlmacenEtiqueta> Visibles => BaseColumna(-1);
+
+    private IEnumerable<MovimientosAlmacenEtiqueta> Ordenar(IEnumerable<MovimientosAlmacenEtiqueta> q)
+    {
+        if (_ordenCol is not { } col) return q;
+        var c = _cols[col];
+        Func<MovimientosAlmacenEtiqueta, object?> clave = e => c.Clave is not null ? c.Clave(e) : c.Valor(e);
+        return _ordenAsc ? q.OrderBy(clave) : q.OrderByDescending(clave);
+    }
+
+    private void AlternarOrden(int col)
+    {
+        if (_ordenCol == col) _ordenAsc = !_ordenAsc; else { _ordenCol = col; _ordenAsc = true; }
+    }
+
+    private void Filtrar(int col, HashSet<string>? valores) { _filtros[col] = valores; StateHasChanged(); }
+
+    private void LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _buscar = null;
+        StateHasChanged();
+    }
+
+    // ── Carga y eliminación ───────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        if (Recibidas is not null)
+            _leidasLinea = Recibidas.Where(r => r.Linea == Linea.NUM_SECUENCIA).Select(r => Txt(r.Etiqueta)).ToHashSet(StringComparer.Ordinal);
+        _cols = Columnas();
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true;
+        var ruta = Recepcion
+            ? ApiRoutes.Logistica.ConfirmacionRecepcionEtiquetas(NumMovimiento, Linea.NUM_SECUENCIA)
+            : ApiRoutes.Logistica.MovimientosAlmacenEtiquetas(NumMovimiento, Linea.NUM_SECUENCIA);
+        _etiquetas = await Http.SafeGetAsync<List<MovimientosAlmacenEtiqueta>>(ruta) ?? new();
+        if (Recepcion) AgregarLeidasFueraDeLaSalida();
+        _cargando = false;
+    }
+
+    /// <summary>Una etiqueta que se leyó al recibir y que la salida no tenía en esta línea (existe en OBJETOS_RFID o su código la identifica, pero no
+    /// viajó leída): no está en la lista de la salida, pero tiene que verse para saber que quedará en el ingreso.</summary>
+    private void AgregarLeidasFueraDeLaSalida()
+    {
+        var enSalida = _etiquetas.Select(e => Txt(e.COD_STICKER_RFID)).ToHashSet(StringComparer.Ordinal);
+        foreach (var r in Recibidas!.Where(r => r.Linea == Linea.NUM_SECUENCIA && !enSalida.Contains(Txt(r.Etiqueta))))
+        {
+            _fueraDeSalida.Add(Txt(r.Etiqueta));
+            _etiquetas.Add(new MovimientosAlmacenEtiqueta
+            {
+                NUM_MOVIMIENTO_ALMACEN = NumMovimiento, NUM_SECUENCIA = Linea.NUM_SECUENCIA, COD_STICKER_RFID = Txt(r.Etiqueta),
+                COD_PRODUCTO = r.CodProducto, DES_PRODUCTO = r.DesProducto, CAN_PRODUCTO = r.Cantidad, COD_UNIDAD_MEDIDA = r.Um
+            });
+        }
+    }
+
+    /// <summary>Quitar una lectura. Se pregunta antes: el SP recalcula la línea y el stock, y si era la última de una línea propia,
+    /// elimina la línea.</summary>
+    private async Task QuitarAsync(MovimientosAlmacenEtiqueta e)
+    {
+        if (Solo || _ocupado) return;
+        var etiqueta = e.COD_STICKER_RFID.Length <= 30 ? e.COD_STICKER_RFID : "…" + e.COD_STICKER_RFID[^28..];
+        var consecuencia = ConOrigen
+            ? "La línea viene de otro documento: se queda; solo se quita la lectura."
+            : _etiquetas.Count == 1
+                ? "Es la última lectura de la línea: la línea se eliminará y el stock volverá."
+                : "La cantidad de la línea y el stock se recalculan.";
+        var si = await DialogService.ShowMessageBox("Quitar la lectura", $"¿Quitar la lectura de la etiqueta {etiqueta}? {consecuencia}",
+                                                    yesText: "Quitar", cancelText: "Cancelar");
+        if (si != true) return;
+
+        _ocupado = true;
+        try
+        {
+            var resp = await Http.DeleteAsync(ApiRoutes.Logistica.MovimientosAlmacenEtiquetaDelete(NumMovimiento, Linea.NUM_SECUENCIA ?? 0, e.COD_STICKER_RFID));
+            if (resp.IsSuccessStatusCode)
+            {
+                _huboCambios = true;
+                await CargarAsync();
+                // Una línea propia sin lecturas deja de existir: no hay nada más que mostrar.
+                if (_etiquetas.Count == 0 && !ConOrigen) { Cerrar(); return; }
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoEtiquetasDialog), nameof(QuitarAsync));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoEtiquetasDialog), nameof(QuitarAsync)); }
+        finally { _ocupado = false; }
+    }
+
+    /// <summary>El ojo de «Lote / Orden»: el mismo diálogo del movimiento (lote, proceso con su descripción, orden, ítem y unidad), en solo
+    /// lectura y con lo que dice ESTA etiqueta. Si el lote de la etiqueta no está en la lista del movimiento (la etiqueta puede traer otro
+    /// lote que el de la cabecera), se agrega a la lista del diálogo para que el combo lo muestre en vez de verse vacío.</summary>
+    private async Task VerLoteOrdenAsync(MovimientosAlmacenEtiqueta e)
+    {
+        var lotes = Lotes.ToList();
+        if (!string.IsNullOrWhiteSpace(e.NUM_LOTE_CONTROL) && !lotes.Any(l => string.Equals(l.Id, e.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase)))
+            lotes.Insert(0, new ComboboxItem { Id = e.NUM_LOTE_CONTROL, Texto = e.NUM_LOTE_CONTROL });
+
+        var parametros = new DialogParameters
+        {
+            ["Lotes"]          = lotes,
+            ["NumLoteControl"] = e.NUM_LOTE_CONTROL,
+            ["CodProceso"]     = e.COD_PROCESO,
+            ["DesProceso"]     = e.DES_PROCESO,
+            ["NumOrden"]       = e.NUM_ORDEN_PRODUCCION,
+            ["DesOrden"]       = e.DES_ORDEN_PRODUCCION,
+            ["NumItem"]        = e.NUM_ORDEN_PRODUCCION_ITEM,
+            ["NumUnidad"]      = e.NUM_ORDEN_PRODUCCION_UNIDAD,
+            ["NumSecuencia"]   = Linea.NUM_SECUENCIA,
+            ["DesProducto"]    = e.DES_PRODUCTO,
+            ["EtiquetaLeida"]  = e.COD_STICKER_RFID,
+            ["SoloLectura"]    = true
+        };
+        await DialogService.ShowAsync<LoteOrdenProduccionDialog>("Lote y orden de producción",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+    }
+
+    private void Cerrar() => MudDialog.Close(DialogResult.Ok(_huboCambios));
+}

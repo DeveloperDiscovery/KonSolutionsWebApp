@@ -1,0 +1,96 @@
+@* InventariosAlmacenesProductosAgregarDialog.razor
+   -----------------------------------------------------------------------
+   Selección múltiple de productos (combobox general de ESTANDAR.PRODUCTOS, filtrado
+   client-side por los que ya están agregados a este almacén-inventario) para agregarlos
+   como "a inventariar" (LOGISTICA.INVENTARIOS_ALMACENES_PRODUCTOS). No hay SP bulk: se
+   hace un POST (Insert, que es upsert) por cada producto marcado, secuencial. *@
+@using ProductoModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesProductos
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Agregar productos a inventariar</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Style="opacity:.7;font-size:.8rem;" Class="mb-3">Almacén @CodAlmacen — seleccione uno o más productos.</MudText>
+        @if (!_disponibles.Any())
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;">No hay productos disponibles para agregar (todos ya están asignados).</MudText>
+        }
+        else
+        {
+            <div class="d-flex gap-2 mb-2">
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="SeleccionarTodos">Seleccionar todos</MudButton>
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="DeseleccionarTodos">Deseleccionar todos</MudButton>
+            </div>
+            <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_seleccionadosSet"
+                       Label="Productos" Variant="Variant.Outlined" Class="mb-3">
+                @foreach (var p in _disponibles)
+                {
+                    <MudSelectItem T="string" Value="@p.Id">@p.Id - @p.Texto</MudSelectItem>
+                }
+            </MudSelect>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Cancel())" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" OnClick="Confirmar" Disabled="@(_guardando || !_seleccionadosSet.Any())" Style="@EstilosBoton.Confirmar">
+            @(_guardando ? "Guardando..." : "Agregar")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter] public List<string> YaAgregados { get; set; } = new();
+
+
+    private List<ComboboxItem> _todos = new();
+    private List<ComboboxItem> _disponibles => _todos.Where(t => !YaAgregados.Contains(t.Id)).ToList();
+    private IEnumerable<string> _seleccionadosSet = new List<string>();
+    private bool _guardando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Combobox general de ESTANDAR.PRODUCTOS (no hay variante filtrada por almacén) —
+        // se filtran client-side los que ya están agregados a este almacén-inventario.
+        _todos = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.ProductosCombobox)) ?? new();
+    }
+
+    private void SeleccionarTodos() => _seleccionadosSet = _disponibles.Select(x => x.Id).ToList();
+    private void DeseleccionarTodos() => _seleccionadosSet = new List<string>();
+
+    private async Task Confirmar()
+    {
+        _guardando = true;
+        var errores = new List<string>();
+        foreach (var cod in _seleccionadosSet.ToList())
+        {
+            var dto = new ProductoModelo { NUM_INVENTARIO = NumInventario, COD_ALMACEN = CodAlmacen, COD_PRODUCTO = cod };
+            var resp = await Http.PostAsJsonAsync(LogisticaRoute.InventariosAlmacenesProductos, dto);
+            if (!resp.IsSuccessStatusCode) errores.Add(cod);
+        }
+        _guardando = false;
+
+        if (errores.Count == 0)
+        {
+            Snackbar.Add("Productos agregados.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                $"No se pudieron agregar: {string.Join(", ", errores)}. El resto sí se guardó.",
+                DialogService, nameof(InventariosAlmacenesProductosAgregarDialog), "Error al guardar");
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+    }
+}

@@ -1,0 +1,218 @@
+@* InventariosAlmacenesPuntoTomaGrid.razor
+   -----------------------------------------------------------------------
+   CRUD de los puntos de conteo de UN almacén dentro de un inventario puntual
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA, clave compuesta NUM_INVENTARIO +
+   COD_ALMACEN + NUM_PUNTO_TOMA_INVENTARIO). Se abre desde una solapa propia en
+   Inventarios.razor cuando el usuario hace clic en "Puntos de Conteo" sobre una
+   fila de InventariosAlmacenesGrid.razor — mismo criterio "grilla + diálogo"
+   que el resto del módulo (ver InventariosAlmacenesDialog.razor).
+
+   Botones de acción vía AccionesBotones (config BotonTreeviewItem), no fijos en
+   el markup — mismo criterio que InventariosAlmacenesGrid.razor. Usa el MISMO
+   CodAplicacion/CodOpcionAplicacion que la opción "Inventarios" (recibidos como
+   parámetro desde Inventarios.razor, igual que ya viajan hasta
+   InventariosAlmacenesGrid.razor), ya que Puntos de Conteo no tiene su propia
+   fila en SEGURIDAD.APLICACIONES_OPCIONES — se abre desde un botón de esa misma
+   opción, no desde una opción de menú propia. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoToma
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfigService ConfigSvc
+@inject LimitesService Limites
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h6">Puntos de conteo · Almacén @Almacen?.COD_ALMACEN</MudText>
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">@_items.Count punto(s) de conteo</MudText>
+    </div>
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Volver" Style="@EstilosBoton.Cancelar">
+            Volver a Almacenes
+        </MudButton>
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="inventarios-almacenes-punto-toma" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="N° punto" Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono">@context.Item.NUM_PUNTO_TOMA_INVENTARIO</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Entidad responsable" Width="220">
+                <CellTemplate>@context.Item.DES_NOMBRE_COMPLETO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Inicio / Final programado" Width="220">
+                <CellTemplate>@(context.Item.FEC_INICIO_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—") — @(context.Item.FEC_FINAL_PROGRAMADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Inicio / Final efectuado" Width="220">
+                <CellTemplate>@(context.Item.FEC_INICIO_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—") — @(context.Item.FEC_FINAL_EFECTUADA?.ToString("dd/MM/yyyy HH:mm") ?? "—")</CellTemplate>
+            </TemplateColumn>
+            @* RFID + código de barras en una sola columna, un ícono representativo cada uno
+               (Nfc / QrCodeScanner) en vez de dos columnas de check — atenuado cuando el
+               lector no está habilitado para este punto de conteo. *@
+            <TemplateColumn Sortable="false" Title="Lectores" Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    <div class="d-flex align-center justify-center gap-1">
+                        <MudTooltip Text="@(context.Item.FLG_READER_RFID == true ? "Lector RFID habilitado" : "Lector RFID no habilitado")">
+                            <MudIcon Icon="@Icons.Material.Filled.Nfc" Size="Size.Small"
+                                     Color="@(context.Item.FLG_READER_RFID == true ? Color.Success : Color.Default)"
+                                     Style="@(context.Item.FLG_READER_RFID == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                        <MudTooltip Text="@(context.Item.FLG_READER_CODEBAR == true ? "Lector de código de barras habilitado" : "Lector de código de barras no habilitado")">
+                            <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Size="Size.Small"
+                                     Color="@(context.Item.FLG_READER_CODEBAR == true ? Color.Success : Color.Default)"
+                                     Style="@(context.Item.FLG_READER_CODEBAR == true ? "" : "opacity:.3;")" />
+                        </MudTooltip>
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Observación" Width="220">
+                <CellTemplate><span class="mono" style="opacity:.75;">@context.Item.DES_OBSERVACION</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="150">
+                <CellTemplate>
+                    <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div class="d-flex align-center">
+                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                         CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin puntos de conteo agregados a este almacén.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    /// <summary>Almacén de un inventario puntual dueño de estos puntos de conteo — trae
+    /// NUM_INVENTARIO + COD_ALMACEN, únicos datos que necesita esta grilla.</summary>
+    [Parameter, EditorRequired] public KONSolutions.Shared.Models.Logistica.InventariosAlmacenes? Almacen { get; set; }
+    [Parameter] public EventCallback OnCerrar { get; set; }
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+
+    private List<Modelo> _items = new();
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    /// <summary>Recarga cuando el padre cambia de almacén (nueva solapa) sin recrear el componente.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Almacen is not null && (_almacenCargado is null
+            || _almacenCargado.NUM_INVENTARIO != Almacen.NUM_INVENTARIO || _almacenCargado.COD_ALMACEN != Almacen.COD_ALMACEN))
+        {
+            await Load();
+        }
+    }
+
+    private KONSolutions.Shared.Models.Logistica.InventariosAlmacenes? _almacenCargado;
+
+    private async Task Load()
+    {
+        if (Almacen is null) { _items = new(); return; }
+        _almacenCargado = Almacen;
+        try
+        {
+            var resp = await Http.GetAsync($"{LogisticaRoute.InventariosAlmacenesPuntoToma}?numInventario={Almacen.NUM_INVENTARIO}&codAlmacen={Uri.EscapeDataString(Almacen.COD_ALMACEN)}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<Modelo>>>();
+                _items = r?.Data ?? new();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaGrid), nameof(Load));
+                _items = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(InventariosAlmacenesPuntoTomaGrid), nameof(Load));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(InventariosAlmacenesPuntoTomaGrid), "Error al cargar");
+            _items = new();
+        }
+        StateHasChanged();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Agregar();
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return Editar(item);
+        if (b.FLG_ACCION_DELETE == true) return Eliminar(item);
+        if (b.FLG_ACCION_GET    == true) return AbrirDialog(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Agregar() => await AbrirDialog(null, CrudModo.Create);
+    private async Task Editar(Modelo item) => await AbrirDialog(item, CrudModo.Update);
+
+    private async Task AbrirDialog(Modelo? item, CrudModo modo)
+    {
+        if (Almacen is null) return;
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Agregar punto de conteo",
+            _                => $"Editar · Punto {item?.NUM_PUNTO_TOMA_INVENTARIO}"
+        };
+        var parametros = new DialogParameters
+        {
+            ["Item"] = item,
+            ["Modo"] = modo,
+            ["NumInventario"] = (int)Almacen.NUM_INVENTARIO!,
+            ["CodAlmacen"] = Almacen.COD_ALMACEN,
+            ["CodAplicacion"] = CodAplicacion,
+            ["CodOpcionAplicacion"] = CodOpcionAplicacion
+        };
+        var dlg = await DialogService.ShowAsync<InventariosAlmacenesPuntoTomaDialog>(titulo, parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Eliminar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar punto de conteo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar punto de conteo",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el punto de conteo N° {item.NUM_PUNTO_TOMA_INVENTARIO} de este almacén?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{LogisticaRoute.InventariosAlmacenesPuntoToma}/{item.NUM_INVENTARIO}/{item.COD_ALMACEN}/{item.NUM_PUNTO_TOMA_INVENTARIO}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Punto de conteo quitado.", Severity.Success); await Load(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaGrid), nameof(Eliminar));
+    }
+
+    private async Task Volver()
+    {
+        if (OnCerrar.HasDelegate) await OnCerrar.InvokeAsync();
+    }
+}

@@ -1,0 +1,169 @@
+@page "/logistica/guias-remision-series"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.GuiaRemisionSerie
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Series de Guías de Remisión · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Series de Guías de Remisión" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@* La serie es de donde sale el número de la guía. El correlativo lo mueve la base al emitir (nunca esta pantalla),
+   por eso aquí solo se ve. Una serie con guías emitidas no se borra ni se retrocede. *@
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="guiasremisionseries" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="Filtradas" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Serie" Width="100" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono" style="font-weight:700;">@context.Item.COD_SERIE</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción" Width="@Limites.ColWidth("LOGISTICA.GUIAS_REMISION_SERIES","DES_SERIE",180,320)">
+                <CellTemplate>@context.Item.DES_SERIE</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Sucursal" Width="220">
+                <CellTemplate>
+                    @if (string.IsNullOrWhiteSpace(context.Item.COD_SUCURSAL))
+                    {
+                        <span style="opacity:.55;">Todas (serie general)</span>
+                    }
+                    else
+                    {
+                        @($"{context.Item.COD_SUCURSAL} — {context.Item.DES_SUCURSAL}")
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Último correlativo" Width="140" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.NUM_ULTIMO_CORRELATIVO</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Próxima guía" Width="150" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono">@context.Item.NUM_SIGUIENTE_GUIA</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Guías emitidas" Width="120" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.NUM_GUIAS</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Activa" Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    @if (context.Item.FLG_ACTIVA)
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Size="Size.Small" Title="Activa" />
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.PauseCircle" Color="Color.Default" Size="Size.Small" Title="Inactiva: no se usa para emitir" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros. Crea una serie (por ejemplo T001) para poder emitir guías.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+
+    /// <summary>El listado es corto (una serie por sucursal, o una sola): se filtra aquí y no en la API.</summary>
+    private IEnumerable<Modelo> Filtradas => string.IsNullOrWhiteSpace(_search)
+        ? _items
+        : _items.Where(x => Coincide(x.COD_SERIE) || Coincide(x.DES_SERIE) || Coincide(x.COD_SUCURSAL) || Coincide(x.DES_SUCURSAL));
+
+    private bool Coincide(string? texto) => texto?.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase) == true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "GuiasRemisionSeries");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.GUIAS_REMISION_SERIES", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(ApiRoutes.Logistica.GuiasRemisionSeries);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiasRemisionSeries), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(GuiasRemisionSeries));
+            _items = new();
+        }
+    }
+
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico (ver TiposTransporte.razor): un Modificar trae GET y PUT, un Eliminar GET y DELETE.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nueva serie",
+            CrudModo.Delete => $"Eliminar · {item?.COD_SERIE}",
+            CrudModo.Read   => $"Consultar · {item?.COD_SERIE}",
+            _               => $"Editar · {item?.COD_SERIE}"
+        };
+        var dlg = await DialogService.ShowAsync<GuiasRemisionSeriesDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.GUIAS_REMISION_SERIES", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

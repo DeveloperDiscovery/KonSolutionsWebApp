@@ -1,0 +1,427 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+@* Planificación del proyecto: fases (en árbol), tareas, hitos y Gantt. Las barras se arrastran con el mouse: mover cambia inicio y fin,
+   los bordes cambian el inicio o el fin; al soltar se guarda en la base (PROC_PROYECTOS_PLANIFICACION_MOVER) y una fase que se corre lleva sus tareas. *@
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly)
+    {
+        <MudButton OnClick="@(() => EditarFase(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AccountTree">Nueva fase</MudButton>
+        <MudButton OnClick="@(() => EditarTarea(null, null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.TaskAlt">Nueva tarea</MudButton>
+        <MudButton OnClick="@(() => EditarHito(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Flag">Nuevo hito</MudButton>
+    }
+    <MudSpacer />
+    <MudCheckBox T="bool" @bind-Value="_moverHijos" Color="Color.Primary" Size="Size.Small" Label="Mover la fase con sus tareas" Disabled="ReadOnly" />
+    <MudToggleGroup T="string" @bind-Value="_zoom" Color="Color.Primary" Size="Size.Small" SelectionMode="SelectionMode.SingleSelection" CheckMark="false">
+        <MudToggleItem Value="@("D")" Text="Día" />
+        <MudToggleItem Value="@("S")" Text="Semana" />
+        <MudToggleItem Value="@("M")" Text="Mes" />
+    </MudToggleGroup>
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+@if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (_filas.Count == 0)
+{
+    <MudText Class="pa-6 mono" Style="opacity:.6;">El proyecto todavía no tiene fases, tareas ni hitos. @(ReadOnly ? "" : "Empieza con «Nueva fase» o «Nueva tarea».")</MudText>
+}
+else
+{
+    <div class="pg-wrap" @ref="_wrap" data-px="@Px.ToString(Inv)" style="--px:@(Px.ToString(Inv))px;">
+        <div class="pg-head">
+            <div class="pg-left"><span style="flex:1;">Fase / tarea / hito</span><span class="pg-c-est">Estado</span><span class="pg-c-av">Avance</span><span class="pg-c-di">Días</span><span class="pg-c-ac">Acciones</span><span class="pg-lres" title="Arrastra para cambiar el ancho"></span></div>
+            <div class="pg-right" style="width:@(Ancho)px;">
+                <div class="pg-hrow">
+                    @foreach (var m in _meses)
+                    {
+                        <div class="pg-month" style="width:@(m.Dias * Px)px;">@m.Texto</div>
+                    }
+                </div>
+                @if (_zoom != "M")
+                {
+                    <div class="pg-hrow">
+                        @foreach (var c in _sub)
+                        {
+                            <div class="pg-sub @(c.Fin ? "fin" : "")" style="width:@(c.Dias * Px)px;" title="@c.Titulo">@c.Texto</div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+        @foreach (var f in _filas)
+        {
+            var fila = f;
+            <div class="pg-row @(_sel == fila.Clave ? "sel" : "")" @onclick="@(() => _sel = fila.Clave)">
+                <div class="pg-left" style="padding-left:@(8 + fila.Nivel * 16)px;">
+                    @if (fila.Tipo == "FAS") { <MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" Style="opacity:.7;" /> }
+                    else if (fila.Tipo == "HIT") { <MudIcon Icon="@Icons.Material.Filled.Flag" Size="Size.Small" Style="color:#e08a00;" /> }
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;@(fila.Tipo == "FAS" ? "font-weight:600;" : "")" title="@fila.Texto">@fila.Texto</span>
+                    @if (fila.Tipo != "HIT")
+                    {
+                        @* El ESTADO real de la fase o tarea (catálogo de estados: nombre y colores). La situación calculada solo se avisa cuando hay un problema. *@
+                        <span class="pg-c-est" style="@(fila.Tipo == "FAS" ? "margin-right:14px;" : "")">
+                            @if (fila.Est is { DES_ESTADO: not null } est)
+                            {
+                                @if (_iconos.TryGetValue((est.COD_TIPO_ESTADO ?? 0, est.COD_ESTADO ?? 0), out var ic) && ic is { Length: > 0 }) { <img src="@ImagenDataUri.De(ic)" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;margin-right:3px;" title="@est.DES_ESTADO" /> }
+                                <EstadoChip Estado="@est.DES_ESTADO" BackColor="@est.DES_BACKCOLOR" ForeColor="@est.DES_FORECOLOR" />
+                            }
+                            else { <span class="sit sit-@fila.Sit">@ProyectoApi.Situacion(fila.Sit)</span> }
+                            @if (fila.Sit == "ATR") { <span class="sit sit-ATR" title="Atrasada: pasó su fecha final programada" style="margin-left:3px;">!</span> }
+                            @if (fila.Sit == "POR") { <span class="sit sit-POR" title="Por confirmar" style="margin-left:3px;">?</span> }
+                        </span>
+                    }
+                    @if (fila.Tipo != "HIT") { <span class="mono pg-c-av">@fila.Avance.ToString("0")%</span> }
+                    @if (fila.Tipo == "HIT") { <span class="pg-c-est"></span><span class="pg-c-av"></span><span class="pg-c-di"></span> }
+                    else if (_edClave == fila.Clave)
+                    {
+                        <input type="number" min="1" class="pg-dias-in pg-c-di" value="@_edDias" @oninput="@(e => _edDias = int.TryParse(e.Value?.ToString(), out var n) ? n : null)"
+                               @onblur="@(() => ConfirmaDias(fila))" @onkeydown="@(e => TeclaDias(e, fila))" @onclick:stopPropagation="true" id="pg-dias-ed" />
+                    }
+                    else
+                    {
+                        var dias = ProyectoApi.Dias(fila.Ini, fila.Fin);
+                        <span class="mono pg-c-di pg-dias @(!ReadOnly && dias is not null ? "ed" : "")" title="@(ReadOnly ? "Días" : "Clic para cambiar los días (cambia la fecha de fin)")"
+                              @onclick="@(() => EditaDias(fila))" @onclick:stopPropagation="true">@(dias?.ToString() ?? "—")</span>
+                    }
+                    <span class="pg-c-ac">
+                    @if (!ReadOnly)
+                    {
+                        @if (fila.Tipo == "TAR")
+                        {
+                            <MudIconButton Icon="@Icons.Material.Filled.TrendingUp" Size="Size.Small" OnClick="@(() => Avance(fila.Tarea!))" title="Registrar avance" />
+                            @if (fila.Sit == "POR") { <MudIconButton Icon="@Icons.Material.Filled.FactCheck" Size="Size.Small" Color="Color.Secondary" OnClick="@(() => Confirmar(fila.Tarea!))" title="Confirmar o rechazar" /> }
+                        }
+                        @if (fila.Tipo == "FAS") { <MudIconButton Icon="@Icons.Material.Filled.AddTask" Size="Size.Small" OnClick="@(() => EditarTarea(null, fila.Cod))" title="Agregar una tarea a esta fase" /> }
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(fila))" title="Editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(fila))" title="Quitar" />
+                    }
+                    </span>
+                </div>
+                <div class="pg-right pg-grid" style="width:@(Ancho)px;--off:@_off;">
+                    @if (fila.Tipo == "HIT" && fila.Fin is not null)
+                    {
+                        <div class="gdia @(fila.Sit == "TER" ? "ter" : fila.Sit == "ATR" ? "atr" : "") @(ReadOnly ? "ro" : "")" data-gdrag="1" data-tipo="HIT" data-cod="@fila.Cod" data-fin="@Iso(fila.Fin)" data-ro="@(ReadOnly ? "1" : "0")"
+                             style="left:@(Izq(fila.Fin.Value) + Px / 2)px;" title="@($"{fila.Texto} · {ProyectoApi.Fecha(fila.Fin)}")"></div>
+                    }
+                    else if (fila.Ini is not null && fila.Fin is not null)
+                    {
+                        <div class="gbar @(fila.Tipo == "FAS" ? "fase" : "") @(fila.Sit == "ATR" ? "atr" : fila.Sit == "TER" ? "ter" : "") @(ReadOnly ? "ro" : "")" data-gdrag="1" data-tipo="@fila.Tipo" data-cod="@fila.Cod" data-ini="@Iso(fila.Ini)" data-fin="@Iso(fila.Fin)" data-ro="@(ReadOnly ? "1" : "0")"
+                             style="left:@(Izq(fila.Ini.Value))px;width:@(Largo(fila.Ini.Value, fila.Fin.Value))px;" title="@($"{fila.Texto} · {ProyectoApi.Fecha(fila.Ini)} → {ProyectoApi.Fecha(fila.Fin)}")">
+                            @if (!ReadOnly) { <span class="gh-l"></span> }
+                            @if (fila.Tipo == "TAR") { <span class="gfill" style="width:@(Math.Min(100m, fila.Avance).ToString("0.#", Inv))%"></span> }
+                            @if (Largo(fila.Ini.Value, fila.Fin.Value) > 70 && fila.Tipo == "TAR") { <span class="glbl">@fila.Avance.ToString("0")%</span> }
+                            @if (!ReadOnly) { <span class="gh-r"></span> }
+                        </div>
+                    }
+                    else
+                    {
+                        <span class="mono" style="position:absolute;left:8px;top:6px;opacity:.5;font-size:.72rem;">sin fechas programadas</span>
+                    }
+                    @foreach (var hl in _filas.Where(x => x.Tipo == "HIT" && x.Fin is not null))
+                    {
+                        <div class="gh-linea @(hl.Sit == "TER" ? "ter" : hl.Sit == "ATR" ? "atr" : "")" style="left:@(Izq(hl.Fin!.Value) + Px / 2)px;" title="@($"Hito: {hl.Texto} · {ProyectoApi.Fecha(hl.Fin)}")"></div>
+                    }
+                    @if (HoyIzq is { } hoy) { <div class="gantt-hoy" style="left:@(hoy)px;"></div> }
+                </div>
+            </div>
+        }
+    </div>
+    <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.7;">
+        Barra azul: programado (rojo si está atrasada, verde si terminó) · relleno claro: avance · rombo: hito · línea roja: hoy.
+        @(ReadOnly ? "El proyecto está cerrado o en consulta: no se pueden mover fechas." : "Arrastra una barra para moverla, o sus bordes para cambiar el inicio o el fin (los días se recalculan); también puedes hacer clic en los días de la fila y escribirlos. Se guarda al soltar.")
+    </MudText>
+}
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    /// <summary>Avisa al expediente que algo cambió (para refrescar la franja de avance).</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+    private ExpedientePlanificacion _plan = new();
+    private List<ComboboxItem> _entidades = new();
+    private List<Fila> _filas = new();
+    private List<Mes> _meses = new();
+    private ElementReference _wrap;
+    private DotNetObjectReference<ProyectoPlanificacion>? _self;
+    private bool _cargando = true, _jsListo, _moverHijos = true;
+    private string _sel = "";
+    private string _zoomV = "S";
+    private string _zoom { get => _zoomV; set { if (_zoomV == value) return; _zoomV = value; _jsListo = false; if (_filas.Count > 0) CalculaEscala(); } }
+    private DateTime _origen = DateTime.Today.AddDays(-7);
+    private int _dias = 90;
+
+    private Dictionary<(int, int), byte[]?> _iconos = new();
+
+    private sealed class Fila
+    {
+        public string Tipo = "", Texto = "", Sit = "PEN", Clave = "";
+        public int Cod, Nivel;
+        public DateTime? Ini, Fin;
+        public decimal Avance;
+        public ExpedienteTarea? Tarea; public ExpedienteFase? Fase; public ExpedienteHito? Hito;
+        public ExpedienteEstado? Est;
+    }
+    private sealed record Mes(string Texto, int Dias);
+    private sealed record Celda(string Texto, int Dias, string Titulo, bool Fin);
+    private List<Celda> _sub = new();
+    private string? _edClave; private int? _edDias; private bool _edCerrando;
+
+    private double Px => _zoom switch { "D" => 28d, "M" => 3.2d, _ => 9d };
+    private double Ancho => _dias * Px;
+    private double Izq(DateTime d) => (d.Date - _origen).Days * Px;
+    private double Largo(DateTime a, DateTime b) => Math.Max(1, (b.Date - a.Date).Days + 1) * Px;
+    private double? HoyIzq => DateTime.Today >= _origen && DateTime.Today <= _origen.AddDays(_dias) ? Izq(DateTime.Today) + Px / 2 : null;
+    private static string Iso(DateTime? d) => d?.ToString("yyyy-MM-dd") ?? "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _self = DotNetObjectReference.Create(this);
+        _entidades = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.Exp(NumProyecto, "entidades-elegibles")) ?? new();
+        await CargarAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_jsListo || _filas.Count == 0) return;
+        try
+        {
+            await JS.InvokeVoidAsync("proyectoGantt.init", _wrap, _self); _jsListo = true;
+            var ancho = await JS.InvokeAsync<double>("proyectoGantt.ancho", _wrap);
+            if (ancho > 300 && Math.Abs(ancho - _visible) > 40) { _visible = ancho; CalculaEscala(); StateHasChanged(); }
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoPlanificacion), nameof(OnAfterRenderAsync)); }
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; StateHasChanged();
+        try
+        {
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+            var ics = await Http.SafeGetAsync<List<ExpedienteEstadoIcono>>(ApiRoutes.Proyectos.Exp(NumProyecto, "estados-iconos")) ?? new();
+            _iconos = ics.GroupBy(i => (i.COD_TIPO_ESTADO, i.COD_ESTADO)).ToDictionary(g => g.Key, g => g.First().IMG_PICTURE);
+            _jsListo = false;
+            Armar();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoPlanificacion), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar la planificación. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Arma las filas: las fases en árbol, cada una con sus tareas; luego las tareas sin fase y los hitos.</summary>
+    private void Armar()
+    {
+        var filas = new List<Fila>();
+        var fases = _plan.Fases;
+        var codigos = fases.Select(f => f.COD_FASE).ToHashSet();
+        void Agrega(ExpedienteFase f, int nivel, HashSet<int> visitadas)
+        {
+            if (!visitadas.Add(f.COD_FASE)) return; // protege de un ciclo en COD_FASE_PADRE
+            filas.Add(new Fila { Tipo = "FAS", Cod = f.COD_FASE, Nivel = nivel, Texto = $"{f.COD_FASE}. {f.DES_FASE}", Ini = f.FEC_INICIO_PROGRAMADO, Fin = f.FEC_FINAL_PROGRAMADO, Avance = f.TAS_AVANCE ?? 0, Sit = f.COD_SITUACION, Est = f, Fase = f, Clave = $"F{f.COD_FASE}" });
+            foreach (var t in _plan.Tareas.Where(t => t.COD_FASE == f.COD_FASE).OrderBy(t => t.FEC_INICIO_PROGRAMADO).ThenBy(t => t.COD_TAREA)) filas.Add(FilaTarea(t, nivel + 1));
+            foreach (var h in fases.Where(x => x.COD_FASE_PADRE == f.COD_FASE).OrderBy(x => x.FEC_INICIO_PROGRAMADO).ThenBy(x => x.COD_FASE)) Agrega(h, nivel + 1, visitadas);
+        }
+        var vis = new HashSet<int>();
+        foreach (var f in fases.Where(f => f.COD_FASE_PADRE is null || !codigos.Contains(f.COD_FASE_PADRE.Value)).OrderBy(f => f.FEC_INICIO_PROGRAMADO).ThenBy(f => f.COD_FASE)) Agrega(f, 0, vis);
+        foreach (var f in fases.Where(f => !vis.Contains(f.COD_FASE))) Agrega(f, 0, vis); // las que quedaron en un ciclo, para que no se pierdan
+        var sueltas = _plan.Tareas.Where(t => t.COD_FASE is null || !codigos.Contains(t.COD_FASE.Value)).OrderBy(t => t.FEC_INICIO_PROGRAMADO).ThenBy(t => t.COD_TAREA).ToList();
+        if (sueltas.Count > 0)
+        {
+            filas.Add(new Fila { Tipo = "SEP", Texto = "Tareas sin fase", Clave = "SEP1" });
+            foreach (var t in sueltas) filas.Add(FilaTarea(t, 1));
+        }
+        foreach (var h in _plan.Hitos) filas.Add(new Fila { Tipo = "HIT", Cod = h.COD_HITO_PROYECTO, Texto = $"{h.COD_HITO_PROYECTO}. {h.DES_HITO_PROYECTO}", Fin = h.FEC_FINAL_PROGRAMADO, Sit = h.FEC_INICIO_EJECUTADO is not null ? "TER" : (h.FEC_FINAL_PROGRAMADO < DateTime.Today ? "ATR" : "PEN"), Hito = h, Clave = $"H{h.COD_HITO_PROYECTO}" });
+        _filas = filas.Where(f => f.Tipo != "SEP").ToList();
+        // las filas separadoras no se dibujan: la tarea sin fase ya se ve por su nivel
+        CalculaEscala();
+    }
+
+    private static Fila FilaTarea(ExpedienteTarea t, int nivel) => new()
+    { Tipo = "TAR", Cod = t.COD_TAREA, Nivel = nivel, Texto = $"{t.COD_TAREA}. {t.DES_TAREA}", Ini = t.FEC_INICIO_PROGRAMADO, Fin = t.FEC_FINAL_PROGRAMADO, Avance = t.TAS_EJECUCION ?? 0, Sit = t.COD_SITUACION, Est = t, Tarea = t, Clave = $"T{t.COD_TAREA}" };
+
+    private static DateTime FinDeMes(DateTime d) => new DateTime(d.Year, d.Month, DateTime.DaysInMonth(d.Year, d.Month));
+    private double _visible = 1100; private int _off;
+
+    private void CalculaEscala()
+    {
+        // solo los meses del proyecto: desde el primer día del mes de la fecha más temprana (nada hacia atrás);
+        // hacia adelante, hasta el fin del último mes y más meses si hace falta para llenar el ancho de la pantalla
+        var fechas = _filas.SelectMany(f => new[] { f.Ini, f.Fin }).Where(d => d is not null).Select(d => d!.Value.Date).ToList();
+        if (fechas.Count == 0) fechas.Add(DateTime.Today);
+        var min = new DateTime(fechas.Min().Year, fechas.Min().Month, 1);
+        var max = FinDeMes(fechas.Max());
+        while (((max - min).Days + 1) * Px < _visible) max = FinDeMes(max.AddDays(1));
+        _off = (int)((8 - (int)min.DayOfWeek) % 7); // días del origen al primer lunes: las líneas de semana de la grilla caen en lunes
+        _origen = min; _dias = (max - min).Days + 1;
+        _meses = new();
+        var d = min;
+        var es = new System.Globalization.CultureInfo("es-PE");
+        while (d <= max)
+        {
+            var finMes = new DateTime(d.Year, d.Month, DateTime.DaysInMonth(d.Year, d.Month));
+            var hasta = finMes < max ? finMes : max;
+            var dias = (hasta - d).Days + 1;
+            _meses.Add(new Mes(dias * Px >= 54 ? es.DateTimeFormat.GetAbbreviatedMonthName(d.Month) + " " + d.Year : "", dias));
+            d = hasta.AddDays(1);
+        }
+        ArmaSub(min, max, es);
+    }
+
+    /// <summary>Segunda fila de la cabecera: una celda por semana (S + número y día de inicio) o por día (número y letra del día), según el zoom.</summary>
+    private void ArmaSub(DateTime min, DateTime max, System.Globalization.CultureInfo es)
+    {
+        _sub = new();
+        if (_zoom == "M") return;
+        if (_zoom == "S")
+        {
+            for (var d = min; d <= max; )
+            {
+                var fin = d.AddDays((7 - (((int)d.DayOfWeek + 6) % 7)) - 1); // hasta el domingo de esa semana
+                if (fin > max) fin = max;
+                var sem = System.Globalization.ISOWeek.GetWeekOfYear(d);
+                _sub.Add(new Celda((fin - d).Days + 1 >= 4 ? $"S{sem} · {d:dd/MM}" : $"S{sem}", (fin - d).Days + 1, $"Semana {sem}: {d:dd/MM/yyyy} al {fin:dd/MM/yyyy}", false));
+                d = fin.AddDays(1);
+            }
+        }
+        else
+        {
+            var letras = new[] { "D", "L", "M", "X", "J", "V", "S" };
+            for (var d = min; d <= max; d = d.AddDays(1))
+                _sub.Add(new Celda($"{letras[(int)d.DayOfWeek]}{d.Day}", 1, d.ToString("dddd dd/MM/yyyy", es), d.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday));
+        }
+    }
+
+    // ───────── días de una fase o tarea: se editan en la fila y recalculan el fin ─────────
+
+    private void EditaDias(Fila f)
+    {
+        if (ReadOnly || f.Ini is null || f.Fin is null) return;
+        _edClave = f.Clave; _edDias = ProyectoApi.Dias(f.Ini, f.Fin); _edCerrando = false;
+        _ = FocoDias();
+    }
+
+    private async Task FocoDias() { await Task.Yield(); try { await JS.InvokeVoidAsync("proyectoGantt.foco", "pg-dias-ed"); } catch { } }
+
+    private async Task TeclaDias(KeyboardEventArgs e, Fila f)
+    {
+        if (e.Key == "Enter") await ConfirmaDias(f);
+        else if (e.Key == "Escape") { _edCerrando = true; _edClave = null; }
+    }
+
+    private async Task ConfirmaDias(Fila f)
+    {
+        if (_edCerrando || _edClave != f.Clave) return;
+        _edCerrando = true;
+        var dias = _edDias; _edClave = null;
+        var actual = ProyectoApi.Dias(f.Ini, f.Fin);
+        if (dias is null or < 1) { Snackbar.Add("Los días deben ser 1 o más.", Severity.Warning); return; }
+        if (f.Ini is null || dias == actual) return;
+        await MoverAsync(f.Tipo, f.Cod, Iso(f.Ini), Iso(ProyectoApi.FinPor(f.Ini.Value, dias.Value)), "R");
+    }
+
+    // ───────── arrastrar en el Gantt ─────────
+
+    [JSInvokable]
+    public Task<bool> OnGanttCambio(string tipo, int cod, string? ini, string fin, string modo) => MoverAsync(tipo, cod, ini, fin, modo);
+
+    /// <summary>Guarda las fechas nuevas (arrastre o cambio de días). modo M = mover (la fase lleva sus tareas), R = redimensionar.</summary>
+    private async Task<bool> MoverAsync(string tipo, int cod, string? ini, string fin, string modo)
+    {
+        try
+        {
+            var cuerpo = new { Tipo = tipo, Cod = cod, FecInicio = string.IsNullOrEmpty(ini) ? (DateTime?)null : DateTime.Parse(ini, Inv), FecFinal = DateTime.Parse(fin, Inv), MoverHijos = _moverHijos, Modo = modo == "R" ? "R" : "M" };
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Proyectos.Exp(NumProyecto, "mover"), cuerpo);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<ExpedienteMovido>>>();
+            if (r is not { Success: true, Data: not null })
+            {
+                await InvokeAsync(() => Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? "No se pudieron guardar las fechas." : r!.Message, Severity.Warning));
+                return false;
+            }
+            await InvokeAsync(async () =>
+            {
+                foreach (var m in r.Data) Aplica(m);
+                CalculaEscala();
+                StateHasChanged();
+                await OnCambio.InvokeAsync();
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ProyectoPlanificacion), nameof(MoverAsync));
+            await InvokeAsync(() => Snackbar.Add("No se pudieron guardar las fechas. Ver detalle en el log de errores.", Severity.Error));
+            return false;
+        }
+    }
+
+    private void Aplica(ExpedienteMovido m)
+    {
+        if (m.TIPO == "FAS") { var f = _plan.Fases.FirstOrDefault(x => x.COD_FASE == m.COD); if (f is not null) { f.FEC_INICIO_PROGRAMADO = m.FEC_INICIO; f.FEC_FINAL_PROGRAMADO = m.FEC_FINAL; } }
+        else if (m.TIPO == "TAR") { var t = _plan.Tareas.FirstOrDefault(x => x.COD_TAREA == m.COD); if (t is not null) { t.FEC_INICIO_PROGRAMADO = m.FEC_INICIO; t.FEC_FINAL_PROGRAMADO = m.FEC_FINAL; } }
+        else if (m.TIPO == "HIT") { var h = _plan.Hitos.FirstOrDefault(x => x.COD_HITO_PROYECTO == m.COD); if (h is not null) h.FEC_FINAL_PROGRAMADO = m.FEC_FINAL; }
+        var fila = _filas.FirstOrDefault(x => x.Tipo == m.TIPO && x.Cod == m.COD);
+        if (fila is not null) { if (m.TIPO != "HIT") fila.Ini = m.FEC_INICIO; fila.Fin = m.FEC_FINAL; }
+    }
+
+    // ───────── diálogos ─────────
+
+    private static readonly DialogOptions Opciones = new() { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+    // la fase lleva los botones de flujo (Pausar, Reanudar, Reprogramar, Cancelar) ademas de Cancelar y Modificar: necesita mas ancho
+    private static readonly DialogOptions OpcionesFase = new() { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+
+    private async Task Despues(IDialogReference dlg)
+    {
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private Task EditarFase(ExpedienteFase? f) => Despues(DialogService.Show<ProyectoFaseDialog>(f is null ? "Nueva fase" : "Editar fase",
+        new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = f, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas, ["Hitos"] = _plan.Hitos, ["Entidades"] = _entidades }, OpcionesFase));
+
+    private Task EditarTarea(ExpedienteTarea? t, int? fase) => Despues(DialogService.Show<ProyectoTareaDialog>(t is null ? "Nueva tarea" : "Editar tarea",
+        new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = t, ["CodFaseInicial"] = fase, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas, ["SubTareas"] = _plan.SubTareas, ["Entidades"] = _entidades },
+        new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false }));
+
+    private Task EditarHito(ExpedienteHito? h) => Despues(DialogService.Show<ProyectoHitoDialog>(h is null ? "Nuevo hito" : "Editar hito",
+        new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = h, ["Hitos"] = _plan.Hitos }, Opciones));
+
+    private Task Avance(ExpedienteTarea t) => Despues(DialogService.Show<ProyectoAvanceDialog>("Avance",
+        new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = t, ["SubTareas"] = _plan.SubTareas }, Opciones));
+
+    private Task Confirmar(ExpedienteTarea t) => Despues(DialogService.Show<ProyectoConfirmarDialog>("Confirmar tarea",
+        new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = t, ["Entidades"] = _entidades }, Opciones));
+
+    private Task Editar(Fila f) => f.Tipo switch { "FAS" => EditarFase(f.Fase), "TAR" => EditarTarea(f.Tarea, null), _ => EditarHito(f.Hito) };
+
+    private async Task Quitar(Fila f)
+    {
+        var que = f.Tipo switch { "FAS" => "la fase", "TAR" => "la tarea", _ => "el hito" };
+        var ok = await DialogService.ShowMessageBox("Quitar", $"¿Quitar {que} «{f.Texto}»? Esta acción no se puede deshacer.", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var url = f.Tipo switch
+        {
+            "FAS" => $"{ApiRoutes.Proyectos.Fases}/{NumProyecto}/{f.Cod}",
+            "TAR" => $"{ApiRoutes.Proyectos.Tareas}/{NumProyecto}/{f.Cod}",
+            _ => $"{ApiRoutes.Proyectos.Hitos}/{NumProyecto}/{f.Cod}"
+        };
+        // las subtareas de una tarea se quitan primero (la base no las borra en cascada)
+        if (f.Tipo == "TAR")
+            foreach (var s in _plan.SubTareas.Where(s => s.COD_TAREA == f.Cod).ToList())
+                await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.SubTareas}/{NumProyecto}/{f.Cod}/{s.COD_SUB_TAREA}");
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, url);
+        if (!exito) { Snackbar.Add(msg ?? $"No se pudo quitar {que}: tiene datos asociados (recursos, gastos, riesgos u otras tareas).", Severity.Warning); await CargarAsync(); return; }
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        await CargarAsync();
+        await OnCambio.InvokeAsync();
+    }
+
+    public void Dispose() => _self?.Dispose();
+}

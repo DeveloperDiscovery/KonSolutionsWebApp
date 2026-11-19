@@ -1,0 +1,1000 @@
+@page "/reportes/reportes-disenos"
+@attribute [Authorize]
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Forms
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject ConfigService ConfigSvc
+@inject MenuService MenuService
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<PageTitle>Diseños de reportes · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* REPORTEADOR · DISEÑOS
+
+   Un diseño es cómo se ve un reporte sobre una fuente:
+     - LISTADO (LIS): el resultado 1 como tabla, con grupos (hasta 2 niveles), subtotales, total general y orden;
+     - FICHA (FIC): un registro; cada resultado es una sección (campos, tabla, totales u oculto), más las firmas;
+     - LIBRE (BAN): un lienzo por secciones (bandas) al estilo de Crystal Reports, con objetos puestos donde se quiera
+       (LienzoEditor.razor). Se crea nuevo o con «Convertir a bandas» desde un listado o una ficha grabados; un diseño
+       libre no vuelve a ser listado ni ficha. Excel y CSV leen sus datos (los campos del detalle), o el Excel sale
+       «con formato», como el PDF (FLG_CON_FORMATO); Word, solo con plantilla propia.
+   El PDF sale siempre del diseño. Word y Excel salen del diseño o de una plantilla propia: se descarga la plantilla
+   base (el diseño con marcas {{...}} en vez de datos), se edita en Word/Excel y se sube. CSV solo en listados.
+
+   Los textos (título, subtítulo, títulos de sección, pie) admiten {@PARAMETRO} y {COLUMNA} (de la primera fila del
+   resultado 1). La vista previa usa el diseño GRABADO. *@
+<div>
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Diseños de reportes" CodAplicacion="@_codAp" CodOpcionAplicacion="@_codOp" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Reporteador · listados, fichas y diseños libres sobre una fuente, en PDF, Word, Excel y CSV
+            </MudText>
+        </div>
+        <MudSpacer />
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Add"
+                   Disabled="_grabando" OnClick="Nuevo">Nuevo diseño</MudButton>
+    </div>
+
+    <div class="rep-columnas @(_soloEditor ? "rep-solo" : "")">
+        @* ══════════ LISTA ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel" Style="@(_soloEditor ? "display:none;" : "")">
+            <div class="pa-2 px-3 rep-cab">Diseños</div>
+            <div class="pa-2 d-flex flex-column gap-2">
+                <MudSelect T="int?" Value="_filtroFuente" ValueChanged="@(v => _filtroFuente = v)" Label="Fuente" Variant="Variant.Outlined"
+                           Margin="Margin.Dense" Clearable="true">
+                    @foreach (var f in _fuentes)
+                    {
+                        <MudSelectItem T="int?" Value="@f.NUM_FUENTE">@f.DES_FUENTE</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudTextField T="string" @bind-Value="_buscar" Label="Buscar" Variant="Variant.Outlined" Immediate="true"
+                              Margin="Margin.Dense" Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
+            </div>
+            @if (_cargandoLista)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            <div style="overflow:auto;max-height:68vh;">
+                @foreach (var d in Filtrados)
+                {
+                    var x = d;
+                    <div class="rep-item @(x.NUM_DISENO == _det?.Diseno.NUM_DISENO ? "rep-item-sel" : "")" @onclick="@(() => Abrir(x.NUM_DISENO))">
+                        <div class="d-flex align-center gap-1">
+                            <MudIcon Icon="@IconoTipo(x.COD_TIPO_DISENO)" Size="Size.Small" Style="opacity:.6;" />
+                            <span style="font-weight:700;">@x.DES_DISENO</span>
+                        </div>
+                        <div style="font-size:.72rem;opacity:.7;">@NombreTipo(x.COD_TIPO_DISENO) · @x.DES_FUENTE</div>
+                        <div class="d-flex flex-wrap gap-1 mt-1">
+                            @foreach (var (c, ok, propia) in new[] { ("PDF", x.FLG_PDF, false), ("DOC", x.FLG_DOC, x.FLG_PROPIA_DOC), ("XLS", x.FLG_XLS, x.FLG_PROPIA_XLS), ("CSV", x.FLG_CSV, false) })
+                            {
+                                if (!ok) continue;
+                                <span class="rep-chip" title="@(propia ? "Con plantilla propia" : "")">@(ReportesWebService.NombreFormato(c) + (propia ? " ★" : ""))</span>
+                            }
+                            @if (x.NUM_BOTONES > 0)
+                            {
+                                <span class="rep-chip rep-chip-b">@($"{x.NUM_BOTONES} botón{(x.NUM_BOTONES == 1 ? "" : "es")}")</span>
+                            }
+                            @if (!x.FLG_HABILITADO) { <span class="rep-chip">deshabilitado</span> }
+                        </div>
+                    </div>
+                }
+                @if (!_cargandoLista && Filtrados.Count == 0)
+                {
+                    <MudText Class="pa-3" Typo="Typo.body2" Style="opacity:.6;">No hay diseños.</MudText>
+                }
+            </div>
+        </MudPaper>
+
+        @* ══════════ EDITOR ══════════ *@
+        <MudPaper Elevation="0" Class="rep-panel">
+            @if (_det is not { } det)
+            {
+                <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">Elige un diseño de la lista o crea uno nuevo.</MudText>
+            }
+            else
+            {
+                var d = det.Diseno;
+                var esFicha = d.COD_TIPO_DISENO == "FIC";
+                var libre = d.COD_TIPO_DISENO == "BAN";
+                <div class="pa-2 px-3 rep-cab d-flex align-center gap-2 flex-wrap">
+                    <span>@(d.NUM_DISENO is null ? "Nuevo diseño" : $"Diseño N° {d.NUM_DISENO}")@(libre ? " · libre" : "")</span>
+                    <MudSpacer />
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar"
+                               StartIcon="@(_soloEditor ? Icons.Material.Filled.CloseFullscreen : Icons.Material.Filled.OpenInFull)"
+                               OnClick="@(() => _soloEditor = !_soloEditor)">@(_soloEditor ? "Mostrar la lista" : "Más ancho")</MudButton>
+                    @if (!libre && d.NUM_DISENO is not null)
+                    {
+                        <MudTooltip Text="Crea un diseño libre nuevo con el lienzo armado para que salga igual que este (este no cambia)">
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Dashboard"
+                                       Disabled="_grabando" OnClick="Convertir">Convertir a bandas</MudButton>
+                        </MudTooltip>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Visibility"
+                               Disabled="@(d.NUM_DISENO is null || _grabando)" OnClick="VistaPrevia">Vista previa</MudButton>
+                    @if (d.NUM_DISENO is not null)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Error" Style="@EstilosBoton.Eliminar"
+                                   StartIcon="@Icons.Material.Filled.Delete" Disabled="_grabando" OnClick="Eliminar">Eliminar</MudButton>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save"
+                               Disabled="_grabando" OnClick="Grabar">@(_grabando ? "Grabando..." : "Grabar")</MudButton>
+                </div>
+
+                @if (_nuevas.Count > 0)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mx-3 mt-2" ShowCloseIcon="true" CloseIconClicked="@(() => _nuevas.Clear())">
+                        La fuente trae columnas que este diseño todavía no usa: <b>@string.Join(", ", _nuevas.Select(TextoNueva))</b>.
+                        @(libre ? "Ya están en el explorador del lienzo; para que salgan en una tabla, márcalas con «Ver» en «Columnas de las tablas»."
+                                : "Para que salgan, márcalas con «Ver» en «Columnas».")
+                        Después, graba el diseño.
+                    </MudAlert>
+                }
+
+                <MudTabs Elevation="0" ApplyEffectsToContainer="true" PanelClass="pa-3" @bind-ActivePanelIndex="_pestana">
+                    @* ── GENERAL ── *@
+                    <MudTabPanel Text="General" Icon="@Icons.Material.Filled.Tune">
+                        <div class="rep-grid4">
+                            <MudSelect T="int?" Value="d.NUM_FUENTE" ValueChanged="ElegirFuente" Label="Fuente *" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                       Disabled="@(d.NUM_DISENO is not null)" HelperText="@(d.NUM_DISENO is not null ? "Un diseño grabado no cambia de fuente" : null)">
+                                @foreach (var f in _fuentes.Where(f => f.FLG_HABILITADO || f.NUM_FUENTE == d.NUM_FUENTE))
+                                {
+                                    <MudSelectItem T="int?" Value="@f.NUM_FUENTE">@f.DES_FUENTE</MudSelectItem>
+                                }
+                            </MudSelect>
+                            <MudTextField T="string" @bind-Value="d.DES_DISENO" Label="Descripción *" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" />
+                            <MudSelect T="string" Value="d.COD_TIPO_DISENO" ValueChanged="CambiarTipo" Label="Tipo" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                       Disabled="@(libre && d.NUM_DISENO is not null)"
+                                       HelperText="@(d.NUM_DISENO is not null && libre ? "Un diseño libre no vuelve a ser listado ni ficha" : null)">
+                                <MudSelectItem T="string" Value="@("LIS")">Listado (varias filas)</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("FIC")">Ficha (un registro)</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("BAN")" Disabled="@(d.NUM_DISENO is not null && !libre)">
+                                    @(d.NUM_DISENO is not null && !libre ? "Libre (usa «Convertir a bandas»)" : "Libre (por bandas, como Crystal)")
+                                </MudSelectItem>
+                            </MudSelect>
+                            <MudSwitch T="bool" @bind-Value="d.FLG_HABILITADO" Label="Habilitado" Color="Color.Success" />
+                        </div>
+                        <div class="rep-grid2b mt-2">
+                            <MudTextField T="string" @bind-Value="d.DES_TITULO" Label="Título" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="200" />
+                            <MudTextField T="string" @bind-Value="d.DES_SUBTITULO" Label="Subtítulo" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="300"
+                                          HelperText="@AyudaTextos" />
+                        </div>
+                        <div class="rep-grid4 mt-2">
+                            <MudSelect T="string" @bind-Value="d.COD_ORIENTACION" Label="Orientación" Variant="Variant.Outlined" Margin="Margin.Dense">
+                                <MudSelectItem T="string" Value="@("V")">Vertical</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("H")">Horizontal</MudSelectItem>
+                            </MudSelect>
+                            <MudSelect T="string" @bind-Value="d.COD_PAPEL" Label="Papel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                                <MudSelectItem T="string" Value="@("A4")">A4</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("CAR")">Carta</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("OFI")">Oficio</MudSelectItem>
+                            </MudSelect>
+                            <MudNumericField T="int" @bind-Value="d.NUM_TAMANO_LETRA" Label="Tamaño de letra" Min="6" Max="14" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                            @if (!esFicha)
+                            {
+                                <MudSelect T="string" Value="@(d.DES_SEPARADOR_CSV ?? ";")" ValueChanged="@(v => d.DES_SEPARADOR_CSV = v)" Label="Separador CSV"
+                                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                                    <MudSelectItem T="string" Value="@(";")">Punto y coma ( ; )</MudSelectItem>
+                                    <MudSelectItem T="string" Value="@(",")">Coma ( , )</MudSelectItem>
+                                    <MudSelectItem T="string" Value="@("TAB")">Tabulador</MudSelectItem>
+                                    <MudSelectItem T="string" Value="@("|")">Barra ( | )</MudSelectItem>
+                                </MudSelect>
+                            }
+                        </div>
+                        @if (libre)
+                        {
+                            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+                                En un diseño libre, el lienzo decide qué sale y dónde: el logo, los datos de la empresa, los totales, las firmas y el pie
+                                se ponen como objetos en la pestaña «Lienzo». El título y el subtítulo salen con los campos especiales «Título» y «Subtítulo».
+                            </MudAlert>
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-wrap gap-4 mt-2">
+                                <MudSwitch T="bool" @bind-Value="d.FLG_LOGO" Label="Logo" Color="Color.Primary" />
+                                <MudSwitch T="bool" @bind-Value="d.FLG_DATOS_EMPRESA" Label="Datos de la empresa" Color="Color.Primary" />
+                                <MudSwitch T="bool" @bind-Value="d.FLG_FILTROS_PIE" Label="Filtros usados al pie" Color="Color.Primary" />
+                                @if (!esFicha)
+                                {
+                                    <MudSwitch T="bool" @bind-Value="d.FLG_SUBTOTAL_GRUPO" Label="Subtotal por grupo" Color="Color.Primary" />
+                                    <MudSwitch T="bool" @bind-Value="d.FLG_SALTO_GRUPO" Label="Página nueva por grupo" Color="Color.Primary" />
+                                    <MudSwitch T="bool" @bind-Value="d.FLG_TOTAL_GENERAL" Label="Total general" Color="Color.Primary" />
+                                }
+                            </div>
+                            @if (esFicha)
+                            {
+                                <MudTextField T="string" @bind-Value="d.DES_FIRMAS" Label="Firmas" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" MaxLength="300"
+                                              HelperText="Separadas con | : Elaborado por|Aprobado por|Proveedor (vacío: sin firmas)" />
+                            }
+                            <MudTextField T="string" @bind-Value="d.DES_PIE" Label="Texto al pie" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" Lines="2" MaxLength="500" />
+                        }
+                    </MudTabPanel>
+
+                    @* ── LIENZO (diseño libre) ── *@
+                    @if (libre)
+                    {
+                        <MudTabPanel Text="Lienzo" Icon="@Icons.Material.Filled.Dashboard" Disabled="@(_fuente is null)">
+                            @if (_fuente is not null)
+                            {
+                                <LienzoEditor Detalle="det" Fuente="_fuente" Disenos="_disenos" LeerFuente="LeerFuente" />
+                            }
+                        </MudTabPanel>
+                    }
+
+                    @* ── COLUMNAS ── *@
+                    <MudTabPanel Text="@(libre ? "Columnas de las tablas" : "Columnas")" Icon="@Icons.Material.Filled.ViewColumn" Disabled="@(_fuente is null)">
+                        @if (_fuente is not null)
+                        {
+                            @if (libre)
+                            {
+                                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                                    Lo que se imprime está en el lienzo. Aquí se eligen las columnas (título, ancho, formato y total) de cada «Tabla de un resultado»,
+                                    y el orden de las filas del resultado 1 después de los grupos del lienzo. El ancho de la tabla es el de su objeto en el lienzo;
+                                    «Ancho» lo reparte entre las columnas que se ven.
+                                </MudAlert>
+                            }
+                            else if (!esFicha && _fuente.Resultados.Count > 1)
+                            {
+                                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                                    El listado imprime el resultado 1. Los demás resultados de la fuente se pueden usar en una plantilla propia con {{R2.COLUMNA}}.
+                                </MudAlert>
+                            }
+                            @foreach (var r in ResultadosVisibles(esFicha || libre))
+                            {
+                                var rr = r;
+                                var s = Seccion(rr.NUM_RESULTADO);
+                                var tabla = !esFicha || s.COD_PRESENTACION == "TAB";
+                                var conGrupo = !esFicha && !libre;
+                                var campos = esFicha && s.COD_PRESENTACION == "CAM";
+                                <div class="rep-resultado mb-3">
+                                    <div class="d-flex align-center gap-2 pa-2 px-3 rep-cab2">
+                                        <span style="font-weight:800;">Resultado @rr.NUM_RESULTADO</span>
+                                        <span style="font-size:.78rem;opacity:.7;">@rr.DES_RESULTADO · @Papel(rr.COD_PAPEL)</span>
+                                        @if (esFicha)
+                                        {
+                                            <MudSpacer />
+                                            <label class="rep-lbl">Se muestra como</label>
+                                            <select class="rep-input" style="max-width:150px;" value="@s.COD_PRESENTACION" @onchange="@(e => s.COD_PRESENTACION = e.Value?.ToString() ?? "TAB")">
+                                                <option value="CAM">Campos</option><option value="TAB">Tabla</option><option value="TOT">Totales</option><option value="OCU">No se muestra</option>
+                                            </select>
+                                            @if (s.COD_PRESENTACION == "CAM")
+                                            {
+                                                <label class="rep-lbl">Columnas</label>
+                                                <select class="rep-input" style="width:60px;" value="@(s.NUM_COLUMNAS ?? 3)" @onchange="@(e => s.NUM_COLUMNAS = Num(e.Value) ?? 3)">
+                                                    @for (var i = 1; i <= 4; i++) { <option value="@i">@i</option> }
+                                                </select>
+                                            }
+                                            <label class="rep-lbl">Orden</label>
+                                            <input class="rep-input" type="number" style="width:56px;" value="@s.NUM_ORDEN" @onchange="@(e => s.NUM_ORDEN = Num(e.Value) ?? s.NUM_ORDEN)" />
+                                            <input class="rep-input" style="max-width:220px;" placeholder="Título de la sección" value="@s.DES_TITULO" @onchange="@(e => s.DES_TITULO = Vacio(e.Value?.ToString()))" />
+                                        }
+                                    </div>
+                                    @if (!esFicha || libre || s.COD_PRESENTACION != "OCU")
+                                    {
+                                        <div style="overflow:auto;">
+                                            <table class="tabla-simple-editable rep-tabla">
+                                                <thead>
+                                                    <tr>
+                                                        <th style="width:54px;"></th><th title="Se imprime">Ver</th><th>Columna</th><th style="min-width:150px;">Etiqueta</th>
+                                                        <th style="width:104px;" title="@AyudaAncho(campos)">Ancho</th>
+                                                        <th style="width:96px;">Alineación</th><th style="width:130px;">Formato</th>
+                                                        @if (tabla) { <th title="Suma la columna">Total</th> }
+                                                        @if (conGrupo)
+                                                        {
+                                                            <th style="width:84px;" title="Agrupa por esta columna (nivel 1 o 2)">Grupo</th>
+                                                        }
+                                                        @if (!esFicha)
+                                                        {
+                                                            <th style="width:100px;">Ordenar</th><th style="width:54px;" title="Prioridad del orden (1 primero)">Prior.</th>
+                                                        }
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @{ var filas = Elementos(rr.NUM_RESULTADO); }
+                                                    @for (var i = 0; i < filas.Count; i++)
+                                                    {
+                                                        var e = filas[i];
+                                                        var idx = i;
+                                                        var col = ColumnaFuente(e);
+                                                        <tr class="@(e.FLG_VISIBLE ? "" : "rep-oculta")">
+                                                            <td style="white-space:nowrap;">
+                                                                <button class="rep-flecha" disabled="@(idx == 0)" title="Subir" @onclick="@(() => Mover(rr.NUM_RESULTADO, idx, -1))">▲</button>
+                                                                <button class="rep-flecha" disabled="@(idx == filas.Count - 1)" title="Bajar" @onclick="@(() => Mover(rr.NUM_RESULTADO, idx, 1))">▼</button>
+                                                            </td>
+                                                            <td style="text-align:center;"><input type="checkbox" checked="@e.FLG_VISIBLE" @onchange="@(ev => e.FLG_VISIBLE = (bool)(ev.Value ?? false))" /></td>
+                                                            <td>
+                                                                <span class="mono" style="font-weight:700;">@e.DES_COLUMNA</span> <span class="mono" style="font-size:.68rem;opacity:.55;">@col?.DES_TIPO_DATO</span>
+                                                                @if (_nuevas.Contains((e.NUM_RESULTADO, e.DES_COLUMNA.ToUpperInvariant())))
+                                                                {
+                                                                    <span class="rep-nueva" title="El procedimiento la trae desde hace poco: márcala con «Ver» para que salga">nueva</span>
+                                                                }
+                                                            </td>
+                                                            <td><input class="rep-input" placeholder="@(col?.DES_ETIQUETA ?? ReportesWebService.EtiquetaDesdeNombre(e.DES_COLUMNA))" value="@e.DES_ETIQUETA" @onchange="@(ev => e.DES_ETIQUETA = Vacio(ev.Value?.ToString()))" /></td>
+                                                            <td>
+                                                                <div class="d-flex align-center gap-1">
+                                                                    <input class="rep-input rep-ancho" type="number" min="1" max="@(campos ? 4 : 100)" placeholder="@(campos ? "1" : "10")"
+                                                                           title="@AyudaAncho(campos)" value="@e.NUM_ANCHO" @onchange="@(ev => e.NUM_ANCHO = Num(ev.Value))" />
+                                                                    @if (!campos && e.FLG_VISIBLE)
+                                                                    {
+                                                                        <span class="rep-pct" title="Lo que le toca del ancho de la tabla">@Parte(rr.NUM_RESULTADO, e)</span>
+                                                                    }
+                                                                </div>
+                                                            </td>
+                                                            <td>
+                                                                <select class="rep-input" value="@(e.COD_ALINEACION ?? "")" @onchange="@(ev => e.COD_ALINEACION = Vacio(ev.Value?.ToString()))">
+                                                                    <option value="">@(col?.COD_ALINEACION is { } a ? $"({Alin(a)})" : "(según tipo)")</option>
+                                                                    <option value="I">Izquierda</option><option value="C">Centro</option><option value="D">Derecha</option>
+                                                                </select>
+                                                            </td>
+                                                            <td><input class="rep-input mono" list="rep-formatos-d" placeholder="@col?.DES_FORMATO" value="@e.DES_FORMATO" @onchange="@(ev => e.DES_FORMATO = Vacio(ev.Value?.ToString()))" /></td>
+                                                            @if (tabla)
+                                                            {
+                                                                <td style="text-align:center;"><input type="checkbox" checked="@e.FLG_TOTALIZA" @onchange="@(ev => e.FLG_TOTALIZA = (bool)(ev.Value ?? false))" /></td>
+                                                            }
+                                                            @if (conGrupo)
+                                                            {
+                                                                <td>
+                                                                    <select class="rep-input" value="@e.NUM_NIVEL_GRUPO" @onchange="@(ev => CambiarGrupo(e, Num(ev.Value) ?? 0))">
+                                                                        <option value="0">—</option><option value="1">Nivel 1</option><option value="2">Nivel 2</option>
+                                                                    </select>
+                                                                </td>
+                                                            }
+                                                            @if (!esFicha)
+                                                            {
+                                                                <td>
+                                                                    <select class="rep-input" value="@(e.COD_ORDEN ?? "")" @onchange="@(ev => CambiarOrden(rr.NUM_RESULTADO, e, Vacio(ev.Value?.ToString())))">
+                                                                        <option value="">—</option><option value="A">Ascendente</option><option value="D">Descendente</option>
+                                                                    </select>
+                                                                </td>
+                                                                <td><input class="rep-input" type="number" min="1" max="99" value="@e.NUM_PRIORIDAD_ORDEN" disabled="@(e.COD_ORDEN is null)" @onchange="@(ev => e.NUM_PRIORIDAD_ORDEN = Num(ev.Value))" /></td>
+                                                            }
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            @if (!esFicha && !libre)
+                            {
+                                <MudText Typo="Typo.caption" Style="opacity:.65;">
+                                    Una columna de grupo suele ir sin "Ver": sale como título del grupo. El orden de las filas: primero los grupos y luego las
+                                    columnas con "Ordenar", según su prioridad; sin nada, el orden en que las devuelve el SP. "Ancho" reparte el ancho de la hoja
+                                    entre las columnas que se ven: es un peso (10 si lo dejas vacío), y al lado sale el % que le toca a cada una.
+                                </MudText>
+                            }
+                            <datalist id="rep-formatos-d">
+                                <option value="dd/MM/yyyy"></option><option value="dd/MM/yyyy HH:mm"></option><option value="#,##0.00"></option>
+                                <option value="#,##0"></option><option value="#,##0.000"></option><option value="0"></option><option value="LETRAS"></option>
+                            </datalist>
+                        }
+                    </MudTabPanel>
+
+                    @* ── FORMATOS Y PLANTILLAS ── *@
+                    <MudTabPanel Text="Formatos y plantillas" Icon="@Icons.Material.Filled.Description">
+                        @foreach (var c in Codigos)
+                        {
+                            var f = Formato(c);
+                            var csvFicha = c == "CSV" && esFicha;
+                            <div class="rep-formato">
+                                <MudCheckBox T="bool" Value="@(f.FLG_HABILITADO && !csvFicha)" ValueChanged="@(v => f.FLG_HABILITADO = v)" Disabled="csvFicha" Color="Color.Primary" Dense="true" />
+                                <MudIcon Icon="@ReportesWebService.IconoFormato(c)" Style="opacity:.7;" />
+                                <div style="flex:1;min-width:200px;">
+                                    <div style="font-weight:800;">@ReportesWebService.NombreFormato(c)</div>
+                                    <div style="font-size:.76rem;opacity:.75;">
+                                        @if (c == "PDF") { <span>@(libre ? "Sale del lienzo, tal como se ve." : "Sale siempre del diseño.")</span> }
+                                        else if (c == "CSV") { <span>@(csvFicha ? "Solo en listados." : libre ? "Los campos del detalle del lienzo, con el separador elegido." : "Las columnas visibles del resultado 1, con el separador elegido.")</span> }
+                                        else if (libre && c == "DOC" && !f.FLG_PLANTILLA_PROPIA) { <span>En un diseño libre, Word sale solo con plantilla propia: descarga la base, ajústala y súbela.</span> }
+                                        else if (f.FLG_PLANTILLA_PROPIA)
+                                        {
+                                            <span>Con plantilla propia: <b>@f.DES_NOMBRE_ARCHIVO</b> (@Kb(f.NUM_BYTES))@(f.FEC_ACTUALIZACION is { } fa ? $" · {f.COD_USUARIO_ACTUALIZACION} {fa:dd/MM/yyyy HH:mm}" : "")</span>
+                                        }
+                                        else if (libre && c == "XLS" && f.FLG_CON_FORMATO) { <span>Como el PDF: la hoja copia el lienzo (letra, colores, cuadros, líneas y logo); los números y las fechas siguen siendo números y fechas.</span> }
+                                        else { <span>@(libre ? "Sale con los datos del lienzo (sin plantilla propia)." : "Sale del diseño (sin plantilla propia).")</span> }
+                                    </div>
+                                    @if (libre && c == "XLS")
+                                    {
+                                        <div title="@(f.FLG_PLANTILLA_PROPIA ? "Con plantilla propia, el Excel sale de la plantilla: quítala para usar esta opción." : "")">
+                                            <MudSwitch T="bool" @bind-Value="f.FLG_CON_FORMATO" Disabled="@f.FLG_PLANTILLA_PROPIA" Color="Color.Primary" Size="Size.Small"
+                                                       Label="Con formato (como el PDF)" Class="mt-1" />
+                                        </div>
+                                    }
+                                </div>
+                                @if (c is "DOC" or "XLS")
+                                {
+                                    var ext = c == "DOC" ? ".docx" : ".xlsx";
+                                    <div class="d-flex flex-wrap gap-1 align-center">
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Download"
+                                                   Disabled="@(d.NUM_DISENO is null || _plantilla)" OnClick="@(() => DescargarBase(c))">Plantilla base</MudButton>
+                                        <MudFileUpload T="IBrowserFile" Accept="@ext" FilesChanged="@(a => Subir(c, a))" Disabled="@(d.NUM_DISENO is null || _plantilla)">
+                                            <ActivatorContent>
+                                                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.UploadFile"
+                                                           Disabled="@(d.NUM_DISENO is null || _plantilla)">Subir propia</MudButton>
+                                            </ActivatorContent>
+                                        </MudFileUpload>
+                                        @if (f.FLG_PLANTILLA_PROPIA)
+                                        {
+                                            <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.FileDownload"
+                                                       Disabled="_plantilla" OnClick="@(() => DescargarPropia(c))">Descargar propia</MudButton>
+                                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" StartIcon="@Icons.Material.Filled.LinkOff"
+                                                       Disabled="_plantilla" OnClick="@(() => QuitarPropia(c))">Quitar</MudButton>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                        @if (d.NUM_DISENO is null)
+                        {
+                            <MudText Typo="Typo.caption" Style="opacity:.7;">Las plantillas se manejan cuando el diseño ya está grabado.</MudText>
+                        }
+                        @if (_avisos is { Count: > 0 })
+                        {
+                            <MudAlert Severity="Severity.Warning" Class="mt-2" ShowCloseIcon="true" CloseIconClicked="@(() => _avisos = null)">
+                                <div style="font-weight:700;">La plantilla se grabó, pero revisa:</div>
+                                <ul style="margin:4px 0 0 18px;">@foreach (var a in _avisos) { <li>@a</li> }</ul>
+                            </MudAlert>
+                        }
+
+                        <details class="mt-3 rep-ayuda">
+                            <summary>Marcas para las plantillas propias</summary>
+                            <div class="pa-2" style="font-size:.78rem;">
+                                <p>Se escriben en el Word o en el Excel entre llaves dobles. Con <span class="mono">|formato</span> al final se cambia el formato:
+                                    <span class="mono">{{R1.FEC_PEDIDO|dd/MM/yyyy}}</span>.</p>
+                                <ul style="margin-left:18px;">
+                                    <li><span class="mono">{{R2.COLUMNA}}</span> columna del resultado 2. También <span class="mono">{{CAB.COLUMNA}}</span>, <span class="mono">{{DET.COLUMNA}}</span>, <span class="mono">{{ADI.COLUMNA}}</span> según su papel.</li>
+                                    <li>Una fila (de tabla en Word, de hoja en Excel) con marcas de un resultado que no es cabecera <b>se repite</b> por cada fila de datos.</li>
+                                    <li><span class="mono">{{TOTAL.R2.COLUMNA}}</span> suma de la columna (en Excel queda como fórmula SUBTOTAL).</li>
+                                    <li><span class="mono">{{@@PARAMETRO}}</span> o <span class="mono">{{P.PARAMETRO}}</span> valor de un parámetro.</li>
+                                    <li><span class="mono">{{EMPRESA.NOMBRE}}</span>, <span class="mono">{{EMPRESA.RUC}}</span>, <span class="mono">{{EMPRESA.DIRECCION}}</span>, <span class="mono">{{EMPRESA.APLICACION}}</span> (el nombre de la aplicación).</li>
+                                    <li><span class="mono">{{TITULO}}</span>, <span class="mono">{{SUBTITULO}}</span>, <span class="mono">{{FILTROS}}</span>, <span class="mono">{{USUARIO}}</span>, <span class="mono">{{FECHA}}</span>, <span class="mono">{{HOY}}</span>.</li>
+                                    <li>Formato <span class="mono">LETRAS</span>: el importe en letras con la moneda de la fila (SON: ... CON 50/100 SOLES).</li>
+                                </ul>
+                                @if (_fuente is not null)
+                                {
+                                    <div style="font-weight:700;" class="mt-1">De esta fuente:</div>
+                                    @foreach (var r in _fuente.Resultados.OrderBy(x => x.NUM_RESULTADO))
+                                    {
+                                        var rr = r;
+                                        <div class="mt-1"><b>@($"R{rr.NUM_RESULTADO}")</b> (@Papel(rr.COD_PAPEL)):
+                                            <span class="mono" style="opacity:.8;">@string.Join("  ", _fuente.Columnas.Where(c => c.NUM_RESULTADO == rr.NUM_RESULTADO).OrderBy(c => c.NUM_ORDEN).Select(c => c.DES_COLUMNA))</span>
+                                        </div>
+                                    }
+                                    @if (_fuente.Parametros.Count > 0)
+                                    {
+                                        <div class="mt-1"><b>Parámetros:</b>
+                                            <span class="mono" style="opacity:.8;">@string.Join("  ", _fuente.Parametros.OrderBy(p => p.NUM_ORDEN).Select(p => p.DES_PARAMETRO))</span>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        </details>
+                    </MudTabPanel>
+                </MudTabs>
+            }
+        </MudPaper>
+    </div>
+</div>
+
+<style>
+    .rep-columnas { display:grid; grid-template-columns:minmax(240px,320px) minmax(0,1fr); gap:12px; align-items:start; }
+    .rep-columnas.rep-solo { grid-template-columns:minmax(0,1fr); }
+    @@media (max-width: 900px) { .rep-columnas { grid-template-columns:1fr; } }
+    .rep-panel { border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+    .rep-cab { background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:700; }
+    .rep-cab2 { background:var(--mud-palette-background-grey,#f3f4f6); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+    .rep-item { padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; font-size:.84rem; }
+    .rep-item:hover { background:rgba(0,0,0,.03); }
+    .rep-item-sel { background:#fffde7; border-left:3px solid var(--grilla-cab-fondo,#163a5f); }
+    .rep-chip { font-size:.66rem; padding:1px 6px; border-radius:8px; background:#eceff1; color:#37474f; font-weight:700; }
+    .rep-chip-b { background:#e3f2fd; color:#0d47a1; }
+    .rep-grid4 { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; align-items:center; }
+    .rep-grid2b { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
+    .rep-tabla { width:100%; font-size:.8rem; }
+    .rep-tabla td { vertical-align:middle; }
+    .rep-input { width:100%; border:1px solid #cfd8dc; border-radius:4px; padding:3px 6px; font-size:.8rem; background:#fff; }
+    .rep-input:disabled { background:#f5f5f5; color:#90a4ae; }
+    .rep-ancho { width:58px; flex:0 0 58px; }
+    .rep-pct { font-size:.68rem; opacity:.65; white-space:nowrap; }
+    .rep-lbl { font-size:.72rem; opacity:.7; white-space:nowrap; }
+    .rep-oculta td { color:#90a4ae; }
+    .rep-nueva { font-size:.62rem; font-weight:800; padding:1px 6px; border-radius:8px; background:#e3f2fd; color:#0d47a1; margin-left:4px; }
+    .rep-flecha { border:1px solid #cfd8dc; background:#fff; border-radius:3px; font-size:.6rem; padding:0 4px; line-height:16px; cursor:pointer; }
+    .rep-flecha:disabled { opacity:.3; cursor:default; }
+    .rep-resultado { border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+    .rep-formato { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 4px; border-bottom:1px solid var(--line); }
+    .rep-ayuda summary { cursor:pointer; font-weight:700; font-size:.82rem; }
+</style>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const string Formulario = "Reportes/ReportesDisenos.razor";
+    private static readonly string[] Codigos = { "PDF", "DOC", "XLS", "CSV" };
+    private const string AyudaTextos = "Admite {@PARAMETRO} y {COLUMNA}: Del {@FEC_DESDE} al {@FEC_HASTA}";
+    private const long MaxPlantilla = 5 * 1024 * 1024;
+
+    private string _codAp = "", _codOp = "";
+    private List<ReporteDiseno> _disenos = new();
+    private List<ReporteFuente> _fuentes = new();
+    private ReporteDisenoDetalle? _det;
+    private ReporteFuenteDetalle? _fuente;
+    private string? _grabado;
+    private int? _filtroFuente;
+    private string? _buscar;
+    private List<string>? _avisos;
+    // Las columnas de la fuente que el diseño grabado todavía no tenía (se agregaron al SP): resultado y nombre en mayúsculas.
+    private readonly HashSet<(int Resultado, string Columna)> _nuevas = new();
+    private int _pestana;
+    private bool _cargandoLista, _grabando, _plantilla;
+    // El editor a todo el ancho (sin la lista): el lienzo lo agradece.
+    private bool _soloEditor;
+
+    private List<ReporteDiseno> Filtrados => _disenos
+        .Where(d => _filtroFuente is null || d.NUM_FUENTE == _filtroFuente)
+        .Where(d => string.IsNullOrWhiteSpace(_buscar)
+                 || (d.DES_DISENO ?? "").Contains(_buscar, StringComparison.OrdinalIgnoreCase)
+                 || (d.DES_FUENTE ?? "").Contains(_buscar, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("REPORTES", "ReportesDisenos");
+        _codAp = CodAplicacion;
+        _codOp = CodOpcionAplicacion;
+        if ((string.IsNullOrWhiteSpace(_codAp) || string.IsNullOrWhiteSpace(_codOp)) && MenuService.BuscarCodigosPorFormulario(Formulario) is { } cod)
+            (_codAp, _codOp) = cod;
+        var (f, err) = await Reportes.GetAsync<List<ReporteFuente>>(ApiRoutes.Reportes.DisenosFuentes);
+        _fuentes = f ?? new();
+        if (err is not null) Snackbar.Add(err, Severity.Warning);
+        await CargarLista();
+    }
+
+    private async Task CargarLista()
+    {
+        _cargandoLista = true;
+        var (d, err) = await Reportes.GetAsync<List<ReporteDiseno>>(ApiRoutes.Reportes.Disenos);
+        _disenos = d ?? new();
+        if (err is not null) Snackbar.Add(err, Severity.Warning);
+        _cargandoLista = false;
+    }
+
+    private async Task Nuevo()
+    {
+        _det = new ReporteDisenoDetalle
+        {
+            Diseno = new ReporteDiseno { NUM_FUENTE = _filtroFuente, DES_SEPARADOR_CSV = ";" },
+            Formatos = Codigos.Select(c => new ReporteDisenoPlantilla { COD_FORMATO = c, FLG_HABILITADO = true }).ToList()
+        };
+        _fuente = null; _avisos = null; _grabado = null; _pestana = 0;
+        _nuevas.Clear();
+        if (_filtroFuente is { } n) await ElegirFuente(n);
+    }
+
+    private async Task Abrir(int? num)
+    {
+        if (num is not { } n) return;
+        var (d, err) = await Reportes.GetAsync<ReporteDisenoDetalle>(ApiRoutes.Reportes.Diseno(n));
+        if (d is null) { Snackbar.Add(err ?? "No se pudo leer el diseño.", Severity.Warning); return; }
+        _fuente = d.Diseno.NUM_FUENTE is { } nf ? await LeerFuente(nf) : null;
+        _det = d; _avisos = null;
+        _nuevas.Clear();
+        Completar(d, existente: true);
+        if (d.Diseno.COD_TIPO_DISENO == "BAN")
+        {
+            d.Lienzo ??= LienzoEditor.Basico(d.Diseno);
+            LienzoEditor.Completar(d.Lienzo);
+        }
+        _grabado = Foto();
+    }
+
+    private async Task<ReporteFuenteDetalle?> LeerFuente(int num)
+    {
+        var (f, err) = await Reportes.GetAsync<ReporteFuenteDetalle>(ApiRoutes.Reportes.DisenosFuente(num));
+        if (f is null) Snackbar.Add(err ?? "No se pudo leer la fuente.", Severity.Warning);
+        return f;
+    }
+
+    private async Task ElegirFuente(int? num)
+    {
+        if (_det is null || num is not { } n) return;
+        var f = await LeerFuente(n);
+        if (f is null) return;
+        _fuente = f;
+        _det.Diseno.NUM_FUENTE = n;
+        if (string.IsNullOrWhiteSpace(_det.Diseno.DES_DISENO)) _det.Diseno.DES_DISENO = f.Fuente.DES_FUENTE;
+        if (string.IsNullOrWhiteSpace(_det.Diseno.DES_TITULO)) _det.Diseno.DES_TITULO = f.Fuente.DES_FUENTE;
+        // Una fuente con cabecera es, casi siempre, para una ficha (un diseño libre sigue libre).
+        if (_det.Diseno.COD_TIPO_DISENO != "BAN")
+            _det.Diseno.COD_TIPO_DISENO = f.Resultados.Any(r => r.COD_PAPEL == "CAB") ? "FIC" : "LIS";
+        _det.Secciones.Clear();
+        _det.Elementos.Clear();
+        _nuevas.Clear();
+        Completar(_det, existente: false);
+        StateHasChanged();
+    }
+
+    /// <summary>Al cambiar de tipo, las secciones vuelven a lo habitual del tipo nuevo (las columnas se quedan como están).</summary>
+    private void CambiarTipo(string tipo)
+    {
+        if (_det is null || _det.Diseno.COD_TIPO_DISENO == tipo) return;
+        _det.Diseno.COD_TIPO_DISENO = tipo;
+        _det.Secciones.Clear();
+        Completar(_det, existente: false);
+        // Un diseño libre nuevo empieza con el encabezado y el pie de siempre; los otros tipos no llevan lienzo.
+        if (tipo == "BAN")
+        {
+            _det.Lienzo ??= LienzoEditor.Basico(_det.Diseno);
+            LienzoEditor.Completar(_det.Lienzo);
+        }
+        else _det.Lienzo = null;
+    }
+
+    /// <summary>Deja una sección por resultado y un elemento por columna de la fuente, para editar sobre la lista completa.
+    /// Lo que el diseño no traía: en un diseño grabado queda como estaba (sección oculta, columna sin "Ver"); en uno nuevo
+    /// toma lo habitual (la cabecera como campos, lo demás como tablas, todas las columnas visibles).</summary>
+    private void Completar(ReporteDisenoDetalle d, bool existente)
+    {
+        foreach (var c in Codigos)
+            if (!d.Formatos.Any(f => f.COD_FORMATO == c)) d.Formatos.Add(new ReporteDisenoPlantilla { COD_FORMATO = c });
+        if (_fuente is null) return;
+        var esFicha = d.Diseno.COD_TIPO_DISENO == "FIC";
+        var sinSecciones = d.Secciones.Count == 0;
+        foreach (var r in _fuente.Resultados.OrderBy(x => x.NUM_RESULTADO))
+        {
+            if (!d.Secciones.Any(s => s.NUM_RESULTADO == r.NUM_RESULTADO))
+            {
+                var oculta = existente && !sinSecciones && esFicha;
+                d.Secciones.Add(new ReporteDisenoSeccion
+                {
+                    NUM_RESULTADO = r.NUM_RESULTADO,
+                    NUM_ORDEN = r.NUM_RESULTADO,
+                    COD_PRESENTACION = oculta ? "OCU" : !esFicha ? (r.NUM_RESULTADO == 1 ? "TAB" : "OCU") : r.COD_PAPEL == "CAB" ? "CAM" : "TAB",
+                    DES_TITULO = esFicha && r.COD_PAPEL != "CAB" ? r.DES_RESULTADO : null,
+                    NUM_COLUMNAS = r.COD_PAPEL == "CAB" ? 3 : null
+                });
+            }
+            var tenia = d.Elementos.Any(e => e.NUM_RESULTADO == r.NUM_RESULTADO);
+            var orden = d.Elementos.Where(e => e.NUM_RESULTADO == r.NUM_RESULTADO).Select(e => e.NUM_ORDEN).DefaultIfEmpty(0).Max();
+            foreach (var c in _fuente.Columnas.Where(x => x.NUM_RESULTADO == r.NUM_RESULTADO).OrderBy(x => x.NUM_ORDEN))
+            {
+                if (d.Elementos.Any(e => e.NUM_RESULTADO == r.NUM_RESULTADO && Igual(e.DES_COLUMNA, c.DES_COLUMNA))) continue;
+                var n = c.DES_COLUMNA.ToUpperInvariant();
+                if (existente && tenia) _nuevas.Add((r.NUM_RESULTADO, n));
+                d.Elementos.Add(new ReporteDisenoElemento
+                {
+                    NUM_RESULTADO = r.NUM_RESULTADO,
+                    DES_COLUMNA = c.DES_COLUMNA,
+                    NUM_ORDEN = ++orden,
+                    FLG_VISIBLE = !(existente && tenia),
+                    FLG_TOTALIZA = !tenia && r.COD_PAPEL != "CAB" && (n.StartsWith("IMP_") || n.StartsWith("CAN_"))
+                });
+            }
+        }
+        // Una sección que apunta a un resultado que la fuente ya no tiene no se puede grabar.
+        d.Secciones.RemoveAll(s => !_fuente.Resultados.Any(r => r.NUM_RESULTADO == s.NUM_RESULTADO));
+        if (!esFicha && d.Secciones.FirstOrDefault(s => s.NUM_RESULTADO == 1) is { } s1) s1.COD_PRESENTACION = "TAB";
+    }
+
+    private IEnumerable<ReporteFuenteResultado> ResultadosVisibles(bool esFicha)
+        => (_fuente?.Resultados ?? new()).Where(r => esFicha || r.NUM_RESULTADO == 1).OrderBy(r => r.NUM_RESULTADO);
+
+    private ReporteDisenoSeccion Seccion(int resultado)
+    {
+        var s = _det!.Secciones.FirstOrDefault(x => x.NUM_RESULTADO == resultado);
+        if (s is null) { s = new ReporteDisenoSeccion { NUM_RESULTADO = resultado, NUM_ORDEN = resultado }; _det.Secciones.Add(s); }
+        return s;
+    }
+
+    private List<ReporteDisenoElemento> Elementos(int resultado)
+        => _det!.Elementos.Where(e => e.NUM_RESULTADO == resultado).OrderBy(e => e.NUM_ORDEN).ToList();
+
+    private ReporteFuenteColumna? ColumnaFuente(ReporteDisenoElemento e)
+        => _fuente?.Columnas.FirstOrDefault(c => c.NUM_RESULTADO == e.NUM_RESULTADO && Igual(c.DES_COLUMNA, e.DES_COLUMNA));
+
+    private void Mover(int resultado, int indice, int paso)
+    {
+        var filas = Elementos(resultado);
+        var otro = indice + paso;
+        if (otro < 0 || otro >= filas.Count) return;
+        (filas[indice], filas[otro]) = (filas[otro], filas[indice]);
+        for (var i = 0; i < filas.Count; i++) filas[i].NUM_ORDEN = i + 1;
+    }
+
+    /// <summary>Una columna de grupo se ordena (si no tenía orden) y deja de imprimirse como columna: ya sale en el título del grupo.</summary>
+    private void CambiarGrupo(ReporteDisenoElemento e, int nivel)
+    {
+        e.NUM_NIVEL_GRUPO = nivel;
+        if (nivel > 0)
+        {
+            e.FLG_VISIBLE = false;
+            if (e.COD_ORDEN is null) { e.COD_ORDEN = "A"; e.NUM_PRIORIDAD_ORDEN = nivel; }
+        }
+    }
+
+    private void CambiarOrden(int resultado, ReporteDisenoElemento e, string? orden)
+    {
+        e.COD_ORDEN = orden;
+        if (orden is null) e.NUM_PRIORIDAD_ORDEN = null;
+        else e.NUM_PRIORIDAD_ORDEN ??= _det!.Elementos.Where(x => x.NUM_RESULTADO == resultado && x.COD_ORDEN is not null && x != e)
+                                                       .Select(x => x.NUM_PRIORIDAD_ORDEN ?? 0).DefaultIfEmpty(0).Max() + 1;
+    }
+
+    private ReporteDisenoPlantilla Formato(string codigo)
+    {
+        var f = _det!.Formatos.FirstOrDefault(x => x.COD_FORMATO == codigo);
+        if (f is null) { f = new ReporteDisenoPlantilla { COD_FORMATO = codigo }; _det.Formatos.Add(f); }
+        return f;
+    }
+
+    private async Task Grabar()
+    {
+        if (_det is null || _grabando) return;
+        var d = _det.Diseno;
+        if (d.NUM_FUENTE is null) { Snackbar.Add("Elige la fuente.", Severity.Warning); return; }
+        if (string.IsNullOrWhiteSpace(d.DES_DISENO)) { Snackbar.Add("Falta la descripción.", Severity.Warning); return; }
+        if (d.COD_TIPO_DISENO == "FIC") Formato("CSV").FLG_HABILITADO = false;
+        if (!_det.Formatos.Any(f => f.FLG_HABILITADO)) { Snackbar.Add("Marca al menos un formato.", Severity.Warning); return; }
+        if (d.COD_TIPO_DISENO == "BAN" && _det.Lienzo is null) { Snackbar.Add("El diseño libre no tiene lienzo.", Severity.Warning); return; }
+        if (d.COD_TIPO_DISENO == "LIS" && !_det.Elementos.Any(e => e.NUM_RESULTADO == 1 && e.FLG_VISIBLE))
+        { Snackbar.Add("El listado no tiene ninguna columna para ver.", Severity.Warning); return; }
+        _grabando = true;
+        try
+        {
+            if (await AlinearConFuente() is { } falta) { Snackbar.Add(falta, Severity.Warning); return; }
+            var (num, err) = await Reportes.PostAsync<int>(ApiRoutes.Reportes.Disenos, _det);
+            if (err is not null)
+            {
+                // Las fórmulas con errores vienen una por línea: se leen mejor en un cuadro que en el aviso de abajo.
+                if (err.Contains('\n'))
+                    await DialogService.ShowMessageBox("No se grabó", new MarkupString(string.Join("<br/>", err.Split('\n').Select(System.Net.WebUtility.HtmlEncode))), yesText: "Entendido");
+                else Snackbar.Add(err, Severity.Warning);
+                return;
+            }
+            Snackbar.Add($"Diseño N° {num} grabado.", Severity.Success);
+            await CargarLista();
+            await Abrir(num);
+        }
+        finally { _grabando = false; }
+    }
+
+    /// <summary>Antes de grabar, la fuente como está ahora en la base: pudo cambiar con la pantalla abierta (otra pestaña grabó
+    /// la fuente, o el SP dejó de devolver una columna y se volvió a probar). Las columnas que la fuente ya no tiene y que el
+    /// diseño no usa (ocultas, sin grupo ni orden) se quitan sin preguntar; las nuevas se agregan ocultas. Si el diseño usa una
+    /// que ya no está, devuelve qué pasa y no se graba.</summary>
+    private async Task<string?> AlinearConFuente()
+    {
+        if (_det?.Diseno.NUM_FUENTE is not { } nf) return null;
+        var (f, _) = await Reportes.GetAsync<ReporteFuenteDetalle>(ApiRoutes.Reportes.DisenosFuente(nf));
+        if (f is null) return null;
+        bool Existe(ReporteDisenoElemento e) => f.Columnas.Any(c => c.NUM_RESULTADO == e.NUM_RESULTADO && Igual(c.DES_COLUMNA, e.DES_COLUMNA));
+        var usadas = _det.Elementos.Where(e => !Existe(e) && (e.FLG_VISIBLE || e.NUM_NIVEL_GRUPO > 0 || e.COD_ORDEN is not null)).ToList();
+        if (usadas.Count > 0)
+            return $"La fuente ya no tiene {string.Join(", ", usadas.Select(e => $"{e.DES_COLUMNA} (resultado {e.NUM_RESULTADO})"))}, y el diseño la usa. "
+                 + "Quítale «Ver», el grupo y el orden en «Columnas», o vuelve a probar la fuente si el SP todavía la devuelve.";
+        _det.Elementos.RemoveAll(e => !Existe(e));
+        // Una columna que llegara dos veces (no debería) se queda una sola vez.
+        _det.Elementos = _det.Elementos.GroupBy(e => (e.NUM_RESULTADO, e.DES_COLUMNA.ToUpperInvariant())).Select(g => g.First()).ToList();
+        _nuevas.RemoveWhere(n => !f.Columnas.Any(c => c.NUM_RESULTADO == n.Resultado && Igual(c.DES_COLUMNA, n.Columna)));
+        _fuente = f;
+        Completar(_det, existente: true);
+        return null;
+    }
+
+    private async Task Eliminar()
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        var botones = _det.Diseno.NUM_BOTONES > 0 ? $" Lo usan {_det.Diseno.NUM_BOTONES} botón(es): primero hay que quitárselo." : "";
+        var ok = await DialogService.ShowMessageBox("Eliminar diseño", $"¿Eliminar el diseño «{_det.Diseno.DES_DISENO}» y sus plantillas?{botones}",
+                                                    yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var err = await Reportes.DeleteAsync(ApiRoutes.Reportes.Diseno(n));
+        if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+        Snackbar.Add("Diseño eliminado.", Severity.Success);
+        _det = null; _fuente = null;
+        await CargarLista();
+    }
+
+    /// <summary>Convertir a bandas: la API crea un diseño libre nuevo, copia de este (lo grabado), con el lienzo que lo
+    /// dibuja igual. Se abre en su lienzo.</summary>
+    private async Task Convertir()
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        var sinGrabar = _grabado != Foto() ? " Hay cambios sin grabar: se convierte lo que está grabado." : "";
+        var ok = await DialogService.ShowMessageBox("Convertir a bandas",
+            $"Se crea un diseño libre nuevo, «{_det.Diseno.DES_DISENO} (bandas)», con el lienzo armado para que salga igual que este. Este diseño queda como está.{sinGrabar}",
+            yesText: "Convertir", cancelText: "Cancelar");
+        if (ok != true) return;
+        _grabando = true;
+        try
+        {
+            var (num, err) = await Reportes.PostAsync<int>(ApiRoutes.Reportes.DisenoConvertir(n), new { });
+            if (err is not null || num == 0) { Snackbar.Add(err ?? "No se pudo convertir el diseño.", Severity.Warning); return; }
+            Snackbar.Add($"Diseño libre N° {num} creado: revisa su lienzo y, cuando esté listo, asígnalo a los botones.", Severity.Success);
+            await CargarLista();
+            await Abrir(num);
+            _pestana = 1;
+        }
+        finally { _grabando = false; }
+    }
+
+    private async Task VistaPrevia()
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        if (_grabado != Foto())
+        {
+            var seguir = await DialogService.ShowMessageBox("Vista previa", "Hay cambios sin grabar: la vista previa usa el diseño grabado.",
+                                                            yesText: "Ver lo grabado", cancelText: "Cancelar");
+            if (seguir != true) return;
+        }
+        var p = new DialogParameters
+        {
+            ["NumDiseno"] = n,
+            ["Titulo"] = $"Vista previa · {_det.Diseno.DES_DISENO}",
+            ["Contexto"] = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        };
+        var dlg = await DialogService.ShowAsync<ReporteEjecutarDialog>("", p,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true, BackdropClick = false });
+        await dlg.Result;
+        await RefrescarFuente();
+    }
+
+    /// <summary>Después de la vista previa. Si el procedimiento trajo columnas nuevas, la API ya las agregó a la fuente: se
+    /// vuelve a leer para que aparezcan en el explorador del lienzo y en «Columnas» (sin «Ver»: lo que se imprime no cambia
+    /// hasta que las marques). Sin columnas nuevas no cambia nada.</summary>
+    private async Task RefrescarFuente()
+    {
+        if (_det?.Diseno.NUM_FUENTE is not { } nf || _fuente is null) return;
+        var (f, _) = await Reportes.GetAsync<ReporteFuenteDetalle>(ApiRoutes.Reportes.DisenosFuente(nf));
+        if (f is null || f.Columnas.All(c => _fuente.Columnas.Any(x => x.NUM_RESULTADO == c.NUM_RESULTADO && Igual(x.DES_COLUMNA, c.DES_COLUMNA)))) return;
+        // Las columnas que se agregan aquí van ocultas: si el diseño no tenía cambios, sigue sin tenerlos.
+        var sinCambios = _grabado == Foto();
+        _fuente = f;
+        Completar(_det, existente: true);
+        if (sinCambios) _grabado = Foto();
+        StateHasChanged();
+    }
+
+    private string TextoNueva((int Resultado, string Columna) n)
+    {
+        var r = _fuente?.Resultados.FirstOrDefault(x => x.NUM_RESULTADO == n.Resultado);
+        return $"{n.Columna} ({(r?.DES_RESULTADO is { Length: > 0 } d ? d : $"resultado {n.Resultado}")})";
+    }
+
+    // ── Plantillas propias ──────────────────────────────────────────────────────
+
+    private async Task DescargarBase(string formato)
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        if (_grabado != Foto()) Snackbar.Add("La plantilla base se arma con el diseño grabado (hay cambios sin grabar).", Severity.Info);
+        _plantilla = true;
+        try
+        {
+            var (a, err) = await Reportes.GetAsync<ReporteArchivo>(ApiRoutes.Reportes.PlantillaBase(n, formato));
+            if (a is null) { Snackbar.Add(err ?? "No se pudo armar la plantilla.", Severity.Warning); return; }
+            await Reportes.DescargarAsync(a);
+        }
+        finally { _plantilla = false; }
+    }
+
+    private async Task DescargarPropia(string formato)
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        _plantilla = true;
+        try
+        {
+            var (a, err) = await Reportes.GetAsync<ReporteArchivo>(ApiRoutes.Reportes.Plantilla(n, formato));
+            if (a is null) { Snackbar.Add(err ?? "No se pudo leer la plantilla.", Severity.Warning); return; }
+            await Reportes.DescargarAsync(a);
+        }
+        finally { _plantilla = false; }
+    }
+
+    private async Task Subir(string formato, IBrowserFile? archivo)
+    {
+        if (archivo is null || _det?.Diseno.NUM_DISENO is not { } n) return;
+        var ext = formato == "DOC" ? ".docx" : ".xlsx";
+        if (!archivo.Name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) { Snackbar.Add($"La plantilla de {ReportesWebService.NombreFormato(formato)} tiene que ser {ext}.", Severity.Warning); return; }
+        if (archivo.Size > MaxPlantilla) { Snackbar.Add("La plantilla pasa de 5 MB. Revisa las imágenes que tiene.", Severity.Warning); return; }
+        _plantilla = true; _avisos = null;
+        try
+        {
+            byte[] bytes;
+            await using (var s = archivo.OpenReadStream(MaxPlantilla))
+            using (var ms = new MemoryStream())
+            {
+                await s.CopyToAsync(ms);
+                bytes = ms.ToArray();
+            }
+            var (r, err) = await Reportes.PostAsync<ReportePlantillaResultado>(ApiRoutes.Reportes.Plantilla(n, formato),
+                new ReportePlantillaDto { DES_NOMBRE_ARCHIVO = archivo.Name, CONTENIDO = bytes });
+            if (r is null) { Snackbar.Add(err ?? "No se pudo subir la plantilla.", Severity.Warning); return; }
+            Snackbar.Add($"Plantilla grabada ({r.NUM_MARCAS} marca{(r.NUM_MARCAS == 1 ? "" : "s")}).", r.Avisos.Count > 0 ? Severity.Warning : Severity.Success);
+            _avisos = r.Avisos.Count > 0 ? r.Avisos : null;
+            await RefrescarFormatos(n);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ReportesDisenos), nameof(Subir), archivo.Name);
+            Snackbar.Add("No se pudo leer el archivo. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally { _plantilla = false; }
+    }
+
+    private async Task QuitarPropia(string formato)
+    {
+        if (_det?.Diseno.NUM_DISENO is not { } n) return;
+        var ok = await DialogService.ShowMessageBox("Quitar plantilla", $"¿Quitar la plantilla propia de {ReportesWebService.NombreFormato(formato)}? El formato vuelve a salir del diseño.",
+                                                    yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        _plantilla = true;
+        try
+        {
+            var err = await Reportes.DeleteAsync(ApiRoutes.Reportes.Plantilla(n, formato));
+            if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+            Snackbar.Add("Plantilla quitada.", Severity.Success);
+            _avisos = null;
+            await RefrescarFormatos(n);
+        }
+        finally { _plantilla = false; }
+    }
+
+    /// <summary>Vuelve a leer solo los formatos: lo demás que se esté editando no se pierde.</summary>
+    private async Task RefrescarFormatos(int num)
+    {
+        var (d, _) = await Reportes.GetAsync<ReporteDisenoDetalle>(ApiRoutes.Reportes.Diseno(num));
+        if (d is null || _det is null) return;
+        foreach (var f in d.Formatos)
+        {
+            var mio = Formato(f.COD_FORMATO);
+            mio.FLG_PLANTILLA_PROPIA = f.FLG_PLANTILLA_PROPIA; mio.DES_NOMBRE_ARCHIVO = f.DES_NOMBRE_ARCHIVO; mio.NUM_BYTES = f.NUM_BYTES;
+            mio.COD_USUARIO_ACTUALIZACION = f.COD_USUARIO_ACTUALIZACION; mio.FEC_ACTUALIZACION = f.FEC_ACTUALIZACION;
+        }
+        if (_disenos.FirstOrDefault(x => x.NUM_DISENO == num) is { } l) { l.FLG_PROPIA_DOC = d.Diseno.FLG_PROPIA_DOC; l.FLG_PROPIA_XLS = d.Diseno.FLG_PROPIA_XLS; }
+    }
+
+    // ── Ayudas ──────────────────────────────────────────────────────────────────
+
+    /// <summary>El diseño como texto, para saber si hay cambios sin grabar (solo lo que se edita, no las plantillas).</summary>
+    private string Foto() => _det is null ? "" : JsonSerializer.Serialize(new
+    {
+        _det.Diseno, Secciones = _det.Secciones.OrderBy(s => s.NUM_RESULTADO), Elementos = _det.Elementos.OrderBy(e => e.NUM_RESULTADO).ThenBy(e => e.DES_COLUMNA),
+        Formatos = _det.Formatos.OrderBy(f => f.COD_FORMATO).Select(f => new { f.COD_FORMATO, f.FLG_HABILITADO, f.FLG_CON_FORMATO }),
+        _det.Lienzo
+    });
+
+    private static string IconoTipo(string? tipo) => tipo switch
+    {
+        "FIC" => Icons.Material.Filled.Article,
+        "BAN" => Icons.Material.Filled.Dashboard,
+        _     => Icons.Material.Filled.ListAlt
+    };
+
+    private static string NombreTipo(string? tipo) => tipo switch { "FIC" => "Ficha", "BAN" => "Libre", _ => "Listado" };
+
+    private static string Papel(string? p) => p switch { "CAB" => "cabecera", "DET" => "detalle", _ => "adicional" };
+    private static string Alin(string a) => a switch { "C" => "centro", "D" => "derecha", _ => "izquierda" };
+    private static string Kb(int? bytes) => bytes is { } b ? (b < 1024 ? $"{b} B" : $"{b / 1024.0:0.#} KB") : "";
+    private static bool Igual(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+    private static int? Num(object? v) => int.TryParse(v?.ToString(), out var n) ? n : null;
+
+    /// <summary>Qué es el ancho de una columna: en una sección de campos de una ficha, cuántas columnas ocupa el campo; en
+    /// una tabla (listado, tabla de una ficha o de un diseño libre), su peso al repartir el ancho entre las que se ven.</summary>
+    private static string AyudaAncho(bool campos) => campos
+        ? "Cuántas columnas de la sección ocupa el campo (1 si lo dejas vacío)."
+        : "Peso de la columna al repartir el ancho de la tabla entre las que se ven (10 si lo dejas vacío). Ejemplo: 30 y 10 reparten 75 % y 25 %.";
+
+    /// <summary>El % del ancho que le toca a una columna visible, con los pesos de las demás visibles del resultado.</summary>
+    private string Parte(int resultado, ReporteDisenoElemento e)
+    {
+        static int Peso(ReporteDisenoElemento x) => x.NUM_ANCHO is > 0 ? x.NUM_ANCHO.Value : 10;
+        var suma = Elementos(resultado).Where(x => x.FLG_VISIBLE).Sum(Peso);
+        return suma <= 0 ? "" : $"{Math.Round(100.0 * Peso(e) / suma):0} %";
+    }
+    private static string? Vacio(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}

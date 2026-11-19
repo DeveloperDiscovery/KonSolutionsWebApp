@@ -1,0 +1,103 @@
+@* Historial de estados de un pedido comercial: una fila por cada cambio de
+   estado, con quién y cuándo lo hizo. Se abre con el botón al lado del campo
+   "Estado" del documento — ahí sólo se ve el estado ACTUAL (y deshabilitado,
+   nunca se edita a mano), acá se ve el recorrido completo.
+
+   De sólo lectura a propósito: es un historial, no se modifica desde ningún
+   lado. *@
+
+@using Historial = KONSolutions.Shared.Models.Comercial.PedidosComercialesEstados
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+<MudDialog Style="width:min(820px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Historial de estados</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+            <span class="mono">@CodClaseOperacion/@CodTipoOperacion N° @NumPedidoComercial</span>
+        </MudText>
+
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (_historial.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                No hay historial de estados registrado para este pedido.
+            </MudAlert>
+        }
+        else
+        {
+            <div style="overflow-x:auto;">
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:60px;"></th>
+                            <th>Estado</th>
+                            <th style="width:180px;">Usuario</th>
+                            <th style="width:140px;">Estación</th>
+                            <th style="width:160px;">Fecha</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var h in _historial)
+                        {
+                            <tr>
+                                <td><GridImage Image="@h.IMG_PICTURE" /></td>
+                                <td>
+                                    <EstadoChip Estado="@h.DES_ESTADO"
+                                                BackColor="@h.DES_BACKCOLOR" ForeColor="@h.DES_FORECOLOR" />
+                                </td>
+                                <td class="mono">@h.COD_USUARIO_REGISTRO</td>
+                                <td class="mono">@h.COD_ESTACION_REGISTRO</td>
+                                <td class="mono">@h.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.6;">
+                @_historial.Count cambio(s) de estado, del más antiguo al más reciente.
+            </MudText>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string CodClaseOperacion { get; set; } = "";
+    [Parameter] public string CodTipoOperacion { get; set; } = "";
+    [Parameter] public decimal NumPedidoComercial { get; set; }
+
+    private List<Historial> _historial = new();
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodClaseOperacion) || string.IsNullOrWhiteSpace(CodTipoOperacion) || NumPedidoComercial <= 0)
+        { _cargando = false; return; }
+
+        try
+        {
+            _historial = (await Http.SafeGetAsync<List<Historial>>(
+                ApiRoutes.Comercial.PedidosComercialesEstadosDe(CodClaseOperacion, CodTipoOperacion, NumPedidoComercial))) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PedidoComercialEstadosDialog), nameof(OnInitializedAsync));
+            _historial = new();
+        }
+        _cargando = false;
+    }
+}

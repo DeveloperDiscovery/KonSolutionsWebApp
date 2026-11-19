@@ -1,0 +1,74 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+@* Enviar un documento a aprobar: se genera un PDF borrador y se crea (o se reabre) el documento de compromiso con sus responsables y aprobadores. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Enviar a aprobar</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            @if (string.IsNullOrWhiteSpace(Item?.COD_TIPO_DOCUMENTO_COMPROMISO))
+            {
+                <MudItem xs="12">
+                    <AriaCombo TItem="ComboboxItem" Items="Tipos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_tipo" Label="Tipo de documento de compromiso" Obligatorio="true" />
+                    <MudText Typo="Typo.caption" Style="opacity:.65;">La plantilla no tiene tipo asignado: elige uno aquí o asígnalo en Plantillas de documento.</MudText>
+                </MudItem>
+            }
+            <MudItem xs="12" md="6">
+                <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_resp" Label="Responsables (uno o más)" Variant="Variant.Outlined" Required="true" SelectAll="false" Dense="true">
+                    @foreach (var e in Entidades) { <MudSelectItem T="string" Value="@e.Id">@e.Texto</MudSelectItem> }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_apr" Label="Aprobadores (uno o más)" Variant="Variant.Outlined" Required="true" SelectAll="false" Dense="true">
+                    @foreach (var e in Entidades) { <MudSelectItem T="string" Value="@e.Id">@e.Texto</MudSelectItem> }
+                </MudSelect>
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Enviar" Disabled="_enviando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Send">Enviar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public DocumentoEmitido? Item { get; set; }
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Tipos { get; set; } = new();
+
+    private string? _tipo;
+    private IEnumerable<string> _resp = new HashSet<string>(), _apr = new HashSet<string>();
+    private bool _enviando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Item?.NUM_SECUENCIA_COMPROMISO is not { } c) return;
+        // un reenvío conserva los responsables y aprobadores del envío anterior
+        var personas = await Http.SafeGetAsync<List<ExpedienteCompromisoPersona>>(ApiRoutes.Proyectos.Exp(NumProyecto, $"compromisos/{c}/personas")) ?? new();
+        _resp = personas.Where(p => p.COD_FUNCION_COMPROMISO == "RES").Select(p => p.COD_ENTIDAD.ToString("0")).ToHashSet();
+        _apr = personas.Where(p => p.COD_FUNCION_COMPROMISO == "APR").Select(p => p.COD_ENTIDAD.ToString("0")).ToHashSet();
+    }
+
+    private async Task Enviar()
+    {
+        if (Item is null) return;
+        if (string.IsNullOrWhiteSpace(Item.COD_TIPO_DOCUMENTO_COMPROMISO) && string.IsNullOrWhiteSpace(_tipo)) { Snackbar.Add("Elige el tipo de documento de compromiso.", Severity.Warning); return; }
+        if (!_resp.Any()) { Snackbar.Add("Indica al menos un responsable.", Severity.Warning); return; }
+        if (!_apr.Any()) { Snackbar.Add("Indica al menos un aprobador.", Severity.Warning); return; }
+        _enviando = true;
+        try
+        {
+            var (ok, msg) = await ProyectoApi.PostAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"documentos-emitidos/{Item.NUM_SECUENCIA}/enviar"),
+                new { CodTipoDocumento = _tipo, Responsables = _resp.Select(x => decimal.Parse(x)).ToList(), Aprobadores = _apr.Select(x => decimal.Parse(x)).ToList() });
+            if (!ok) { Snackbar.Add(msg ?? "No se pudo enviar el documento.", Severity.Warning); return; }
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumentoEnviarDialog), nameof(Enviar)); Snackbar.Add("No se pudo enviar. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _enviando = false; }
+    }
+}

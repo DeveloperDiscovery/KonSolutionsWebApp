@@ -1,0 +1,113 @@
+@* Precedencias de una ruta (script SQL 122): que operacion (hoja) debe ir antes de cual. "Generar" las arma por defecto desde el arbol (los hermanos van en secuencia,
+   salvo los marcados en paralelo); aqui se pueden ajustar a mano. La base rechaza los ciclos y todo se guarda junto (todo o nada). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex flex-wrap align-center gap-2 mb-2">
+            <MudSelect T="int" @bind-Value="_a" Label="Antecesora" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:230px;max-width:320px;" data-campo="antecesora">
+                @foreach (var n in _hojas) { <MudSelectItem T="int" Value="@n.NUM_ESTRUCTURA_RUTA_PROCESO">@n.DES_OPERACION</MudSelectItem> }
+            </MudSelect>
+            <MudIcon Icon="@Icons.Material.Filled.ArrowForward" />
+            <MudSelect T="int" @bind-Value="_s" Label="Sucesora" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:230px;max-width:320px;" data-campo="sucesora">
+                @foreach (var n in _hojas) { <MudSelectItem T="int" Value="@n.NUM_ESTRUCTURA_RUTA_PROCESO">@n.DES_OPERACION</MudSelectItem> }
+            </MudSelect>
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="Agregar" data-accion="agregar">Agregar</MudButton>
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.AutoFixHigh" OnClick="Generar" data-accion="generar">Generar por defecto</MudButton>
+        </div>
+        <div style="overflow:auto;max-height:50vh;">
+            <table class="rp-tabla" data-tabla="precedencias">
+                <thead><tr><th>Antecesora</th><th></th><th>Sucesora</th><th></th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < _filas.Count; i++)
+                    {
+                        var f = _filas[i]; var idx = i;
+                        <tr data-prec="@f.NUM_ESTRUCTURA_ANTECESORA-@f.NUM_ESTRUCTURA_SUCESORA"><td>@f.DES_ANTECESORA</td><td>→</td><td>@f.DES_SUCESORA</td>
+                            <td><MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => _filas.RemoveAt(idx))" data-accion="quitar" /></td></tr>
+                    }
+                    @if (_filas.Count == 0) { <tr><td colspan="4" style="opacity:.6;">Sin precedencias: las operaciones no tienen orden obligatorio entre sí.</td></tr> }
+                </tbody>
+            </table>
+        </div>
+        <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.65;">@_filas.Count precedencia(s)</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cerrar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .rp-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .rp-tabla th, .rp-tabla td { padding: 3px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .rp-tabla th { font-weight: 600; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RutaTiempoResumen? Ruta { get; set; }
+    [Parameter] public List<RutaNodo> Nodos { get; set; } = new();
+
+    private List<RutaPrecedencia> _filas = new();
+    private List<RutaNodo> _hojas = new();
+    private int _a, _s;
+    private bool _guardando;
+    private string _error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _hojas = Nodos.Where(n => n.FLG_HOJA && n.COD_OPERACION is not null).ToList();
+        await Leer();
+    }
+
+    private async Task Leer()
+    {
+        if (Ruta is null) return;
+        var r = await OperacionesApi.LeerAsync<List<RutaPrecedencia>>(Http, IngRoute.RutaTiempos(Ruta.COD_RUTA_PRODUCCION, "precedencias"));
+        if (!r.Ok) _error = r.Mensaje ?? "No se pudieron leer las precedencias.";
+        _filas = r.Data ?? new();
+    }
+
+    private string Nombre(int num) => _hojas.FirstOrDefault(n => n.NUM_ESTRUCTURA_RUTA_PROCESO == num)?.DES_OPERACION ?? num.ToString();
+
+    private void Agregar()
+    {
+        _error = "";
+        if (_a == 0 || _s == 0) { _error = "Elige la antecesora y la sucesora."; return; }
+        if (_a == _s) { _error = "Una operación no puede ir después de sí misma."; return; }
+        if (_filas.Any(f => f.NUM_ESTRUCTURA_ANTECESORA == _a && f.NUM_ESTRUCTURA_SUCESORA == _s)) return;
+        _filas.Add(new RutaPrecedencia { COD_RUTA_PRODUCCION = Ruta?.COD_RUTA_PRODUCCION ?? "", NUM_ESTRUCTURA_ANTECESORA = _a, NUM_ESTRUCTURA_SUCESORA = _s, DES_ANTECESORA = Nombre(_a), DES_SUCESORA = Nombre(_s) });
+    }
+
+    private async Task Generar()
+    {
+        _error = "";
+        if (Ruta is null) return;
+        var r = await OperacionesApi.EnviarAsync<int>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/precedencias/generar", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, REEMPLAZAR = true });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo generar."; return; }
+        Snackbar.Add($"Se generaron {r.Data} precedencia(s).", Severity.Success);
+        await Leer();
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (Ruta is null) return;
+        _guardando = true;
+        var cuerpo = new RutaPrecedenciasGuardarDto
+        {
+            COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION,
+            Precedencias = _filas.Select(f => new RutaPrecedenciaDto { NUM_ESTRUCTURA_ANTECESORA = f.NUM_ESTRUCTURA_ANTECESORA, NUM_ESTRUCTURA_SUCESORA = f.NUM_ESTRUCTURA_SUCESORA }).ToList()
+        };
+        var r = await ProyectoApi.PutAsync(Http, IngRoute.RutasTiempos + "/precedencias", cuerpo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add("Precedencias guardadas.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

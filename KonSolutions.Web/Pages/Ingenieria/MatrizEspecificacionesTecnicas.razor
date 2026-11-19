@@ -1,0 +1,826 @@
+@page "/ingenieria/matriz-especificaciones-tecnicas"
+@attribute [Authorize]
+@using System.Net.Http.Json
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@using FamiliaModel = KONSolutions.Shared.Models.Estandar.FamiliasProducto
+@using SubFamiliaModel = KONSolutions.Shared.Models.Estandar.SubFamiliasProducto
+@using PetModel = KONSolutions.Shared.Models.Estandar.ProductosEspecificacionesTecnicas
+@using ItemModel = KONSolutions.Shared.Models.Comercial.EspecificacionesItemsTecnicosComboDependiente
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+@inject AccessLogService AccessLog
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   MATRIZ DE ESPECIFICACIONES TÉCNICAS
+
+   Carga masiva: se elige Grupo / Familia / Sub Familia y se obtiene una matriz con
+   las especificaciones en un eje y los productos en el otro, con un botón para
+   invertirlos.
+
+   NO HAY CÓDIGO NUEVO EN EL API. Todo sale de endpoints que ya existen:
+     GET  estandar/productos                                            → maestro
+     GET  estandar/productos-especificaciones-tecnicas?codProducto=     → asignadas + valores
+     GET  ingenieria/especificaciones-items-tecnicos/combo-dependientes → ítems de lista
+     POST estandar/productos-especificaciones-tecnicas                  → graba UNA celda
+     POST estandar/productos/{cod}/actualizar-descripcion-detalle
+   Ni un controlador, ni un servicio, ni un SP nuevo.
+
+   SE GRABA SOLO LO MODIFICADO. No es una optimización: el POST de alta manda un juego
+   fijo de campos, así que reenviar una fila que nadie tocó la reescribe con lo que la
+   pantalla tenga en memoria. Lo que no se toca, no se toca.
+
+   EL COSTO DE CARGAR es una llamada por producto — el SHOWALL de asignadas recibe un
+   solo COD_PRODUCTO. Se disparan de a 6 en paralelo. Con 40 productos son 40 llamadas
+   cortas; si alguna vez son cientos, ahí conviene un SP que reciba la sub familia.
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+<PageTitle>Matriz de Especificaciones Técnicas · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<style>
+    /* La matriz scrollea DENTRO de su caja y no en la página: con los dos ejes fijos,
+       perder de vista el encabezado deja las celdas sin significado. */
+    /* El alto NO se declara aquí: lo calcula gridAutoAlto.js, que estira cada
+       [data-resizable-grid] hasta el borde superior de la barra de estado y lo rehace
+       cuando cambia el tamaño de la ventana, el zoom de la app o el layout de arriba.
+
+       Antes había un max-height: calc(100vh - 330px). Esos 330px eran un número inventado
+       —la suma estimada del encabezado, los filtros y la barra de orientación— así que
+       sobraba pantalla abajo y, con el filtro en dos líneas, hubiera faltado.
+
+       Solo queda un alto MÍNIMO, para el instante entre que se dibuja la grilla y el
+       script la mide. */
+    .matriz-cont {
+        overflow: auto;
+        min-height: 150px;
+        border: 1px solid var(--grilla-borde, #d8d0c0);
+        border-radius: 4px;
+        background: var(--paper-back, #fff);
+    }
+    .matriz-cont table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; }
+    .matriz-cont th, .matriz-cont td {
+        border-right: 1px solid var(--grilla-borde-suave, #e6dfd2);
+        border-bottom: 1px solid var(--grilla-borde-suave, #e6dfd2);
+    }
+    .matriz-cont thead th {
+        position: sticky; top: 0; z-index: 3;
+        background: var(--grilla-cab-fondo, #2b2622);
+        color: var(--grilla-cab-texto, #fff);
+        font-size: .78rem; font-weight: 600; text-align: left;
+        padding: 8px 10px; vertical-align: bottom; border-bottom: 0;
+    }
+    /* La esquina tapa a las dos barras fijas a la vez, así que necesita el z-index más alto. */
+    .matriz-cont thead th.esquina { left: 0; z-index: 5; min-width: 270px; }
+    .matriz-cont thead th .cod { display: block; font-size: .68rem; font-weight: 400; opacity: .62; margin-top: 2px; }
+    .matriz-cont tbody th {
+        position: sticky; left: 0; z-index: 2;
+        background: var(--paper-back-2, #f7f2e8);
+        text-align: left; font-weight: 500; font-size: .84rem;
+        padding: 6px 10px; min-width: 270px;
+    }
+    .matriz-cont tbody th .cod { display: block; font-size: .68rem; opacity: .6; margin-top: 1px; }
+    .matriz-cont td { padding: 4px 6px; vertical-align: middle; }
+    .matriz-cont .col-dato { min-width: 210px; }
+
+    /* Los controles van sin margen propio: aquí la separación la da el padding de la celda
+       de la tabla, no la grilla de formulario, y el label flotante no hace falta porque el
+       encabezado de fila y el de columna ya dicen qué es cada celda.
+
+       OJO al editar este bloque: Razor parsea el contenido de la hoja de estilo como marcado,
+       así que una etiqueta HTML escrita dentro de un comentario CSS —aun comentada— la toma
+       como etiqueta abierta y falla con RZ9980. Nombra los elementos en palabras. */
+    .matriz-cont .aria-combo,
+    .matriz-cont .mud-input-control { margin: 0 !important; }
+    .matriz-cont .aria-combo-label { display: none; }
+    .matriz-cont .celda-num input { text-align: right; }
+
+    /* Modificada y todavía sin grabar. */
+    .matriz-cont .celda-sucia .mud-input-outlined-border,
+    .matriz-cont .celda-sucia .aria-combo-input {
+        border-color: var(--mud-palette-warning) !important;
+        border-width: 2px !important;
+    }
+
+    .matriz-cont .fila-grupo th, .matriz-cont .fila-grupo td {
+        background: var(--mud-palette-primary-hover, #e3edf7);
+        font-size: .72rem; letter-spacing: .09em; text-transform: uppercase;
+        font-weight: 600; padding: 4px 10px;
+    }
+    .matriz-cont .celda-na { font-size: .75rem; opacity: .45; font-style: italic; text-align: center; padding: 6px 0; }
+    .matriz-cont .muestra-color {
+        width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .matriz-cont .muestra-color.grande {
+        width: 16px; height: 16px; border-radius: 3px;
+        border: 1px solid var(--grilla-borde, #d8d0c0);
+    }
+</style>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Matriz de Especificaciones Técnicas"
+                      CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+            Schema INGENIERIA@(_especs.Count > 0
+                ? $" · {EspecsVisibles.Count()} especificación(es) · {ProductosVisibles.Count} producto(s) · {SinValor} celda(s) sin valor"
+                : "")
+        </MudText>
+    </div>
+</div>
+
+@* ── Filtros ───────────────────────────────────────────────────────────────── *@
+<MudPaper Class="pa-4 mb-3" Elevation="0" Style="border:1px solid var(--grilla-borde,#d8d0c0);">
+    <MudGrid>
+        <MudItem xs="12" sm="6" md="3">
+            <AriaCombo TItem="ComboboxItem" Items="_grupos"
+                       TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+                       Value="@_codGrupo" ValueChanged="@(v => OnGrupoChanged(v))"
+                       Label="Grupo de Producto" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <AriaCombo TItem="ComboboxItem" Items="_familias"
+                       TextFunc="@(f => $"{f.Id} - {f.Texto}")" ValueFunc="@(f => f.Id)"
+                       Value="@_codFamilia" ValueChanged="@(v => OnFamiliaChanged(v))"
+                       Label="Familia de Producto" Disabled="@string.IsNullOrEmpty(_codGrupo)" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <AriaCombo TItem="ComboboxItem" Items="_subFamilias"
+                       TextFunc="@(s => $"{s.Id} - {s.Texto}")" ValueFunc="@(s => s.Id)"
+                       Value="@_codSubFamilia" ValueChanged="@(v => _codSubFamilia = v)"
+                       Label="Sub Familia de Producto" Disabled="@string.IsNullOrEmpty(_codFamilia)" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3" Class="d-flex align-center gap-2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.GridOn"
+                       Disabled="@(_cargando || _guardando || string.IsNullOrEmpty(_codSubFamilia))"
+                       OnClick="CargarMatrizAsync">Cargar matriz</MudButton>
+            <MudButton StartIcon="@Icons.Material.Filled.Save"
+                       Disabled="@(_guardando || _cargando || _sucias.Count == 0)"
+                       OnClick="GuardarAsync" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar">
+                Guardar@(_sucias.Count > 0 ? $" ({_sucias.Count})" : "")
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+@if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" />
+    <MudText Typo="Typo.body2" Class="mono" Style="opacity:.6;">
+        @* Mientras se trae el maestro, _productos todavía está vacío y este cartel decía
+           "0 de 0 producto(s)", que se lee como "no hay ninguno" en vez de "todavía no sé
+           cuántos son". Hasta saberlo, se dice qué está haciendo. *@
+        @(_productos.Count == 0
+            ? "Buscando productos de la sub familia…"
+            : $"Leyendo especificaciones — {_leidos} de {_productos.Count} producto(s)…")
+    </MudText>
+}
+else if (_especs.Count == 0)
+{
+    <MudPaper Class="pa-8 d-flex flex-column align-center gap-2" Elevation="0"
+              Style="border:1px dashed var(--grilla-borde,#d8d0c0);">
+        <MudIcon Icon="@Icons.Material.Filled.GridOn" Size="Size.Large" Style="opacity:.3;" />
+        <MudText Class="mono" Style="opacity:.55;">@_mensajeVacio</MudText>
+    </MudPaper>
+}
+else
+{
+    @* ── Estado y orientación ───────────────────────────────────────────────── *@
+    <div class="d-flex align-center gap-4 mb-2 flex-wrap">
+        @* Buscador de la cabecera. Filtra filas Y columnas a la vez: en una matriz, filtrar
+           un solo eje deja la mitad del ruido. No recarga nada — trabaja sobre lo que ya
+           está en memoria, así que no pierde lo editado sin grabar. *@
+        <MudTextField T="string" Value="_busqueda" ValueChanged="@((string v) => _busqueda = v ?? "")"
+                      Immediate="true" DebounceInterval="200"
+                      Placeholder="Buscar especificación o producto…"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      Style="max-width:320px;" Class="mt-0" />
+
+        <MudSwitch T="bool" Value="_soloFichaTecnica" ValueChanged="@((bool v) => _soloFichaTecnica = v)"
+                   Color="Color.Success" Size="Size.Small" Label="Solo ficha técnica" />
+        <MudSwitch T="bool" Value="_agruparPorGrupo" ValueChanged="@((bool v) => _agruparPorGrupo = v)"
+                   Color="Color.Success" Size="Size.Small" Label="Agrupar por grupo" />
+        <MudSpacer />
+        @if (_sucias.Count > 0)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                     Icon="@Icons.Material.Filled.EditNote">@_sucias.Count sin grabar</MudChip>
+        }
+        <MudButtonGroup Variant="Variant.Outlined" Size="Size.Small">
+            <MudButton StartIcon="@Icons.Material.Filled.TableRows"
+                       Color="@(_especEnFilas ? Color.Primary : Color.Default)"
+                       OnClick="@(() => _especEnFilas = true)">Especificaciones en filas</MudButton>
+            <MudButton StartIcon="@Icons.Material.Filled.ViewColumn"
+                       Color="@(!_especEnFilas ? Color.Primary : Color.Default)"
+                       OnClick="@(() => _especEnFilas = false)">Productos en filas</MudButton>
+        </MudButtonGroup>
+    </div>
+
+    @* Sin coincidencias NO es lo mismo que sin datos: la matriz está cargada y lo que
+       falta es el texto buscado. Decirlo evita que parezca que se vació. *@
+    @if (SinCoincidencias)
+    {
+        <MudAlert Severity="Severity.Normal" Dense="true" Class="mb-2"
+                  Icon="@Icons.Material.Filled.SearchOff">
+            Nada coincide con “@_busqueda”. La matriz sigue cargada con
+            @_especs.Count especificación(es) y @_productos.Count producto(s).
+        </MudAlert>
+    }
+
+    @* ── La matriz ──────────────────────────────────────────────────────────── *@
+    @* data-resizable-grid: lo toma gridAutoAlto.js y le da el alto que queda hasta la barra
+       de estado. Es el mismo mecanismo que usan las ~156 grillas de la solución, así que la
+       matriz se comporta igual que el resto cuando cambia el zoom o el tamaño de ventana. *@
+    <div class="matriz-cont" data-resizable-grid>
+        <table>
+            @if (_especEnFilas)
+            {
+                <thead>
+                    <tr>
+                        <th class="esquina">Especificación técnica</th>
+                        @foreach (var p in ProductosVisibles)
+                        {
+                            <th class="col-dato">@p.DES_PRODUCTO<span class="cod">@Cod(p)</span></th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @{ string? grupoDibujado = null; }
+                    @foreach (var esp in EspecsVisibles)
+                    {
+                        @if (_agruparPorGrupo && esp.DesGrupo != grupoDibujado)
+                        {
+                            grupoDibujado = esp.DesGrupo;
+                            <tr class="fila-grupo">
+                                <th>@(string.IsNullOrWhiteSpace(grupoDibujado) ? "Sin grupo" : grupoDibujado)</th>
+                                <td colspan="@ProductosVisibles.Count"></td>
+                            </tr>
+                        }
+                        <tr>
+                            <th>@esp.Descripcion<span class="cod">@Etiqueta(esp)</span></th>
+                            @foreach (var p in ProductosVisibles)
+                            {
+                                <td class="col-dato">@DibujarCelda(esp, Cod(p))</td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            }
+            else
+            {
+                <thead>
+                    <tr>
+                        <th class="esquina">Producto</th>
+                        @foreach (var esp in EspecsVisibles)
+                        {
+                            <th class="col-dato">@esp.Descripcion<span class="cod">@Etiqueta(esp)</span></th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in ProductosVisibles)
+                    {
+                        <tr>
+                            <th>@p.DES_PRODUCTO<span class="cod">@Cod(p)</span></th>
+                            @foreach (var esp in EspecsVisibles)
+                            {
+                                <td class="col-dato">@DibujarCelda(esp, Cod(p))</td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            }
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // ── Filtros ────────────────────────────────────────────────────────────
+    private List<ComboboxItem> _grupos = new(), _familias = new(), _subFamilias = new();
+    private string? _codGrupo, _codFamilia, _codSubFamilia;
+
+    // ── Matriz ─────────────────────────────────────────────────────────────
+    private List<EspecMatriz> _especs = new();
+    private List<ProductoModel> _productos = new();
+    private bool _especEnFilas = true, _soloFichaTecnica, _agruparPorGrupo = true;
+    private bool _cargando, _guardando;
+    private int _leidos;
+    private string _mensajeVacio = "Elige grupo, familia y sub familia, y carga la matriz.";
+
+    /// <summary>El valor de cada celda, indexado por (producto, especificación).
+    /// Ésta es la estructura que permite invertir la matriz sin recargar y sin perder lo
+    /// editado: el dato no vive en la fila ni en la columna, vive en el par.</summary>
+    private readonly Dictionary<(string Prod, string Esp), CeldaMatriz> _celdas = new();
+
+    /// <summary>Celdas tocadas desde la última carga. Es lo único que se graba.</summary>
+    private readonly HashSet<(string Prod, string Esp)> _sucias = new();
+
+    /// <summary>Ítems de lista, cacheados por especificación + ítem del padre. Una lista
+    /// dependiente ofrece distintos ítems según lo elegido en su padre, y eso cambia POR
+    /// PRODUCTO: por eso la clave incluye el ítem del padre y no alcanza con la
+    /// especificación sola.</summary>
+    private readonly Dictionary<string, List<ItemModel>> _itemsCache = new();
+
+    /// <summary>Texto del buscador de la cabecera. Filtra LOS DOS EJES: una matriz filtrada
+    /// por un solo eje deja la mitad del ruido en pantalla.</summary>
+    private string _busqueda = "";
+
+    /// <summary>Sin acentos y en minúsculas: buscar "prendas" tiene que encontrar
+    /// "PRENDAS" y buscar "codigo" tiene que encontrar "CÓDIGO". Quien busca no sabe
+    /// cómo se tipeó el dato.</summary>
+    private static string Normaliza(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var d = s.Trim().ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(d.Length);
+        foreach (var c in d)
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)
+                != System.Globalization.UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        return sb.ToString();
+    }
+
+    private bool Coincide(params string?[] campos)
+    {
+        var q = Normaliza(_busqueda);
+        if (q.Length == 0) return true;
+        foreach (var c in campos)
+            if (Normaliza(c).Contains(q)) return true;
+        return false;
+    }
+
+    /// <summary>Las especificaciones que se dibujan, ya filtradas y ORDENADAS POR DESCRIPCIÓN.
+    ///
+    /// El orden depende de si se agrupa: con grupos, la descripción ordena DENTRO de cada
+    /// grupo — si no, el encabezado de grupo se repetiría cada dos filas, porque el render
+    /// lo dibuja cada vez que cambia respecto de la fila anterior.
+    ///
+    /// Antes ordenaba por NUM_ORDEN_PRESENTACION. Ese es el orden de la ficha del producto,
+    /// que ahí tiene sentido —lo define quien configura—; en una matriz de decenas de filas
+    /// que se recorre buscando una, pesa más poder encontrarla alfabéticamente.</summary>
+    private IEnumerable<EspecMatriz> EspecsVisibles
+    {
+        get
+        {
+            var q = _especs.Where(e => !_soloFichaTecnica || e.FlgFichaTecnica == true)
+                           .Where(e => Coincide(e.Descripcion, e.Codigo, e.DesGrupo));
+            // El "￿" manda las sin grupo al final sin un OrderBy aparte.
+            return _agruparPorGrupo
+                ? q.OrderBy(e => string.IsNullOrWhiteSpace(e.DesGrupo) ? "￿" : e.DesGrupo)
+                   .ThenBy(e => e.Descripcion)
+                : q.OrderBy(e => e.Descripcion);
+        }
+    }
+
+    /// <summary>Los productos que se dibujan. Mismo filtro, otro eje.</summary>
+    private List<ProductoModel> ProductosVisibles =>
+        _productos.Where(p => Coincide(p.DES_PRODUCTO, p.COD_PRODUCTO)).ToList();
+
+    /// <summary>Si el texto buscado no aparece en ningún eje. Distinto de "no hay datos":
+    /// la matriz está cargada, lo que no hay es coincidencias.</summary>
+    private bool SinCoincidencias =>
+        _busqueda.Length > 0 && (!EspecsVisibles.Any() || ProductosVisibles.Count == 0);
+
+    private int SinValor => _celdas.Count(c => !c.Value.NoAplica && c.Value.EstaVacia);
+
+    private static string Cod(ProductoModel p) => p.COD_PRODUCTO.Trim();
+
+    private static string Etiqueta(EspecMatriz e) =>
+        e.Codigo + (string.IsNullOrEmpty(e.Unidad) ? "" : " · " + e.Unidad);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "MatrizEspecificacionesTecnicas");
+        var lc = await Http.SafeGetAsync<ProductosLoadCombosResult>(EstandarRoute.ProductosLoadcombos);
+        if (lc is not null) _grupos = lc.Grupos;
+    }
+
+    // ── Cascada de filtros ─────────────────────────────────────────────────
+    private async Task OnGrupoChanged(string? val)
+    {
+        _codGrupo = val; _codFamilia = null; _codSubFamilia = null;
+        _subFamilias = new();
+        var fam = string.IsNullOrEmpty(val) ? null
+            : await Http.SafeGetAsync<List<FamiliaModel>>(
+                $"{EstandarRoute.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(val)}");
+        _familias = (fam ?? new())
+            .Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO })
+            .ToList();
+        LimpiarMatriz("Elige la familia y la sub familia, y carga la matriz.");
+    }
+
+    private async Task OnFamiliaChanged(string? val)
+    {
+        _codFamilia = val; _codSubFamilia = null;
+        var sub = (string.IsNullOrEmpty(val) || string.IsNullOrEmpty(_codGrupo)) ? null
+            : await Http.SafeGetAsync<List<SubFamiliaModel>>(
+                $"{EstandarRoute.SubFamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(_codGrupo!)}"
+              + $"&codFamiliaProducto={Uri.EscapeDataString(val)}");
+        _subFamilias = (sub ?? new())
+            .Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = s.DES_SUB_FAMILIA_PRODUCTO })
+            .ToList();
+        LimpiarMatriz("Elige la sub familia y carga la matriz.");
+    }
+
+    private void LimpiarMatriz(string mensaje)
+    {
+        _especs = new(); _productos = new();
+        _celdas.Clear(); _sucias.Clear(); _itemsCache.Clear();
+        // La búsqueda se limpia junto con la matriz: un filtro que sobrevive a la carga
+        // hace que la siguiente aparezca a medias sin que se vea por qué.
+        _busqueda = "";
+        _mensajeVacio = mensaje;
+    }
+
+    // ── Carga ──────────────────────────────────────────────────────────────
+    private async Task CargarMatrizAsync()
+    {
+        if (string.IsNullOrEmpty(_codSubFamilia)) return;
+
+        if (_sucias.Count > 0)
+        {
+            var seguir = await DialogService.ShowMessageBox("Cambios sin grabar",
+                $"Hay {_sucias.Count} celda(s) modificada(s) que se van a perder. ¿Recargar igual?",
+                yesText: "Recargar", cancelText: "Cancelar");
+            if (seguir != true) return;
+        }
+
+        _cargando = true; _leidos = 0;
+        LimpiarMatriz("");
+        StateHasChanged();
+
+        try
+        {
+            // 1 · Los productos de la sub familia.
+            //     El SEARCH del maestro solo recibe texto libre —lo verifiqué en
+            //     ProductosSearchDto— así que el filtro por clasificación se hace aquí.
+            var todos = await Http.SafeGetAsync<List<ProductoModel>>(EstandarRoute.Productos) ?? new();
+            _productos = todos
+                .Where(p => Igual(p.COD_GRUPO_PRODUCTO, _codGrupo)
+                         && Igual(p.COD_FAMILIA_PRODUCTO, _codFamilia)
+                         && Igual(p.COD_SUB_FAMILIA_PRODUCTO, _codSubFamilia))
+                .OrderBy(p => p.DES_PRODUCTO)
+                .ToList();
+
+            if (_productos.Count == 0)
+            {
+                _mensajeVacio = "Esa sub familia no tiene productos.";
+                return;
+            }
+
+            // 2 · Las asignadas de cada producto, de a 6 en paralelo.
+            var porProducto = new Dictionary<string, List<PetModel>>();
+            foreach (var lote in _productos.Chunk(6))
+            {
+                var tareas = lote.Select(async p =>
+                {
+                    var cod = Cod(p);
+                    var filas = await Http.SafeGetAsync<List<PetModel>>(
+                        $"{EstandarRoute.ProductosEspecificacionesTecnicas}?codProducto={Uri.EscapeDataString(cod)}");
+                    return (cod, filas: filas ?? new());
+                }).ToList();
+
+                foreach (var t in await Task.WhenAll(tareas))
+                {
+                    porProducto[t.cod] = t.filas;
+                    _leidos++;
+                }
+                StateHasChanged();
+            }
+
+            // 3 · Las filas son la UNIÓN de las especificaciones de todos los productos:
+            //     dos productos de la misma sub familia pueden no tener asignadas
+            //     exactamente las mismas.
+            var vistas = new Dictionary<string, EspecMatriz>();
+            foreach (var filas in porProducto.Values)
+            {
+                foreach (var f in filas)
+                {
+                    var cod = f.COD_ESPECIFICACION_TECNICA.Trim();
+                    if (vistas.ContainsKey(cod)) continue;
+                    vistas[cod] = new EspecMatriz
+                    {
+                        Codigo = cod,
+                        Descripcion = Descripcion(f, cod),
+                        CodPadre = string.IsNullOrWhiteSpace(f.COD_ESPECIFICACION_TECNICA_PADRE)
+                            ? null : f.COD_ESPECIFICACION_TECNICA_PADRE.Trim(),
+                        Tipo = Tipo(f),
+                        CanDecimal = f.CAN_DECIMAL,
+                        Unidad = Unidad(f),
+                        FlgRange = f.FLG_RANGE == true,
+                        FlgFichaTecnica = f.FLG_FICHA_TECNICA,
+                        FlgIncluirDescripcion = f.FLG_INCLUIR_DESCRIPCION,
+                        CodGrupo = f.COD_GRUPO_ESPECIFICACION_TECNICA,
+                        DesGrupo = f.DES_GRUPO_ESPECIFICACION_TECNICA,
+                        NumOrden = f.NUM_ORDEN_PRESENTACION
+                    };
+                }
+            }
+
+            // El orden NO se fija aquí: lo resuelve EspecsVisibles, que ordena por
+            // descripción y tiene en cuenta si se está agrupando por grupo. Fijarlo en dos
+            // lugares es la forma segura de que un día dejen de coincidir.
+            _especs = vistas.Values.ToList();
+
+            // 4 · Las celdas. Lo que no vino para un producto es "no aplica".
+            foreach (var p in _productos)
+            {
+                var cod = Cod(p);
+                var porEsp = porProducto.TryGetValue(cod, out var l)
+                    ? l.GroupBy(f => f.COD_ESPECIFICACION_TECNICA.Trim())
+                       .ToDictionary(g => g.Key, g => g.First())
+                    : new Dictionary<string, PetModel>();
+
+                foreach (var esp in _especs)
+                    _celdas[(cod, esp.Codigo)] = porEsp.TryGetValue(esp.Codigo, out var f)
+                        ? CeldaMatriz.Desde(f, esp.Tipo)
+                        : new CeldaMatriz { NoAplica = true };
+            }
+
+            // 5 · Los ítems de las listas, ANTES de dibujar.
+            //     Esto se hacía a demanda desde el render y los combos salían vacíos. Ahora
+            //     se cargan aquí, esperados, igual que en la Ficha Técnica.
+            await PrecargarItemsAsync();
+
+            if (_especs.Count == 0)
+                _mensajeVacio = "Los productos de esa sub familia no tienen especificaciones asignadas.";
+        }
+        catch (Exception ex)
+        {
+            LimpiarMatriz("No se pudo cargar la matriz.");
+            await ErrorLog.LogAsync(ex, nameof(MatrizEspecificacionesTecnicas), nameof(CargarMatrizAsync));
+            Snackbar.Add("No se pudo cargar la matriz.", Severity.Error);
+        }
+        finally { _cargando = false; }
+    }
+
+    private static bool Igual(string? a, string? b) =>
+        string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>La singular primero: en una columna angosta "COLOR DE CAJA" se lee mejor que
+    /// "COLORES DE CAJA". Es el mismo orden de preferencia que usa la Ficha Técnica.</summary>
+    private static string Descripcion(PetModel f, string cod) =>
+        !string.IsNullOrWhiteSpace(f.DES_ESPECIFICACION_TECNICA_SINGULAR) ? f.DES_ESPECIFICACION_TECNICA_SINGULAR
+        : (!string.IsNullOrWhiteSpace(f.DES_ESPECIFICACION_TECNICA) ? f.DES_ESPECIFICACION_TECNICA : cod);
+
+    private static TipoEspecMatriz Tipo(PetModel v) => v switch
+    {
+        { FLG_LISTA: true }      => TipoEspecMatriz.Lista,
+        { FLG_ENTERO: true }     => TipoEspecMatriz.Entero,
+        { FLG_NUMERICO: true }   => TipoEspecMatriz.Numerico,
+        { FLG_CADENA: true }     => TipoEspecMatriz.Cadena,
+        { FLG_FECHA_HORA: true } => TipoEspecMatriz.FechaHora,
+        { FLG_FECHA: true }      => TipoEspecMatriz.Fecha,
+        { FLG_HORA: true }       => TipoEspecMatriz.Hora,
+        { FLG_LOGICO: true }     => TipoEspecMatriz.Logico,
+        { FLG_COLOR: true }      => TipoEspecMatriz.Color,
+        _ => TipoEspecMatriz.Ninguno
+    };
+
+    /// <summary>Unidad principal, y la divisora cuando la hay: "LIBRA (lb) / PULGADA (inh)".
+    /// Las tres columnas de la divisora las agrega el SHOWALL ampliado; mientras no las
+    /// devuelva llegan en NULL y se muestra la unidad sola.</summary>
+    private static string? Unidad(PetModel v)
+    {
+        if (string.IsNullOrWhiteSpace(v.DES_UNIDAD_MEDIDA)) return null;
+        var principal = $"{v.DES_UNIDAD_MEDIDA} ({v.COD_SIMBOLO})";
+        return string.IsNullOrWhiteSpace(v.DES_UNIDAD_MEDIDA_DIVISORA)
+            ? principal
+            : $"{principal} / {v.DES_UNIDAD_MEDIDA_DIVISORA} ({v.COD_SIMBOLO_DIVISORA})";
+    }
+
+    // ── Dibujo ─────────────────────────────────────────────────────────────
+    private RenderFragment DibujarCelda(EspecMatriz esp, string codProducto) => __builder =>
+    {
+        var clave = (codProducto, esp.Codigo);
+        var celda = _celdas.TryGetValue(clave, out var c) ? c : new CeldaMatriz { NoAplica = true };
+
+        <MatrizCelda Espec="esp" Celda="celda"
+                     Items="@(esp.Tipo == TipoEspecMatriz.Lista ? ItemsDe(esp, codProducto) : new())"
+                     Sucia="@_sucias.Contains(clave)"
+                     Disabled="@(_guardando || _cargando)"
+                     OnCambio="@(() => CambioAsync(clave))" />
+    };
+
+    /// <summary>La celda ya viene modificada por el componente —es el mismo objeto—, así que
+    /// aquí solo queda marcarla y arrastrar las consecuencias.</summary>
+    private async Task CambioAsync((string Prod, string Esp) clave)
+    {
+        _sucias.Add(clave);
+
+        // Cambiar el valor de un padre invalida a sus hijas PARA ESE PRODUCTO: la lista
+        // dependiente ya no ofrece lo mismo. Se borra el valor de la hija, que dejó de ser
+        // válido, y se piden sus ítems nuevos — esperando la respuesta, no disparándola al
+        // aire, que es lo que dejaba los combos vacíos.
+        foreach (var hija in _especs.Where(e => PadreDe(e)?.Codigo == clave.Esp))
+        {
+            if (_celdas.TryGetValue((clave.Prod, hija.Codigo), out var ch)
+                && !string.IsNullOrEmpty(ch.CodItem))
+            {
+                ch.CodItem = null;
+                _sucias.Add((clave.Prod, hija.Codigo));
+            }
+
+            var claveHija = ClaveCache(hija, clave.Prod);
+            _itemsCache.Remove(claveHija);
+            await CargarItemsAsync(hija, clave.Prod, claveHija);
+        }
+    }
+
+    // ── Ítems de lista ─────────────────────────────────────────────────────
+
+    /// <summary>El padre REAL de una especificación, o null si no tiene.
+    ///
+    /// No alcanza con mirar si COD_ESPECIFICACION_TECNICA_PADRE viene cargado: las
+    /// especificaciones de primer nivel traen "00000" —el Root— que NO es vacío ni NULL.
+    /// Tomarlo como padre las convertía en listas dependientes de algo inexistente, y sus
+    /// combos salían vacíos.
+    ///
+    /// El criterio correcto —el mismo que usa EspecificacionesTecnicasPanel— es que el padre
+    /// cuenta solo si está entre las especificaciones de la matriz. Así no hay que conocer el
+    /// código del Root: si el padre no está cargado, no hay dependencia que resolver.</summary>
+    private EspecMatriz? PadreDe(EspecMatriz esp) =>
+        esp.CodPadre is null ? null : _especs.FirstOrDefault(e => e.Codigo == esp.CodPadre);
+
+    private string ClaveCache(EspecMatriz esp, string codProducto)
+    {
+        var padre = PadreDe(esp);
+        if (padre is null) return esp.Codigo;
+        var itemPadre = _celdas.TryGetValue((codProducto, padre.Codigo), out var p) ? p.CodItem : null;
+        return $"{esp.Codigo}|{padre.Codigo}|{itemPadre}";
+    }
+
+    /// <summary>Solo lee el caché. NO dispara nada.
+    ///
+    /// Antes disparaba la carga si faltaba, desde adentro del render y sin esperarla, y los
+    /// combos salían vacíos. Un método que se llama al dibujar tiene que ser puro: la carga
+    /// va antes, en PrecargarItemsAsync.</summary>
+    private List<ItemModel> ItemsDe(EspecMatriz esp, string codProducto) =>
+        _itemsCache.TryGetValue(ClaveCache(esp, codProducto), out var items) ? items : new();
+
+    /// <summary>Trae los ítems de todas las listas de la matriz, esperando cada tanda.
+    ///
+    /// No es una llamada por celda: una lista SIN padre se pide UNA vez para toda la matriz
+    /// —sus ítems no dependen del producto—, y una lista CON padre, una vez por cada valor
+    /// distinto que tenga el padre entre los productos cargados. En la práctica son unas
+    /// pocas llamadas, no cientos.
+    ///
+    /// El orden importa: primero las raíz y después las dependientes, porque el ítem del
+    /// padre tiene que estar resuelto para poder pedir los de la hija.</summary>
+    private async Task PrecargarItemsAsync()
+    {
+        var listas = _especs.Where(e => e.Tipo == TipoEspecMatriz.Lista).ToList();
+        if (listas.Count == 0) return;
+
+        var fallidas = 0;
+
+        // Las claves a pedir, sin repetir. Un HashSet porque muchas celdas comparten clave.
+        var pedidos = new Dictionary<string, (EspecMatriz Esp, string Prod)>();
+
+        foreach (var esp in listas.Where(e => PadreDe(e) is null))
+            pedidos[esp.Codigo] = (esp, Cod(_productos[0]));
+
+        foreach (var esp in listas.Where(e => PadreDe(e) is not null))
+            foreach (var p in _productos)
+            {
+                var clave = ClaveCache(esp, Cod(p));
+                if (!pedidos.ContainsKey(clave)) pedidos[clave] = (esp, Cod(p));
+            }
+
+        foreach (var lote in pedidos.Chunk(6))
+        {
+            var tareas = lote.Select(kv => CargarItemsAsync(kv.Value.Esp, kv.Value.Prod, kv.Key)).ToList();
+            foreach (var ok in await Task.WhenAll(tareas))
+                if (!ok) fallidas++;
+            StateHasChanged();
+        }
+
+        // Si algo no cargó hay que decirlo: un combo vacío sin aviso parece un dato que no
+        // existe, y lo que pasó fue que la lista no llegó.
+        if (fallidas > 0)
+            Snackbar.Add($"{fallidas} lista(s) no se pudieron cargar. Sus combos van a salir vacíos.",
+                         Severity.Warning);
+    }
+
+    /// <summary>Devuelve true si cargó (aunque venga vacía) y false si falló la llamada.</summary>
+    private async Task<bool> CargarItemsAsync(EspecMatriz esp, string codProducto, string clave)
+    {
+        var url = $"{IngenieriaRoute.EspecificacionesItemsTecnicosComboDependientes}"
+                + $"?codEspecificacionTecnica={Uri.EscapeDataString(esp.Codigo)}";
+
+        // Solo cuenta el padre que esté cargado en la matriz — ver PadreDe. Las de primer
+        // nivel traen "00000" (Root) en COD_ESPECIFICACION_TECNICA_PADRE y no son dependientes.
+        var padre = PadreDe(esp);
+        if (padre is not null)
+        {
+            var itemPadre = _celdas.TryGetValue((codProducto, padre.Codigo), out var p) ? p.CodItem : null;
+
+            // Sin padre elegido no hay hijas que ofrecer. No es un error: es que todavía no
+            // hay nada que pedir.
+            if (string.IsNullOrEmpty(itemPadre)) { _itemsCache[clave] = new(); return true; }
+
+            url += $"&codEspecificacionTecnicaDependiente={Uri.EscapeDataString(padre.Codigo)}"
+                 + $"&codItemTecnicoDependiente={itemPadre}";
+        }
+
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ItemModel>>>(url);
+            _itemsCache[clave] = (r?.Data ?? new())
+                .OrderBy(i => i.NUM_ORDEN_PRESENTACION ?? int.MaxValue)
+                .ToList();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _itemsCache[clave] = new();
+            await ErrorLog.LogAsync(ex, nameof(MatrizEspecificacionesTecnicas), nameof(CargarItemsAsync), url);
+            return false;
+        }
+    }
+
+    // ── Grabado ────────────────────────────────────────────────────────────
+    private async Task GuardarAsync()
+    {
+        if (_sucias.Count == 0) return;
+        _guardando = true;
+
+        var huboError = false;
+        var productosTocados = new HashSet<string>();
+
+        foreach (var clave in _sucias.ToList())
+        {
+            var esp = _especs.FirstOrDefault(e => e.Codigo == clave.Esp);
+            if (esp is null || !_celdas.TryGetValue(clave, out var c) || c.NoAplica)
+            {
+                _sucias.Remove(clave);
+                continue;
+            }
+
+            // Mismo juego de campos que arma EspecificacionesTecnicasPanel.GuardarAsync. Si la
+            // matriz mandara otra cosa, un mismo dato quedaría distinto según por dónde se cargó.
+            var dto = new
+            {
+                COD_PRODUCTO = clave.Prod,
+                COD_ESPECIFICACION_TECNICA = clave.Esp,
+                COD_ITEM_TECNICO = esp.Tipo == TipoEspecMatriz.Lista && int.TryParse(c.CodItem, out var ci) ? ci : (int?)null,
+                FEC_ESPECIFICACION_TENICA = esp.Tipo is TipoEspecMatriz.Fecha or TipoEspecMatriz.FechaHora ? c.Fecha : null,
+                HOR_ESPECIFICACION_TENICA = esp.Tipo is TipoEspecMatriz.Hora or TipoEspecMatriz.FechaHora ? c.Hora : null,
+                LOG_ESPECIFICACION_TENICA = esp.Tipo == TipoEspecMatriz.Logico ? c.Logico : null,
+                STR_ESPECIFICACION_TENICA = esp.Tipo == TipoEspecMatriz.Cadena ? c.Texto : null,
+                VAL_ESPECIFICACION_TENICA = esp.Tipo switch
+                {
+                    TipoEspecMatriz.Entero when !esp.FlgRange   => c.Texto,
+                    TipoEspecMatriz.Numerico when !esp.FlgRange => c.Texto,
+                    TipoEspecMatriz.Color                       => c.Texto,
+                    _ => null
+                },
+                VAL_MINIMO = esp.Tipo is TipoEspecMatriz.Entero or TipoEspecMatriz.Numerico && esp.FlgRange ? c.Minimo : null,
+                VAL_MAXIMO = esp.Tipo is TipoEspecMatriz.Entero or TipoEspecMatriz.Numerico && esp.FlgRange ? c.Maximo : null,
+                NUM_ORDEN_PRESENTACION = esp.NumOrden,
+                FLG_INCLUIR_DESCRIPCION = esp.FlgIncluirDescripcion,
+                COD_GRUPO_ESPECIFICACION_TECNICA = esp.CodGrupo,
+            };
+
+            var resp = await Http.PostAsJsonAsync(EstandarRoute.ProductosEspecificacionesTecnicas, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                _sucias.Remove(clave);
+                productosTocados.Add(clave.Prod);
+            }
+            else
+            {
+                huboError = true;
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(MatrizEspecificacionesTecnicas), nameof(GuardarAsync),
+                    $"No se pudo guardar \"{esp.Descripcion}\" de {clave.Prod}");
+                // Frenar en el primer error: seguir con cientos de celdas llenaría la pantalla
+                // de diálogos iguales. Lo que ya se grabó queda grabado y sale de _sucias, así
+                // que corregir y volver a Guardar reintenta solo lo que falta.
+                break;
+            }
+        }
+
+        // La descripción detallada del producto se arma con sus especificaciones, así que se
+        // regenera UNA vez por producto tocado y no una por celda.
+        foreach (var cod in productosTocados)
+        {
+            try { await Http.PostAsync(EstandarRoute.ProductosActualizarDescripcionDetalle(cod), null); }
+            catch { }
+        }
+
+        _guardando = false;
+
+        if (!huboError)
+            Snackbar.Add($"Grabado. {productosTocados.Count} producto(s) actualizado(s).", Severity.Success);
+        else
+            Snackbar.Add($"Se grabó parcialmente. Quedan {_sucias.Count} celda(s) sin grabar.", Severity.Warning);
+    }
+}

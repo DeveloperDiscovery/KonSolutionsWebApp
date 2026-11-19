@@ -1,0 +1,84 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* Organigrama del proyecto: los roles que tienen gente asignada en las tareas y su jerarquía (script 73). Cada rol cuelga del rol
+   antecesor más cercano que también esté en el proyecto; si ninguno está, es raíz. Se arma con la jerarquía que se define en Roles de tarea. *@
+
+@if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Class="my-4" />
+}
+else if (_nodos.Count == 0)
+{
+    <MudText Class="pa-6 mono" Style="opacity:.6;">Todavía no hay personas con rol asignado en las tareas del proyecto. Asigna recursos en la pestaña Recursos (con su rol) y el organigrama se arma solo con la jerarquía de roles.</MudText>
+}
+else
+{
+    <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+        <MudText Class="mono" Style="opacity:.7;font-size:.8rem;">@_nodos.Count roles · @_nodos.Sum(n => Personas(n).Count) personas</MudText>
+        <MudSpacer />
+        @foreach (var c in _nodos.Where(n => n.COD_CATEGORIA_ROL != null).GroupBy(n => n.COD_CATEGORIA_ROL).Select(g => g.First()))
+        {
+            <span class="mono" style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px;"><i style="width:10px;height:10px;border-radius:2px;background:@Color(c.COD_CATEGORIA_ROL);display:inline-block;"></i>@c.DES_CATEGORIA_ROL</span>
+        }
+    </div>
+    <ZoomPanel><div class="org-tree"><ul>@foreach (var r in Hijos(null)) { @Nodo(r) }</ul></div></ZoomPanel>
+}
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+
+    private List<ExpedienteOrganigramaNodo> _nodos = new();
+    private bool _cargando = true;
+
+    private int _cargadoDe = -1;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_cargadoDe == NumProyecto) return;   // los re-dibujos del padre no vuelven a pedir
+        _cargadoDe = NumProyecto;
+        await CargarAsync();
+    }
+
+    public async Task CargarAsync()
+    {
+        _cargando = true;
+        try { _nodos = await Http.SafeGetAsync<List<ExpedienteOrganigramaNodo>>(ApiRoutes.Proyectos.Exp(NumProyecto, "organigrama")) ?? new(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoOrganigrama), nameof(CargarAsync)); _nodos = new(); }
+        _cargando = false;
+    }
+
+    private IEnumerable<ExpedienteOrganigramaNodo> Hijos(string? padre)
+        => _nodos.Where(n => string.Equals(n.COD_ROL_PADRE_EFECTIVO, padre, StringComparison.Ordinal) && n.COD_ROL_TAREA != padre);
+
+    private static readonly string[] Paleta = { "#7c3aed", "#1d4ed8", "#0e7490", "#15803d", "#b45309", "#c2410c", "#be185d", "#475569", "#0f766e", "#6d28d9" };
+    private static string Color(string? cat)
+    {
+        if (string.IsNullOrEmpty(cat)) return "#64748b";
+        var i = Array.IndexOf(new[] { "EST", "DIR", "GES", "ESP", "TEC", "OPE", "USU", "EXT", "CON", "SOP" }, cat);
+        return Paleta[i < 0 ? 7 : i];
+    }
+
+    private static List<(string Nombre, string Detalle)> Personas(ExpedienteOrganigramaNodo n)
+        => (n.CARGOS ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries).Select(t =>
+        {
+            var i = t.IndexOf(": ", StringComparison.Ordinal);
+            var nombre = i < 0 ? t : t[..i];
+            var det = i < 0 ? "" : t[(i + 2)..];
+            return (nombre, det.Trim() == "- / -" ? "" : det);
+        }).ToList();
+
+    private RenderFragment Nodo(ExpedienteOrganigramaNodo n) => @<li>
+        <div class="org-card" style="--cat:@Color(n.COD_CATEGORIA_ROL);">
+            <div class="rol">@n.DES_ROL_TAREA</div>
+            <div class="cat">@n.COD_ROL_TAREA@(n.DES_CATEGORIA_ROL is null ? "" : $" · {n.DES_CATEGORIA_ROL}")</div>
+            @foreach (var p in Personas(n))
+            {
+                <div class="per">@p.Nombre@if (p.Detalle != "") { <small>@p.Detalle</small> }</div>
+            }
+        </div>
+        @{ var hs = Hijos(n.COD_ROL_TAREA).ToList(); }
+        @if (hs.Count > 0) { <ul>@foreach (var h in hs) { @Nodo(h) }</ul> }
+    </li>;
+}

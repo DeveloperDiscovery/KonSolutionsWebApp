@@ -1,0 +1,442 @@
+@using Modelo = KONSolutions.Shared.Models.Proyectos.Proyectos
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Expediente del proyecto: la cabecera (pestaña General) y, ya grabado el proyecto, sus pestañas de Planificación (Gantt), Recursos,
+   Costos, Materiales, Riesgos y Documentos. Costos y Materiales salen según el tipo de proyecto (presupuesto/valorado y producción). *@
+@if (_grabado && _resumen is not null)
+{
+    <div class="d-flex align-center gap-3 flex-wrap mb-2">
+        <MudText Typo="Typo.h6">Proyecto @_resumen.NUM_PROYECTO · @_resumen.DES_PROYECTO</MudText>
+        <EstadoChip Estado="@_resumen.DES_ESTADO" BackColor="@_resumen.DES_BACKCOLOR" ForeColor="@_resumen.DES_FORECOLOR" />
+        <span class="mono" style="opacity:.7;">@_resumen.DES_TIPO_PROYECTO</span>
+        <MudSpacer />
+        <div class="d-flex align-center gap-2" style="min-width:220px;">
+            <div class="prog-mini" style="flex:1;height:10px;"><i style="width:@(Math.Min(100m, _resumen.TAS_AVANCE).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%"></i></div>
+            <span class="mono">@_resumen.TAS_AVANCE.ToString("0")% · @_resumen.NUM_TAREAS_TERMINADAS/@_resumen.NUM_TAREAS tareas</span>
+        </div>
+        @if (_resumen.NUM_TAREAS_ATRASADAS > 0) { <span class="sit sit-ATR">@_resumen.NUM_TAREAS_ATRASADAS atrasadas</span> }
+        <MudIconButton Icon="@(_verInd ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.QueryStats)" Size="Size.Small" OnClick="AlternarIndicadores" title="@(_verInd ? "Ocultar los indicadores (más espacio para el Gantt)" : "Mostrar los indicadores programado vs real")" />
+    </div>
+    @if (_verInd) { <ProyectoIndicadores R="_resumen" /> }
+    @if (_resumen.FLG_CERRADO) { <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">El proyecto está @(_resumen.DES_ESTADO?.ToLowerInvariant() ?? "cerrado"): las pestañas quedan en consulta.</MudAlert> }
+}
+<div class="@(_verInd ? "" : "ind-oculto")">
+<MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-3" KeepPanelsAlive="false">
+<MudTabPanel Text="General" Icon="@Icons.Material.Filled.Description">
+<div class="documento-logistica">
+    <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+        <DataAnnotationsValidator />
+
+        <MudGrid Spacing="2" Style="align-items:stretch;">
+            <MudItem xs="12" md="8">
+                <MudGrid Spacing="2">
+                    <MudItem xs="6" md="2">
+                        <MudTextField T="string" Value="@(_esNuevo ? "(automático)" : _model.NUM_PROYECTO?.ToString())"
+                                      Label="N° proyecto" Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <AriaCombo TItem="ComboboxItem" Items="_tiposProyecto"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_model.COD_TIPO_PROYECTO"
+                                   Label="Tipo de proyecto" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                   TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_model.COD_MONEDA_VALORIZACION"
+                                   Label="Moneda de valorización" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <CampoTexto Tabla="PROYECTOS.PROYECTOS" Columna="DES_PROYECTO"
+                                    @bind-Value="_model.DES_PROYECTO"
+                                    Disabled="_readonly" Obligatorio="true" />
+                    </MudItem>
+
+                    <MudItem xs="6" md="3">
+                        <MudDatePicker @bind-Date="_model.FEC_INICIO_PROGRAMADO" Label="Inicio programado"
+                                       Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Disabled="_readonly" Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudDatePicker @bind-Date="_model.FEC_FINAL_PROGRAMADO" Label="Fin programado"
+                                       Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Disabled="_readonly" Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudDatePicker @bind-Date="_model.FEC_INICIO_EJECUTADO" Label="Inicio ejecutado"
+                                       Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Disabled="_readonly" Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudDatePicker @bind-Date="_model.FEC_FINAL_EJECUTADO" Label="Fin ejecutado"
+                                       Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Disabled="_readonly" Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_model.COD_ENTIDAD_RESPONSABLE?.ToString())"
+                                   ValueChanged="@(async v => { _model.COD_ENTIDAD_RESPONSABLE = decimal.TryParse(v, out var n) ? n : null; await CargoAreaAsync(v, true); })"
+                                   Label="Entidad responsable" Disabled="_readonly" Class="mb-1" />
+                        @CargoAreaTexto(_model.COD_ENTIDAD_RESPONSABLE, _model.DES_CARGO_RESPONSABLE, _model.DES_AREA_RESPONSABLE)
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_model.COD_ENTIDAD_ESPONSOR?.ToString())"
+                                   ValueChanged="@(async v => { _model.COD_ENTIDAD_ESPONSOR = decimal.TryParse(v, out var n) ? n : null; await CargoAreaAsync(v, false); })"
+                                   Label="Entidad sponsor" Disabled="_readonly" Class="mb-1" />
+                        @CargoAreaTexto(_model.COD_ENTIDAD_ESPONSOR, _model.DES_CARGO_ESPONSOR, _model.DES_AREA_ESPONSOR)
+                    </MudItem>
+
+                    <MudItem xs="6" md="6">
+                        <MudNumericField @bind-Value="_model.VAL_PRESUPUESTO_PROYECTO" Label="Presupuesto"
+                                         Format="@Decimales.FormatoPrecio" Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="6" md="6">
+                        <MudNumericField @bind-Value="_model.VAL_COSTO_PROYECTO" Label="Costo"
+                                         Format="@Decimales.FormatoPrecio" Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                </MudGrid>
+            </MudItem>
+
+            <MudItem xs="12" md="4" Style="display:flex;flex-direction:column;">
+                <CampoTexto Tabla="PROYECTOS.PROYECTOS" Columna="DES_OBSERVACION"
+                            @bind-Value="_model.DES_OBSERVACION" Lines="5" Disabled="_readonly"
+                            Margin="Margin.None"
+                            Class="mb-3 flex-grow-1 campo-texto-alto-completo" />
+                <EstadoCombo DesTabla="PROYECTOS.PROYECTOS"
+                             @bind-Value="_model.COD_ESTADO"
+                             CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                             Disabled="_readonly" Class="mb-3" />
+            </MudItem>
+        </MudGrid>
+
+        @if (_historial.Count > 0)
+        {
+            <MudExpansionPanels Class="mt-3" Elevation="0">
+                <MudExpansionPanel Text="@($"Historial de estados ({_historial.Count})")">
+                    <MudSimpleTable Dense Hover Style="max-height:220px;overflow:auto;">
+                        <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>De</th><th>A</th><th>Comentario</th></tr></thead>
+                        <tbody>
+                        @foreach (var h in _historial)
+                        {
+                            <tr><td>@h.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</td><td>@h.COD_USUARIO_REGISTRO</td><td>@h.DES_BOTON</td><td>@h.DES_ESTADO_ANTERIOR</td><td>@h.DES_ESTADO_NUEVO</td><td>@h.DES_OBSERVACION</td></tr>
+                        }
+                        </tbody>
+                    </MudSimpleTable>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+        }
+
+        <div class="d-flex align-center gap-2 mt-4 flex-wrap">
+            <MudSpacer />
+            @* Botones configurados con FLG_DIALOG para esta opción, como en RequerimientoDocumento:
+               a la izquierda de Cerrar, separados por una línea, y sólo con el proyecto ya grabado.
+               El estado del proyecto decide si cada uno está habilitado. *@
+            @if (!_esNuevo && !string.IsNullOrWhiteSpace(CodAplicacion))
+            {
+                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                 Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                                 CodTipoEstado="@_model.COD_TIPO_ESTADO" CodEstadoActual="@_model.COD_ESTADO" />
+                <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+            }
+            <MudButton StartIcon="@Icons.Material.Filled.Close"
+                       OnClick="Cerrar" Disabled="_saving" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+            @if (!_readonly)
+            {
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Save" Disabled="_saving">
+                    @(Modo == CrudModo.Delete ? "Eliminar" : "Grabar")
+                </MudButton>
+            }
+        </div>
+    </EditForm>
+</div>
+
+@if (_grabado)
+{
+    <MudPaper Elevation="0" Class="pa-3 mt-3" Style="border:1px solid var(--line);">
+        <MudText Typo="Typo.subtitle2">Tipos de entidad que participan</MudText>
+        <MudText Typo="Typo.caption" Style="opacity:.7;" Class="mb-2">Limitan a quién se puede asignar como responsable, confirmador o recurso. Sin ninguno marcado, se puede asignar a cualquier entidad.</MudText>
+        <div class="d-flex flex-wrap gap-1 mb-2">
+            @foreach (var t in _tiposEntidad)
+            {
+                var tipo = t;
+                <MudChip T="string" Color="@(tipo.FLG_ELEGIDO ? Color.Primary : Color.Default)" Variant="@(tipo.FLG_ELEGIDO ? Variant.Filled : Variant.Outlined)" Size="Size.Small"
+                         OnClick="@(() => { if (!_soloLectura) tipo.FLG_ELEGIDO = !tipo.FLG_ELEGIDO; })">@tipo.DES_TIPO_ENTIDAD</MudChip>
+            }
+        </div>
+        @if (!_soloLectura) { <MudButton OnClick="GuardarTiposEntidadAsync" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Save">Guardar tipos de entidad</MudButton> }
+    </MudPaper>
+}
+</MudTabPanel>
+@if (_grabado)
+{
+    <MudTabPanel Text="Planificación" Icon="@Icons.Material.Filled.EventNote"><ProyectoPlanificacion NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Recursos" Icon="@Icons.Material.Filled.Groups"><ProyectoRecursos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Organigrama" Icon="@Icons.Material.Filled.AccountTree"><ProyectoOrganigrama NumProyecto="_model.NUM_PROYECTO!.Value" /></MudTabPanel>
+    @* Costos siempre se muestra: las facturas (comprobantes de pago) se asocian a cualquier tipo de proyecto *@
+    <MudTabPanel Text="Costos" Icon="@Icons.Material.Filled.Paid"><ProyectoCostos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    @if (MuestraMateriales)
+    {
+        <MudTabPanel Text="Materiales" Icon="@Icons.Material.Filled.Inventory2"><ProyectoMateriales NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    }
+    <MudTabPanel Text="Compromisos" Icon="@Icons.Material.Filled.Gavel"><ProyectoCompromisos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Documentos emitidos" Icon="@Icons.Material.Filled.NoteAlt"><ProyectoDocumentosEmitidos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Memorias" Icon="@Icons.Material.Filled.Notes"><ProyectoMemorias NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Eventos" Icon="@Icons.Material.Filled.EventBusy"><ProyectoEventos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Riesgos" Icon="@Icons.Material.Filled.Warning"><ProyectoRiesgos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+    <MudTabPanel Text="Documentos" Icon="@Icons.Material.Filled.FolderOpen"><ProyectoDocumentos NumProyecto="_model.NUM_PROYECTO!.Value" ReadOnly="_soloLectura" OnCambio="CargarResumenAsync" /></MudTabPanel>
+}
+</MudTabs>
+</div>
+
+@code {
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú de la pantalla que abre el proyecto: de ella salen los botones marcados
+    // como Diálogo que van en el pie.
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // Los botones de diálogo se conectan acá, por su código. Mientras uno no tenga su acción,
+    // tocarlo avisa en vez de no hacer nada (mismo criterio que RequerimientoDocumento).
+    // Envío a aprobación y su resolución: el destino sale del flujo de la opción (script 70). Rechazar y Observar piden el motivo.
+    private async Task OnAccionDialog(BotonTreeviewItem b)
+    {
+        if (_model.NUM_PROYECTO is not { } n || string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION)) { await AvisarBotonSinConectar(b); return; }
+        var metodo = b.DES_METODO ?? "";
+        // Script 82: el resto de cambios de estado (cerrar, suspender, cancelar, etc.) se reconocen por método o por nombre del botón.
+        var clave = metodo.Trim().ToUpperInvariant().Replace(" ", "");
+        var nombre = (b.DES_BOTON_OPCION ?? "").Trim().ToUpperInvariant().Replace(" ", "");
+        var cambiosScript82 = new[] { "CERRAR", "SUBSANAROBSERVACIONES", "HABILITAR", "SUSPENDER", "CANCELAR", "LIQUIDAR", "ABRIR", "ARCHIVAR", "ENVIARAPREPARAR", "REINICIAR" };
+        var esCambio82 = cambiosScript82.Contains(clave) || cambiosScript82.Contains(nombre);
+        if (!esCambio82 && metodo is not ("EnviarAprobacion" or "Aprobar" or "Rechazar" or "Observar")) { await AvisarBotonSinConectar(b); return; }
+        string? obs = null;
+        var pideMotivo = esCambio82 || metodo is "Rechazar" or "Observar" or "Aprobar" or "EnviarAprobacion";
+        if (pideMotivo)
+        {
+            var obligatorio = metodo is "Rechazar" or "Observar"
+                || new[] { "SUSPENDER", "CANCELAR", "SUBSANAROBSERVACIONES" }.Contains(clave) || new[] { "SUSPENDER", "CANCELAR", "SUBSANAROBSERVACIONES" }.Contains(nombre);
+            var dlg = await DialogService.ShowAsync<ProyectoMotivoDialog>(b.DES_BOTON_OPCION ?? metodo,
+                new DialogParameters { ["Titulo"] = b.DES_BOTON_OPCION ?? metodo, ["Obligatorio"] = obligatorio },
+                new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small });
+            var r = await dlg.Result;
+            if (r is null || r.Canceled) return;
+            obs = r.Data as string;
+        }
+        var (ok, msg, est) = await ProyectoApi.CambiarEstadoAsync(Http, n, "", 0, CodAplicacion, CodOpcionAplicacion, b.COD_BOTON_OPCION, obs);
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo cambiar el estado.", Severity.Warning); return; }
+        _huboCambios = true;
+        await RecargarCabeceraAsync();
+        Snackbar.Add($"Estado del proyecto: {est?.DES_ESTADO}", Severity.Success);
+    }
+
+    private async Task AvisarBotonSinConectar(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre el proyecto {_model.NUM_PROYECTO}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(ProyectoDocumento), "Acción pendiente");
+    }
+
+    private Modelo _model = new();
+    private List<ComboboxItem> _tiposProyecto = new(), _monedas = new(), _entidades = new();
+
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private bool _huboCambios;
+    private bool _grabado => _model.NUM_PROYECTO is not null;
+
+    // ───────── expediente ─────────
+    private ExpedienteResumen? _resumen;
+    private List<ExpedienteTipoEntidad> _tiposEntidad = new();
+    private List<ExpedienteEstadoHistorial> _historial = new();
+    /// <summary>Consulta, eliminación o proyecto terminado/cancelado: las pestañas no editan.</summary>
+    private bool _soloLectura => _readonly || (_resumen?.FLG_CERRADO ?? false);
+    // si el tipo de proyecto no está configurado (sin banderas), se muestran todas las pestañas
+    private bool MuestraMateriales => _resumen is null || _resumen.COD_TIPO_PROYECTO is null || _resumen.FLG_PRODUCCION;
+
+    private async Task CargarResumenAsync()
+    {
+        if (_model.NUM_PROYECTO is not { } n) return;
+        try
+        {
+            _resumen = await Http.SafeGetAsync<ExpedienteResumen>(ApiRoutes.Proyectos.Exp(n, "resumen"));
+            _tiposEntidad = await Http.SafeGetAsync<List<ExpedienteTipoEntidad>>(ApiRoutes.Proyectos.Exp(n, "tipos-entidad")) ?? new();
+            _historial = await Http.SafeGetAsync<List<ExpedienteEstadoHistorial>>(ApiRoutes.Proyectos.Exp(n, "estados-historial")) ?? new();
+            StateHasChanged();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumento), nameof(CargarResumenAsync)); }
+    }
+
+    private async Task GuardarTiposEntidadAsync()
+    {
+        if (_model.NUM_PROYECTO is not { } n) return;
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.Exp(n, "tipos-entidad"), new { Tipos = _tiposEntidad.Where(t => t.FLG_ELEGIDO).Select(t => t.COD_TIPO_ENTIDAD).ToList() });
+        if (ok) { Snackbar.Add("Tipos de entidad guardados.", Severity.Success); _huboCambios = true; }
+        else Snackbar.Add(msg ?? "No se pudieron guardar los tipos de entidad.", Severity.Warning);
+    }
+
+    private bool _verInd = true;
+
+    /// <summary>Cargo y area de la entidad elegida (responsable o sponsor), debajo de su combo. Sin ninguno registrado lo dice.</summary>
+    private RenderFragment CargoAreaTexto(decimal? entidad, string? cargo, string? area) => builder =>
+    {
+        if (entidad is null) return;
+        var vacio = string.IsNullOrWhiteSpace(cargo) && string.IsNullOrWhiteSpace(area);
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "class", "mono");
+        builder.AddAttribute(2, "style", "font-size:.78rem;opacity:.8;margin:0 0 12px 6px;");
+        builder.AddContent(3, vacio ? "Sin cargo ni área registrados" : $"Cargo: {(string.IsNullOrWhiteSpace(cargo) ? "—" : cargo)}  ·  Área: {(string.IsNullOrWhiteSpace(area) ? "—" : area)}");
+        builder.CloseElement();
+    };
+
+    private async Task CargoAreaAsync(string? cod, bool responsable)
+    {
+        string? cargo = null, area = null;
+        if (!string.IsNullOrWhiteSpace(cod))
+        {
+            try
+            {
+                var r = await Http.SafeGetAsync<ExpedienteCargoArea>($"{ApiRoutes.Proyectos.Expediente}/entidad-cargo/{Uri.EscapeDataString(cod)}");
+                cargo = r?.DES_CARGO; area = r?.DES_AREA;
+            }
+            catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoDocumento), nameof(CargoAreaAsync)); }
+        }
+        if (responsable) { _model.DES_CARGO_RESPONSABLE = cargo; _model.DES_AREA_RESPONSABLE = area; }
+        else { _model.DES_CARGO_ESPONSOR = cargo; _model.DES_AREA_ESPONSOR = area; }
+        StateHasChanged();
+    }
+
+    private async Task AlternarIndicadores()
+    {
+        _verInd = !_verInd;
+        try { await JS.InvokeVoidAsync("localStorage.setItem", "pryVerIndicadores", _verInd ? "1" : "0"); } catch { /* sin almacenamiento: solo no se recuerda */ }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _verInd = await JS.InvokeAsync<string?>("localStorage.getItem", "pryVerIndicadores") != "0"; } catch { }
+        _esNuevo = Modo == CrudModo.Create;
+        await CargarCombosAsync();
+
+        if (_esNuevo) { _model = new Modelo(); return; }
+        // Se relee del SHOWBYID en vez de usar la fila que trajo la grilla: esa fila es el
+        // snapshot de la última carga del listado y puede estar vieja. Si la lectura falla,
+        // se cae a la fila de la grilla para no dejar la pantalla en blanco.
+        if (Item is not null)
+            _model = Item;
+            await RecargarCabeceraAsync();
+    }
+
+    /// <summary>Tres combos independientes ya existentes en el sistema (Tipos de Proyecto,
+    /// Monedas, Entidades) — no hace falta un LOADCOMBOS propio para "solo cabecera".</summary>
+    /// <summary>Relee la cabecera del SHOWBYID y refresca lo que depende de ella.
+    ///
+    /// Se llama al ABRIR (la fila que trae la grilla es el snapshot de la última carga del
+    /// listado) y al GRABAR (el procedimiento puede cambiar datos que la pantalla no escribió
+    /// —el Estado es el caso típico—, y el documento se quedaba mostrando el valor viejo hasta
+    /// cerrarlo y volver a abrirlo).
+    ///
+    /// Si la lectura falla se deja lo que ya estaba, para no vaciar la pantalla.</summary>
+    private async Task RecargarCabeceraAsync()
+    {
+        if (_model.NUM_PROYECTO is null) return;
+        var fresco = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Proyectos.ProyectosDoc}/{_model.NUM_PROYECTO}");
+        if (fresco is not null) _model = fresco;
+        await CargarResumenAsync();
+    }
+
+    private async Task CargarCombosAsync()
+    {
+        try
+        {
+            _tiposProyecto = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.TiposProyectoCombobox) ?? new();
+            _monedas       = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.MonedasCombobox) ?? new();
+            _entidades     = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.EntidadesCombobox) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ProyectoDocumento), nameof(CargarCombosAsync));
+        }
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync(_huboCambios);
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Proyectos.ProyectosDoc;
+
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_PROYECTO}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Proyecto eliminado.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(ProyectoDocumento), nameof(Submit), "No se pudo eliminar el proyecto");
+                return;
+            }
+
+            var esAlta = !_grabado;
+            var resp = await Http.GuardarAsync(ruta, _model, esAlta);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProyectoDocumento), nameof(Submit));
+                return;
+            }
+
+            _huboCambios = true;
+
+            if (esAlta)
+            {
+                var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+                if (int.TryParse(cuerpo?.Data?.Codigo, out var generado))
+                {
+                    _model.NUM_PROYECTO = generado;
+                    _esNuevo = false;
+                    Snackbar.Add($"Proyecto N° {generado} creado.", Severity.Success);
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAvisoAsync("El proyecto se creó, pero la base no devolvió su número.", DialogService, nameof(ProyectoDocumento));
+                }
+            }
+            else
+            {
+                Snackbar.Add("Proyecto actualizado.", Severity.Success);
+            }
+
+            // El SP puede haber movido el Estado (y cualquier otro campo que la pantalla no
+            // escribe): se relee para que lo que se ve sea lo que quedó en la base.
+            await RecargarCabeceraAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ProyectoDocumento), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(ProyectoDocumento));
+        }
+        finally { _saving = false; }
+    }
+}

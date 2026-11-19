@@ -1,0 +1,160 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject MenuService MenuSvc
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudText Typo="Typo.h6">@(Item is null ? "Nueva fase" : $"Fase {Item.COD_FASE} · {Item.DES_FASE}")</MudText>
+            @if (Item is not null && !string.IsNullOrWhiteSpace(_estadoDes)) { <EstadoChip Estado="@_estadoDes" BackColor="@_estadoBack" ForeColor="@_estadoFore" /> }
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_des" Label="Descripción" Variant="Variant.Outlined" MaxLength="100" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudDatePicker Date="_ini" DateChanged="IniCambia" Label="Inicio programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudDatePicker Date="_fin" DateChanged="FinCambia" Label="Fin programado" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudNumericField T="int?" Value="_dias" ValueChanged="DiasCambia" Label="Días" Variant="Variant.Outlined" Min="1" HelperText="Calcula el fin desde el inicio" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_resp" ValueChanged="@(v => _resp = v)" Label="Responsable" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_padres" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_padre" ValueChanged="@(v => _padre = v)" Label="Fase padre (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_hitos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_hito" ValueChanged="@(v => _hito = v)" Label="Hito que cierra (opcional)" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_obs" Label="Observación" Variant="Variant.Outlined" Lines="2" MaxLength="500" />
+            </MudItem>
+        </MudGrid>
+        @* Botones de dialogo de la opcion hija "Fase" (Seguridad > Opciones): cada uno lleva la fase a su estado destino segun el flujo configurado *@
+        <CrudDialogActions Modo="@(Item is null ? CrudModo.Create : CrudModo.Update)" Saving="_guardando" SubmitButton="false"
+                           OnConfirm="Guardar" OnCancel="Cerrar"
+                           CodAplicacion="@_app" CodOpcionAplicacion="@_opc"
+                           CodTipoEstado="@_tipoEstado" CodEstadoActual="@_codEstado" OnAccionDialog="AccionDialogo">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteFase? Item { get; set; }
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+    [Parameter] public List<ExpedienteHito> Hitos { get; set; } = new();
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+
+    private string _des = "", _obs = "";
+    private DateTime? _ini, _fin;
+    private int? _dias;
+    private string? _resp, _padre, _hito;
+    private bool _guardando;
+    private List<ComboboxItem> _padres = new(), _hitos = new();
+    private string? _app, _opc, _estadoDes, _estadoBack, _estadoFore;
+    private int? _tipoEstado, _codEstado;
+    private bool _cambioEstado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Item is null) return;
+        if (await ProyectoApi.OpcionDialogoAsync(MenuSvc, "Proyectos/ProyectoFaseDialog.razor") is { } o) { _app = o.App; _opc = o.Opcion; }
+    }
+
+    // si ya se cambio el estado con un boton, cerrar tambien refresca la planificacion
+    private Task Cerrar() { if (_cambioEstado) MudDialog.Close(DialogResult.Ok(true)); else MudDialog.Cancel(); return Task.CompletedTask; }
+
+    private async Task AccionDialogo(BotonTreeviewItem b)
+    {
+        if (Item is null || string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION) || _app is null || _opc is null) return;
+        var (ok, msg, est) = await ProyectoApi.CambiarEstadoAsync(Http, NumProyecto, "fases", Item.COD_FASE, _app, _opc, b.COD_BOTON_OPCION);
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo cambiar el estado.", Severity.Warning); return; }
+        if (est is not null) { _tipoEstado = est.COD_TIPO_ESTADO; _codEstado = est.COD_ESTADO; _estadoDes = est.DES_ESTADO; _estadoBack = est.DES_BACKCOLOR; _estadoFore = est.DES_FORECOLOR; }
+        _cambioEstado = true;
+        Snackbar.Add($"Estado de la fase: {_estadoDes}", Severity.Success);
+    }
+
+    protected override void OnInitialized()
+    {
+        _padres = Fases.Where(f => Item is null || f.COD_FASE != Item.COD_FASE).Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        _hitos = Hitos.Select(h => new ComboboxItem { Id = h.COD_HITO_PROYECTO.ToString(), Texto = $"{h.COD_HITO_PROYECTO} — {h.DES_HITO_PROYECTO}" }).ToList();
+        if (Item is null)
+        {
+            // fase nueva: empieza el día siguiente al fin de la última fase (se puede cambiar)
+            var ultimo = Fases.Where(f => f.FEC_FINAL_PROGRAMADO is not null).Select(f => f.FEC_FINAL_PROGRAMADO!.Value.Date).DefaultIfEmpty().Max();
+            if (ultimo != default) _ini = ultimo.AddDays(1);
+            return;
+        }
+        _tipoEstado = Item.COD_TIPO_ESTADO; _codEstado = Item.COD_ESTADO; _estadoDes = Item.DES_ESTADO; _estadoBack = Item.DES_BACKCOLOR; _estadoFore = Item.DES_FORECOLOR;
+        _des = Item.DES_FASE ?? ""; _obs = Item.DES_OBSERVACION ?? ""; _ini = Item.FEC_INICIO_PROGRAMADO; _fin = Item.FEC_FINAL_PROGRAMADO; _dias = ProyectoApi.Dias(_ini, _fin);
+        _resp = Item.COD_ENTIDAD_RESPONSABLE?.ToString("0"); _padre = Item.COD_FASE_PADRE?.ToString(); _hito = Item.COD_HITO_PROYECTO?.ToString();
+    }
+
+    // inicio, fin y días se calculan entre sí: cambiar el inicio mantiene los días; cambiar el fin o los días recalcula el otro
+    private void IniCambia(DateTime? v)
+    {
+        _ini = v;
+        if (v is null) return;
+        if (_dias is > 0) _fin = ProyectoApi.FinPor(v.Value, _dias.Value);
+        else _dias = ProyectoApi.Dias(_ini, _fin);
+    }
+    private void FinCambia(DateTime? v) { _fin = v; _dias = ProyectoApi.Dias(_ini, _fin); }
+    private void DiasCambia(int? v)
+    {
+        _dias = v;
+        if (_ini is not null && v is > 0) _fin = ProyectoApi.FinPor(_ini.Value, v.Value);
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción de la fase.", Severity.Warning); return; }
+        if (_ini is not null && _fin is not null && _fin < _ini) { Snackbar.Add("El fin no puede ser anterior al inicio.", Severity.Warning); return; }
+        if (Item is not null && _ini is not null && _fin is not null)
+        {
+            var fuera = Tareas.FirstOrDefault(t => t.COD_FASE == Item.COD_FASE && t.FEC_INICIO_PROGRAMADO is not null && t.FEC_FINAL_PROGRAMADO is not null
+                && (t.FEC_INICIO_PROGRAMADO.Value.Date < _ini.Value.Date || t.FEC_FINAL_PROGRAMADO.Value.Date > _fin.Value.Date));
+            if (fuera is not null) { Snackbar.Add($"La tarea «{fuera.DES_TAREA}» ({ProyectoApi.Fecha(fuera.FEC_INICIO_PROGRAMADO)} a {ProyectoApi.Fecha(fuera.FEC_FINAL_PROGRAMADO)}) quedaría fuera de la fase. Ajusta primero la tarea.", Severity.Warning); return; }
+        }
+        var esNueva = Item is null;
+        var cod = esNueva ? (Fases.Count == 0 ? 1 : Fases.Max(f => f.COD_FASE) + 1) : Item!.COD_FASE;
+        if (cod > 255) { Snackbar.Add("Un proyecto admite hasta 255 fases.", Severity.Warning); return; }
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, COD_FASE = cod, DES_FASE = _des.Trim(),
+            FEC_INICIO_PROGRAMADO = _ini, FEC_FINAL_PROGRAMADO = _fin,
+            FEC_INICIO_EJECUTADO = Item?.FEC_INICIO_EJECUTADO, FEC_FINAL_EJECUTADO = Item?.FEC_FINAL_EJECUTADO,
+            COD_ENTIDAD_RESPONSABLE = decimal.TryParse(_resp, out var r) ? (decimal?)r : null,
+            DES_OBSERVACION = string.IsNullOrWhiteSpace(_obs) ? null : _obs.Trim(),
+            COD_FASE_PADRE = int.TryParse(_padre, out var p) ? (int?)p : null,
+            COD_HITO_PROYECTO = int.TryParse(_hito, out var h) ? (int?)h : null,
+            COD_TIPO_ESTADO = Item?.COD_TIPO_ESTADO, COD_ESTADO = Item?.COD_ESTADO
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Fases, cuerpo, esNueva);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar la fase.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

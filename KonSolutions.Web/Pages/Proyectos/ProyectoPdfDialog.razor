@@ -1,0 +1,19 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@* Muestra un PDF ya cargado como blob: URL (visor nítido del navegador). Libera el blob al cerrar. *@
+<MudDialog Style="height:85vh;">
+    <DialogContent>
+        <div style="height:78vh;"><PdfFrame Src="@(Url + "#zoom=page-width")" Title="PDF" /></div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Url { get; set; } = "";
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("blobViewer.liberar", Url); } catch { /* ya liberado o sin conexión */ }
+    }
+}

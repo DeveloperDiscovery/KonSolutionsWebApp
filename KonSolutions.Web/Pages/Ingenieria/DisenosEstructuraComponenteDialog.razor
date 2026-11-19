@@ -1,0 +1,63 @@
+@* Agrega un componente (del catalogo INGENIERIA.COMPONENTES_PRODUCTO) a un sector de la version, o CAMBIA el componente de
+   un sector por otro: los insumos pasan al componente nuevo (si ya estaba en el sector, se suman a los que tenia). *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(560px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">@(Cambia ? "Cambiar componente" : "Agregar componente") · sector @CodSector</MudText></TitleContent>
+    <DialogContent>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            @if (Cambia)
+            {
+                <MudText Typo="Typo.overline" Style="opacity:.7;">Componente actual</MudText>
+                <MudText Class="mb-3" data-actual="1"><b>@CodActual</b></MudText>
+            }
+            <MudText Typo="Typo.overline" Class="mb-1" Style="opacity:.7;">@(Cambia ? "Cambiar por" : "Componente del catálogo")</MudText>
+            <AriaCombo TItem="ComboboxItem" Items="_disponibles" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" @bind-Value="_cod" Label="Componente" Class="mb-0" />
+            @if (_cargado && !_disponibles.Any()) { <MudText Class="mono" Style="opacity:.6;font-size:.8rem;">No hay componentes disponibles en el catálogo.</MudText> }
+            @if (Cambia) { <MudText Class="mt-2" Style="opacity:.7;font-size:.8rem;">Los insumos y fórmulas del componente actual pasan al nuevo. Si el nuevo ya está en el sector, se suman a los suyos.</MudText> }
+        </MudPaper>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex justify-end gap-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_guardando || string.IsNullOrEmpty(_cod))" OnClick="GuardarAsync" data-accion="guardar">@(Cambia ? "Cambiar" : "Agregar")</MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    [Parameter] public string CodSector { get; set; } = "";
+    /// <summary>Componentes que el sector ya tiene (no se ofrecen de nuevo al agregar).</summary>
+    [Parameter] public HashSet<string> Excluir { get; set; } = new();
+    /// <summary>Si viene, el dialogo CAMBIA este componente por otro.</summary>
+    [Parameter] public string? CodActual { get; set; }
+    private bool Cambia => !string.IsNullOrEmpty(CodActual);
+    private List<ComboboxItem> _disponibles = new();
+    private string? _cod; private string _error = ""; private bool _guardando, _cargado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var todos = await Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.ComponentesProductoCombobox) ?? new();
+        _disponibles = Cambia ? todos.Where(c => c.Id != CodActual).ToList() : todos.Where(c => !Excluir.Contains(c.Id)).ToList();
+        _cargado = true;
+    }
+
+    private async Task GuardarAsync()
+    {
+        _guardando = true; _error = "";
+        (bool Ok, string Mensaje, bool Data) r = Cambia
+            ? await Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraComponenteCambiar, new DisenosEstructuraComponenteCambiarDto
+                { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_ORIGEN = CodActual!, COD_COMPONENTE_DESTINO = _cod! })
+            : await Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraComponente, new DisenosEstructuraComponenteDto
+                { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = _cod! });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje; return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

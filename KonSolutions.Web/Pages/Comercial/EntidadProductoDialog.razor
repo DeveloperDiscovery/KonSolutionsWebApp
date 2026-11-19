@@ -1,0 +1,255 @@
+@* Alta/edición de COMERCIAL.ENTIDADES_PRODUCTOS: el vínculo entre un proveedor y un
+   producto, con el código y nombre que el proveedor le da, su unidad de atención, su
+   precio y sus tolerancias.
+
+   La clave es (entidad, producto). Según desde qué pestaña se abra viene fija una de las
+   dos y se elige la otra: entrando por proveedor se elige el producto, y entrando por
+   producto se elige el proveedor. Una vez grabada, las dos quedan bloqueadas. *@
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(820px,96vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="@Modo" Descripcion="Producto del proveedor" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            @if (_cargando)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mb-3" />
+            }
+            else
+            {
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="6">
+                        <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_model.COD_ENTIDAD?.ToString())"
+                                   ValueChanged="@(v => _model.COD_ENTIDAD = decimal.TryParse(v, out var n) ? n : null)"
+                                   Label="Proveedor" Obligatorio="true"
+                                   Disabled="@(_readonly || !_esNuevo || EntidadFija)" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <AriaCombo TItem="ComboboxItem" Items="_productos"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_model.COD_PRODUCTO"
+                                   ValueChanged="@(v => _model.COD_PRODUCTO = v ?? "")"
+                                   Label="Producto" Obligatorio="true"
+                                   Disabled="@(_readonly || !_esNuevo || ProductoFijo)" Class="mb-3" />
+                    </MudItem>
+
+                    @* Cómo llama el proveedor a ese producto: su código y su nombre. Es lo que
+                       después aparece en su cotización y en su factura. *@
+                    <MudItem xs="12" md="4">
+                        <MudTextField T="string" @bind-Value="_model.COD_PRODUCTO_ENTIDAD" Variant="Variant.Outlined"
+                                      Label="Código del proveedor" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="8">
+                        <MudTextField T="string" @bind-Value="_model.DES_PRODUCTO_ENTIDAD" Variant="Variant.Outlined"
+                                      Label="Nombre del proveedor" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_unidades"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_model.COD_UNIDAD_MEDIDA_ATENCION"
+                                   ValueChanged="@(v => _model.COD_UNIDAD_MEDIDA_ATENCION = v)"
+                                   Label="Unidad de atención" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudNumericField T="decimal?" @bind-Value="_model.FAC_CONVERSION" Variant="Variant.Outlined"
+                                         Label="Factor de conversión" Format="@Decimales.FormatoFactor"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_model.COD_MONEDA" ValueChanged="@(v => _model.COD_MONEDA = v)"
+                                   Label="Moneda" Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="4">
+                        <MudNumericField T="decimal?" @bind-Value="_model.VAL_PRECIO_ENTIDAD" Variant="Variant.Outlined"
+                                         Label="Precio del proveedor" Format="@Decimales.FormatoCantidad"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudNumericField T="decimal?" @bind-Value="_model.TAS_DESCUENTO" Variant="Variant.Outlined"
+                                         Label="Descuento (%)" Format="@Decimales.FormatoPorcentual"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudNumericField T="int?" @bind-Value="_model.CAN_DIAS_ATENCION" Variant="Variant.Outlined"
+                                         Label="Días de atención"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+
+                    @* Tolerancias: cuánto de más o de menos se acepta al recibir. Cada una
+                       puede expresarse en cantidad o en porcentaje, por eso son cuatro
+                       campos y no dos. *@
+                    <MudItem xs="12" md="3">
+                        <MudNumericField T="decimal?" @bind-Value="_model.CAN_TOLERANCIA_EXCESO" Variant="Variant.Outlined"
+                                         Label="Exceso (cantidad)" Format="@Decimales.FormatoCantidad"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudNumericField T="decimal?" @bind-Value="_model.TAS_TOLERANCIA_EXCESO" Variant="Variant.Outlined"
+                                         Label="Exceso (%)" Format="@Decimales.FormatoPorcentual"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudNumericField T="decimal?" @bind-Value="_model.CAN_TOLERANCIA_DEFICIT" Variant="Variant.Outlined"
+                                         Label="Déficit (cantidad)" Format="@Decimales.FormatoCantidad"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudNumericField T="decimal?" @bind-Value="_model.TAS_TOLERANCIA_DEFICIT" Variant="Variant.Outlined"
+                                         Label="Déficit (%)" Format="@Decimales.FormatoPorcentual"
+                                         Culture="@System.Globalization.CultureInfo.CurrentCulture"
+                                         Disabled="_readonly" Class="mb-3" />
+                    </MudItem>
+                </MudGrid>
+
+                <div class="campos-config" style="grid-template-columns:1fr 1fr;">
+                    <div class="d-flex align-center gap-2">
+                        <MudIcon Icon="@Icons.Material.Filled.EventAvailable" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch Value="_model.FLG_DIAS_HABILES" ValueChanged="@((bool? v) => _model.FLG_DIAS_HABILES = v)"
+                                   Color="Color.Primary" Disabled="_readonly" Label="Días hábiles" />
+                    </div>
+                    <div class="d-flex align-center gap-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Inventory2" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch Value="_model.FLG_TOLERANCIA_EMBALAJE" ValueChanged="@((bool? v) => _model.FLG_TOLERANCIA_EMBALAJE = v)"
+                                   Color="Color.Primary" Disabled="_readonly" Label="Tolerancia por embalaje" />
+                    </div>
+                </div>
+            }
+
+            <CrudDialogActions Modo="Modo" Saving="_saving"
+                               OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    [Parameter] public EntidadProducto? Item { get; set; }
+    /// <summary>Cuando se abre desde la pestaña de un proveedor, su código viene fijo.</summary>
+    [Parameter] public decimal? CodEntidadFija { get; set; }
+    /// <summary>Cuando se abre desde la pestaña de un producto, su código viene fijo.</summary>
+    [Parameter] public string? CodProductoFijo { get; set; }
+
+    private readonly EntidadProductoSaveDto _model = new();
+    private bool _cargando = true, _saving;
+    private bool _esNuevo => Modo == CrudModo.Create;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private bool EntidadFija => CodEntidadFija is not null;
+    private bool ProductoFijo => !string.IsNullOrWhiteSpace(CodProductoFijo);
+
+    private List<ComboboxItem> _entidades = new(), _productos = new(),
+                               _unidades = new(), _monedas = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Item is not null)
+        {
+            _model.COD_ENTIDAD                = Item.COD_ENTIDAD;
+            _model.COD_PRODUCTO               = Item.COD_PRODUCTO;
+            _model.COD_PRODUCTO_ENTIDAD       = Item.COD_PRODUCTO_ENTIDAD;
+            _model.DES_PRODUCTO_ENTIDAD       = Item.DES_PRODUCTO_ENTIDAD;
+            _model.COD_UNIDAD_MEDIDA_ATENCION = Item.COD_UNIDAD_MEDIDA_ATENCION;
+            _model.FAC_CONVERSION             = Item.FAC_CONVERSION;
+            _model.COD_MONEDA                 = Item.COD_MONEDA;
+            _model.VAL_PRECIO_ENTIDAD         = Item.VAL_PRECIO_ENTIDAD;
+            _model.TAS_DESCUENTO              = Item.TAS_DESCUENTO;
+            _model.CAN_DIAS_ATENCION          = Item.CAN_DIAS_ATENCION;
+            _model.FLG_DIAS_HABILES           = Item.FLG_DIAS_HABILES;
+            _model.CAN_TOLERANCIA_EXCESO      = Item.CAN_TOLERANCIA_EXCESO;
+            _model.FLG_TOLERANCIA_EMBALAJE    = Item.FLG_TOLERANCIA_EMBALAJE;
+            _model.CAN_TOLERANCIA_DEFICIT     = Item.CAN_TOLERANCIA_DEFICIT;
+            _model.TAS_TOLERANCIA_EXCESO      = Item.TAS_TOLERANCIA_EXCESO;
+            _model.TAS_TOLERANCIA_DEFICIT     = Item.TAS_TOLERANCIA_DEFICIT;
+        }
+        else
+        {
+            // Alta: el lado por el que se entró viene fijo desde la pestaña.
+            _model.COD_ENTIDAD  = CodEntidadFija;
+            _model.COD_PRODUCTO = CodProductoFijo ?? "";
+        }
+
+        await Task.WhenAll(
+            CargarComboAsync(ApiRoutes.Estandar.EntidadesCombobox,      l => _entidades = l),
+            CargarComboAsync(ApiRoutes.Estandar.ProductosCombobox,      l => _productos = l),
+            CargarComboAsync(ApiRoutes.Estandar.UnidadesMedidaCombobox, l => _unidades = l),
+            CargarComboAsync(ApiRoutes.Estandar.MonedasCombobox,        l => _monedas = l));
+
+        _cargando = false;
+    }
+
+    private async Task CargarComboAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadProductoDialog), nameof(CargarComboAsync)); }
+    }
+
+    private async Task Submit()
+    {
+        if (_saving) return;
+        _saving = true;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync(
+                $"{ApiRoutes.Comercial.EntidadesProductos}/{_model.COD_ENTIDAD}/{Uri.EscapeDataString(_model.COD_PRODUCTO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(EntidadProductoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        if (_model.COD_ENTIDAD is null || string.IsNullOrWhiteSpace(_model.COD_PRODUCTO))
+        {
+            _saving = false;
+            await ErrorDialogHelper.MostrarAvisoAsync("Elige el proveedor y el producto.", DialogService, nameof(EntidadProductoDialog));
+            return;
+        }
+        // La base exige un factor mayor que cero (script 36). Vacío se admite: con la misma unidad que el producto la base graba 1.
+        if (_model.FAC_CONVERSION is <= 0)
+        {
+            _saving = false;
+            await ErrorDialogHelper.MostrarAvisoAsync("El factor de conversión tiene que ser mayor que cero.", DialogService, nameof(EntidadProductoDialog));
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ApiRoutes.Comercial.EntidadesProductos, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadProductoDialog), nameof(Submit));
+    }
+}

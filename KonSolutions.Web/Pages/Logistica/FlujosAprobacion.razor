@@ -1,0 +1,682 @@
+@page "/logistica/flujos-aprobacion"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using TipoOperacionModel = KONSolutions.Shared.Models.Estandar.TipoOperacion
+@using Modelo = KONSolutions.Shared.Models.Logistica.FlujoAprobacion
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+<PageTitle>Flujos de Aprobación · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Flujos de Aprobación" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar flujo..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@* ── MAESTRO ── *@
+<MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mb-4">
+    <div data-resizable-grid="flujos-aprobacion" data-default-height="240" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="_items" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre"
+                 RowClick="OnFlujoRowClick" RowClassFunc="@FilaFlujoSeleccionado">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="N°" Width="80" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate><span class="mono">@context.Item.NUM_FLUJO_APROBACION</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción del flujo">
+                <CellTemplate>@context.Item.DES_FLUJO_APROBACION</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="130" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    @if (!string.IsNullOrWhiteSpace(context.Item.DES_ESTADO))
+                    {
+                        <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                    BackColor="@context.Item.DES_BACKCOLOR"
+                                    ForeColor="@context.Item.DES_FORECOLOR" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="160">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                     CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@* ── DETALLES ── *@
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <MudTabs Elevation="0" ApplyEffectsToContainer="true" PanelClass="pa-0">
+
+        @* ── Sub-módulo 1: Área y Cargo ── *@
+        <MudTabPanel Text="Área y Cargo" Icon="@Icons.Material.Filled.AccountTree">
+            <div class="d-flex align-center justify-space-between pa-3 flex-wrap gap-2" style="border-bottom:1px solid var(--line);">
+                <div>
+                    <MudText Typo="Typo.h6">Niveles de aprobación</MudText>
+                    <MudText Class="mono" Style="opacity:.5;font-size:.78rem;color:var(--subtitulo-color,#6b6358);">
+                        @if (_flujoSel is null) { <text>Sin flujo seleccionado</text> }
+                        else { <text>@_areaCargos.Count niveles · edición directa en la grilla</text> }
+                    </MudText>
+                </div>
+                <div class="d-flex gap-2">
+                    <GridRefreshButton OnRefresh="LoadAreaCargos" />
+                    @* Solo tiene sentido copiar niveles ya grabados: con la grilla en edición
+                       las filas nuevas todavía no existen en la base. *@
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ContentCopy"
+                               Disabled="@(_flujoSel is null || !_areaCargos.Any(x => !x.EsNueva))" Size="Size.Small"
+                               OnClick="CopiarAOtroFlujo">Copiar a otro flujo</MudButton>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                               Disabled="@(_flujoSel is null)" Size="Size.Small"
+                               OnClick="AgregarFilaAreaCargo">Agregar nivel</MudButton>
+                </div>
+            </div>
+
+            @if (_flujoSel is null)
+            {
+                <MudText Class="pa-6 mono" Style="opacity:.4;">Seleccione un flujo para ver sus niveles de aprobación.</MudText>
+            }
+            else if (_cargandoAreaCargos)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+            else
+            {
+                <div data-resizable-grid="flujos-aprobacion-area-cargo" style="position:relative;">
+                @* Edición por celda: cada celda que se confirma dispara GuardarAreaCargo.
+                   Las filas nuevas NO se graban por celda (les falta la clave completa):
+                   se graban con el botón de la propia fila. *@
+                <MudDataGrid T="FlujoAprobacionAreaCargo" Items="_areaCargos" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="false" EditMode="DataGridEditMode.Cell"
+                             CommittedItemChanges="@(async (FlujoAprobacionAreaCargo it) => await GuardarSiNoEsNueva(it))"
+                             Height="100%" FixedHeader="true">
+                    <Columns>
+                        @* Área y Cargo son la clave: se eligen solo mientras la fila es nueva.
+                           Con edición por celda la grilla usa EditTemplate en vez de CellTemplate,
+                           así que el combo tiene que estar en ambos o al entrar a la celda
+                           aparecería el editor de texto por defecto. *@
+                        <TemplateColumn Title="Área" Sortable="false" Editable="false" Width="260">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    <AriaCombo TItem="ComboboxItem" Items="_areas"
+                                               TextFunc="@(a => a.Texto)" ValueFunc="@(a => a.Id)"
+                                               Value="@(it.COD_AREA?.ToString())"
+                                               ValueChanged="@(v => AsignarArea(it, v))"
+                                               Label="Área" />
+                                }
+                                else
+                                {
+                                    <span class="mono" style="opacity:.65;">@it.COD_AREA</span>
+                                    <span class="ml-1">@it.DES_AREA</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Cargo" Sortable="false" Editable="false" Width="260">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    @* Los cargos dependen del área elegida en esta misma fila. *@
+                                    <AriaCombo TItem="ComboboxItem" Items="@CargosDe(it.COD_AREA)"
+                                               TextFunc="@(c => c.Texto)" ValueFunc="@(c => c.Id)"
+                                               Value="@(it.COD_CARGO?.ToString())"
+                                               ValueChanged="@(v => it.COD_CARGO = int.TryParse(v, out var n) ? n : null)"
+                                               Label="Cargo" Disabled="@(it.COD_AREA is null)" />
+                                }
+                                else
+                                {
+                                    <span class="mono" style="opacity:.65;">@it.COD_CARGO</span>
+                                    <span class="ml-1">@it.DES_CARGO</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <PropertyColumn Property="x => x.NUM_ORDEN_APROBACION" Title="Orden" Sortable="false"
+                                        Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;" />
+
+                        @* La moneda NO es parte de la clave, así que se puede cambiar también en
+                           una fila ya grabada: el combo va siempre, y al elegir se graba (salvo
+                           que la fila todavía sea nueva, que se graba con su propio botón). *@
+                        <TemplateColumn Title="Moneda" Sortable="false" Editable="false" Width="170">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                           TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)"
+                                           Value="@it.COD_MONEDA"
+                                           ValueChanged="@(async v => { it.COD_MONEDA = v; await GuardarSiNoEsNueva(it); })"
+                                           Label="Moneda" />
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <PropertyColumn Property="x => x.VAL_MONTO_MINIMO" Title="Monto mínimo" Sortable="false"
+                                        Width="150" CellStyle="text-align:right;" HeaderStyle="text-align:right;" />
+
+                        <PropertyColumn Property="x => x.VAL_MONTO_MAXIMO" Title="Monto máximo" Sortable="false"
+                                        Width="150" CellStyle="text-align:right;" HeaderStyle="text-align:right;" />
+
+                        <TemplateColumn Title="Último" Sortable="false" Editable="false" Width="90" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <MudSwitch T="bool" Value="@(it.FLG_ULTIMO ?? false)"
+                                           ValueChanged="@(async v => { it.FLG_ULTIMO = v; await GuardarSiNoEsNueva(it); })"
+                                           Color="Color.Primary" Size="Size.Small" />
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Habilitado" Sortable="false" Editable="false" Width="110" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <MudSwitch T="bool" Value="@(it.FLG_HABILITADO ?? false)"
+                                           ValueChanged="@(async v => { it.FLG_HABILITADO = v; await GuardarSiNoEsNueva(it); })"
+                                           Color="Color.Success" Size="Size.Small" />
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="110">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    <span title="Grabar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Success"
+                                                       OnClick="@(() => GuardarAreaCargo(it))" />
+                                    </span>
+                                    <span title="Descartar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                       OnClick="@(() => _areaCargos.Remove(it))" />
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span title="Eliminar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => EliminarAreaCargo(it))" />
+                                    </span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin niveles de aprobación.</MudText></NoRecordsContent>
+                    <PagerContent><MudDataGridPager T="FlujoAprobacionAreaCargo" /></PagerContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+                </div>
+            }
+        </MudTabPanel>
+
+        @* ── Sub-módulo 2: Tipos de Operación ── *@
+        <MudTabPanel Text="Tipos de Operación" Icon="@Icons.Material.Filled.SwapHoriz">
+            <div class="d-flex align-center justify-space-between pa-3 flex-wrap gap-2" style="border-bottom:1px solid var(--line);">
+                <div>
+                    <MudText Typo="Typo.h6">Tipos de operación</MudText>
+                    <MudText Class="mono" Style="opacity:.5;font-size:.78rem;color:var(--subtitulo-color,#6b6358);">
+                        @if (_flujoSel is null) { <text>Sin flujo seleccionado</text> }
+                        else { <text>@_tiposOperacion.Count tipos</text> }
+                    </MudText>
+                </div>
+                <div class="d-flex gap-2">
+                    <GridRefreshButton OnRefresh="LoadTiposOperacion" />
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                               Disabled="@(_flujoSel is null)" Size="Size.Small"
+                               OnClick="AgregarFilaTipoOperacion">Agregar tipo</MudButton>
+                </div>
+            </div>
+
+            @if (_flujoSel is null)
+            {
+                <MudText Class="pa-6 mono" Style="opacity:.4;">Seleccione un flujo para ver sus tipos de operación.</MudText>
+            }
+            else if (_cargandoTiposOperacion)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+            else
+            {
+                <div data-resizable-grid="flujos-aprobacion-tipos-operacion" style="position:relative;">
+                @* Los tres campos son la clave, así que no hay edición por celda: la fila nueva
+                   se arma con los combos y se graba; las existentes solo se quitan. *@
+                <MudDataGrid T="FlujoAprobacionTipoOperacion" Items="_tiposOperacion" Dense="true" Hover="true" Striped="true"
+                             Height="100%" FixedHeader="true">
+                    <Columns>
+                        <TemplateColumn Title="Clase de operación" Sortable="false" Width="300">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    <AriaCombo TItem="ComboboxItem" Items="_clases"
+                                               TextFunc="@(c => c.Texto)" ValueFunc="@(c => c.Id)"
+                                               Value="@it.COD_CLASE_OPERACION"
+                                               ValueChanged="@(v => AsignarClase(it, v))"
+                                               Label="Clase" />
+                                }
+                                else
+                                {
+                                    <span class="mono" style="opacity:.65;">@it.COD_CLASE_OPERACION</span>
+                                    <span class="ml-1">@it.DES_CLASE_OPERACION</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Tipo de operación" Sortable="false">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    @* Los tipos dependen de la clase elegida en esta misma fila. *@
+                                    <AriaCombo TItem="TipoOperacionModel" Items="@TiposDe(it.COD_CLASE_OPERACION)"
+                                               TextFunc="@(t => $"{t.COD_TIPO_OPERACION} — {t.DES_TIPO_OPERACION}")"
+                                               ValueFunc="@(t => t.COD_TIPO_OPERACION)"
+                                               Value="@it.COD_TIPO_OPERACION"
+                                               ValueChanged="@(v => it.COD_TIPO_OPERACION = v ?? "")"
+                                               Label="Tipo" Disabled="@(string.IsNullOrWhiteSpace(it.COD_CLASE_OPERACION))" />
+                                }
+                                else
+                                {
+                                    <span class="mono" style="opacity:.65;">@it.COD_TIPO_OPERACION</span>
+                                    <span class="ml-1">@it.DES_TIPO_OPERACION</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Auditoría" Sortable="false" Width="200">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (!it.EsNueva)
+                                {
+                                    <span class="mono" style="font-size:.68rem;opacity:.75;">
+                                        @it.COD_USUARIO_REGISTRO<br />
+                                        @(it.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm") ?? "—")
+                                    </span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        <TemplateColumn Title="Acciones" Sortable="false" Width="110">
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                @if (it.EsNueva)
+                                {
+                                    <span title="Grabar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Success"
+                                                       OnClick="@(() => GuardarTipoOperacion(it))" />
+                                    </span>
+                                    <span title="Descartar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                       OnClick="@(() => _tiposOperacion.Remove(it))" />
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span title="Quitar" style="display:inline-flex;align-items:center;">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => EliminarTipoOperacion(it))" />
+                                    </span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin tipos de operación.</MudText></NoRecordsContent>
+                    <PagerContent><MudDataGridPager T="FlujoAprobacionTipoOperacion" /></PagerContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+                </div>
+            }
+        </MudTabPanel>
+
+    </MudTabs>
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private Func<Task>? _onCambio;
+    private List<Modelo> _items = new();
+    private string _search = "";
+    private Modelo? _flujoSel;
+
+    // Detalle 1
+    private List<ComboboxItem> _areas = new();
+    private List<ComboboxItem> _monedas = new();
+    private List<FlujoAprobacionAreaCargo> _areaCargos = new();
+    private bool _cargandoAreaCargos;
+    /// <summary>Cargos por área, cacheados: el combo de Cargo de cada fila depende del área
+    /// elegida en esa fila, y varias filas suelen compartir área.</summary>
+    private readonly Dictionary<int, List<ComboboxItem>> _cargosPorArea = new();
+
+    // Detalle 2
+    private List<ComboboxItem> _clases = new();
+    private List<FlujoAprobacionTipoOperacion> _tiposOperacion = new();
+    private bool _cargandoTiposOperacion;
+    /// <summary>Tipos por clase, cacheados: mismo criterio que los cargos por área.</summary>
+    private readonly Dictionary<string, List<TipoOperacionModel>> _tiposPorClase = new();
+
+    private string FilaFlujoSeleccionado(Modelo item, int _)
+        => _flujoSel is not null && item.NUM_FLUJO_APROBACION == _flujoSel.NUM_FLUJO_APROBACION ? "fila-seleccionada" : "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "FlujosAprobacion");
+        await Load();
+        _areas   = await CargarCombo(ApiRoutes.Administracion.AreasCombobox);
+        _monedas = await CargarCombo(ApiRoutes.Estandar.MonedasCombobox);
+        _clases  = await CargarCombo(ApiRoutes.Estandar.ClasesOperacionCombobox);
+
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.FLUJOS_APROBACION", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task<List<ComboboxItem>> CargarCombo(string ruta)
+    {
+        try { return (await Http.SafeGetAsync<List<ComboboxItem>>(ruta)) ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(FlujosAprobacion), nameof(CargarCombo));
+            return new();
+        }
+    }
+
+    // ── Maestro ──────────────────────────────────────────────────────────────
+    private async Task Load()
+    {
+        try
+        {
+            var ruta = string.IsNullOrWhiteSpace(_search)
+                ? ApiRoutes.Logistica.FlujosAprobacion
+                : $"{ApiRoutes.Logistica.FlujosAprobacionSearch}?search={Uri.EscapeDataString(_search)}";
+            _items = (await Http.SafeGetAsync<List<Modelo>>(ruta)) ?? new();
+
+            if (_flujoSel is not null && !_items.Any(x => x.NUM_FLUJO_APROBACION == _flujoSel.NUM_FLUJO_APROBACION))
+            {
+                _flujoSel = null;
+                _areaCargos = new();
+                _tiposOperacion = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(FlujosAprobacion), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(FlujosAprobacion));
+            _items = new();
+        }
+    }
+
+    private Task Buscar() => Load();
+
+    private async Task OnFlujoRowClick(DataGridRowClickEventArgs<Modelo> args)
+    {
+        _flujoSel = args.Item;
+        await LoadAreaCargos();
+        await LoadTiposOperacion();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(Modelo? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo flujo de aprobación",
+            CrudModo.Read   => $"Consultar · {item?.DES_FLUJO_APROBACION}",
+            CrudModo.Delete => $"Eliminar · {item?.DES_FLUJO_APROBACION}",
+            _               => $"Editar · {item?.DES_FLUJO_APROBACION}"
+        };
+        var dlg = await DialogService.ShowAsync<FlujosAprobacionDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    // ── Detalle 1: Área / Cargo ──────────────────────────────────────────────
+    private async Task LoadAreaCargos()
+    {
+        if (_flujoSel?.NUM_FLUJO_APROBACION is null) { _areaCargos = new(); return; }
+        _cargandoAreaCargos = true;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.FlujosAprobacionAreaCargo}/{_flujoSel.NUM_FLUJO_APROBACION}";
+            _areaCargos = (await Http.SafeGetAsync<List<FlujoAprobacionAreaCargo>>(url)) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(FlujosAprobacion), nameof(LoadAreaCargos));
+            _areaCargos = new();
+        }
+        finally { _cargandoAreaCargos = false; }
+    }
+
+    private void AgregarFilaAreaCargo()
+    {
+        if (_flujoSel?.NUM_FLUJO_APROBACION is null) return;
+        _areaCargos.Insert(0, new FlujoAprobacionAreaCargo
+        {
+            NUM_FLUJO_APROBACION = _flujoSel.NUM_FLUJO_APROBACION,
+            FLG_HABILITADO = true,
+            EsNueva = true
+        });
+    }
+
+    /// <summary>Copia los niveles de este flujo a otro. La copia entera la resuelve el SP en una
+    /// transacción; aquí solo se elige el destino y si reemplaza o solo agrega.</summary>
+    private async Task CopiarAOtroFlujo()
+    {
+        if (_flujoSel?.NUM_FLUJO_APROBACION is null) return;
+        var parametros = new DialogParameters
+        {
+            ["NumFlujoOrigen"] = _flujoSel.NUM_FLUJO_APROBACION.Value,
+            ["DesFlujoOrigen"] = _flujoSel.DES_FLUJO_APROBACION
+        };
+        var dlg = await DialogService.ShowAsync<FlujosAprobacionAreaCargoCopyDialog>(
+            "Copiar niveles a otro flujo", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.ExtraSmall, FullWidth = true, CloseButton = true });
+        await dlg.Result;
+        // No se recarga la grilla: lo que cambió es el flujo DESTINO, no el que está en pantalla.
+    }
+
+    private List<ComboboxItem> CargosDe(int? codArea)
+        => codArea is null ? new() : _cargosPorArea.GetValueOrDefault(codArea.Value, new());
+
+    /// <summary>Al elegir el área se limpia el cargo (el anterior podía ser de otra área) y se
+    /// cargan los cargos de la nueva.</summary>
+    private async Task AsignarArea(FlujoAprobacionAreaCargo it, string? val)
+    {
+        it.COD_AREA = int.TryParse(val, out var n) ? n : null;
+        it.COD_CARGO = null;
+        if (it.COD_AREA is null) return;
+
+        if (!_cargosPorArea.ContainsKey(it.COD_AREA.Value))
+        {
+            var cargos = await CargarCombo($"{ApiRoutes.Administracion.Areas}/{it.COD_AREA.Value}/cargos");
+            _cargosPorArea[it.COD_AREA.Value] = cargos;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Las filas nuevas no se graban al confirmar una celda: todavía les falta la
+    /// clave (área + cargo). Se graban con el botón de su propia fila.</summary>
+    private Task GuardarSiNoEsNueva(FlujoAprobacionAreaCargo it)
+        => it.EsNueva ? Task.CompletedTask : GuardarAreaCargo(it);
+
+    private async Task GuardarAreaCargo(FlujoAprobacionAreaCargo it)
+    {
+        if (it.EsNueva && (it.COD_AREA is null || it.COD_CARGO is null))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Elija el área y el cargo antes de grabar.",
+                DialogService, nameof(FlujosAprobacion));
+            return;
+        }
+
+        // Misma regla que valida el servicio; aquí se corta antes de ir al servidor.
+        if (it.VAL_MONTO_MINIMO is not null && it.VAL_MONTO_MAXIMO is not null
+            && it.VAL_MONTO_MAXIMO <= it.VAL_MONTO_MINIMO)
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("El monto máximo debe ser mayor que el monto mínimo.",
+                DialogService, nameof(FlujosAprobacion));
+            return;
+        }
+
+        it.NUM_FLUJO_APROBACION ??= _flujoSel?.NUM_FLUJO_APROBACION;
+        var resp = await Http.GuardarAsync(ApiRoutes.Logistica.FlujosAprobacionAreaCargo, it, it.EsNueva);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(it.EsNueva ? "Nivel agregado." : "Nivel actualizado.", Severity.Success);
+            await LoadAreaCargos();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(FlujosAprobacion), nameof(GuardarAreaCargo));
+    }
+
+    private async Task EliminarAreaCargo(FlujoAprobacionAreaCargo it)
+    {
+        var confirmado = await DialogService.ShowMessageBox(
+            "Eliminar", $"¿Quitar el cargo \"{it.DES_CARGO}\" de este flujo?",
+            yesText: "Eliminar", cancelText: "Cancelar");
+        if (confirmado != true) return;
+
+        var url = $"{ApiRoutes.Logistica.FlujosAprobacionAreaCargo}/{it.NUM_FLUJO_APROBACION}/{it.COD_AREA}/{it.COD_CARGO}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); await LoadAreaCargos(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(FlujosAprobacion), nameof(EliminarAreaCargo));
+    }
+
+    // ── Detalle 2: Tipos de Operación ────────────────────────────────────────
+    private async Task LoadTiposOperacion()
+    {
+        if (_flujoSel?.NUM_FLUJO_APROBACION is null) { _tiposOperacion = new(); return; }
+        _cargandoTiposOperacion = true;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.FlujosAprobacionTiposOperacion}/{_flujoSel.NUM_FLUJO_APROBACION}";
+            _tiposOperacion = (await Http.SafeGetAsync<List<FlujoAprobacionTipoOperacion>>(url)) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(FlujosAprobacion), nameof(LoadTiposOperacion));
+            _tiposOperacion = new();
+        }
+        finally { _cargandoTiposOperacion = false; }
+    }
+
+    private void AgregarFilaTipoOperacion()
+    {
+        if (_flujoSel?.NUM_FLUJO_APROBACION is null) return;
+        _tiposOperacion.Insert(0, new FlujoAprobacionTipoOperacion
+        {
+            NUM_FLUJO_APROBACION = _flujoSel.NUM_FLUJO_APROBACION,
+            EsNueva = true
+        });
+    }
+
+    private List<TipoOperacionModel> TiposDe(string? codClase)
+        => string.IsNullOrWhiteSpace(codClase) ? new() : _tiposPorClase.GetValueOrDefault(codClase, new());
+
+    private async Task AsignarClase(FlujoAprobacionTipoOperacion it, string? val)
+    {
+        it.COD_CLASE_OPERACION = val ?? "";
+        it.COD_TIPO_OPERACION = "";
+        if (string.IsNullOrWhiteSpace(it.COD_CLASE_OPERACION)) return;
+
+        if (!_tiposPorClase.ContainsKey(it.COD_CLASE_OPERACION))
+        {
+            try
+            {
+                var url = $"{ApiRoutes.Estandar.TiposOperacion}?codClaseOperacion={Uri.EscapeDataString(it.COD_CLASE_OPERACION)}";
+                _tiposPorClase[it.COD_CLASE_OPERACION] = (await Http.SafeGetAsync<List<TipoOperacionModel>>(url)) ?? new();
+            }
+            catch (Exception ex)
+            {
+                await ErrorLog.LogAsync(ex, nameof(FlujosAprobacion), nameof(AsignarClase));
+                _tiposPorClase[it.COD_CLASE_OPERACION] = new();
+            }
+        }
+        StateHasChanged();
+    }
+
+    private async Task GuardarTipoOperacion(FlujoAprobacionTipoOperacion it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_CLASE_OPERACION) || string.IsNullOrWhiteSpace(it.COD_TIPO_OPERACION))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Elija la clase y el tipo de operación antes de grabar.",
+                DialogService, nameof(FlujosAprobacion));
+            return;
+        }
+        if (_tiposOperacion.Any(x => !x.EsNueva
+                && x.COD_CLASE_OPERACION == it.COD_CLASE_OPERACION
+                && x.COD_TIPO_OPERACION == it.COD_TIPO_OPERACION))
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync("Ese tipo de operación ya está asignado a este flujo.",
+                DialogService, nameof(FlujosAprobacion));
+            return;
+        }
+
+        it.NUM_FLUJO_APROBACION ??= _flujoSel?.NUM_FLUJO_APROBACION;
+        var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.FlujosAprobacionTiposOperacion, it);
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Tipo de operación agregado.", Severity.Success); await LoadTiposOperacion(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(FlujosAprobacion), nameof(GuardarTipoOperacion));
+    }
+
+    private async Task EliminarTipoOperacion(FlujoAprobacionTipoOperacion it)
+    {
+        var confirmado = await DialogService.ShowMessageBox(
+            "Quitar", $"¿Quitar el tipo de operación \"{it.DES_TIPO_OPERACION ?? it.COD_TIPO_OPERACION}\" de este flujo?",
+            yesText: "Quitar", cancelText: "Cancelar");
+        if (confirmado != true) return;
+
+        var url = $"{ApiRoutes.Logistica.FlujosAprobacionTiposOperacion}/{it.NUM_FLUJO_APROBACION}/{Uri.EscapeDataString(it.COD_CLASE_OPERACION)}/{Uri.EscapeDataString(it.COD_TIPO_OPERACION)}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Quitado.", Severity.Success); await LoadTiposOperacion(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(FlujosAprobacion), nameof(EliminarTipoOperacion));
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.FLUJOS_APROBACION", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

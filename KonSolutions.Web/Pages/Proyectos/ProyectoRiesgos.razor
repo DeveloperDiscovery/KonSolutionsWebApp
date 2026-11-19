@@ -1,0 +1,162 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using Probabilidad = KONSolutions.Shared.Models.Proyectos.ProyectosProbabilidadRiesgo
+@using Impacto = KONSolutions.Shared.Models.Proyectos.ProyectosImpactoRiesgo
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly)
+    {
+        <MudButton OnClick="@(() => EditarRiesgo(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Warning">Nuevo riesgo</MudButton>
+        <MudButton OnClick="@(() => EditarPlan(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Shield">Nuevo plan</MudButton>
+    }
+    <MudSpacer />
+    <MudText Class="mono" Style="opacity:.6;font-size:.82rem;">Nivel = probabilidad × impacto · alto desde 0.40 · medio desde 0.15</MudText>
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
+    <div style="flex:2 1 560px;min-width:0;">
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div data-resizable-grid="proy-riesgos" style="position:relative;">
+                <MudDataGrid T="ExpedienteRiesgo" Items="_r.Riesgos" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="25">
+                    <Columns>
+                        <PropertyColumn Property="x => x.NUM_SECUENCIA" Title="#" />
+                        <PropertyColumn Property="x => x.DES_RIESGO" Title="Riesgo" />
+                        <PropertyColumn Property="x => x.DES_PROBABILIDAD" Title="Probabilidad" />
+                        <PropertyColumn Property="x => x.DES_IMPACTO" Title="Impacto" />
+                        <TemplateColumn Title="Nivel" Sortable="false" Filterable="false"><CellTemplate><span class="sit nivel-@context.Item.COD_NIVEL">@ProyectoApi.Nivel(context.Item.COD_NIVEL) · @context.Item.VAL_NIVEL.ToString("0.00")</span></CellTemplate></TemplateColumn>
+                        <PropertyColumn Property="x => x.DES_PLAN_MITIGACION" Title="Plan" />
+                        <TemplateColumn Title="Dónde" Sortable="false" Filterable="false"><CellTemplate>@(context.Item.DES_TAREA ?? context.Item.DES_FASE ?? "Proyecto")</CellTemplate></TemplateColumn>
+                        <TemplateColumn Title="Estado" Sortable="false" Filterable="false"><CellTemplate><EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /></CellTemplate></TemplateColumn>
+                        @if (!ReadOnly)
+                        {
+                            <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                                <CellTemplate>
+                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditarRiesgo(context.Item))" title="Editar" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => QuitarRiesgo(context.Item))" title="Quitar" />
+                                </CellTemplate>
+                            </TemplateColumn>
+                        }
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">No hay riesgos registrados.</MudText></NoRecordsContent>
+                    <PagerContent><MudDataGridPager T="ExpedienteRiesgo" /></PagerContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+    </div>
+
+    <div style="flex:1 1 380px;min-width:0;">
+        <MudText Typo="Typo.subtitle2" Class="mb-1">Matriz de riesgos</MudText>
+        @if (_probs.Count == 0 || _imps.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.7;">Faltan los catálogos de probabilidad e impacto (Proyectos &gt; Probabilidad de riesgo / Impacto de riesgo).</MudText>
+        }
+        else
+        {
+            <div class="mx5" style="grid-template-columns:90px repeat(@_imps.Count,minmax(52px,1fr));">
+                <div class="h"></div>
+                @foreach (var im in _imps) { <div class="h">@im.DES_IMPACTO_RIESGO</div> }
+                @foreach (var pr in _probs)
+                {
+                    <div class="h">@pr.DES_PROBABILIDAD_RIESGO</div>
+                    @foreach (var im in _imps)
+                    {
+                        var nivel = (pr.VAL_PROBABILIDAD ?? 0) * (im.VAL_PROBABILIDAD ?? 0);
+                        var aqui = _r.Riesgos.Where(x => x.COD_PROBABILIDAD_RIESGO == pr.COD_PROBABILIDAD_RIESGO && x.COD_IMPACTO_RIESGO == im.COD_IMPACTO_RIESGO).ToList();
+                        <div class="c @(nivel >= 0.40m ? "L3" : nivel >= 0.15m ? "L2" : "L1")">
+                            @foreach (var x in aqui) { <span class="pt" title="@x.DES_RIESGO">@x.NUM_SECUENCIA</span> }
+                        </div>
+                    }
+                }
+            </div>
+        }
+
+        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Planes de mitigación</MudText>
+        <MudSimpleTable Dense="true" Hover="true" Style="overflow-x:auto;">
+            <thead><tr><th>Código</th><th>Plan</th><th style="text-align:right;">Riesgos</th><th>Estado</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var p in _r.Planes)
+                {
+                    var plan = p;
+                    <tr>
+                        <td class="mono">@plan.COD_PLAN_MITIGACION</td><td>@plan.DES_PLAN_MITIGACION</td><td class="mono" style="text-align:right;">@plan.NUM_RIESGOS</td>
+                        <td><EstadoChip Estado="@plan.DES_ESTADO" BackColor="@plan.DES_BACKCOLOR" ForeColor="@plan.DES_FORECOLOR" /></td>
+                        <td style="white-space:nowrap;">
+                            @if (!ReadOnly)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditarPlan(plan))" title="Editar" />
+                                <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => QuitarPlan(plan))" title="Quitar" />
+                            }
+                        </td>
+                    </tr>
+                }
+                @if (_r.Planes.Count == 0) { <tr><td colspan="5" class="mono" style="opacity:.5;">Sin planes.</td></tr> }
+            </tbody>
+        </MudSimpleTable>
+    </div>
+</div>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private ExpedienteRiesgos _r = new();
+    private ExpedientePlanificacion _plan = new();
+    private List<Probabilidad> _probs = new();
+    private List<Impacto> _imps = new();
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _r = await Http.SafeGetAsync<ExpedienteRiesgos>(ApiRoutes.Proyectos.Exp(NumProyecto, "riesgos")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+            // la matriz: probabilidad de mayor a menor (arriba lo más probable), impacto de menor a mayor
+            _probs = (await Http.SafeGetAsync<List<Probabilidad>>(ApiRoutes.Proyectos.ProbabilidadRiesgo) ?? new()).OrderByDescending(x => x.VAL_PROBABILIDAD).ToList();
+            _imps = (await Http.SafeGetAsync<List<Impacto>>(ApiRoutes.Proyectos.ImpactoRiesgo) ?? new()).OrderBy(x => x.VAL_PROBABILIDAD).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoRiesgos), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los riesgos. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private static readonly DialogOptions Opc = new() { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+
+    private async Task EditarRiesgo(ExpedienteRiesgo? r)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoRiesgoDialog>(r is null ? "Nuevo riesgo" : "Editar riesgo",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = r, ["Riesgos"] = _r.Riesgos, ["Planes"] = _r.Planes, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas }, Opc);
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task EditarPlan(ExpedientePlan? p)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoPlanDialog>(p is null ? "Nuevo plan" : "Editar plan",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = p, ["Planes"] = _r.Planes }, Opc);
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task QuitarRiesgo(ExpedienteRiesgo r)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar riesgo", $"¿Quitar el riesgo «{r.DES_RIESGO}»?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.Riesgos}/{NumProyecto}/{r.NUM_SECUENCIA}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el riesgo.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+
+    private async Task QuitarPlan(ExpedientePlan p)
+    {
+        if (p.NUM_RIESGOS > 0) { Snackbar.Add($"El plan lo usan {p.NUM_RIESGOS} riesgo(s): quítaselo primero.", Severity.Warning); return; }
+        var ok = await DialogService.ShowMessageBox("Quitar plan", $"¿Quitar el plan «{p.DES_PLAN_MITIGACION}»?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.Planes}/{NumProyecto}/{Uri.EscapeDataString(p.COD_PLAN_MITIGACION)}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el plan.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

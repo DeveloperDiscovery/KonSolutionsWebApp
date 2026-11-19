@@ -1,0 +1,25 @@
+@typeparam T
+@* Cabecera de columna con orden y filtro de una grilla que usa GridOF<T>: el titulo ordena (EncabezadoOrdenable) y el embudo filtra (FiltroExcelColumna).
+   Uso (dentro de un TemplateColumn):  <HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Codigo" OnCambio="Refrescar" /></HeaderTemplate> *@
+<div class="d-flex align-center gap-1">
+    <EncabezadoOrdenable Texto="@Texto" Activo="@(G.OrdenColumna == Col)" Ascendente="G.Ascendente" OnClick="@Ordenar" />
+    @if (Filtrable)
+    {
+        <FiltroExcelColumna T="T" ItemsBase="@G.Base(Items, Col)" ValorDe="@G.Valor(Col)"
+                            ValoresActivos="@G.Filtro(Col)" ValoresActivosChanged="@Filtrar" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public GridOF<T> G { get; set; } = default!;
+    /// <summary>La lista completa sobre la que trabaja la grilla (antes de los filtros de columna).</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<T> Items { get; set; } = Array.Empty<T>();
+    [Parameter, EditorRequired] public int Col { get; set; }
+    [Parameter] public string Texto { get; set; } = "";
+    [Parameter] public bool Filtrable { get; set; } = true;
+    /// <summary>Avisa a la pantalla que cambio el orden o un filtro (ella se vuelve a dibujar).</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private Task Ordenar() { G.ToggleOrden(Col); return OnCambio.InvokeAsync(); }
+    private Task Filtrar(HashSet<string>? v) { G.SetFiltro(Col, v); return OnCambio.InvokeAsync(); }
+}

@@ -1,0 +1,151 @@
+====================================================================
+PROYECTO WEB CORREGIDO — KonSolutionsWebApp
+(KonSolutions.Web + KonSolutions.Shared)
+====================================================================
+
+Va el proyecto COMPLETO, igual que la API. Está armado sobre tu última
+versión, así que todo lo de la sesión (comparativo, requerimientos,
+DES_TIPO_PRECIO, COD_TIPO_ESTADO_DETALLE_RELACIONADO, el dialecto, los
+labels del diálogo de estado) ya venía adentro y no lo volví a tocar.
+
+Lo NUEVO son 11 archivos modificados y 2 eliminados.
+
+--------------------------------------------------------------------
+1. TRAZAS DE DIAGNÓSTICO QUE QUEDARON EN PRODUCCIÓN (18 sentencias)
+--------------------------------------------------------------------
+Varias eran bloques que el propio código marcaba como "TEMPORAL" o
+"TRACE temporal" y nunca se quitaron. En Blazor WASM esto se imprime en
+la consola del navegador de CADA usuario, no en un log del servidor.
+
+  AriaCombo.razor                bloque "TEMPORAL — diagnóstico del combo
+                                 de Estado en Productos" (con su comentario)
+  NodoMenuItem.razor             traza dentro del lambda de @oncontextmenu:
+                                 se ejecutaba en CADA clic derecho del menú
+  TiposSolicitudComercial.razor  bloque "TRACE temporal" de 5 sentencias
+                                 (se fue también botonesCargo, que solo
+                                 existía para alimentar la traza)
+  SolicitudesComerciales.razor   2 trazas de tiempo de carga de iconos
+  OpcionesAplicaciones.razor     2 trazas de tiempo de carga de iconos
+  Workspace.razor                2 trazas de tiempo (y t0, que quedaba sin
+                                 usar → CS0219)
+  MainLayout.razor               [TECLADO-VIRTUAL] ("quitar cuando
+                                 funcione"), MostrarMenuOpcion y ToggleCarpeta
+
+  AplicacionesOpcionesDialog.razor — este es el que más me importaba.
+  Imprimía en la consola del navegador el EXEC completo del SP con TODOS
+  sus parámetros y sus valores:
+
+     [SP] EXEC PROC_SEGURIDAD_APLICACIONES_OPCIONES_INSERT @COD_APLICACION = '...'
+          @COD_OPCION_APLICACION = '...' @DES_FORMULARIO = '...' ...
+
+  Eso le entrega a cualquiera que abra F12 el nombre real del
+  procedimiento y su firma completa — justo de la pantalla de seguridad.
+  Se fueron las 5 sentencias de ese archivo (DELETE, INSERT, ambos
+  resultados y la del catch); el error igual se sigue mostrando al
+  usuario y registrando en ErrorLog, así que no se pierde nada.
+
+  LO QUE SÍ SE QUEDÓ, a propósito:
+   - ErrorLogService.TraceAsync — ESE es el canal correcto y ya escribe
+     en consola por diseño.
+   - AccessLogService — ya está condicionado por appsettings.json.
+   - Los 2 Console.WriteLine "[ERROR]" dentro de catch de carga de iconos:
+     reportan una falla real, no son ruido.
+
+--------------------------------------------------------------------
+2. BUG REAL: dos excepciones que quedaban sin observar
+--------------------------------------------------------------------
+Este no venía de la auditoría, lo encontré revisando y es el hallazgo
+que más vale del paquete.
+
+  MainLayout.razor (~línea 1420) y NotificacionesConsulta.razor (línea 62)
+  hacían lo mismo:
+
+      _ = FotoSvc.PrecargarVariosAsync(...)
+             .ContinueWith(async t => { if (t.Result) await ...; });
+
+  Si la descarga de fotos falla, "t.Result" RELANZA la excepción dentro
+  de la continuación. Y esa continuación es un Task descartado (_ =), o
+  sea que nadie la observa: la excepción no aparece ni en pantalla, ni
+  en ErrorLog, ni en la consola. Se pierde.
+
+  El de MainLayout es el peor porque está en el POLLING de
+  notificaciones: un corte de red lo repite en cada refresco.
+
+  Reescritos como método async propio con try/catch, que registra en
+  ErrorLog y no le muestra nada al usuario (la foto es decorativa, la
+  pantalla queda igual de usable). En NotificacionesConsulta hubo que
+  agregar "@inject ErrorLogService ErrorLog", que no estaba.
+
+--------------------------------------------------------------------
+3. RAZOR NO UTILIZADOS
+--------------------------------------------------------------------
+Revisé los 407 .razor: sin @page, sin uso como componente <X>, sin
+typeof(X) y sin mención por nombre en ningún archivo del proyecto.
+Salieron 8 candidatos, y 5 son falsos positivos que verifiqué uno por uno
+(EmptyLayout se usa con @layout; ComparativoCompras y PaginaError y
+PaginaEnConstruccion por typeof con namespace completo; AtajosTecladoDialog
+por DialogService.ShowAsync<T>).
+
+  ELIMINADOS — cero referencias en todo el proyecto:
+    Pages/Seguridad/Treeview/NodoRadial.razor   (nodo rombo de una vista
+                                                radial que ya no existe)
+    Pages/Seguridad/VerUsuarioDialog.razor      (visor de usuario superado
+                                                por el diálogo actual)
+
+  NO LO ELIMINÉ, decídelo tú:
+    Pages/Entorno/NotificacionMensajeDialog.razor
+    Está completo y bien hecho — visor de notificaciones que NO son de
+    aprobación, hermano de NotificacionAprobacionDialog — pero nadie lo
+    abre. No parece código muerto sino una función terminada y nunca
+    conectada. Borrarlo sería tirar trabajo hecho, así que lo dejé.
+
+  Los dos borrados están en el historial de git si los quieres de vuelta.
+
+--------------------------------------------------------------------
+4. DOS COSAS QUE ENCONTRÉ Y NO TOQUÉ (te explico por qué)
+--------------------------------------------------------------------
+
+  a) 88 "private async void OnAtajoNuevo()"
+     Un async void que lanza excepción no se puede capturar desde afuera:
+     se va al contexto de sincronización y puede tumbar el circuito. Están
+     en 88 pantallas.
+
+     PERO no es descuido de las pantallas: ShortcutService los declara como
+     "public event Action?", y un Action obliga a async void. Arreglarlo de
+     verdad es cambiar el servicio a "event Func<Task>?" y sus Raise* a
+     await, y recién ahí cambiar las 88 firmas. Es un refactor de 89
+     archivos que no puedo compilar acá, y meterlo de contrabando en una
+     entrega de limpieza me parece mal. Queda propuesto; si lo quieres, lo
+     hago como cambio propio.
+
+  b) Leaflet desde CDN sin SRI
+     index.html líneas 18 y 562 cargan leaflet 1.9.4 desde
+     cdn.jsdelivr.net sin atributo integrity. Si ese CDN se compromete, el
+     script entra al ERP con todos los permisos de la página. La versión
+     al menos está fijada (1.9.4), que es la mitad del problema resuelto.
+     Lo correcto es agregar integrity + crossorigin, o servir leaflet desde
+     wwwroot. No lo cambié porque tocar cómo carga el mapa sin poder
+     probarlo es pedir un problema.
+
+--------------------------------------------------------------------
+5. LO QUE REVISÉ Y ESTABA BIEN
+--------------------------------------------------------------------
+  - wwwroot/appsettings.json: no tiene secretos, solo ApiBaseUrl (apunta a
+    localhost:62599, o sea el valor de desarrollo — cámbialo al publicar).
+  - Sin archivos basura: ningún *_AGREGAR, *.tmp, *.bak, *.user ni salidas
+    del depurador versionadas. Este proyecto estaba más limpio que la API.
+  - Los ~20 "await dlg.Result" que la auditoría contó como bloqueo de hilo
+    son MudDialog: es await sobre un Task, correcto. Me retracto de ese
+    punto, igual que en la API.
+
+--------------------------------------------------------------------
+6. NOTA SOBRE LA COMPILACIÓN
+--------------------------------------------------------------------
+Este entorno no tiene el SDK de .NET, así que no pude compilar. Verifiqué
+a mano cada borrado: que no quedaran variables huérfanas (revisé t0,
+botonesCargo y actual uno por uno), que las firmas de PrecargarVariosAsync
+(Task<bool>) y ErrorLog.LogAsync(ex, pagina, metodo) coincidan con lo que
+llamo, y que los métodos nuevos queden dentro del bloque @code. Aun así,
+compílalo antes de subirlo.
+
+El zip NO incluye .vs, bin ni obj.

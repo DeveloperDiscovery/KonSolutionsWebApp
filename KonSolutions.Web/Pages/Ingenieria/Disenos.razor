@@ -1,0 +1,526 @@
+@page "/ingenieria/disenos"
+@attribute [Authorize]
+@using DisenosModel = KONSolutions.Shared.Models.Ingenieria.Disenos
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject MenuService MenuSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+@inject Blazored.LocalStorage.ILocalStorageService Local
+
+<PageTitle>Diseños · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Diseños" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema INGENIERIA · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+</div>
+
+@* Dos tabs dentro del mismo módulo: la grilla de diseños y, al costado, la de versiones
+   del diseño sobre el que se pulsó la acción "Versiones". Habilitación cruzada y
+   excluyente: al entrar solo Diseños está habilitado; "Versiones" (fila) carga la
+   grilla y voltea la figura — deshabilita Diseños y habilita Versiones; "Volver a
+   Diseños" la vuelve a voltear. *@
+<MudTabs Elevation="0" Rounded="false" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-2"
+         @bind-ActivePanelIndex="_tabActivo">
+<MudTabPanel Text="Diseños" Icon="@Icons.Material.Filled.DesignServices" Disabled="@_versionesHabilitado">
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar diseño..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f=>f.Value is not null) || HayPanel)" />
+    @* Oculta o muestra el panel de filtros. Con filtros puestos y el panel oculto el boton se resalta (y dice cuantos hay):
+       nadie deberia dejar un filtro activo detras de un panel cerrado. *@
+    <MudTooltip Text="@TextoBotonFiltros">
+        <MudIconButton Icon="@Icons.Material.Filled.FilterAlt" Color="@ColorBotonFiltros" Size="Size.Small" OnClick="AlternarFiltros" data-accion="filtros" />
+    </MudTooltip>
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@* Filtros: grupo > familia > sub familia (cada una acota a la siguiente), tipo de diseno, entidad, personal responsable (la entidad
+   asignada a la solicitud comercial), temporada / coleccion y estado. Se combinan entre si (Y) y con los filtros de las cabeceras de columna.
+   Las opciones salen de los disenos que hay en la lista (solo se ofrece lo que existe). *@
+@if (_verFiltros)
+{
+    <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);" data-panel="filtros">
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcGrupos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fGrupo" ValueChanged="@OnFiltroGrupo" Label="Grupo de producto" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcFamilias" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fFamilia" ValueChanged="@OnFiltroFamilia" Label="Familia de producto" Disabled="@(_fGrupo is null)" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcSubFamilias" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fSub" ValueChanged="@(v => { _fSub = Vacio(v); })" Label="Sub-familia de producto" Disabled="@(_fFamilia is null)" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcTipos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fTipo" ValueChanged="@(v => { _fTipo = Vacio(v); })" Label="Tipo de diseño" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcEntidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fEntidad" ValueChanged="@(v => { _fEntidad = Vacio(v); })" Label="Entidad" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcResponsables" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fResp" ValueChanged="@(v => { _fResp = Vacio(v); })" Label="Personal responsable" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcTemporadas" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fTemp" ValueChanged="@(v => { _fTemp = Vacio(v); })" Label="Temporada / Colección" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <AriaCombo TItem="ComboboxItem" Items="@OpcEstados" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fEstado" ValueChanged="@(v => { _fEstado = Vacio(v); })" Label="Estado" />
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+}
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="disenos" style="position:relative;">
+    <MudDataGrid T="DisenosModel" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Código" Width="90">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="COD_DISENO" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(0)" ValorDe="@(x=>x.COD_DISENO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>Filtro(0,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.COD_DISENO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_DISENO" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(1)" ValorDe="@(x=>x.DES_DISENO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_DISENO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Grupo / Familia / Sub-familia de producto">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Grupo / Familia / Sub-familia de producto" Activo="@(_ordenColumna == 2)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(2))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(2)" ValorDe="@(x=>Clasificacion(x))"
+                                            ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v=>Filtro(2,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@Clasificacion(context.Item)</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Tipo de Diseño">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_TIPO_DISENO" Activo="@(_ordenColumna == 3)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(3))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(3)" ValorDe="@(x=>x.DES_TIPO_DISENO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v=>Filtro(3,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_DISENO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Entidad">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_NOMBRE_COMPLETO" Activo="@(_ordenColumna == 4)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(4))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(4)" ValorDe="@(x=>x.DES_NOMBRE_COMPLETO ?? x.DES_COMERCIAL ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v=>Filtro(4,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@(context.Item.DES_NOMBRE_COMPLETO ?? context.Item.DES_COMERCIAL)</CellTemplate>
+            </TemplateColumn>
+            @* Entidad asignada = entidad responsable de la solicitud comercial vinculada
+               (el SP la resuelve con JOIN a ESTANDAR.ENTIDADES por COD_ENTIDAD_RESPONSABLE).
+               Índices nuevos: orden 7 y filtro 8, los primeros libres en esta grilla. *@
+            <TemplateColumn Sortable="false" Title="Entidad Asignada">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ENTIDAD_ASIGNADA" Activo="@(_ordenColumna == 7)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(7))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(8)" ValorDe="@(x=>x.DES_ENTIDAD_ASIGNADA ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(8)" ValoresActivosChanged="@(v=>Filtro(8,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_ENTIDAD_ASIGNADA</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Temporada/Colección" Sortable="false" Width="170">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Temporada/Colección" Activo="@(_ordenColumna == 8)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(8))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(7)" ValorDe="@(x=>TemporadaColeccionTexto(x))"
+                                            ValoresActivos="_filtros.GetValueOrDefault(7)" ValoresActivosChanged="@(v=>Filtro(7,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@TemporadaColeccionTexto(context.Item)</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Solicitud Comercial">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_SOLICITUD_COMERCIAL" Activo="@(_ordenColumna == 6)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(6))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(6)" ValorDe="@(x=>x.DES_SOLICITUD_COMERCIAL ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v=>Filtro(6,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_SOLICITUD_COMERCIAL</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="130">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ESTADO" Activo="@(_ordenColumna == 5)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(5))" />
+                        <FiltroExcelColumna T="DisenosModel" ItemsBase="@Base(5)" ValorDe="@(x=>x.DES_ESTADO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v=>Filtro(5,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>
+                    <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div @onclick:stopPropagation="true">
+                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))"
+                                         CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="DisenosModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+</MudTabPanel>
+
+@* Disabled hasta que se pulse "Versiones" en una fila: sin un diseño elegido el tab no
+   tiene nada que mostrar y MudTabs no deja seleccionar un panel deshabilitado, así que
+   esto también bloquea el click directo en el tab. *@
+<MudTabPanel Text="@_textoTabVersiones" Icon="@Icons.Material.Filled.Layers" Disabled="@(!_versionesHabilitado)">
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        @* Mismo componente que usa la pantalla suelta del sub módulo. Los códigos de
+           aplicación/opción que recibe son los del sub módulo Diseños Versión, no los de
+           Diseños, para que los botones respeten los permisos configurados allí. *@
+        <DisenosVersionPanel CodDiseno="@(_disenoSel?.COD_DISENO ?? "")"
+                             DesDiseno="@_disenoSel?.DES_DISENO"
+                             CodAplicacion="@_codApVersiones"
+                             CodOpcionAplicacion="@_codOpVersiones"
+                             OnVolver="VolverATabDisenos" />
+    </MudPaper>
+</MudTabPanel>
+
+</MudTabs>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<DisenosModel> _items = new();
+    private string _search = "";
+
+    // ── Tab de versiones ──
+    private int _tabActivo;
+    private DisenosModel? _disenoSel;
+    // Controla la habilitación EXCLUYENTE de los dos tabs (independiente de si hay o no
+    // diseño elegido): arranca en false para que solo "Diseños" esté disponible.
+    private bool _versionesHabilitado;
+    private string _textoTabVersiones =>
+        _disenoSel is null ? "Versiones" : $"Versiones · {_disenoSel.COD_DISENO}";
+
+    // Los códigos que llegan por parámetro son los del módulo Diseños. Los del sub módulo
+    // se resuelven por su DES_FORMULARIO — clave estable que no cambia si la opción se
+    // mueve de carpeta (COD_OPCION_APLICACION sí se renumera al mover).
+    private string _codApVersiones = "", _codOpVersiones = "";
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private List<DisenosModel> Ordenar(List<DisenosModel> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_DISENO).ToList() : items.OrderByDescending(x => x.COD_DISENO).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_DISENO).ToList() : items.OrderByDescending(x => x.DES_DISENO).ToList(),
+        2 => _ordenAscendente ? items.OrderBy(x => Clasificacion(x)).ToList() : items.OrderByDescending(x => Clasificacion(x)).ToList(),
+        3 => _ordenAscendente ? items.OrderBy(x => x.DES_TIPO_DISENO).ToList() : items.OrderByDescending(x => x.DES_TIPO_DISENO).ToList(),
+        4 => _ordenAscendente ? items.OrderBy(x => x.DES_NOMBRE_COMPLETO).ToList() : items.OrderByDescending(x => x.DES_NOMBRE_COMPLETO).ToList(),
+        5 => _ordenAscendente ? items.OrderBy(x => x.DES_ESTADO).ToList() : items.OrderByDescending(x => x.DES_ESTADO).ToList(),
+        6 => _ordenAscendente ? items.OrderBy(x => x.DES_SOLICITUD_COMERCIAL).ToList() : items.OrderByDescending(x => x.DES_SOLICITUD_COMERCIAL).ToList(),
+        7 => _ordenAscendente ? items.OrderBy(x => x.DES_ENTIDAD_ASIGNADA).ToList() : items.OrderByDescending(x => x.DES_ENTIDAD_ASIGNADA).ToList(),
+        8 => _ordenAscendente ? items.OrderBy(x => TemporadaColeccionTexto(x)).ToList() : items.OrderByDescending(x => TemporadaColeccionTexto(x)).ToList(),
+        _ => items
+    };
+    private List<DisenosModel> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<DisenosModel> Base(int col) => Aplicar(_items, col);
+
+    private List<DisenosModel> Aplicar(List<DisenosModel> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon && !HayPanel) return src;
+
+        IEnumerable<DisenosModel> q = src;
+        if (HayPanel)
+        {
+            if (_fGrupo is not null) q = q.Where(x => x.COD_GRUPO_PRODUCTO == _fGrupo);
+            if (_fFamilia is not null) q = q.Where(x => x.COD_FAMILIA_PRODUCTO == _fFamilia);
+            if (_fSub is not null) q = q.Where(x => x.COD_SUB_FAMILIA_PRODUCTO == _fSub);
+            if (_fTipo is not null) q = q.Where(x => x.COD_TIPO_DISENO == _fTipo);
+            if (_fEntidad is not null) q = q.Where(x => IdEntidad(x) == _fEntidad);
+            if (_fResp is not null) q = q.Where(x => x.DES_ENTIDAD_ASIGNADA == _fResp);
+            if (_fTemp is not null) q = q.Where(x => TemporadaColeccionTexto(x) == _fTemp);
+            if (_fEstado is not null) q = q.Where(x => x.DES_ESTADO == _fEstado);
+        }
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.COD_DISENO)),
+                1 => q.Where(x => v.Contains(x.DES_DISENO)),
+                2 => q.Where(x => v.Contains(Clasificacion(x))),
+                3 => q.Where(x => v.Contains(x.DES_TIPO_DISENO ?? "")),
+                4 => q.Where(x => v.Contains(x.DES_NOMBRE_COMPLETO ?? x.DES_COMERCIAL ?? "")),
+                5 => q.Where(x => v.Contains(x.DES_ESTADO ?? "")),
+                6 => q.Where(x => v.Contains(x.DES_SOLICITUD_COMERCIAL ?? "")),
+                7 => q.Where(x => v.Contains(TemporadaColeccionTexto(x))),
+                8 => q.Where(x => v.Contains(x.DES_ENTIDAD_ASIGNADA ?? "")),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    // ── Filtros del panel (se combinan entre si y con los de las cabeceras) ──
+    // Grupo, familia y sub familia se filtran por CODIGO (la familia 00001 de un grupo no es la del otro) y se muestran por descripcion.
+    private string? _fGrupo, _fFamilia, _fSub, _fTipo, _fEntidad, _fResp, _fTemp, _fEstado;
+    private bool _verFiltros = true;      // se recuerda en este navegador (disenos.verFiltros)
+    private bool HayPanel => FiltrosActivos > 0;
+    private int FiltrosActivos => new[] { _fGrupo, _fFamilia, _fSub, _fTipo, _fEntidad, _fResp, _fTemp, _fEstado }.Count(f => f is not null);
+    private string TextoBotonFiltros => _verFiltros ? "Ocultar los filtros"
+        : HayPanel ? $"Mostrar los filtros ({FiltrosActivos} activo{(FiltrosActivos == 1 ? "" : "s")})" : "Mostrar los filtros";
+    private Color ColorBotonFiltros => _verFiltros ? Color.Primary : HayPanel ? Color.Warning : Color.Default;
+
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+    // Hasta que el SP traiga la descripcion del grupo y de la familia (script 114) se muestra su codigo.
+    private static string TextoGrupo(DisenosModel x) => !string.IsNullOrWhiteSpace(x.DES_GRUPO_PRODUCTO) ? x.DES_GRUPO_PRODUCTO : x.COD_GRUPO_PRODUCTO;
+    private static string TextoFamilia(DisenosModel x) => !string.IsNullOrWhiteSpace(x.DES_FAMILIA_PRODUCTO) ? x.DES_FAMILIA_PRODUCTO : x.COD_FAMILIA_PRODUCTO;
+    private static string TextoSubFamilia(DisenosModel x) => !string.IsNullOrWhiteSpace(x.DES_SUB_FAMILIA_PRODUCTO) ? x.DES_SUB_FAMILIA_PRODUCTO : x.COD_SUB_FAMILIA_PRODUCTO;
+    /// <summary>Texto de la columna "Grupo / Familia / Sub-familia de producto".</summary>
+    private static string Clasificacion(DisenosModel x) => string.Join(" / ", new[] { TextoGrupo(x), TextoFamilia(x), TextoSubFamilia(x) }.Where(t => !string.IsNullOrWhiteSpace(t)));
+
+    private static string? IdEntidad(DisenosModel x) => x.COD_ENTIDAD?.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+    private static string NombreEntidad(DisenosModel x) => !string.IsNullOrWhiteSpace(x.DES_NOMBRE_COMPLETO) ? x.DES_NOMBRE_COMPLETO
+        : !string.IsNullOrWhiteSpace(x.DES_COMERCIAL) ? x.DES_COMERCIAL : IdEntidad(x) ?? "";
+
+    // Los valores distintos que hay en la lista, ordenados por texto; lo que viene vacio no se ofrece.
+    private static List<ComboboxItem> Distintos(IEnumerable<(string? Id, string? Texto)> src) => src
+        .Where(t => !string.IsNullOrWhiteSpace(t.Id) && !string.IsNullOrWhiteSpace(t.Texto))
+        .GroupBy(t => t.Id!).Select(g => g.First())
+        .OrderBy(t => t.Texto, StringComparer.OrdinalIgnoreCase)
+        .Select(t => new ComboboxItem { Id = t.Id!, Texto = t.Texto! }).ToList();
+
+    private List<ComboboxItem> OpcGrupos => Distintos(_items.Select(x => ((string?)x.COD_GRUPO_PRODUCTO, (string?)TextoGrupo(x))));
+    private List<ComboboxItem> OpcFamilias => _fGrupo is null ? new() : Distintos(_items.Where(x => x.COD_GRUPO_PRODUCTO == _fGrupo).Select(x => ((string?)x.COD_FAMILIA_PRODUCTO, (string?)TextoFamilia(x))));
+    private List<ComboboxItem> OpcSubFamilias => _fGrupo is null || _fFamilia is null ? new()
+        : Distintos(_items.Where(x => x.COD_GRUPO_PRODUCTO == _fGrupo && x.COD_FAMILIA_PRODUCTO == _fFamilia).Select(x => ((string?)x.COD_SUB_FAMILIA_PRODUCTO, (string?)TextoSubFamilia(x))));
+    private List<ComboboxItem> OpcTipos => Distintos(_items.Select(x => ((string?)x.COD_TIPO_DISENO, (string?)(!string.IsNullOrWhiteSpace(x.DES_TIPO_DISENO) ? x.DES_TIPO_DISENO : x.COD_TIPO_DISENO))));
+    private List<ComboboxItem> OpcEntidades => Distintos(_items.Where(x => x.COD_ENTIDAD is not null).Select(x => (IdEntidad(x), (string?)NombreEntidad(x))));
+    private List<ComboboxItem> OpcResponsables => Distintos(_items.Select(x => (x.DES_ENTIDAD_ASIGNADA, x.DES_ENTIDAD_ASIGNADA)));
+    private List<ComboboxItem> OpcTemporadas => Distintos(_items.Where(x => !string.IsNullOrEmpty(x.DES_TEMPORADA) || !string.IsNullOrEmpty(x.DES_COLECCION)).Select(x => ((string?)TemporadaColeccionTexto(x), (string?)TemporadaColeccionTexto(x))));
+    private List<ComboboxItem> OpcEstados => Distintos(_items.Select(x => (x.DES_ESTADO, x.DES_ESTADO)));
+
+    // Cada nivel cambia: los de abajo ya no valen
+    private void OnFiltroGrupo(string? v) { _fGrupo = Vacio(v); _fFamilia = _fSub = null; }
+    private void OnFiltroFamilia(string? v) { _fFamilia = Vacio(v); _fSub = null; }
+
+    /// <summary>Tras recargar la lista (o buscar) quita los filtros del panel cuyo valor ya no esta entre las opciones: no queda un filtro
+    /// invisible dejando la grilla vacia.</summary>
+    private void DepurarFiltros()
+    {
+        if (_fGrupo is not null && OpcGrupos.All(o => o.Id != _fGrupo)) { _fGrupo = null; _fFamilia = _fSub = null; }
+        if (_fFamilia is not null && OpcFamilias.All(o => o.Id != _fFamilia)) { _fFamilia = null; _fSub = null; }
+        if (_fSub is not null && OpcSubFamilias.All(o => o.Id != _fSub)) _fSub = null;
+        if (_fTipo is not null && OpcTipos.All(o => o.Id != _fTipo)) _fTipo = null;
+        if (_fEntidad is not null && OpcEntidades.All(o => o.Id != _fEntidad)) _fEntidad = null;
+        if (_fResp is not null && OpcResponsables.All(o => o.Id != _fResp)) _fResp = null;
+        if (_fTemp is not null && OpcTemporadas.All(o => o.Id != _fTemp)) _fTemp = null;
+        if (_fEstado is not null && OpcEstados.All(o => o.Id != _fEstado)) _fEstado = null;
+    }
+
+    private async Task AlternarFiltros() { _verFiltros = !_verFiltros; try { await Local.SetItemAsync("disenos.verFiltros", _verFiltros); } catch { } }
+
+    private static string TemporadaColeccionTexto(DisenosModel x) =>
+        string.IsNullOrEmpty(x.DES_TEMPORADA) && string.IsNullOrEmpty(x.DES_COLECCION) ? "—" : $"{x.DES_TEMPORADA} / {x.DES_COLECCION}";
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _fGrupo = _fFamilia = _fSub = _fTipo = _fEntidad = _fResp = _fTemp = _fEstado = null;
+        StateHasChanged();
+    }
+
+    private async Task Buscar() { _items = string.IsNullOrWhiteSpace(_search) ? await Fetch() : await FetchSearch(_search); DepurarFiltros(); }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Disenos");
+        try { if (await Local.ContainKeyAsync("disenos.verFiltros")) _verFiltros = await Local.GetItemAsync<bool>("disenos.verFiltros"); }
+        catch { /* sin almacenamiento del navegador: quedan visibles */ }
+        var cod = MenuSvc.BuscarCodigosPorFormulario("Ingenieria/DisenosVersion.razor");
+        (_codApVersiones, _codOpVersiones) = cod is null
+            ? (CodAplicacion, CodOpcionAplicacion)
+            : (cod.Value.CodAplicacion, cod.Value.CodOpcionAplicacion);
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("INGENIERIA.DISENOS", _onCambio);
+    }
+
+    private async Task Load() { _items = string.IsNullOrWhiteSpace(_search) ? await Fetch() : await FetchSearch(_search); DepurarFiltros(); }
+
+    private async Task<List<DisenosModel>> Fetch()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DisenosModel>>>(ApiRoutes.Ingenieria.Disenos);
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Disenos), nameof(Fetch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Disenos));
+            return new();
+        }
+    }
+
+    private async Task<List<DisenosModel>> FetchSearch(string s)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DisenosModel>>>(
+                $"{ApiRoutes.Ingenieria.Disenos}/search?search={Uri.EscapeDataString(s)}");
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Disenos), nameof(FetchSearch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Disenos));
+            return new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    // Regla general de la app: un diseño ANULADO ('ANU') queda congelado — solo consulta.
+    // Sus versiones también, ver DisenosVersionPanel.razor.
+    private bool DebeBloquearPorAnulado(DisenosModel item, BotonTreeviewItem b)
+    {
+        if (!EstadoAlias.EsAnulado(item.COD_ESTADO_ALIAS)) return false;
+        // Ayuda Memoria sí se abre: el diálogo detecta la anulación y se pone en solo
+        // lectura por dentro (se pueden leer las memorias, no crear/editar/eliminar).
+        if (EsBotonVersiones(b) || EsBotonAyudaMemoria(b) || b.FLG_ACCION_GET == true) return false;
+        return true;
+    }
+
+    private async Task MostrarAvisoAnuladoAsync()
+        => await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Diseño anulado",
+                ["Mensaje"] = "El diseño está anulado: solo se permite consultarlo."
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+
+    private async Task OnAccionGrilla(DisenosModel item, BotonTreeviewItem b)
+    {
+        if (DebeBloquearPorAnulado(item, b)) { await MostrarAvisoAnuladoAsync(); return; }
+        // Se evalúa ANTES que los FLG_*: el botón "Versiones" suele configurarse con
+        // FLG_ACCION_GET y, si no se distinguiera primero, abriría el diálogo de consulta.
+        if (EsBotonVersiones(b)) { AbrirVersiones(item); return; }
+        if (EsBotonAyudaMemoria(b)) { await AbrirAyudaMemoria(item); return; }
+        if (b.FLG_ACCION_PUT    == true) { await Abrir(item, CrudModo.Update); return; }
+        if (b.FLG_ACCION_DELETE == true) { await Abrir(item, CrudModo.Delete); return; }
+        if (b.FLG_ACCION_GET    == true) { await Abrir(item, CrudModo.Read); return; }
+    }
+
+    /// <summary>Distingue el botón "Versiones" del botón genérico de Consultar. Primero se
+    /// mira DES_METODO (el nombre de acción configurado en el botón) y, como respaldo, el
+    /// nombre/alias/tooltip visible — mismo criterio que "Asignar Responsable" en
+    /// Solicitudes Comerciales.</summary>
+    private static bool EsBotonVersiones(BotonTreeviewItem b)
+    {
+        if (string.Equals(b.DES_METODO, "Versiones", StringComparison.OrdinalIgnoreCase)) return true;
+        var n = ((b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+        return n.Contains("VERSION");
+    }
+
+    // Botón "Ayuda Memoria" — bitácora libre del diseño (INGENIERIA.DISENOS_MEMORIAS).
+    // "MEMORIA" es palabra propia, sin choque con los otros botones de esta grilla.
+    private static bool EsBotonAyudaMemoria(BotonTreeviewItem b)
+    {
+        if (string.Equals(b.DES_METODO, "AyudaMemoria", StringComparison.OrdinalIgnoreCase)) return true;
+        var n = ((b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+        return n.Contains("MEMORIA");
+    }
+
+    private async Task AbrirAyudaMemoria(DisenosModel item)
+    {
+        var dlg = await DialogService.ShowAsync<DisenosMemoriasDialog>(
+            "Ayuda Memoria",
+            new DialogParameters { ["Item"] = item },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        await dlg.Result;
+    }
+
+    /// <summary>Fija el diseño de la fila, carga su grilla de versiones (vía el binding de
+    /// CodDiseno al panel) y voltea la figura: deshabilita Diseños y habilita Versiones.</summary>
+    private void AbrirVersiones(DisenosModel item)
+    {
+        _disenoSel = item;
+        _versionesHabilitado = true;
+        _tabActivo = 1;
+        StateHasChanged();
+    }
+
+    /// <summary>Botón "Volver a Diseños" dentro del tab de versiones — invierte la figura:
+    /// deshabilita Versiones y habilita Diseños. No limpia _disenoSel: si el usuario vuelve
+    /// a entrar (pulsando "Versiones" de nuevo en la misma fila) conserva lo cargado.</summary>
+    private void VolverATabDisenos()
+    {
+        _versionesHabilitado = false;
+        _tabActivo = 0;
+        StateHasChanged();
+    }
+
+    private async Task Abrir(DisenosModel? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo diseño",
+            CrudModo.Delete => $"Eliminar · {item?.DES_DISENO}",
+            CrudModo.Read   => $"Consultar · {item?.DES_DISENO}",
+            _               => $"Editar · {item?.DES_DISENO}"
+        };
+        // MaxWidth=False (en vez de Small): el diálogo necesita poder ensancharse cuando se
+        // abre el visor de documentos a la derecha; con Small quedaría recortado.
+        var dlg = await DialogService.ShowAsync<DisenosDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = false, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose() => Cambios.Desuscribir("INGENIERIA.DISENOS", _onCambio ?? (() => Task.CompletedTask));
+}

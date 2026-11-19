@@ -1,0 +1,405 @@
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using System.Text
+@using System.Security.Cryptography
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* ENROLAR: el panel donde cada chip entrega su TID.
+
+   Se escanea (o se digita) el TID del chip y Enter: la base le asigna la siguiente etiqueta pendiente de la emisión —o la de la línea elegida—,
+   le da el correlativo (el código queda en ESTANDAR.OBJETOS_RFID como  TID + 15 dígitos) y devuelve el EPC que hay que grabar en el chip
+   (9 ceros + los 15 dígitos). Mientras no haya agente conectado al equipo, el EPC se graba con el programa del fabricante y aquí se marca
+   «grabada»; más adelante lo hará el agente. Si el mismo TID llega otra vez (un reintento) devuelve lo ya enrolado, sin crear nada.
+   Una etiqueta que falla (chip dañado, no grabó) se anula y se repone; si ya tiene lecturas no se puede anular. *@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Enrolar etiquetas · emisión @Emision.NUM_EMISION</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (_e is not null)
+        {
+            <div class="mb-2" style="line-height:1.5;" data-ficha="enrolar">
+                <span><strong>@_e.DES_ORIGEN</strong>@(_e.COD_ORIGEN == "C" ? $" · ingreso {_e.NUM_MOVIMIENTO_ALMACEN?.ToString("0")} · {_e.DES_ENTIDAD}" : "") · almacén <span class="mono">@_e.COD_ALMACEN</span></span>
+                <MudProgressLinear Value="@(_e.CAN_ETIQUETAS <= 0 ? 0 : 100.0 * _e.CAN_ENROLADAS / _e.CAN_ETIQUETAS)" Color="Color.Success" Size="Size.Medium" Rounded="true" Class="my-1" />
+                <span class="mono" style="font-size:.85rem;" data-avance="true">
+                    @_e.CAN_ENROLADAS de @_e.CAN_ETIQUETAS enroladas · @_e.CAN_PENDIENTES pendientes · @_grabadas grabadas@(_e.CAN_ANULADAS > 0 ? $" · {_e.CAN_ANULADAS} anuladas" : "")
+                </span>
+            </div>
+        }
+
+        <MudGrid Class="align-end" Spacing="2">
+            <MudItem xs="12" sm="4">
+                <MudSelect T="int?" Label="Línea (vacío = la siguiente pendiente)" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_linea" Clearable="true" data-campo="linea">
+                    @foreach (var l in _lineas.Where(x => x.CAN_PENDIENTES > 0))
+                    {
+                        <MudSelectItem T="int?" Value="@((int?)l.NUM_ITEM)">@l.NUM_ITEM · @l.DES_PRODUCTO (@l.CAN_PENDIENTES pendientes)</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="5">
+                <MudTextField T="string" @ref="_campoTid" @bind-Value="_tid" Label="TID del chip (escanea o digita y Enter)" Variant="Variant.Outlined" Margin="Margin.Dense"
+                              Immediate="true" Disabled="@(_e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0 || _trabajando)" OnKeyDown="OnTidKey"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Nfc" Class="mono" data-campo="tid" />
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" OnClick="EnrolarAsync" StartIcon="@Icons.Material.Filled.Add"
+                           Disabled="@(string.IsNullOrWhiteSpace(_tid) || _trabajando || _e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0)" data-accion="enrolar">Enrolar</MudButton>
+            </MudItem>
+        </MudGrid>
+
+        @* SIMULADOR DE TID: solo para probar que el enrolamiento graba en ESTANDAR.OBJETOS_RFID sin tener chips. Siempre arranca apagado. *@
+        <div class="d-flex align-center gap-3 mt-1" style="flex-wrap:wrap;" data-simulador="true">
+            <MudCheckBox T="bool" @bind-Value="_simulador" Color="Color.Warning" Label="Simulador de TID (solo para pruebas)" Disabled="_trabajando" data-campo="simulador" />
+            @if (_simulador)
+            {
+                <MudNumericField T="int" @bind-Value="_cantidadSim" Min="1" Max="@MaxSimulados" Label="Cantidad" Variant="Variant.Outlined" Margin="Margin.Dense" HideSpinButtons="true"
+                                 Style="max-width:110px;" Immediate="true" Disabled="_trabajando" data-campo="cantidad-sim" />
+                <MudButton Variant="Variant.Filled" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Science" OnClick="EnrolarSimuladosAsync"
+                           Disabled="@(_trabajando || _e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0)" data-accion="enrolar-simulado">Enrolar con TID simulado</MudButton>
+                @if (_progreso is not null) { <span class="mono" style="font-size:.8rem;" data-progreso="true">@_progreso</span> }
+            }
+        </div>
+        @if (_simulador)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-1" data-aviso="simulador">
+                Simulador activado: cada enrolamiento inventa el TID (empieza con <b>E2FFFF</b>) y crea filas REALES en ESTANDAR.OBJETOS_RFID y en la emisión. Úsalo solo en una base de pruebas
+                (máximo @MaxSimulados por vez). Para deshacer una prueba, anula la etiqueta.
+            </MudAlert>
+        }
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2" data-error="enrolar">@_error</MudAlert>
+        }
+        @if (_e is not null && _e.CAN_PENDIENTES == 0 && !_e.FLG_ANULADA)
+        {
+            <MudAlert Severity="Severity.Success" Dense="true" Class="mt-2" data-aviso="completa">Todas las etiquetas de la emisión están enroladas.</MudAlert>
+        }
+
+        @if (_ultimo is not null)
+        {
+            <MudPaper Elevation="0" Class="pa-3 mt-3" Style="border:2px solid var(--mud-palette-success);" data-ultimo="@_ultimo.COD_STICKER_RFID">
+                <div style="font-size:.8rem;opacity:.7;">@(_ultimo.FLG_YA_ENROLADA ? "Ese TID ya estaba enrolado en esta emisión (se devuelve lo ya hecho)" : "Etiqueta enrolada") · línea @_ultimo.NUM_ITEM · etiqueta @_ultimo.NUM_ETIQUETA · @_ultimo.COD_PRODUCTO @_ultimo.DES_PRODUCTO · lote @_ultimo.NUM_LOTE_CONTROL · @_ultimo.CAN_PRODUCTO.ToString("0.######") @_ultimo.COD_UNIDAD_MEDIDA</div>
+                <div class="d-flex align-center gap-2 mt-1" style="flex-wrap:wrap;">
+                    <span style="font-size:.8rem;">EPC a grabar:</span>
+                    <span class="mono" style="font-size:1.35rem;font-weight:700;letter-spacing:.04em;" data-epc="true">@_ultimo.COD_EPC</span>
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopiarAsync(_ultimo.COD_EPC))" title="Copiar el EPC" data-accion="copiar-epc" />
+                </div>
+                <div class="d-flex align-center gap-2" style="flex-wrap:wrap;">
+                    <span style="font-size:.8rem;">Código completo:</span>
+                    <span class="mono" style="font-size:.85rem;" data-codigo="true">@_ultimo.COD_STICKER_RFID</span>
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopiarAsync(_ultimo.COD_STICKER_RFID))" title="Copiar el código" data-accion="copiar-codigo" />
+                </div>
+                <div class="mt-1">
+                    @if (_ultimo.FLG_GRABADA)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">Grabada</MudChip>
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Success" StartIcon="@Icons.Material.Filled.Check" OnClick="@(() => MarcarGrabadaAsync(_ultimo.COD_TID))" Disabled="_trabajando" data-accion="grabada-ultimo">Ya la grabé</MudButton>
+                    }
+                </div>
+            </MudPaper>
+        }
+
+        <MudDivider Class="my-3" />
+        <div class="d-flex align-center gap-2 mb-1" style="flex-wrap:wrap;">
+            <MudChip T="string" Size="Size.Small" Variant="@(_ver == "E" ? Variant.Filled : Variant.Outlined)" Color="Color.Success" OnClick="@(() => VerAsync("E"))" data-ver="E">Enroladas (@(_e?.CAN_ENROLADAS ?? 0))</MudChip>
+            <MudChip T="string" Size="Size.Small" Variant="@(_ver == "P" ? Variant.Filled : Variant.Outlined)" Color="Color.Warning" OnClick="@(() => VerAsync("P"))" data-ver="P">Pendientes (@(_e?.CAN_PENDIENTES ?? 0))</MudChip>
+            <MudChip T="string" Size="Size.Small" Variant="@(_ver == "N" ? Variant.Filled : Variant.Outlined)" Color="Color.Default" OnClick="@(() => VerAsync("N"))" data-ver="N">Anuladas (@(_e?.CAN_ANULADAS ?? 0))</MudChip>
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Download" OnClick="DescargarCsvAsync" Disabled="@(_e is null || _e.CAN_ENROLADAS == 0 || _trabajando)" data-accion="csv">Descargar CSV de las enroladas</MudButton>
+        </div>
+        @if (_truncada)
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.7;" data-aviso="truncada">Se muestran las primeras @Limite etiquetas: usa «Etiquetas RFID» para buscar el resto.</MudText>
+        }
+        <MudSimpleTable Dense="true" Hover="true" Style="max-height:300px;overflow:auto;font-size:.8rem;" data-tabla="etiquetas">
+            <thead><tr><th>Línea</th><th>N°</th><th>Estado</th><th>Producto</th><th style="text-align:right;">Cantidad</th><th>Código</th><th>EPC</th><th>Grabada</th><th>Leída</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var t in _tabla)
+                {
+                    <tr data-etiqueta="@t.NUM_ITEM-@t.NUM_ETIQUETA">
+                        <td>@t.NUM_ITEM</td>
+                        <td>@t.NUM_ETIQUETA</td>
+                        <td>@t.DES_ESTADO_ETIQUETA</td>
+                        <td><span class="mono">@t.COD_PRODUCTO</span></td>
+                        <td style="text-align:right;">@t.CAN_PRODUCTO.ToString("0.######") @t.COD_UNIDAD_MEDIDA</td>
+                        <td class="mono" style="word-break:break-all;">@t.COD_STICKER_RFID</td>
+                        <td class="mono">@t.COD_EPC</td>
+                        <td>@(t.FLG_GRABADA ? "Sí" : t.COD_ESTADO_ETIQUETA == "E" ? "No" : "")</td>
+                        <td>@(t.FLG_LEIDA ? "Sí" : "")</td>
+                        <td style="white-space:nowrap;">
+                            @if (t.COD_ESTADO_ETIQUETA == "E" && !t.FLG_GRABADA)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success" title="Ya la grabé" OnClick="@(() => MarcarGrabadaAsync(t.COD_TID))" Disabled="_trabajando" data-accion="@($"grabada-{t.NUM_ITEM}-{t.NUM_ETIQUETA}")" />
+                            }
+                            @if (t.COD_ESTADO_ETIQUETA != "N" && !t.FLG_LEIDA)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Block" Size="Size.Small" Color="Color.Error" title="Anular esta etiqueta" OnClick="@(() => AnularAsync(t))" Disabled="_trabajando" data-accion="@($"anular-{t.NUM_ITEM}-{t.NUM_ETIQUETA}")" />
+                            }
+                        </td>
+                    </tr>
+                }
+                @if (_tabla.Count == 0)
+                {
+                    <tr><td colspan="10" class="mono" style="opacity:.5;">Sin etiquetas.</td></tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+
+        @if (_recientes.Count > 0)
+        {
+            <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.7;">Lo último que enrolaste en esta sesión</MudText>
+            <div style="font-size:.78rem;" class="mono" data-recientes="true">
+                @foreach (var r in _recientes)
+                {
+                    <div>@r.Hora · @r.Texto</div>
+                }
+            </div>
+        }
+
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))" data-accion="cerrar">Cerrar</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public RfidEmision Emision { get; set; } = default!;
+
+    private const int Limite = 1000;
+    private sealed record Reciente(string Hora, string Texto);
+
+    private RfidEmision? _e;
+    private List<RfidEmisionDetalle> _lineas = new();
+    private List<RfidEtiqueta> _pendientes = new(), _enroladas = new(), _anuladas = new();
+    private string _ver = "P";
+    private bool _truncada, _trabajando;
+    private int? _linea;
+    private string? _tid, _error;
+    private const int MaxSimulados = 200;
+    private bool _simulador;
+    private int _cantidadSim = 1;
+    private string? _progreso;
+    private RfidEnrolado? _ultimo;
+    private readonly List<Reciente> _recientes = new();
+    private MudTextField<string>? _campoTid;
+    private bool _enfocar = true;
+
+    private int _grabadas => _e?.CAN_GRABADAS ?? 0;
+    private List<RfidEtiqueta> _tabla => _ver switch { "E" => _enroladas, "N" => _anuladas, _ => _pendientes };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _e = Emision;
+        await RecargarAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_enfocar)
+        {
+            _enfocar = false;
+            if (_campoTid is not null && _e is { FLG_ANULADA: false, CAN_PENDIENTES: > 0 }) await _campoTid.FocusAsync();
+        }
+    }
+
+    /// <summary>Trae todo fresco: la emisión, sus líneas y las etiquetas (las pendientes y las anuladas, pocas; las enroladas, hasta el límite).</summary>
+    private async Task RecargarAsync()
+    {
+        _e = await Http.SafeGetAsync<RfidEmision>($"{ApiRoutes.Rfid.Emisiones}/{Emision.NUM_EMISION}") ?? Emision;
+        _lineas = await Http.SafeGetAsync<List<RfidEmisionDetalle>>(ApiRoutes.Rfid.EmisionDetalle(Emision.NUM_EMISION)) ?? new();
+        _pendientes = await Etiquetas("P", 200);
+        _enroladas = await Etiquetas("E", Limite);
+        _anuladas = await Etiquetas("N", 200);
+        _truncada = _e.CAN_ENROLADAS > _enroladas.Count || _e.CAN_PENDIENTES > _pendientes.Count;
+        _ver = _e.CAN_PENDIENTES > 0 || _enroladas.Count == 0 ? "P" : "E";
+        _enfocar = true;
+    }
+
+    private async Task<List<RfidEtiqueta>> Etiquetas(string estado, int top)
+        => await Http.SafeGetAsync<List<RfidEtiqueta>>($"{ApiRoutes.Rfid.EmisionEtiquetas(Emision.NUM_EMISION)}?COD_ESTADO_ETIQUETA={estado}&TOP={top}") ?? new();
+
+    private async Task VerAsync(string estado) { _ver = estado; await Task.CompletedTask; }
+
+    private async Task OnTidKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await EnrolarAsync();
+    }
+
+    private async Task EnrolarAsync()
+    {
+        var tid = (_tid ?? "").Trim();
+        if (tid.Length == 0 || _trabajando) return;
+        _trabajando = true; _error = null;
+        try { await EnrolarUnoAsync(tid, desdeCaja: true); }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>TID inventado para probar: 24 caracteres hexadecimales (el largo de un Monza) que empiezan con E2FFFF para reconocerlos.</summary>
+    private static string TidSimulado() => "E2FFFF" + Convert.ToHexString(RandomNumberGenerator.GetBytes(9));
+
+    /// <summary>Enrola N etiquetas con TID simulados por el MISMO camino que un chip de verdad (misma API y mismo procedimiento): sirve para probar lo que se graba
+    /// en ESTANDAR.OBJETOS_RFID sin chips. Se detiene en el primer error.</summary>
+    private async Task EnrolarSimuladosAsync()
+    {
+        if (!_simulador || _trabajando || _e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0) return;
+        var n = Math.Clamp(_cantidadSim, 1, Math.Min(MaxSimulados, _e.CAN_PENDIENTES));
+        _trabajando = true; _error = null;
+        var hechas = 0;
+        try
+        {
+            for (var i = 1; i <= n; i++)
+            {
+                _progreso = $"Simulando {i} de {n}...";
+                StateHasChanged();
+                if (!await EnrolarUnoAsync(TidSimulado(), desdeCaja: false)) break;
+                hechas++;
+            }
+        }
+        finally { _trabajando = false; _progreso = null; }
+        if (hechas > 0) Snackbar.Add($"{hechas} etiqueta(s) enrolada(s) con TID simulado.", Severity.Info);
+    }
+
+    /// <summary>Un enrolamiento: lo que hace Enter con el TID de un chip. Devuelve si se enroló. desdeCaja = viene de la caja del TID (se limpia y se vuelve a enfocar).</summary>
+    private async Task<bool> EnrolarUnoAsync(string tid, bool desdeCaja)
+    {
+        try
+        {
+            var dto = new RfidEnrolarDto { COD_TID = tid, NUM_ITEM = _linea, COD_PRODUCTO_EQUIPO = _e?.COD_PRODUCTO_EQUIPO };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Rfid.EmisionEnrolar(Emision.NUM_EMISION), dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _error = await MensajeAsync(resp);
+                if (desdeCaja) { _tid = ""; _enfocar = true; }     // se limpia igual: el siguiente chip entra sin borrar a mano
+                return false;
+            }
+            var r = (await resp.Content.ReadFromJsonAsync<ApiResponse<RfidEnrolado>>())?.Data;
+            if (r is null) { _error = "La API no devolvió la etiqueta enrolada."; return false; }
+            _ultimo = r;
+            _recientes.Insert(0, new Reciente(DateTime.Now.ToString("HH:mm:ss"), $"{(r.FLG_YA_ENROLADA ? "(repetido) " : "")}línea {r.NUM_ITEM} #{r.NUM_ETIQUETA} · {r.COD_PRODUCTO} · {r.COD_STICKER_RFID} · EPC {r.COD_EPC}"));
+            if (_recientes.Count > 8) _recientes.RemoveAt(_recientes.Count - 1);
+            if (!r.FLG_YA_ENROLADA) AplicarEnrolada(r);
+            if (desdeCaja) { _tid = ""; _enfocar = true; }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(EmisionEnrolarDialog), nameof(EnrolarAsync));
+            _error = "No se pudo enrolar. Ver detalle en el log de errores.";
+            return false;
+        }
+    }
+
+    /// <summary>Lo enrolado se refleja sin volver a pedir las listas: la etiqueta pasa de pendientes a enroladas.</summary>
+    private void AplicarEnrolada(RfidEnrolado r)
+    {
+        var fila = _pendientes.FirstOrDefault(t => t.NUM_ITEM == r.NUM_ITEM && t.NUM_ETIQUETA == r.NUM_ETIQUETA);
+        if (fila is not null) _pendientes.Remove(fila);
+        fila ??= new RfidEtiqueta { NUM_EMISION = r.NUM_EMISION, NUM_ITEM = r.NUM_ITEM, NUM_ETIQUETA = r.NUM_ETIQUETA, COD_PRODUCTO = r.COD_PRODUCTO, DES_PRODUCTO = r.DES_PRODUCTO, CAN_PRODUCTO = r.CAN_PRODUCTO, COD_UNIDAD_MEDIDA = r.COD_UNIDAD_MEDIDA };
+        fila.COD_ESTADO_ETIQUETA = "E"; fila.DES_ESTADO_ETIQUETA = "ENROLADA";
+        fila.COD_TID = r.COD_TID; fila.NUM_CORRELATIVO = r.NUM_CORRELATIVO; fila.COD_STICKER_RFID = r.COD_STICKER_RFID; fila.COD_EPC = r.COD_EPC;
+        _enroladas.Add(fila);
+        _enroladas = _enroladas.OrderBy(t => t.NUM_ITEM).ThenBy(t => t.NUM_ETIQUETA).ToList();
+        var d = _lineas.FirstOrDefault(l => l.NUM_ITEM == r.NUM_ITEM);
+        if (d is not null) { d.CAN_PENDIENTES = Math.Max(d.CAN_PENDIENTES - 1, 0); d.CAN_ENROLADAS++; }
+        if (_e is not null)
+        {
+            _e.CAN_PENDIENTES = r.CAN_PENDIENTES;
+            _e.CAN_ENROLADAS++;
+            if (_e.COD_ESTADO_EMISION == "P") { _e.COD_ESTADO_EMISION = "E"; _e.DES_ESTADO_EMISION = "EN PROCESO"; }
+            if (_e.CAN_PENDIENTES == 0) { _e.COD_ESTADO_EMISION = "T"; _e.DES_ESTADO_EMISION = "TERMINADA"; }
+        }
+        if (_linea is { } li && d is { CAN_PENDIENTES: 0 } && d.NUM_ITEM == li) _linea = null;   // la línea elegida se completó
+    }
+
+    private async Task MarcarGrabadaAsync(string? tid)
+    {
+        if (string.IsNullOrWhiteSpace(tid) || _trabajando) return;
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.GuardarAsync(ApiRoutes.Rfid.EtiquetasGrabada, new RfidGrabadaDto { COD_TID = tid }, false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EmisionEnrolarDialog), nameof(MarcarGrabadaAsync));
+                return;
+            }
+            var fila = _enroladas.FirstOrDefault(t => t.COD_TID == tid);
+            if (fila is not null && !fila.FLG_GRABADA) { fila.FLG_GRABADA = true; fila.FEC_GRABACION = DateTime.Now; if (_e is not null) _e.CAN_GRABADAS++; }
+            if (_ultimo is not null && _ultimo.COD_TID == tid) _ultimo.FLG_GRABADA = true;
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task AnularAsync(RfidEtiqueta t)
+    {
+        var titulo = $"Anular la etiqueta {t.NUM_ETIQUETA} de la línea {t.NUM_ITEM}";
+        var dlg = await DialogService.ShowAsync<RfidAnularDialog>(titulo,
+            new DialogParameters
+            {
+                ["Titulo"] = titulo,
+                ["Url"] = ApiRoutes.Rfid.EtiquetaAnular(t.NUM_EMISION, t.NUM_ITEM, t.NUM_ETIQUETA),
+                ["MostrarReponer"] = t.COD_ESTADO_ETIQUETA == "E",
+                ["Aviso"] = t.COD_ESTADO_ETIQUETA == "E"
+                    ? "La etiqueta deja de existir en ESTANDAR.OBJETOS_RFID y su chip puede enrolarse de nuevo. Si ya tiene lecturas, no se puede anular."
+                    : "La etiqueta pendiente deja de contar en la emisión.",
+                ["ExitoMensaje"] = "Etiqueta anulada."
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false })
+        {
+            if (_ultimo is not null && _ultimo.NUM_ITEM == t.NUM_ITEM && _ultimo.NUM_ETIQUETA == t.NUM_ETIQUETA) _ultimo = null;
+            await RecargarAsync();
+        }
+    }
+
+    /// <summary>Todas las enroladas (sin el límite de la tabla) en un CSV con BOM para que Excel lo abra con acentos.</summary>
+    private async Task DescargarCsvAsync()
+    {
+        _trabajando = true;
+        try
+        {
+            var todas = await Http.SafeGetAsync<List<RfidEtiqueta>>($"{ApiRoutes.Rfid.EmisionEtiquetas(Emision.NUM_EMISION)}?COD_ESTADO_ETIQUETA=E") ?? new();
+            var sb = new StringBuilder();
+            sb.AppendLine("Emision;Linea;Etiqueta;Producto;Descripcion;Lote;Cantidad;Unidad;TID;Codigo;EPC;Grabada");
+            foreach (var t in todas)
+                sb.AppendLine(string.Join(';', t.NUM_EMISION, t.NUM_ITEM, t.NUM_ETIQUETA, t.COD_PRODUCTO, (t.DES_PRODUCTO ?? "").Replace(';', ','), t.NUM_LOTE_CONTROL,
+                    t.CAN_PRODUCTO.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture), t.COD_UNIDAD_MEDIDA, t.COD_TID, t.COD_STICKER_RFID, t.COD_EPC, t.FLG_GRABADA ? "SI" : "NO"));
+            var bytes = new UTF8Encoding(true).GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray();
+            await JS.InvokeVoidAsync("blobViewer.descargar", bytes, $"etiquetas-rfid-emision-{Emision.NUM_EMISION}.csv", "text/csv");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(EmisionEnrolarDialog), nameof(DescargarCsvAsync));
+            Snackbar.Add("No se pudo generar el CSV.", Severity.Error);
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task CopiarAsync(string? texto)
+    {
+        if (string.IsNullOrEmpty(texto)) return;
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", texto); Snackbar.Add("Copiado.", Severity.Info); } catch { }
+    }
+
+    /// <summary>El mensaje de la API (el texto del THROW del procedimiento); si no viene, el estado HTTP.</summary>
+    private static async Task<string> MensajeAsync(HttpResponseMessage resp)
+    {
+        try
+        {
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<object>>();
+            if (!string.IsNullOrWhiteSpace(r?.Message)) return r!.Message;
+        }
+        catch { }
+        return $"No se pudo enrolar ({(int)resp.StatusCode}).";
+    }
+}

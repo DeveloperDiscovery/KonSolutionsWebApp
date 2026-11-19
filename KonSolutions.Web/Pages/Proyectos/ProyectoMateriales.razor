@@ -1,0 +1,119 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<MudText Typo="Typo.body2" Class="mb-2" Style="opacity:.8;">
+    El plan dice qué materiales y cuánto se espera usar. Lo consumido sale solo de los movimientos de almacén que llevan este proyecto (salidas menos devoluciones).
+</MudText>
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly) { <MudButton OnClick="@(() => Editar(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Inventory2">Agregar material</MudButton> }
+    <MudSpacer />
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="proy-materiales" style="position:relative;">
+        <MudDataGrid T="ExpedienteMaterial" Items="_m.Plan" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="25">
+            <Columns>
+                <PropertyColumn Property="x => x.COD_PRODUCTO" Title="Código" />
+                <PropertyColumn Property="x => x.DES_PRODUCTO" Title="Producto" />
+                <PropertyColumn Property="x => x.DES_FASE" Title="Fase" />
+                <PropertyColumn Property="x => x.DES_TAREA" Title="Tarea" />
+                <PropertyColumn Property="x => x.CAN_PROGRAMADA" Title="Programado" Format="0.##" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.CAN_CONSUMIDA" Title="Consumido" Format="0.##" CellStyle="text-align:right;" />
+                <TemplateColumn Title="Consumo" Sortable="false" Filterable="false">
+                    <CellTemplate>
+                        @if (context.Item.TAS_CONSUMO is { } p)
+                        {
+                            <div class="d-flex align-center gap-1"><div class="prog-mini"><i style="width:@(Math.Min(100m, p).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%;@(p > 100 ? "background:#c0392b;" : "")"></i></div><span class="mono">@p.ToString("0")%</span></div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.VAL_COSTO_UNITARIO" Title="Costo unit." Format="0.####" CellStyle="text-align:right;" />
+                <PropertyColumn Property="x => x.VAL_COSTO_CONSUMIDO" Title="Costo consumido" Format="N2" CellStyle="text-align:right;" />
+                @if (!ReadOnly)
+                {
+                    <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                        <CellTemplate>
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(context.Item))" title="Editar" />
+                            <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(context.Item))" title="Quitar del plan" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">El plan de materiales está vacío.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="ExpedienteMaterial" /></PagerContent>
+        </MudDataGrid>
+        <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@if (_m.SinPlan.Count > 0)
+{
+    <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Consumido sin estar en el plan</MudText>
+    <MudSimpleTable Dense="true" Hover="true" Style="overflow-x:auto;">
+        <thead><tr><th>Código</th><th>Producto</th><th style="text-align:right;">Consumido</th><th style="text-align:right;">Movimientos</th></tr></thead>
+        <tbody>
+            @foreach (var s in _m.SinPlan)
+            {
+                <tr><td class="mono">@s.COD_PRODUCTO</td><td>@s.DES_PRODUCTO</td><td class="mono" style="text-align:right;">@s.CAN_CONSUMIDA.ToString("0.##")</td><td class="mono" style="text-align:right;">@s.NUM_MOVIMIENTOS</td></tr>
+            }
+        </tbody>
+    </MudSimpleTable>
+}
+
+<MudExpansionPanels Class="mt-3" Elevation="0">
+    <MudExpansionPanel Text="@($"Movimientos de almacén del proyecto ({_m.Movimientos.Count})")">
+        <MudSimpleTable Dense="true" Hover="true" Style="overflow-x:auto;">
+            <thead><tr><th>Movimiento</th><th>Fecha</th><th>Producto</th><th>Clase / tipo</th><th style="text-align:right;">Cantidad (+ salida, − ingreso)</th></tr></thead>
+            <tbody>
+                @foreach (var x in _m.Movimientos)
+                {
+                    <tr><td class="mono">@x.NUM_MOVIMIENTO_ALMACEN.ToString("0")</td><td>@ProyectoApi.Fecha(x.FEC_MOVIMENTO_ALMACEN)</td><td>@x.COD_PRODUCTO · @x.DES_PRODUCTO</td><td>@x.COD_CLASE_MOVIMIENTO / @x.COD_TIPO_MOVIMIENTO</td><td class="mono" style="text-align:right;">@x.CAN_SIGNADA.ToString("0.##")</td></tr>
+                }
+                @if (_m.Movimientos.Count == 0) { <tr><td colspan="5" class="mono" style="opacity:.5;">Ningún movimiento de almacén lleva este proyecto todavía. Se asigna en la cabecera del movimiento.</td></tr> }
+            </tbody>
+        </MudSimpleTable>
+    </MudExpansionPanel>
+</MudExpansionPanels>
+
+@code {
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private ExpedienteMateriales _m = new();
+    private ExpedientePlanificacion _plan = new();
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _m = await Http.SafeGetAsync<ExpedienteMateriales>(ApiRoutes.Proyectos.Exp(NumProyecto, "materiales")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoMateriales), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar los materiales. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Editar(ExpedienteMaterial? m)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoMaterialDialog>(m is null ? "Agregar material" : "Editar material",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = m, ["Plan"] = _m.Plan, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task Quitar(ExpedienteMaterial m)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar material", $"¿Quitar «{m.DES_PRODUCTO}» del plan de materiales?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.Materiales}/{NumProyecto}/{m.NUM_SECUENCIA}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar el material.", Severity.Warning); return; }
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

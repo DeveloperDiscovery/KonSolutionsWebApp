@@ -1,0 +1,91 @@
+@* La ruta de produccion con tiempos estandar (script SQL 122, API ingenieria/rutas-tiempos). La ruta es un arbol (proceso > subproceso > operacion); cada operacion
+   del catalogo aporta su SAM (minutos estandar de una unidad) y su frecuencia, las compuestas se expanden en filas hijas y cada nodo suma lo que cuelga de el.
+   Las rutas anteriores (sin catalogo) se leen igual, con SAM vacio; para ponerles tiempos se arman operaciones del catalogo debajo de sus subprocesos. *@
+@page "/ingenieria/rutas-tiempos"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject AccessLogService AccessLog
+
+<PageTitle>Rutas con tiempos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Rutas con tiempos estándar</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">@(_ruta is null ? "Elige una ruta" : $"{_ruta.COD_RUTA_PRODUCCION} · {_ruta.DES_RUTA_PRODUCCION}")</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_buscar" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar ruta..." DebounceInterval="300" MaxWidth="420px" Class="grid-header-search" />
+    <MudSwitch T="bool" @bind-Value="_soloCatalogo" Label="Solo las armadas con el catálogo" Color="Color.Primary" data-filtro="solo-catalogo" />
+    <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+    <GridRefreshButton OnRefresh="Cargar" />
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<div class="rt-layout">
+    <MudPaper Elevation="0" Class="rt-lista" Style="border:1px solid var(--line);" data-zona="lista">
+        <div data-resizable-grid="rutas-tiempos-lista" style="position:relative;">
+        <div class="mud-table-container" style="height:100%;overflow:auto;">
+        <table class="rt-tabla">
+            <thead><tr><th><EncabezadoOF G="_g" Items="_rutasFuente" Col="0" Texto="Ruta" OnCambio="CambioGrilla" /></th><th class="n"><EncabezadoOF G="_g" Items="_rutasFuente" Col="1" Texto="Filas" OnCambio="CambioGrilla" /></th><th class="n"><EncabezadoOF G="_g" Items="_rutasFuente" Col="2" Texto="SAM por unidad" OnCambio="CambioGrilla" /></th></tr></thead>
+            <tbody>
+                @foreach (var r in _rutasVisibles)
+                {
+                    <tr class="@(_ruta?.COD_RUTA_PRODUCCION == r.COD_RUTA_PRODUCCION ? "rt-sel" : "")" @onclick="@(() => Elegir(r))" data-ruta="@r.COD_RUTA_PRODUCCION" style="cursor:pointer;">
+                        <td>@r.DES_RUTA_PRODUCCION <span class="mono" style="opacity:.5;">@r.COD_RUTA_PRODUCCION</span></td>
+                        <td class="n mono">@r.CAN_FILAS_CATALOGO</td>
+                        <td class="n mono">@(r.CAN_HOJAS_CATALOGO == 0 ? "—" : OperacionesApi.Min(r.VAL_SAM_TOTAL))@if (r.CAN_HOJAS_SIN_TIEMPO > 0) { <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Size="Size.Small" Color="Color.Warning" title="@($"{r.CAN_HOJAS_SIN_TIEMPO} hojas sin tiempo")" /> }</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+        <div class="grid-resize-handle"></div>
+        </div>
+    </MudPaper>
+
+    <RutaArbolEditor Ruta="_ruta" OnCambio="Cargar" />
+</div>
+
+@code {
+    private readonly GridOF<RutaTiempoResumen> _g = new();
+    private void CambioGrilla() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public RutasTiempos()
+    {
+        _g.Add(r => (r.DES_RUTA_PRODUCCION ?? "") + " " + r.COD_RUTA_PRODUCCION);
+        _g.Add(r => r.CAN_FILAS_CATALOGO.ToString(), r => r.CAN_FILAS_CATALOGO);
+        _g.Add(r => r.CAN_HOJAS_CATALOGO == 0 ? "—" : OperacionesApi.Min(r.VAL_SAM_TOTAL), r => r.VAL_SAM_TOTAL);
+    }
+
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<RutaTiempoResumen> _rutas = new();
+    private RutaTiempoResumen? _ruta;
+    private bool _soloCatalogo = true;
+    private string _buscar = "", _error = "";
+
+    private List<RutaTiempoResumen> _rutasVisibles => _g.Visibles(_rutasFuente);
+    private List<RutaTiempoResumen> _rutasFuente => _rutas.Where(r => (!_soloCatalogo || r.CAN_FILAS_CATALOGO > 0)
+        && (string.IsNullOrWhiteSpace(_buscar) || (r.DES_RUTA_PRODUCCION?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false) || r.COD_RUTA_PRODUCCION.Contains(_buscar, StringComparison.OrdinalIgnoreCase))).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "RutasTiempos");
+        await Cargar();
+    }
+
+    private async Task Cargar()
+    {
+        var r = await OperacionesApi.LeerAsync<List<RutaTiempoResumen>>(Http, IngRoute.RutasTiempos);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudieron leer las rutas.";
+        _rutas = r.Data ?? new();
+        if (_ruta is not null) _ruta = _rutas.FirstOrDefault(x => x.COD_RUTA_PRODUCCION == _ruta.COD_RUTA_PRODUCCION);
+        StateHasChanged();
+    }
+
+    private void Elegir(RutaTiempoResumen r) => _ruta = r;
+}

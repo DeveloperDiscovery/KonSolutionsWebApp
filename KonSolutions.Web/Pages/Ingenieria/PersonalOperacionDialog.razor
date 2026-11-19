@@ -1,0 +1,138 @@
+@* Asignar, cambiar, consultar y quitar la categoria de una persona de produccion (script SQL 124). Una persona tiene una sola categoria; la operacion fija (si se indica)
+   debe ser simple, del mismo proceso y de la misma categoria. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudText data-zona="confirmar">¿Quitar la categoría de <b>@Item?.DES_PERSONAL</b> (@Item?.COD_CATEGORIA_OCUPACIONAL · @Item?.DES_PROCESO)? La persona sigue en el personal; solo deja de tener categoría de producción.</MudText>
+        }
+        else
+        {
+            @if (_nuevo)
+            {
+                <MudSelect T="int" @bind-Value="_m.COD_ENTIDAD_PERSONAL" Label="Persona (activa, sin categoría)" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="persona">
+                    @foreach (var p in _disponibles) { <MudSelectItem T="int" Value="@p.COD_ENTIDAD_PERSONAL">@p.COD_PERSONAL · @p.DES_PERSONAL</MudSelectItem> }
+                </MudSelect>
+                @if (_disponibles.Count == 0 && _cargado) { <MudText Typo="Typo.caption" Style="opacity:.65;" data-zona="sin-disponibles">No hay personas activas sin categoría.</MudText> }
+            }
+            else
+            {
+                <MudTextField T="string" Value="@($"{Item?.COD_PERSONAL} · {Item?.DES_PERSONAL}")" Label="Persona" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="true" data-campo="persona-fija" />
+            }
+            <div class="d-flex gap-3 mt-2">
+                <MudSelect T="string" Value="_m.COD_CATEGORIA_OCUPACIONAL" ValueChanged="CambiaCategoria" Label="Categoría" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="categoria">
+                    @foreach (var p in Lista("categorias")) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="proceso">
+                    @foreach (var p in Lista("procesos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+                </MudSelect>
+            </div>
+            var crit = Lista("categorias").FirstOrDefault(c => c.COD == _m.COD_CATEGORIA_OCUPACIONAL)?.DES_DETALLE;
+            @if (!string.IsNullOrWhiteSpace(crit)) { <MudText Typo="Typo.caption" Style="opacity:.65;" data-zona="criterio">@crit</MudText> }
+            <MudSelect T="string" @bind-Value="_m.COD_SUB_PROCESO" Label="Subproceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" Class="mt-2" data-campo="subproceso">
+                @foreach (var p in Lista("subprocesos").Where(s => s.DES_DETALLE == _m.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+            </MudSelect>
+            <MudSelect T="string" @bind-Value="_m.COD_OPERACION" Label="Operación fija (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" Class="mt-2" data-campo="operacion">
+                @foreach (var p in OperacionesPosibles()) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+            </MudSelect>
+            <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Solo se ofrecen las operaciones simples del proceso y de la categoría elegidos.</MudText>
+            @if (!_nuevo)
+            {
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
+                    <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
+                    <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
+                </MudSelect>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <PanelAuditoria Class="" CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO" CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO" FecRegistro="@Item?.FEC_REGISTRO"
+                         CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION" FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura && Modo != CrudModo.Delete ? "Cerrar" : "Cancelar")</MudButton>
+        @if (Modo == CrudModo.Delete)
+        {
+            <MudButton Color="Color.Error" Variant="Variant.Filled" Disabled="_guardando" OnClick="Eliminar" data-accion="confirmar-eliminar">Quitar categoría</MudButton>
+        }
+        else if (!_soloLectura)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public PersonalOperacionItem? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    private PersonalOperacionGuardarDto _m = new();
+    private Dictionary<string, List<CatalogoOperacionItem>> _combos = new();
+    private List<PersonaDisponible> _disponibles = new();
+    private bool _nuevo, _guardando, _cargado;
+    private short _estado;
+    private string _error = "";
+    private bool _soloLectura => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<CatalogoOperacionItem> Lista(string k) => _combos.GetValueOrDefault(k) ?? new();
+
+    /// <summary>Las operaciones simples del proceso elegido y, si la operacion trae categoria, de la categoria elegida.</summary>
+    private IEnumerable<CatalogoOperacionItem> OperacionesPosibles() =>
+        Lista("operaciones").Where(o => o.DES_DETALLE == _m.COD_PROCESO && (string.IsNullOrEmpty(o.COD_REGLA) || o.COD_REGLA == _m.COD_CATEGORIA_OCUPACIONAL));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _nuevo = Modo == CrudModo.Create;
+        if (Item is not null)
+            _m = new PersonalOperacionGuardarDto
+            {
+                COD_ENTIDAD_PERSONAL = Item.COD_ENTIDAD_PERSONAL, COD_CATEGORIA_OCUPACIONAL = Item.COD_CATEGORIA_OCUPACIONAL, COD_PROCESO = Item.COD_PROCESO,
+                COD_SUB_PROCESO = Item.COD_SUB_PROCESO, COD_OPERACION = Item.COD_OPERACION, COD_TIPO_ESTADO = Item.COD_TIPO_ESTADO, COD_ESTADO = Item.COD_ESTADO
+            };
+        _estado = _m.COD_ESTADO ?? 0;
+        if (Modo == CrudModo.Delete) { _cargado = true; return; }
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.PersonalOperacionCombos);
+        if (c.Data is not null) _combos = c.Data; else _error = c.Mensaje ?? "No se pudieron leer los catálogos.";
+        if (_nuevo)
+        {
+            var d = await OperacionesApi.LeerAsync<List<PersonaDisponible>>(Http, IngRoute.PersonalOperacionDisponibles);
+            if (d.Data is not null) _disponibles = d.Data; else _error = d.Mensaje ?? "No se pudo leer el personal disponible.";
+        }
+        _cargado = true;
+    }
+
+    // al cambiar el proceso o la categoria, la operacion y el subproceso elegidos pueden dejar de corresponder
+    private void CambiaProceso(string? p) { _m.COD_PROCESO = p ?? ""; _m.COD_SUB_PROCESO = null; _m.COD_OPERACION = null; }
+    private void CambiaCategoria(string? c) { _m.COD_CATEGORIA_OCUPACIONAL = c ?? ""; if (!OperacionesPosibles().Any(o => o.COD == _m.COD_OPERACION)) _m.COD_OPERACION = null; }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (_m.COD_ENTIDAD_PERSONAL <= 0) { _error = "Elige la persona."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_CATEGORIA_OCUPACIONAL)) { _error = "Elige la categoría."; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_PROCESO)) { _error = "Elige el proceso."; return; }
+        _guardando = true;
+        var r = await ProyectoApi.GuardarAsync(Http, IngRoute.PersonalOperacion, _m, _nuevo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add(_nuevo ? "Categoría asignada." : "Categoría modificada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+
+    private async Task Eliminar()
+    {
+        _error = "";
+        _guardando = true;
+        var r = await ProyectoApi.DeleteAsync(Http, IngRoute.PersonalOperacionDe(_m.COD_ENTIDAD_PERSONAL));
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo quitar."; return; }
+        Snackbar.Add("Categoría quitada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

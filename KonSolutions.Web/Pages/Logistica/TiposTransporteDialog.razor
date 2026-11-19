@@ -1,0 +1,235 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.LogisticaTiposTransporte
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@Item?.COD_TIPO_TRANSPORTE" Descripcion="@Item?.DES_TIPO_TRANSPORTE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_TRANSPORTE" Columna="COD_TIPO_TRANSPORTE"
+                                @bind-Value="_model.COD_TIPO_TRANSPORTE"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="LOGISTICA.TIPOS_TRANSPORTE" Columna="DES_TIPO_TRANSPORTE"
+                                @bind-Value="_model.DES_TIPO_TRANSPORTE"
+                                Disabled="_readonly" />
+                </MudItem>
+
+                @* Grupo, familia y sub familia: ninguno es obligatorio a nivel de SP, cada uno
+                   acota a la siguiente y se vacía cuando su padre cambia. *@
+                <MudItem xs="12" sm="4">
+                    <AriaCombo TItem="ComboboxItem" Items="_grupos"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@_model.COD_GRUPO_PRODUCTO" ValueChanged="OnGrupoChanged"
+                               Label="Grupo de producto" Disabled="_readonly" Class="mb-2" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <AriaCombo TItem="ComboboxItem" Items="_familias"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@_model.COD_FAMILIA_PRODUCTO" ValueChanged="OnFamiliaChanged"
+                               Label="Familia de producto"
+                               Disabled="@(_readonly || string.IsNullOrWhiteSpace(_model.COD_GRUPO_PRODUCTO))" Class="mb-2" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <AriaCombo TItem="ComboboxItem" Items="_subFamilias"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               @bind-Value="_model.COD_SUB_FAMILIA_PRODUCTO"
+                               Label="Sub familia de producto"
+                               Disabled="@(_readonly || string.IsNullOrWhiteSpace(_model.COD_FAMILIA_PRODUCTO))" Class="mb-2" />
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudRadioGroup T="string" Value="@_viaSeleccionada" ValueChanged="OnViaChanged" Disabled="_readonly">
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("TERRESTRE")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.LocalShipping" /> Terrestre</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("MARITIMO")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.DirectionsBoat" /> Marítimo</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("FLUVIAL")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Water" /> Fluvial</div>
+                            </MudRadio>
+                        </div>
+                        <div class="d-flex align-center gap-2" style="height:40px;">
+                            <MudRadio T="string" Value="@("AEREO")" Color="Color.Primary">
+                                <div class="d-flex align-center gap-2"><MudIcon Icon="@Icons.Material.Filled.Flight" /> Aéreo</div>
+                            </MudRadio>
+                        </div>
+                    </MudRadioGroup>
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _grupos = new();
+    private List<ComboboxItem> _familias = new();
+    private List<ComboboxItem> _subFamilias = new();
+    private string? _viaSeleccionada;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        _grupos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.GruposProductoCombobox)) ?? new();
+
+        // Con el registro ya cargado, arma las cascadas de familia/sub familia según el
+        // grupo/familia que ya tenía guardados.
+        if (!string.IsNullOrWhiteSpace(_model.COD_GRUPO_PRODUCTO))
+            await CargarFamilias(_model.COD_GRUPO_PRODUCTO!, mantenerSeleccion: true);
+        if (!string.IsNullOrWhiteSpace(_model.COD_GRUPO_PRODUCTO) && !string.IsNullOrWhiteSpace(_model.COD_FAMILIA_PRODUCTO))
+            await CargarSubFamilias(_model.COD_GRUPO_PRODUCTO!, _model.COD_FAMILIA_PRODUCTO!, mantenerSeleccion: true);
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_TIPO_TRANSPORTE     = m.COD_TIPO_TRANSPORTE,
+            DES_TIPO_TRANSPORTE     = m.DES_TIPO_TRANSPORTE,
+            COD_GRUPO_PRODUCTO      = m.COD_GRUPO_PRODUCTO,
+            COD_FAMILIA_PRODUCTO    = m.COD_FAMILIA_PRODUCTO,
+            COD_SUB_FAMILIA_PRODUCTO= m.COD_SUB_FAMILIA_PRODUCTO,
+            FLG_TERRESTRE           = m.FLG_TERRESTRE,
+            FLG_MARITIMO            = m.FLG_MARITIMO,
+            FLG_FLUVIAL             = m.FLG_FLUVIAL,
+            FLG_AEREO               = m.FLG_AEREO,
+        };
+        _viaSeleccionada =
+            m.FLG_TERRESTRE == true ? "TERRESTRE" :
+            m.FLG_MARITIMO == true ? "MARITIMO" :
+            m.FLG_FLUVIAL == true ? "FLUVIAL" :
+            m.FLG_AEREO == true ? "AEREO" : null;
+    }
+
+    private void OnViaChanged(string? val)
+    {
+        _viaSeleccionada = val;
+        _model.FLG_TERRESTRE = val == "TERRESTRE";
+        _model.FLG_MARITIMO = val == "MARITIMO";
+        _model.FLG_FLUVIAL = val == "FLUVIAL";
+        _model.FLG_AEREO = val == "AEREO";
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre datos que la grilla
+    /// puede tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{ApiRoutes.Logistica.TiposTransporte}/{Uri.EscapeDataString(_model.COD_TIPO_TRANSPORTE)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    /// <summary>El endpoint de familias no tiene un "combobox/{grupo}" dedicado — el GET
+    /// general (?codGrupoProducto=) devuelve la entidad completa, así que aquí se mapea a
+    /// ComboboxItem (Id=código, Texto=descripción). Mismo criterio para sub familias.</summary>
+    private sealed class FamiliaProductoLite
+    {
+        public string COD_FAMILIA_PRODUCTO { get; set; } = "";
+        public string DES_FAMILIA_PRODUCTO { get; set; } = "";
+    }
+    private sealed class SubFamiliaProductoLite
+    {
+        public string COD_SUB_FAMILIA_PRODUCTO { get; set; } = "";
+        public string DES_SUB_FAMILIA_PRODUCTO { get; set; } = "";
+    }
+
+    private async Task CargarFamilias(string grupo, bool mantenerSeleccion = false)
+    {
+        var familias = (await Http.SafeGetAsync<List<FamiliaProductoLite>>(
+            ApiRoutes.Estandar.FamiliasProductoPorGrupo(grupo))) ?? new();
+        _familias = familias.Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO, Texto = f.DES_FAMILIA_PRODUCTO }).ToList();
+        if (!mantenerSeleccion) _model.COD_FAMILIA_PRODUCTO = null;
+    }
+
+    private async Task CargarSubFamilias(string grupo, string familia, bool mantenerSeleccion = false)
+    {
+        var subFamilias = (await Http.SafeGetAsync<List<SubFamiliaProductoLite>>(
+            ApiRoutes.Estandar.SubFamiliasProductoPorFamilia(grupo, familia))) ?? new();
+        _subFamilias = subFamilias.Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO, Texto = s.DES_SUB_FAMILIA_PRODUCTO }).ToList();
+        if (!mantenerSeleccion) _model.COD_SUB_FAMILIA_PRODUCTO = null;
+    }
+
+    /// <summary>Cambiar de grupo invalida la familia y la sub familia elegidas: pertenecen al
+    /// grupo anterior y combinadas con el nuevo no devolverían nada.</summary>
+    private async Task OnGrupoChanged(string? cod)
+    {
+        _model.COD_GRUPO_PRODUCTO = cod;
+        _model.COD_FAMILIA_PRODUCTO = null;
+        _model.COD_SUB_FAMILIA_PRODUCTO = null;
+        _subFamilias = new();
+        if (string.IsNullOrWhiteSpace(cod)) { _familias = new(); return; }
+        await CargarFamilias(cod!);
+    }
+
+    private async Task OnFamiliaChanged(string? cod)
+    {
+        _model.COD_FAMILIA_PRODUCTO = cod;
+        _model.COD_SUB_FAMILIA_PRODUCTO = null;
+        if (string.IsNullOrWhiteSpace(cod) || string.IsNullOrWhiteSpace(_model.COD_GRUPO_PRODUCTO)) { _subFamilias = new(); return; }
+        await CargarSubFamilias(_model.COD_GRUPO_PRODUCTO!, cod!);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Logistica.TiposTransporte;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_TRANSPORTE)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposTransporteDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP de alta es estricto y rechaza la clave repetida.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposTransporteDialog), nameof(Submit));
+    }
+}

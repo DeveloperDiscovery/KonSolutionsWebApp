@@ -1,0 +1,332 @@
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Globalization
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* NUEVA EMISIÓN de etiquetas RFID.
+
+   1. Se elige el ORIGEN:
+        · Ingreso por compra: se busca el ingreso (solo salen los que tienen líneas de productos RFID con algo por emitir) y se elige;
+          salen sus líneas con lo ya emitido y lo que falta.
+        · Stock: se elige el almacén y salen las filas de stock de productos RFID con lo que todavía no tiene etiqueta.
+   2. En cada línea se dice cuántas etiquetas: una por unidad (un par = una etiqueta) o, en los productos de medida (kg, m), UNA POR ROLLO
+      con su peso o metraje (se escriben separados por espacio o punto y coma; los decimales con punto o coma).
+   3. Se elige el equipo (opcional) y se crea. Las etiquetas nacen PENDIENTES: el TID de cada chip se lee después, en «Enrolar».
+
+   Lo que se pide no puede pasar de lo que falta por etiquetar (lo valida también la base). *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Nueva emisión de etiquetas RFID</MudText></TitleContent>
+    <DialogContent>
+        <MudRadioGroup T="string" Value="_origen" ValueChanged="OnOrigen" Class="mb-2" data-campo="origen">
+            <MudRadio T="string" Value="@("C")" Color="Color.Primary">Desde un ingreso por compra</MudRadio>
+            <MudRadio T="string" Value="@("S")" Color="Color.Primary">Desde el stock</MudRadio>
+        </MudRadioGroup>
+
+        @if (_origen == "C")
+        {
+            <div class="d-flex align-center gap-3 mb-2" style="flex-wrap:wrap;">
+                @* el flex va en la caja y no en el MudTextField: su Style cae en el .mud-input de adentro (columna) y el flex-basis pasa a ser ALTO *@
+                <div style="flex:1 1 320px;min-width:200px;" data-caja="busca-compra">
+                    <MudTextField T="string" Label="Buscar ingreso, comprobante, proveedor..." Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_busca" Immediate="true"
+                                  OnKeyDown="OnBuscaKey" FullWidth="true" data-campo="busca-compra" />
+                </div>
+                <MudCheckBox T="bool" Label="Solo con etiquetas por emitir" @bind-Value="_soloPendientes" Color="Color.Primary" data-campo="solo-pendientes" />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="BuscarCompras" Disabled="_cargando" data-accion="buscar-compras">Buscar</MudButton>
+            </div>
+            <MudSimpleTable Dense="true" Hover="true" Style="max-height:220px;overflow:auto;font-size:.82rem;" Class="mb-3" data-tabla="compras">
+                <thead><tr><th>Ingreso</th><th>Fecha</th><th>Proveedor</th><th>Comprobante</th><th>Almacén</th><th style="text-align:right;">Líneas RFID</th><th style="text-align:right;">Total</th><th style="text-align:right;">Falta emitir</th></tr></thead>
+                <tbody>
+                    @foreach (var c in _compras)
+                    {
+                        <tr @onclick="@(() => ElegirCompra(c))" style="cursor:pointer;@(_compra?.NUM_MOVIMIENTO_ALMACEN == c.NUM_MOVIMIENTO_ALMACEN ? "background:rgba(25,118,210,.12);" : "")" data-compra="@c.NUM_MOVIMIENTO_ALMACEN.ToString("0")">
+                            <td class="mono">@c.NUM_MOVIMIENTO_ALMACEN.ToString("0")</td>
+                            <td>@c.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy")</td>
+                            <td>@c.DES_ENTIDAD</td>
+                            <td>@c.NUM_COMPROBANTE_PAGO</td>
+                            <td>@c.COD_ALMACEN</td>
+                            <td style="text-align:right;">@c.CAN_LINEAS_RFID</td>
+                            <td style="text-align:right;">@c.CAN_TOTAL.ToString("0.######")</td>
+                            <td style="text-align:right;">@c.CAN_PENDIENTE.ToString("0.######")</td>
+                        </tr>
+                    }
+                    @if (_compras.Count == 0)
+                    {
+                        <tr><td colspan="8" class="mono" style="opacity:.5;">@(_cargando ? "Buscando..." : "Sin ingresos por compra con productos RFID por emitir.")</td></tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-3 mb-2" style="flex-wrap:wrap;">
+                <MudSelect T="string" Label="Almacén" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_almacen" ValueChanged="OnAlmacen" Style="flex:0 1 320px;" data-campo="almacen">
+                    @foreach (var a in _almacenes)
+                    {
+                        <MudSelectItem T="string" Value="@a.Id">@a.Id - @a.Texto</MudSelectItem>
+                    }
+                </MudSelect>
+                <div style="flex:1 1 260px;min-width:200px;" data-caja="busca-stock">
+                    <MudTextField T="string" Label="Buscar producto, lote, ubicación..." Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_busca" Immediate="true"
+                                  OnKeyDown="OnBuscaKey" FullWidth="true" data-campo="busca-stock" />
+                </div>
+                <MudCheckBox T="bool" Label="Solo lo que falta etiquetar" @bind-Value="_soloPendientes" Color="Color.Primary" data-campo="solo-pendientes" />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="BuscarStock" Disabled="_cargando || string.IsNullOrWhiteSpace(_almacen)" data-accion="buscar-stock">Buscar</MudButton>
+            </div>
+            @if (string.IsNullOrWhiteSpace(_almacen))
+            {
+                <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.7;" data-vacio="sin-almacen">Elige el almacén para ver su stock.</MudText>
+            }
+            else if (_stockBuscado && !_cargando && _lineas.Count == 0)
+            {
+                <div class="mb-3 pa-3" style="border:1px dashed rgba(128,128,128,.6);border-radius:4px;font-size:.85rem;" data-vacio="stock">
+                    <MudText Typo="Typo.subtitle2">No hay stock para etiquetar en este almacén.</MudText>
+                    <div>Aquí solo salen los productos cuya <b>sub familia</b> tiene un <b>Tipo de lectura</b> con RFID activo (Entorno &gt; Tipos de lectura, y en Estándar &gt; Sub familias de producto el campo «Tipo de Lectura»)
+                        y que tienen stock mayor que 0 en este almacén.</div>
+                    @if (_soloPendientes)
+                    {
+                        <div>Si ya los etiquetaste todos, desmarca «Solo lo que falta etiquetar» para verlos.</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_busca))
+                    {
+                        <div>Hay un texto en la búsqueda («@_busca»): bórralo para ver todo el stock del almacén.</div>
+                    }
+                </div>
+            }
+        }
+
+        @if (_lineas.Count > 0)
+        {
+            <MudText Typo="Typo.subtitle2" Class="mb-1">@(_origen == "C" ? $"Líneas del ingreso {_compra?.NUM_MOVIMIENTO_ALMACEN.ToString("0")}" : "Stock") · cuántas etiquetas</MudText>
+            <MudSimpleTable Dense="true" Style="max-height:280px;overflow:auto;font-size:.82rem;" Class="mb-3" data-tabla="lineas">
+                <thead><tr><th>@(_origen == "C" ? "Línea" : "Ubicación")</th><th>Producto</th><th>Lote</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;">Ya emitido</th><th style="text-align:right;">Falta</th><th style="min-width:260px;">Etiquetas</th></tr></thead>
+                <tbody>
+                    @foreach (var l in _lineas)
+                    {
+                        <tr data-linea="@l.Clave">
+                            <td class="mono">@(_origen == "C" ? l.Sec?.ToString() : l.Ubi)</td>
+                            <td><span class="mono">@l.Prod</span><br />@l.Desc</td>
+                            <td class="mono">@l.Lote</td>
+                            <td style="text-align:right;">@l.Origen.ToString("0.######") @l.Umed</td>
+                            <td style="text-align:right;">@l.Emitida.ToString("0.######")</td>
+                            <td style="text-align:right;" data-falta="@l.Clave">@l.Pendiente.ToString("0.######")</td>
+                            <td>
+                                @if (l.Pendiente <= 0)
+                                {
+                                    <span style="opacity:.5;">Nada por emitir</span>
+                                }
+                                else if (l.Medicion)
+                                {
+                                    <MudTextField T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Pesos de los rollos: 30.5 40.25 29.25" @bind-Value="l.Rollos" Immediate="true"
+                                                  Error="@(l.RollosInvalidos || l.SumaRollos > l.Pendiente)" data-rollos="@l.Clave" />
+                                    <span style="font-size:.74rem;opacity:.75;" data-resumen-linea="@l.Clave">@l.ListaRollos().Count rollo(s) · @l.SumaRollos.ToString("0.######") @l.Umed@(l.RollosInvalidos ? " · hay un valor que no es número" : l.SumaRollos > l.Pendiente ? " · se pasa de lo que falta" : "")</span>
+                                }
+                                else
+                                {
+                                    <div class="d-flex align-center gap-1">
+                                        <MudNumericField T="int?" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="l.N" Min="0" Max="@((int)Math.Floor(l.Pendiente))" Immediate="true"
+                                                         HideSpinButtons="true" Style="max-width:110px;" Error="@(l.N > (int)Math.Floor(l.Pendiente))" data-n="@l.Clave" />
+                                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => l.N = (int)Math.Floor(l.Pendiente))" data-accion="@($"todo-{l.Clave}")">Todo</MudButton>
+                                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => l.N = null)" data-accion="@($"nada-{l.Clave}")">Ninguna</MudButton>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+
+        <MudGrid>
+            <MudItem xs="12" sm="5">
+                <MudSelect T="string" Label="Equipo (opcional)" Variant="Variant.Outlined" @bind-Value="_equipo" Clearable="true" data-campo="equipo">
+                    @foreach (var q in _equipos)
+                    {
+                        <MudSelectItem T="string" Value="@q.COD_PRODUCTO">@q.DES_PRODUCTO@(string.IsNullOrWhiteSpace(q.DES_ENTIDAD_MARCA) ? "" : $" ({q.DES_ENTIDAD_MARCA})")</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="7">
+                <MudTextField T="string" Label="Observación" Variant="Variant.Outlined" Lines="1" MaxLength="500" @bind-Value="_observacion" Immediate="true" data-campo="observacion" />
+            </MudItem>
+        </MudGrid>
+
+        <MudText Typo="Typo.body2" Class="mt-2" data-resumen="emision">
+            @TotalEtiquetas etiqueta(s) en @LineasConEtiquetas línea(s)@(Invalido ? " · revisa las líneas marcadas" : "").
+        </MudText>
+
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_saving" data-accion="cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Crear" Disabled="@(_saving || TotalEtiquetas == 0 || Invalido)" data-accion="crear">Crear emisión</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    /// <summary>Una línea del pedido: lo que dice el origen y lo que se pide.</summary>
+    private sealed class Linea
+    {
+        public string Clave { get; init; } = "";
+        public int? Sec { get; init; }
+        public string Ubi { get; init; } = "";
+        public string Prod { get; init; } = "";
+        public string? Desc { get; init; }
+        public string? Lote { get; init; }
+        public string? Proc { get; init; }
+        public int? Op { get; init; }
+        public int? ItemOp { get; init; }
+        public int? Uni { get; init; }
+        public string? Umed { get; init; }
+        public decimal Origen { get; init; }
+        public decimal Emitida { get; init; }
+        public decimal Pendiente { get; init; }
+        public bool Medicion { get; init; }
+        public int? N { get; set; }
+        public string? Rollos { get; set; }
+
+        private static readonly char[] Separadores = { ' ', ';', '\t', '\r', '\n' };
+
+        /// <summary>Los pesos escritos, separados por espacio o punto y coma; el decimal puede ser punto o coma.</summary>
+        public List<decimal> ListaRollos()
+        {
+            var r = new List<decimal>();
+            foreach (var t in (Rollos ?? "").Split(Separadores, StringSplitOptions.RemoveEmptyEntries))
+                if (decimal.TryParse(t.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var d) && d > 0) r.Add(d);
+            return r;
+        }
+        public bool RollosInvalidos => (Rollos ?? "").Split(Separadores, StringSplitOptions.RemoveEmptyEntries).Length != ListaRollos().Count;
+        public decimal SumaRollos => ListaRollos().Sum();
+        public int Etiquetas => !Medicion ? Math.Max(N ?? 0, 0) : ListaRollos().Count;
+        public bool Invalida => Medicion ? RollosInvalidos || SumaRollos > Pendiente : (N ?? 0) > (int)Math.Floor(Pendiente) || (N ?? 0) < 0;
+    }
+
+    private string _origen = "C";
+    private string _busca = "";
+    private bool _soloPendientes = true, _cargando, _saving, _stockBuscado;
+    private List<RfidOrigenCompra> _compras = new();
+    private RfidOrigenCompra? _compra;
+    private List<ComboboxItem> _almacenes = new();
+    private string? _almacen;
+    private List<Linea> _lineas = new();
+    private List<RfidEquipoCombo> _equipos = new();
+    private string? _equipo;
+    private string? _observacion;
+
+    private int TotalEtiquetas => _lineas.Sum(l => l.Etiquetas);
+    private int LineasConEtiquetas => _lineas.Count(l => l.Etiquetas > 0);
+    private bool Invalido => _lineas.Any(l => l.Invalida);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _equipos = await Http.SafeGetAsync<List<RfidEquipoCombo>>(ApiRoutes.Rfid.EquiposCombo) ?? new();
+        _almacenes = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.AlmacenesCombobox) ?? new();
+        await BuscarCompras();
+    }
+
+    private async Task OnOrigen(string? v)
+    {
+        _origen = v == "S" ? "S" : "C";
+        _busca = ""; _lineas = new(); _compra = null;
+        if (_origen == "C") await BuscarCompras();
+        else if (!string.IsNullOrWhiteSpace(_almacen)) await BuscarStock();   // volvió a «Stock» con un almacén ya elegido: se trae su stock
+    }
+
+    private Task OnBuscaKey(KeyboardEventArgs e)
+        => e.Key == "Enter" ? (_origen == "C" ? BuscarCompras() : BuscarStock()) : Task.CompletedTask;
+
+    private async Task BuscarCompras()
+    {
+        _cargando = true;
+        try
+        {
+            var q = $"{ApiRoutes.Rfid.OrigenCompras}?FLG_SOLO_PENDIENTES={(_soloPendientes ? "true" : "false")}"
+                  + (string.IsNullOrWhiteSpace(_busca) ? "" : $"&SEARCH={Uri.EscapeDataString(_busca.Trim())}");
+            _compras = await Http.SafeGetAsync<List<RfidOrigenCompra>>(q) ?? new();
+            if (_compra is not null && _compras.All(c => c.NUM_MOVIMIENTO_ALMACEN != _compra.NUM_MOVIMIENTO_ALMACEN)) { _compra = null; _lineas = new(); }
+        }
+        finally { _cargando = false; }
+    }
+
+    private async Task ElegirCompra(RfidOrigenCompra c)
+    {
+        _compra = c;
+        var lineas = await Http.SafeGetAsync<List<RfidOrigenCompraLinea>>(ApiRoutes.Rfid.OrigenComprasLineas(c.NUM_MOVIMIENTO_ALMACEN)) ?? new();
+        _lineas = lineas.Select(l => new Linea
+        {
+            Clave = "c" + l.NUM_SECUENCIA, Sec = l.NUM_SECUENCIA, Ubi = l.COD_UBICACION_ALMACEN ?? "", Prod = l.COD_PRODUCTO, Desc = l.DES_PRODUCTO,
+            Lote = l.NUM_LOTE_CONTROL, Umed = l.COD_UNIDAD_MEDIDA, Origen = l.CAN_PRODUCTO, Emitida = l.CAN_EMITIDA, Pendiente = l.CAN_PENDIENTE,
+            Medicion = l.FLG_MEDICION,
+            // lo habitual: etiquetar todo lo que falta (una por unidad)
+            N = !l.FLG_MEDICION && l.CAN_PENDIENTE >= 1 ? (int)Math.Floor(l.CAN_PENDIENTE) : null
+        }).ToList();
+    }
+
+    private async Task OnAlmacen(string? v)
+    {
+        _almacen = v; _lineas = new();
+        if (!string.IsNullOrWhiteSpace(v)) await BuscarStock();
+    }
+
+    private async Task BuscarStock()
+    {
+        if (string.IsNullOrWhiteSpace(_almacen)) return;
+        _cargando = true;
+        try
+        {
+            var q = $"{ApiRoutes.Rfid.OrigenStock}?COD_ALMACEN={Uri.EscapeDataString(_almacen)}&FLG_SOLO_PENDIENTES={(_soloPendientes ? "true" : "false")}"
+                  + (string.IsNullOrWhiteSpace(_busca) ? "" : $"&SEARCH={Uri.EscapeDataString(_busca.Trim())}");
+            var filas = await Http.SafeGetAsync<List<RfidOrigenStock>>(q) ?? new();
+            _lineas = filas.Select((s, i) => new Linea
+            {
+                Clave = "s" + i, Ubi = s.COD_UBICACION_ALMACEN, Prod = s.COD_PRODUCTO, Desc = s.DES_PRODUCTO, Lote = s.NUM_LOTE_CONTROL, Proc = s.COD_PROCESO,
+                Op = s.NUM_ORDEN_PRODUCCION, ItemOp = s.NUM_ORDEN_PRODUCCION_ITEM, Uni = s.NUM_ORDEN_PRODUCCION_UNIDAD, Umed = s.COD_UNIDAD_MEDIDA,
+                Origen = s.CAN_PRODUCTO, Emitida = s.CAN_EMITIDA, Pendiente = s.CAN_PENDIENTE, Medicion = s.FLG_MEDICION
+            }).ToList();
+            _stockBuscado = true;
+        }
+        finally { _cargando = false; }
+    }
+
+    private async Task Crear()
+    {
+        if (TotalEtiquetas == 0 || Invalido) return;
+        if (_origen == "C" && _compra is null) { Snackbar.Add("Elige el ingreso por compra.", Severity.Warning); return; }
+        if (_origen == "S" && string.IsNullOrWhiteSpace(_almacen)) { Snackbar.Add("Elige el almacén.", Severity.Warning); return; }
+        _saving = true;
+        try
+        {
+            var dto = new RfidEmisionInsertDto
+            {
+                COD_ORIGEN = _origen,
+                NUM_MOVIMIENTO_ALMACEN = _origen == "C" ? _compra!.NUM_MOVIMIENTO_ALMACEN : null,
+                COD_ALMACEN = _origen == "S" ? _almacen : null,
+                COD_PRODUCTO_EQUIPO = _equipo, DES_OBSERVACION = _observacion,
+                LINEAS = _lineas.Where(l => l.Etiquetas > 0).Select(l => new RfidEmisionLineaDto
+                {
+                    SEC = _origen == "C" ? l.Sec : null,
+                    UBI = _origen == "S" ? l.Ubi : null, PROD = _origen == "S" ? l.Prod : null, LOTE = _origen == "S" ? l.Lote : null,
+                    PROC = _origen == "S" ? l.Proc : null, OP = _origen == "S" ? l.Op : null, ITEM = _origen == "S" ? l.ItemOp : null, UNI = _origen == "S" ? l.Uni : null,
+                    N = l.Medicion ? null : l.N,
+                    ROLLOS = l.Medicion ? l.ListaRollos() : null
+                }).ToList()
+            };
+            var resp = await Http.GuardarAsync(ApiRoutes.Rfid.Emisiones, dto, true);
+            if (resp.IsSuccessStatusCode)
+            {
+                int? numEmision = null;
+                try { numEmision = int.TryParse((await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>())?.Data?.Codigo, out var n) ? n : null; } catch { }
+                Snackbar.Add($"Emisión creada con {TotalEtiquetas} etiquetas pendientes.", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(numEmision));
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EmisionDialog), nameof(Crear));
+        }
+        finally { _saving = false; }
+    }
+}

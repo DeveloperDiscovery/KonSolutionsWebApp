@@ -1,0 +1,200 @@
+@* OpcionesProcesosEstadosFlujosDialog.razor
+   -----------------------------------------------------------------------
+   Alta/edición de UN flujo (ESTANDAR.OPCIONES_PROCESOS_ESTADOS_FLUJOS, clave
+   compuesta COD_APLICACION + COD_OPCION_APLICACION + COD_TIPO_ESTADO +
+   COD_BOTON_OPCION) dentro del Tipo de Estado seleccionado en
+   OpcionesProcesosEstados.razor. A diferencia del diálogo hermano
+   (OpcionesProcesosEstadosAgregarDialog, asignación pura sin UPDATE), esta
+   tabla sí permite editar COD_ESTADO/NUM_ORDEN_FLUJO en un registro existente
+   — se sigue el patrón CrudModo/CrudDialogActions/CrudDialogTitle general del
+   proyecto (ver InventariosAlmacenesDialog.razor).
+
+   Combo de Botón: se reusa GET /seguridad/aplicaciones-opciones-botones
+   (filtrado por CodAplicacion+CodOpcionAplicacion, mismo endpoint que arma el
+   treeview de Botones) en vez de un combobox genérico — así solo se ofrecen
+   los botones que existen realmente para esta Opción. En alta, se excluyen
+   los botones que ya tienen flujo cargado para este Tipo de Estado.
+
+   Estado destino: se reusa EstadoCombo con CodTipoEstado = COD_TIPO_ESTADO del
+   Tipo de Estado activo (mismo criterio que EstadoCombo usa en el resto del
+   proyecto para resolver nombre+color de un COD_ESTADO), en vez de un campo
+   numérico simple — el flujo apunta a un Estado que pertenece a ESE tipo. *@
+@using Modelo = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujos
+@using BotonModelo = KONSolutions.Shared.Models.Seguridad.AplicacionesOpcionesBotones
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject KONSolutions.Web.Services.AplicacionesOpcionesBotonesService BotonesSvc
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@_model.COD_BOTON_OPCION" Descripcion="@_botonDescripcion" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <div style="min-height:220px;">
+
+            @if (!_cargado)
+            {
+                <MudProgressLinear Indeterminate="true" Class="mb-3" />
+            }
+            else if (SinBotonParaCrear)
+            {
+                @* Sin combo no hay validación de "Botón": por eso Crear se apaga (ver
+                   CrudDialogActions más abajo). Antes quedaba activo y mandaba el flujo sin
+                   botón, que chocaba con FK_OPCIONES_PROCESOS_ESTADOS_FLUJOS_APLICACIONES_OPCIONES_BOTONES. *@
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                    @* La lista de botones (PROC_SEGURIDAD_APLICACIONES_OPCIONES_BOTONES_SHOWALL) no
+                       trae el botón externo ('..'): su flujo se crea solo al asignar el Tipo de
+                       Estado y se edita con el lápiz de su fila. *@
+                    @if (_botonesCombo.Count == 0)
+                    {
+                        <text>Esta opción no tiene botones definidos (se crean en Opciones de Aplicaciones). Solo tiene el botón externo, cuyo flujo ya está en la lista: para cambiar su estado destino, usa el lápiz de su fila. Si la opción es un menú, los flujos del documento van en la opción del formulario, que es la que tiene los botones.</text>
+                    }
+                    else
+                    {
+                        <text>Todos los botones de esta opción ya tienen flujo en este Tipo de Estado. Para cambiar el estado destino de uno, usa el lápiz de su fila.</text>
+                    }
+                </MudAlert>
+            }
+            else
+            {
+                <AriaCombo TItem="ComboboxItem" Items="_botonesDisponibles"
+                           TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                           @bind-Value="_model.COD_BOTON_OPCION"
+                           Label="Botón" Obligatorio="true" Disabled="@(!_esNuevo || _readonly)" Class="mb-3" />
+            }
+
+            <EstadoCombo CodTipoEstado="@CodTipoEstado" @bind-Value="_codEstadoInt"
+                         Disabled="_readonly" Class="mb-3" />
+
+            <MudNumericField T="int?" @bind-Value="_numOrdenInt" Label="Orden" Min="0" Max="255"
+                              Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+
+            </div>
+            <CrudDialogActions Modo="Modo" Saving="@(_saving || SinBotonParaCrear)" OnCancel="@(() => MudDialog.Cancel())">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcionAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public short CodTipoEstado { get; set; }
+    /// <summary>Botones que ya tienen flujo cargado en este Tipo de Estado, para no
+    /// ofrecerlos de nuevo en el combo al crear uno nuevo.</summary>
+    [Parameter] public List<string> BotonesYaAgregados { get; set; } = new();
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving, _cargado;
+
+    /// <summary>Alta sin ningún botón para elegir: no hay flujo que crear.</summary>
+    private bool SinBotonParaCrear => _esNuevo && _cargado && _botonesDisponibles.Count == 0;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<BotonModelo> _botones = new();
+    private List<ComboboxItem> _botonesCombo => _botones
+        .Select(b => new ComboboxItem { Id = b.COD_BOTON_OPCION, Texto = string.IsNullOrWhiteSpace(b.DES_ALIAS) ? b.DES_BOTON_OPCION : b.DES_ALIAS })
+        .ToList();
+    private List<ComboboxItem> _botonesDisponibles => _esNuevo
+        ? _botonesCombo.Where(b => !BotonesYaAgregados.Contains(b.Id)).ToList()
+        : _botonesCombo;
+
+    private string? _botonDescripcion => _botones.FirstOrDefault(b => b.COD_BOTON_OPCION == _model.COD_BOTON_OPCION) is { } b
+        ? (string.IsNullOrWhiteSpace(b.DES_ALIAS) ? b.DES_BOTON_OPCION : b.DES_ALIAS) : null;
+
+    // EstadoCombo/MudNumericField trabajan con int?; el modelo usa short?/byte? (tipos exactos
+    // de la columna SQL) — se traduce en el binding para no forzar esos tipos angostos por toda
+    // la UI de MudBlazor.
+    private int? _codEstadoInt
+    {
+        get => _model.COD_ESTADO;
+        set => _model.COD_ESTADO = (short?)value;
+    }
+    private int? _numOrdenInt
+    {
+        get => _model.NUM_ORDEN_FLUJO;
+        set => _model.NUM_ORDEN_FLUJO = (byte?)value;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else
+        {
+            _model.COD_APLICACION = CodAplicacion;
+            _model.COD_OPCION_APLICACION = CodOpcionAplicacion;
+            _model.COD_TIPO_ESTADO = CodTipoEstado;
+        }
+
+        _botones = await BotonesSvc.GetByOpcionAsync(CodAplicacion, CodOpcionAplicacion);
+        _cargado = true;
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            COD_APLICACION = m.COD_APLICACION,
+            COD_OPCION_APLICACION = m.COD_OPCION_APLICACION,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            COD_BOTON_OPCION = m.COD_BOTON_OPCION,
+            COD_ESTADO = m.COD_ESTADO,
+            NUM_ORDEN_FLUJO = m.NUM_ORDEN_FLUJO,
+        };
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        // Por si se llega igual (Enter en un campo): un flujo nuevo sin botón no se manda.
+        if (_esNuevo && string.IsNullOrWhiteSpace(_model.COD_BOTON_OPCION))
+        {
+            Snackbar.Add("Elige el botón del flujo.", Severity.Warning);
+            return;
+        }
+        _saving = true;
+        var ruta = EstandarRoute.OpcionesProcesosEstadosFlujos;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_APLICACION)}/{Uri.EscapeDataString(_model.COD_OPCION_APLICACION)}/{_model.COD_TIPO_ESTADO}/{Uri.EscapeDataString(_model.COD_BOTON_OPCION)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Flujo eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(OpcionesProcesosEstadosFlujosDialog), nameof(Submit), "No se pudo eliminar el flujo");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Flujo agregado." : "Flujo actualizado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstadosFlujosDialog), nameof(Submit));
+    }
+}

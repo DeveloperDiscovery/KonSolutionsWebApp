@@ -1,0 +1,243 @@
+@* Ficha de un armado de linea (script SQL 125): los PUESTOS con sus operarios y las operaciones de la ruta que hace cada uno, el balance (takt, ciclo, capacidad del turno, eficiencia),
+   los avisos de validacion y los operarios que pide por categoria. El reparto se edita aqui (mover una operacion de puesto, agregar o quitar puestos) y se guarda de una vez;
+   "Sugerir balance" lo arma por takt y reemplaza el actual. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.ViewWeek" />
+            <MudText Typo="Typo.h6">@Armado.COD_ARMADO · @Armado.DES_ARMADO</MudText>
+            <MudChip T="string" Size="Size.Small" data-chip="disposicion">@_a.DES_TIPO_DISTRIBUCION</MudChip>
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" data-chip="ruta">@_a.COD_RUTA_PRODUCCION · @_a.DES_PROCESO</MudChip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+        <div class="d-flex flex-wrap gap-3 mb-3" data-zona="balance">
+            <div class="af-kpi" data-kpi="takt"><span>Takt</span><b>@OperacionesApi.Min(_a.VAL_TAKT)</b><small>min por unidad</small></div>
+            <div class="af-kpi" data-kpi="ciclo"><span>Ciclo de la línea</span><b>@OperacionesApi.Min(_a.VAL_CICLO)</b><small>@(_a.COD_REGLA_CICLO == "MAX_PUESTO" ? "el puesto más lento" : "minutos ÷ operarios")</small></div>
+            <div class="af-kpi" data-kpi="capacidad"><span>Capacidad del turno</span><b>@Entero(_a.VAL_CAPACIDAD_TURNO)</b><small>@(_a.VAL_META_UNIDADES is { } m ? "meta " + Entero(m) : "sin meta")</small></div>
+            <div class="af-kpi" data-kpi="operarios"><span>Operarios</span><b>@(_a.CAN_OPERARIOS ?? 0)</b><small>@(_teoricos is { } t ? $"mínimo teórico {t}" : "")</small></div>
+            <div class="af-kpi" data-kpi="balanceo"><span>Balanceo</span><b>@(_a.TAS_EFICIENCIA_BALANCEO is { } b ? Dec(b) + " %" : "—")</b><small>@(_a.COD_REGLA_CICLO == "MAX_PUESTO" ? "minutos ÷ (operarios × ciclo)" : "los operarios se reparten el trabajo")</small></div>
+            <div class="af-kpi" data-kpi="minutos"><span>Minutos</span><b>@OperacionesApi.Min(_a.VAL_SAM_ASIGNADO)</b><small>de @OperacionesApi.Min(_a.VAL_SAM_RUTA) de la ruta</small></div>
+        </div>
+        @if (_sucio) { <MudText Typo="Typo.caption" Style="opacity:.7;" Class="mb-2" data-zona="nota-sucio">El balance y los avisos de arriba son los del último guardado; se recalculan al guardar el reparto.</MudText> }
+
+        <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" Disabled="_ocupado" OnClick="Sugerir" data-accion="sugerir">Sugerir balance</MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" Disabled="_ocupado" OnClick="AgregarPuesto" data-accion="agregar-puesto">Agregar puesto</MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Groups" Disabled="@(_ocupado || _sucio)" OnClick="Personal" title="@(_sucio ? "Guarda el reparto primero" : "Personal por puesto y cobertura por categoría")" data-accion="personal">Personal...</MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.CompareArrows" Disabled="_ocupado" OnClick="Comparar" title="El balance y el personal que pediría cada disposición (no guarda nada)" data-accion="comparar">Comparar disposiciones...</MudButton>
+            @if (_sucio) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" data-chip="sin-guardar">cambios sin guardar</MudChip> }
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="@(_ocupado || !_sucio)" OnClick="Cargar" data-accion="descartar">Descartar cambios</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_ocupado || !_sucio)" OnClick="Guardar" data-accion="guardar">Guardar reparto</MudButton>
+        </div>
+
+        <div class="d-flex flex-wrap gap-3" style="align-items:flex-start;">
+            <div style="flex:1 1 640px;min-width:0;" data-zona="puestos">
+                @foreach (var p in _puestos.OrderBy(x => x.Num))
+                {
+                    var hs = HojasDe(p.Num).ToList();
+                    var sam = hs.Sum(h => h.VAL_SAM_PRENDA);
+                    var ciclo = p.Operarios > 0 ? sam / p.Operarios : 0m;
+                    var carga = _a.VAL_TAKT is > 0 ? ciclo / _a.VAL_TAKT.Value * 100 : (decimal?)null;
+                    <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border:1px solid var(--line);" data-puesto="@p.Num">
+                        <div class="d-flex align-center gap-2 flex-wrap">
+                            <MudChip T="string" Size="Size.Small">@p.Num</MudChip>
+                            <MudTextField T="string" Value="p.Des" ValueChanged="@(v => { p.Des = v ?? ""; _sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" MaxLength="50" Style="max-width:260px;" data-campo="nombre-puesto" />
+                            <MudNumericField T="int" Value="p.Operarios" ValueChanged="@(v => { p.Operarios = Math.Max(1, v); _sucio = true; })" Label="Operarios" Min="1" Max="99" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:110px;" data-campo="operarios" />
+                            <span class="mono" data-dato="minutos">@OperacionesApi.Min(sam) min</span>
+                            <span class="mono" style="opacity:.7;" data-dato="ciclo">ciclo @OperacionesApi.Min(ciclo)</span>
+                            @if (hs.Count > 0 && CategoriaDe(hs) is { } cat) { <MudChip T="string" Size="Size.Small" title="La categoría más alta entre sus operaciones">Cat. @cat</MudChip> }
+                            <MudSpacer />
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => QuitarPuesto(p))" title="Quitar el puesto (sus operaciones quedan sin asignar)" data-accion="quitar-puesto" />
+                        </div>
+                        @if (carga is { } c)
+                        {
+                            <MudProgressLinear Value="@((double)Math.Min(c, 100))" Color="@(c > 100 ? Color.Error : c > 90 ? Color.Warning : Color.Success)" Size="Size.Small" Class="my-1" data-carga="@Dec(c)" />
+                            <span class="mono" style="font-size:.74rem;opacity:.7;" data-dato="carga">@Dec(c) % del takt</span>
+                        }
+                        <table class="of-tabla mt-1" data-tabla="hojas-puesto">
+                            <tbody>
+                                @foreach (var h in hs) { @FilaHoja(h) }
+                                @if (hs.Count == 0) { <tr><td style="opacity:.5;">Sin operaciones.</td></tr> }
+                            </tbody>
+                        </table>
+                    </MudPaper>
+                }
+                @if (_puestos.Count == 0) { <MudText Class="pa-3" Style="opacity:.55;" data-zona="sin-puestos">Sin puestos: agrega uno o usa "Sugerir balance".</MudText> }
+            </div>
+
+            <div style="flex:0 1 380px;min-width:260px;" data-zona="lateral">
+                <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border:1px solid var(--line);" data-zona="libres">
+                    <MudText Typo="Typo.subtitle2">Sin asignar <MudChip T="string" Size="Size.Small" Color="@(_libres.Count > 0 ? Color.Warning : Color.Default)">@_libres.Count</MudChip></MudText>
+                    <table class="of-tabla" data-tabla="hojas-libres"><tbody>
+                        @foreach (var h in _libres) { @FilaHoja(h) }
+                        @if (_libres.Count == 0) { <tr><td style="opacity:.5;">Todas las operaciones tienen puesto.</td></tr> }
+                    </tbody></table>
+                </MudPaper>
+                <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border:1px solid var(--line);" data-zona="avisos">
+                    <MudText Typo="Typo.subtitle2">Avisos</MudText>
+                    @foreach (var a in _avisos)
+                    {
+                        <MudAlert Severity="@(a.COD_SEVERIDAD == "E" ? Severity.Error : Severity.Warning)" Dense="true" Class="mb-1" data-aviso="@a.COD_REGLA">@a.DES_MENSAJE</MudAlert>
+                    }
+                    @if (_avisos.Count == 0) { <MudText Typo="Typo.caption" Style="opacity:.6;" data-zona="sin-avisos">Sin avisos: el reparto cumple las reglas.</MudText> }
+                </MudPaper>
+                <MudPaper Elevation="0" Class="pa-2" Style="border:1px solid var(--line);" data-zona="categorias">
+                    <MudText Typo="Typo.subtitle2">Operarios por categoría</MudText>
+                    <div class="d-flex flex-wrap gap-1">
+                        @foreach (var c in _porCategoria) { <MudChip T="string" Size="Size.Small" data-cat="@c.COD_CATEGORIA_OCUPACIONAL" title="@($"{c.CAN_PUESTOS} puestos")">@c.COD_CATEGORIA_OCUPACIONAL · @c.DES_CATEGORIA_OCUPACIONAL: <b>@c.CAN_OPERARIOS</b></MudChip> }
+                    </div>
+                    <MudText Typo="Typo.caption" Style="opacity:.6;">La categoría de un puesto es la más alta de sus operaciones.</MudText>
+                </MudPaper>
+            </div>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private RenderFragment FilaHoja(ArmadoHoja h) => @<tr data-hoja="@h.NUM_ESTRUCTURA_RUTA_PROCESO">
+        <td class="mono" style="opacity:.55;width:34px;">@h.NUM_SECUENCIA</td>
+        <td>@h.DES_OPERACION @if (!string.IsNullOrEmpty(h.DES_SUB_PROCESO)) { <span style="opacity:.5;font-size:.76rem;"> · @h.DES_SUB_PROCESO</span> }
+            @if (h.FLG_SIN_TIEMPO) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" title="Sin tiempo estándar: no se puede repartir">sin tiempo</MudChip> }</td>
+        <td style="width:34px;">@if (!string.IsNullOrEmpty(h.COD_CATEGORIA_OCUPACIONAL)) { <MudChip T="string" Size="Size.Small">@h.COD_CATEGORIA_OCUPACIONAL</MudChip> }</td>
+        <td class="n mono" style="width:70px;">@OperacionesApi.Min(h.VAL_SAM_PRENDA)</td>
+        <td style="width:150px;">
+            <MudSelect T="int" Value="@(_asigna.GetValueOrDefault(h.NUM_ESTRUCTURA_RUTA_PROCESO))" ValueChanged="@(v => Mover(h, v))" Dense="true" Variant="Variant.Text" Margin="Margin.Dense" Disabled="@(h.FLG_SIN_TIEMPO)" data-campo="mover">
+                <MudSelectItem T="int" Value="0">— sin asignar —</MudSelectItem>
+                @foreach (var p in _puestos.OrderBy(x => x.Num)) { <MudSelectItem T="int" Value="@p.Num">Puesto @p.Num</MudSelectItem> }
+            </MudSelect>
+        </td>
+    </tr>;
+
+    private sealed class PuestoEdit { public int Num; public string Des = ""; public int Operarios = 1; }
+
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Armado Armado { get; set; } = new();
+
+    private Armado _a = new();
+    private List<PuestoEdit> _puestos = new();
+    private List<ArmadoHoja> _hojas = new();
+    private Dictionary<int, int> _asigna = new();      // fila de la ruta -> puesto (0 = sin asignar)
+    private List<ArmadoAviso> _avisos = new();
+    private List<ArmadoOperariosCategoria> _porCategoria = new();
+    private int? _teoricos;
+    private bool _sucio, _ocupado;
+    private string _error = "";
+
+    private IEnumerable<ArmadoHoja> HojasDe(int puesto) => _hojas.Where(h => _asigna.GetValueOrDefault(h.NUM_ESTRUCTURA_RUTA_PROCESO) == puesto).OrderBy(h => h.NUM_SECUENCIA);
+    private List<ArmadoHoja> _libres => _hojas.Where(h => _asigna.GetValueOrDefault(h.NUM_ESTRUCTURA_RUTA_PROCESO) == 0).OrderBy(h => h.NUM_SECUENCIA).ToList();
+    private static string? CategoriaDe(List<ArmadoHoja> hs) => hs.Where(h => !string.IsNullOrEmpty(h.COD_CATEGORIA_OCUPACIONAL)).Select(h => h.COD_CATEGORIA_OCUPACIONAL!).OrderBy(c => c, StringComparer.Ordinal).FirstOrDefault();
+    private static string Dec(decimal v) => v.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Entero(decimal? v) => v is null ? "—" : v.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+
+    protected override async Task OnInitializedAsync() { _a = Armado; await Cargar(); }
+
+    /// <summary>Lee de la base el armado, sus puestos, las operaciones de la ruta, los avisos y los operarios por categoria (descarta lo editado sin guardar).</summary>
+    private async Task Cargar()
+    {
+        _error = "";
+        var a = await OperacionesApi.LeerAsync<Armado>(Http, IngRoute.LineaArmado(Armado.COD_ARMADO));
+        if (!a.Ok || a.Data is null) { _error = a.Mensaje ?? "No se pudo leer el armado."; return; }
+        _a = a.Data;
+        var p = await OperacionesApi.LeerAsync<List<ArmadoPuesto>>(Http, IngRoute.LineaArmado(Armado.COD_ARMADO, "puestos"));
+        var h = await OperacionesApi.LeerAsync<List<ArmadoHoja>>(Http, IngRoute.LineaArmado(Armado.COD_ARMADO, "hojas"));
+        var v = await OperacionesApi.LeerAsync<List<ArmadoAviso>>(Http, IngRoute.LineaArmado(Armado.COD_ARMADO, "avisos"));
+        var c = await OperacionesApi.LeerAsync<List<ArmadoOperariosCategoria>>(Http, IngRoute.LineaArmado(Armado.COD_ARMADO, "operarios-por-categoria"));
+        if (!p.Ok) _error = p.Mensaje ?? "No se pudieron leer los puestos."; else if (!h.Ok) _error = h.Mensaje ?? "No se pudieron leer las operaciones.";
+        _puestos = (p.Data ?? new()).Select(x => new PuestoEdit { Num = x.NUM_PUESTO, Des = x.DES_PUESTO, Operarios = x.NUM_OPERARIOS }).ToList();
+        _hojas = h.Data ?? new();
+        _asigna = _hojas.ToDictionary(x => x.NUM_ESTRUCTURA_RUTA_PROCESO, x => x.NUM_PUESTO ?? 0);
+        _avisos = v.Data ?? new();
+        _porCategoria = c.Data ?? new();
+        _teoricos = _a.VAL_TAKT is > 0 && _a.VAL_SAM_ASIGNADO is { } sa ? (int)Math.Ceiling(Math.Round(sa / _a.VAL_TAKT.Value, 6)) : null;
+        _sucio = false;
+        StateHasChanged();
+    }
+
+    private void Mover(ArmadoHoja h, int puesto) { _asigna[h.NUM_ESTRUCTURA_RUTA_PROCESO] = puesto; _sucio = true; }
+
+    private void AgregarPuesto()
+    {
+        var n = (_puestos.Count == 0 ? 0 : _puestos.Max(x => x.Num)) + 1;
+        _puestos.Add(new PuestoEdit { Num = n, Des = _a.COD_REGLA_CICLO == "MAX_PUESTO" ? $"PUESTO {n:00}" : $"MODULO {n:00}", Operarios = 1 });
+        _sucio = true;
+    }
+
+    private void QuitarPuesto(PuestoEdit p)
+    {
+        foreach (var k in _asigna.Where(x => x.Value == p.Num).Select(x => x.Key).ToList()) _asigna[k] = 0;
+        _puestos.Remove(p);
+        _sucio = true;
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        _ocupado = true;
+        var dto = new ArmadoPuestosGuardarDto
+        {
+            COD_ARMADO = Armado.COD_ARMADO,
+            Puestos = _puestos.OrderBy(x => x.Num).Select(p => new ArmadoPuestoGuardarDto
+            {
+                NUM_PUESTO = p.Num, DES_PUESTO = p.Des, NUM_OPERARIOS = p.Operarios,
+                HOJAS = HojasDe(p.Num).Select(h => h.NUM_ESTRUCTURA_RUTA_PROCESO).ToList()
+            }).ToList()
+        };
+        var r = await ProyectoApi.PutAsync(Http, IngRoute.LineaArmado(Armado.COD_ARMADO, "puestos"), dto);
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar el reparto."; return; }
+        Snackbar.Add("Reparto guardado.", Severity.Success);
+        await Cargar();
+    }
+
+    private async Task Personal()
+    {
+        var dlg = await DialogService.ShowAsync<ArmadoPersonalDialog>($"Personal · {Armado.COD_ARMADO}", new DialogParameters { ["CodArmado"] = Armado.COD_ARMADO },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, BackdropClick = false });
+        await dlg.Result;
+        await Cargar();
+    }
+
+    private async Task Comparar()
+    {
+        var dlg = await DialogService.ShowAsync<ArmadoComparaDialog>($"Comparar disposiciones · {Armado.COD_ARMADO}", new DialogParameters { ["CodArmado"] = Armado.COD_ARMADO },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true });
+        await dlg.Result;
+    }
+
+    private async Task Sugerir()
+    {
+        _error = "";
+        var ok = await DialogService.ShowMessageBox("Sugerir balance",
+            "Se arma el balance por takt y se REEMPLAZAN los puestos y el reparto actuales. ¿Continuar?", yesText: "Sugerir", cancelText: "Cancelar");
+        if (ok != true) return;
+        _ocupado = true;
+        var r = await OperacionesApi.EnviarAsync<ArmadoSugerido>(Http, HttpMethod.Post, IngRoute.LineaArmado(Armado.COD_ARMADO, "sugerir"));
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo sugerir el balance."; return; }
+        Snackbar.Add($"Balance sugerido: {r.Data?.CAN_PUESTOS} puestos, {r.Data?.CAN_OPERARIOS} operarios.", Severity.Success);
+        await Cargar();
+    }
+}
+
+<style>
+    .of-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .of-tabla th, .of-tabla td { padding: 3px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .of-tabla .n { text-align: right; white-space: nowrap; }
+    .af-kpi { display: flex; flex-direction: column; min-width: 120px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; }
+    .af-kpi span { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .65; }
+    .af-kpi b { font-size: 1.3rem; font-family: var(--mono, monospace); }
+    .af-kpi small { font-size: .7rem; opacity: .6; }
+</style>

@@ -1,0 +1,187 @@
+@* Catalogos de las operaciones (script SQL 119, API categorias-ocupacionales / tipos-maquina / metodos-tiempo / tipos-distribucion-linea).
+   Cuatro catalogos en una sola pantalla, uno por pestana: la categoria A-D de la operacion (el personal tendra la suya en la etapa O5), el tipo de maquina,
+   el metodo con que se midio un tiempo y la disposicion de una linea de produccion con su regla de ciclo. Cada opcion del menu abre la pestana que le corresponde. *@
+@page "/ingenieria/categorias-ocupacionales"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject MenuService MenuSvc
+@inject NavigationManager Nav
+@inject AccessLogService AccessLog
+
+<PageTitle>Catálogos de operaciones · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Catálogos de operaciones</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">@_meta[_tab].Titulo · @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_buscar" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar..." DebounceInterval="300" MaxWidth="480px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+        <GridRefreshButton OnRefresh="Cargar" />
+        @if (_cods[_tab].App == "")
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => Abrir(null, CrudModo.Create))" data-accion="nuevo">Nuevo</MudButton>
+        }
+        else
+        {
+            <AccionesBotones CodAplicacion="@_cods[_tab].App" CodOpcionAplicacion="@_cods[_tab].Opcion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+        }
+    </div>
+</div>
+
+<MudTabs @bind-ActivePanelIndex="Tab" Elevation="0" Rounded="true" Class="mb-2" data-zona="pestanas">
+    <MudTabPanel Text="Categorías (A-D)" data-tab="categorias" />
+    <MudTabPanel Text="Tipos de máquina" data-tab="maquinas" />
+    <MudTabPanel Text="Métodos de tiempo" data-tab="metodos" />
+    <MudTabPanel Text="Distribución de línea" data-tab="distribuciones" />
+</MudTabs>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="catalogos-operaciones" style="position:relative;">
+    <MudDataGrid T="CatalogoOperacionItem" Items="_visibles" Dense="true" Hover="true" Striped="true" FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre" data-grilla="catalogo">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false" Width="110px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Código" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.COD</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Descripción" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="1" Texto="Descripción" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES</CellTemplate></TemplateColumn>
+            @if (_tab == 0)
+            {
+                <TemplateColumn Title="Criterio" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Criterio" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES_DETALLE</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Orden" Sortable="false" Width="90px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="Orden" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.NUM_ORDEN</CellTemplate></TemplateColumn>
+            }
+            @if (_tab == 1)
+            {
+                <TemplateColumn Title="Requiere máquina" Sortable="false" Width="150px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Requiere máquina" OnCambio="Refrescar" /></HeaderTemplate>
+                    <CellTemplate><MudIcon Icon="@(context.Item.FLG_1 == true ? Icons.Material.Filled.Check : Icons.Material.Filled.Remove)" Size="Size.Small" Color="@(context.Item.FLG_1 == true ? Color.Success : Color.Default)" /></CellTemplate>
+                </TemplateColumn>
+            }
+            @if (_tab == 3)
+            {
+                <TemplateColumn Title="Regla de ciclo" Sortable="false" Width="170px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="5" Texto="Regla de ciclo" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.COD_REGLA</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Flujo unitario" Sortable="false" Width="130px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="6" Texto="Flujo unitario" OnCambio="Refrescar" /></HeaderTemplate>
+                    <CellTemplate><MudIcon Icon="@(context.Item.FLG_1 == true ? Icons.Material.Filled.Check : Icons.Material.Filled.Remove)" Size="Size.Small" Color="@(context.Item.FLG_1 == true ? Color.Success : Color.Default)" /></CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Precedencias" Sortable="false" Width="130px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="7" Texto="Precedencias" OnCambio="Refrescar" /></HeaderTemplate>
+                    <CellTemplate><MudIcon Icon="@(context.Item.FLG_2 == true ? Icons.Material.Filled.Check : Icons.Material.Filled.Remove)" Size="Size.Small" Color="@(context.Item.FLG_2 == true ? Color.Success : Color.Default)" /></CellTemplate>
+                </TemplateColumn>
+            }
+            <TemplateColumn Title="Estado" Sortable="false" Width="120px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="8" Texto="Estado" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>
+                    @if (!string.IsNullOrEmpty(context.Item.DES_ESTADO)) { <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /> }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var it = context.Item; }
+                    @if (_cods[_tab].App == "")
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Update))" data-accion="editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Delete))" data-accion="eliminar" />
+                    }
+                    else
+                    {
+                        <AccionesBotones CodAplicacion="@_cods[_tab].App" CodOpcionAplicacion="@_cods[_tab].Opcion" Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(it, b))" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="CatalogoOperacionItem" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private readonly GridOF<CatalogoOperacionItem> _g = new();
+    private void Refrescar() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public OperacionesCatalogos()
+    {
+        _g.Add(x => x.COD);
+        _g.Add(x => x.DES);
+        _g.Add(x => x.DES_DETALLE);
+        _g.Add(x => x.NUM_ORDEN?.ToString(), x => x.NUM_ORDEN);
+        _g.Add(x => x.FLG_1 == true ? "Sí" : "No");
+        _g.Add(x => x.COD_REGLA);
+        _g.Add(x => x.FLG_1 == true ? "Sí" : "No");
+        _g.Add(x => x.FLG_2 == true ? "Sí" : "No");
+        _g.Add(x => x.DES_ESTADO);
+    }
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private sealed record Meta(string Clave, string Titulo, string Formulario, string Ruta, string Singular);
+    private static readonly Meta[] _meta =
+    {
+        new("categorias", "Categorías ocupacionales", "Ingenieria/CategoriasOcupacionales.razor", IngRoute.CategoriasOcupacionales, "categoría"),
+        new("maquinas", "Tipos de máquina", "Ingenieria/TiposMaquina.razor", IngRoute.TiposMaquina, "tipo de máquina"),
+        new("metodos", "Métodos de tiempo", "Ingenieria/MetodosTiempo.razor", IngRoute.MetodosTiempo, "método de tiempo"),
+        new("distribuciones", "Tipos de distribución de línea", "Produccion/TiposDistribucionLinea.razor", IngRoute.TiposDistribucionLinea, "distribución"),
+    };
+    private readonly (string App, string Opcion)[] _cods = { ("", ""), ("", ""), ("", ""), ("", "") };
+    private int _tab;
+    private int Tab { get => _tab; set { if (_tab == value) return; _tab = value; _buscar = ""; _ = Cargar(); } }
+    private List<CatalogoOperacionItem> _items = new();
+    private string _buscar = "", _error = "";
+
+    private List<CatalogoOperacionItem> _visibles => _g.Visibles(_fuente);
+    private List<CatalogoOperacionItem> _fuente => string.IsNullOrWhiteSpace(_buscar) ? _items
+        : _items.Where(i => i.COD.Contains(_buscar, StringComparison.OrdinalIgnoreCase) || i.DES.Contains(_buscar, StringComparison.OrdinalIgnoreCase)
+                         || (i.DES_DETALLE?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        // la opcion del menu por la que se entro define la pestana inicial (cada una tiene su DES_FORMULARIO)
+        var uri = Nav.Uri.ToLowerInvariant();
+        _tab = uri.Contains("tipos-maquina") ? 1 : uri.Contains("metodos-tiempo") ? 2 : uri.Contains("distribucion") ? 3 : 0;
+        for (var i = 0; i < _meta.Length; i++)
+        {
+            var r = MenuSvc.BuscarCodigosPorFormulario(_meta[i].Formulario);
+            if (r is not null) _cods[i] = (r.Value.CodAplicacion, r.Value.CodOpcionAplicacion);
+        }
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "OperacionesCatalogos");
+        await Cargar();
+    }
+
+    private async Task Cargar()
+    {
+        var r = await OperacionesApi.LeerAsync<List<CatalogoOperacionItem>>(Http, _meta[_tab].Ruta);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudo leer el catálogo.";
+        _items = r.Data ?? new();
+        StateHasChanged();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b) => b.FLG_ACCION_POST == true ? Abrir(null, CrudModo.Create) : Task.CompletedTask;
+
+    private Task OnAccionGrilla(CatalogoOperacionItem it, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT == true) return Abrir(it, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(it, CrudModo.Delete);
+        if (b.FLG_ACCION_GET == true) return Abrir(it, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(CatalogoOperacionItem? it, CrudModo modo)
+    {
+        var m = _meta[_tab];
+        var titulo = modo switch
+        {
+            CrudModo.Create => $"Nueva {m.Singular}",
+            CrudModo.Delete => $"Eliminar · {it?.DES}",
+            CrudModo.Read => $"Consultar · {it?.DES}",
+            _ => $"Editar · {it?.DES}"
+        };
+        var dlg = await DialogService.ShowAsync<OperacionesCatalogoDialog>(titulo,
+            new DialogParameters { ["Item"] = it, ["Modo"] = modo, ["Clave"] = m.Clave, ["Ruta"] = m.Ruta },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Cargar();
+    }
+}

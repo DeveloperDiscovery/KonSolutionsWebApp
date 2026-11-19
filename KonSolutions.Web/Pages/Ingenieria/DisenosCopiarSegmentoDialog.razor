@@ -1,0 +1,85 @@
+@* Copia un segmento de la estructura (un sector completo o un componente) a una version destino, del mismo diseno o de otro.
+   AGREGAR suma lo copiado a lo que ya haya; REEMPLAZAR vacia antes lo que va a sustituir. Una version destino bloqueada se rechaza. *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(700px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">Copiar segmento</MudText></TitleContent>
+    <DialogContent>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Style="opacity:.7;">Origen</MudText>
+            <MudText data-origen="1">
+                <b>@CodDiseno</b> v@(NumVersion) · sector <b>@CodSector</b>@(string.IsNullOrEmpty(CodComponente) ? " (completo)" : " · componente " + CodComponente)
+            </MudText>
+        </MudPaper>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">Destino</MudText>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="7"><AriaCombo TItem="ComboboxItem" Items="_disenos" TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)" Value="@_disenoDestino" ValueChanged="OnDisenoChanged" Label="Diseño destino" Class="mb-0" /></MudItem>
+                <MudItem xs="12" sm="5"><AriaCombo TItem="DisenoVersion" Items="_versiones" TextFunc="@(v => $"v{v.NUM_VERSION} - {v.DES_VERSION}")" ValueFunc="@(v => v.NUM_VERSION?.ToString() ?? "")" @bind-Value="_versionDestino" Label="Versión destino" Disabled="@(string.IsNullOrEmpty(_disenoDestino))" Class="mb-0" /></MudItem>
+                <MudItem xs="12" sm="5"><MudTextField T="string" @bind-Value="_sectorDestino" Label="Código del sector en el destino" MaxLength="5" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="Si no existe en el destino, se crea" data-campo="sector" /></MudItem>
+            </MudGrid>
+        </MudPaper>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Style="opacity:.7;">Qué se hace con lo que el destino ya tiene en ese sector</MudText>
+            <MudRadioGroup T="string" @bind-Value="_modo">
+                <MudRadio T="string" Value="@("AGREGAR")" Color="Color.Primary">Agregar lo copiado a lo que ya hay</MudRadio>
+                <MudRadio T="string" Value="@("REEMPLAZAR")" Color="Color.Error">Reemplazar: vaciar antes lo que se va a sustituir</MudRadio>
+            </MudRadioGroup>
+            @if (_modo == "REEMPLAZAR") { <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-1">Se eliminan los insumos del destino que se van a sustituir. No se puede deshacer.</MudAlert> }
+        </MudPaper>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex justify-end gap-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="@(_modo == "REEMPLAZAR" ? Color.Error : Color.Primary)" StartIcon="@Icons.Material.Filled.ContentCopy"
+                       Disabled="@(_copiando || string.IsNullOrEmpty(_versionDestino))" OnClick="CopiarAsync" data-accion="copiar">
+                @(_copiando ? "Copiando..." : "Copiar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    [Parameter] public string CodSector { get; set; } = "";
+    /// <summary>null = todo el sector.</summary>
+    [Parameter] public string? CodComponente { get; set; }
+    private List<ComboboxItem> _disenos = new();
+    private List<DisenoVersion> _versiones = new();
+    private string? _disenoDestino, _versionDestino; private string _sectorDestino = "", _modo = "AGREGAR", _error = "";
+    private bool _copiando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _disenos = await Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.DisenosCombobox) ?? new();
+        _sectorDestino = CodSector;
+        await OnDisenoChanged(CodDiseno);
+    }
+
+    private async Task OnDisenoChanged(string? cod)
+    {
+        _disenoDestino = cod; _versionDestino = null; _versiones = new();
+        if (string.IsNullOrEmpty(cod)) return;
+        _versiones = await Http.SafeGetAsync<List<DisenoVersion>>($"{IngenieriaRoute.DisenosVersion}?codDiseno={Uri.EscapeDataString(cod)}") ?? new();
+    }
+
+    private async Task CopiarAsync()
+    {
+        _copiando = true; _error = "";
+        var r = await Http.PostAsync<DisenosSegmentoCopiarResultado>(IngenieriaRoute.DisenosEstructuraCopiarSegmento, new DisenosSegmentoCopiarDto
+        {
+            COD_DISENO_ORIGEN = CodDiseno, NUM_VERSION_ORIGEN = NumVersion, COD_SECTOR_ORIGEN = CodSector, COD_COMPONENTE_ORIGEN = string.IsNullOrEmpty(CodComponente) ? null : CodComponente,
+            COD_DISENO_DESTINO = _disenoDestino!, NUM_VERSION_DESTINO = int.Parse(_versionDestino!),
+            COD_SECTOR_DESTINO = string.IsNullOrWhiteSpace(_sectorDestino) ? null : _sectorDestino.Trim().ToUpperInvariant(), MODO = _modo
+        });
+        _copiando = false;
+        if (!r.Ok || r.Data is null) { _error = r.Mensaje; return; }
+        Snackbar.Add($"{r.Data.INSUMOS_COPIADOS} insumo(s) copiado(s) a {_disenoDestino} v{_versionDestino}.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(r.Data));
+    }
+}

@@ -1,0 +1,70 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Gasto adicional presupuestado" : $"Gasto adicional · {Item.DES_GASTO}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_des" Label="Descripción del gasto" Variant="Variant.Outlined" MaxLength="100" Required="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_destinos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_fase" ValueChanged="@(v => _fase = v)" Label="Se presupuesta a" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudNumericField T="decimal?" @bind-Value="_importe" Label="Importe presupuestado" Variant="Variant.Outlined" Min="0m" Format="N2" Required="true" />
+            </MudItem>
+            <MudItem xs="12">
+                <MudTextField T="string" @bind-Value="_obs" Label="Observación" Variant="Variant.Outlined" Lines="2" MaxLength="200" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteGastoAdicional? Item { get; set; }
+    [Parameter] public List<ExpedienteCostoFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteGastoAdicional> Existentes { get; set; } = new();
+
+    private const string Principal = "P";
+    private string _des = "", _obs = "";
+    private string? _fase = Principal;
+    private decimal? _importe;
+    private bool _guardando;
+    private List<ComboboxItem> _destinos = new();
+
+    protected override void OnInitialized()
+    {
+        // fase nula = el proyecto principal
+        _destinos = new() { new ComboboxItem { Id = Principal, Texto = "Proyecto principal" } };
+        _destinos.AddRange(Fases.Where(f => f.COD_FASE is not null).Select(f => new ComboboxItem { Id = f.COD_FASE!.Value.ToString(), Texto = $"Etapa {f.COD_FASE} — {f.DES_FASE}" }));
+        if (Item is null) return;
+        _des = Item.DES_GASTO; _obs = Item.DES_OBSERVACION ?? ""; _importe = Item.VAL_PRESUPUESTADO; _fase = Item.COD_FASE?.ToString() ?? Principal;
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción del gasto.", Severity.Warning); return; }
+        if (_importe is null or < 0) { Snackbar.Add("Falta el importe presupuestado (no puede ser negativo).", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        var sec = esNuevo ? (Existentes.Count == 0 ? 1 : Existentes.Max(e => e.NUM_SECUENCIA) + 1) : Item!.NUM_SECUENCIA;
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, NUM_SECUENCIA = sec, COD_FASE = int.TryParse(_fase, out var f) ? (int?)f : null,
+            DES_GASTO = _des.Trim(), VAL_PRESUPUESTADO = _importe, DES_OBSERVACION = string.IsNullOrWhiteSpace(_obs) ? null : _obs.Trim()
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.GastosAdicionales, cuerpo, esNuevo);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el gasto adicional.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

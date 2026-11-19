@@ -1,0 +1,195 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using System.Text
+@using System.Text.RegularExpressions
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Importar los XML de los proveedores (facturas y boletas electrónicas, UBL 2.1) como comprobantes del Registro de Compras. Dos maneras:
+   · «Importar la carpeta»: lee los XML de la ruta que se configuró en Configuración general, pestaña Compras; los que entran pasan a la subcarpeta «procesados» y los que no, a «errores»
+     (con un .txt al lado que dice por qué).
+   · «Elegir archivos»: los XML se eligen aquí, desde esta computadora.
+   El tipo de operación: el que se elige; si se deja vacío, el que dice el XML (tipo de operación de SUNAT y unidad ZZ = servicios) y, si el XML no lo decide, el de Configuración general.
+   El proveedor se busca por su RUC, las unidades y la moneda por su código, y los productos por el código que el proveedor les puso en su ficha. Si el XML cita una orden de compra
+   aprobada de ese proveedor, se asocia sola. Las notas de crédito y débito no se importan. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Importar XML de proveedores</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="8">
+                <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                           TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                           Value="@_codTipoOperacion" ValueChanged="@(v => _codTipoOperacion = string.IsNullOrWhiteSpace(v) ? null : v)"
+                           Label="Tipo de operación (vacío: el que dice el XML)" Class="mb-1" />
+                <MudText Typo="Typo.caption" Style="opacity:.8;" data-ayuda="tipo-operacion">Vacío: el tipo sale del XML (tipo de operación de SUNAT; con una línea en unidad ZZ es de servicios). Si el XML no lo decide, se usa el de Configuración general, pestaña Compras.</MudText>
+            </MudItem>
+            <MudItem xs="12" md="4" Class="d-flex align-center">
+                <MudSwitch T="bool" @bind-Value="_validar" Color="Color.Primary" Label="Validar al importar" data-campo="validar" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);height:100%;">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">De la carpeta configurada</MudText>
+                    <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.8;">La ruta se elige en Configuración general, pestaña Compras.</MudText>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="_trabajando" OnClick="ImportarCarpeta" data-accion="importar-carpeta">Importar la carpeta</MudButton>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);height:100%;">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Archivos de esta computadora</MudText>
+                    <InputFile OnChange="ArchivosElegidos" accept=".xml,text/xml,application/xml" multiple disabled="@_trabajando" data-campo="archivos" />
+                </MudPaper>
+            </MudItem>
+            @if (_trabajando)
+            {
+                <MudItem xs="12"><MudProgressLinear Indeterminate="true" Color="Color.Primary" data-estado="trabajando" /></MudItem>
+            }
+            @if (_resultado.Count > 0)
+            {
+                <MudItem xs="12">
+                    <MudText Typo="Typo.subtitle2" Class="mb-1" data-resumen="importacion">@_resumen</MudText>
+                    <MudDataGrid T="RegistroCompraArchivoImportado" Items="_resultado" Dense="true" Hover="true" Striped="true" Height="280px" FixedHeader="true">
+                        <Columns>
+                            <TemplateColumn Title="Archivo" Sortable="false"><CellTemplate>@context.Item.ARCHIVO</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Resultado" Sortable="false">
+                                <CellTemplate>
+                                    @if (context.Item.IMPORTADO)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" data-resultado="ok">Importado · registro @context.Item.NUM_REGISTRO?.ToString("0")</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" data-resultado="error">Con error</MudChip>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Estado" Sortable="false"><CellTemplate>@(context.Item.COD_ESTADO_ALIAS_CONCILIACION is null ? "" : RegistroCompraEstados.Texto(context.Item.COD_ESTADO_ALIAS_CONCILIACION))</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Detalle" Sortable="false"><CellTemplate>@context.Item.MENSAJE</CellTemplate></TemplateColumn>
+                        </Columns>
+                    </MudDataGrid>
+                </MudItem>
+            }
+        </MudGrid>
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Cerrar" Disabled="_trabajando" data-accion="cerrar">Cerrar</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public string CodClaseOperacion { get; set; } = "";
+    /// <summary>Los tipos de operación de la clase (para elegir con cuál entran los XML).</summary>
+    [Parameter] public List<RegistroCompraTipoOperacion> TiposOperacion { get; set; } = new();
+    [Parameter] public string? CodTipoOperacionInicial { get; set; }
+
+    private const long MaximoBytes = 5 * 1024 * 1024;
+    private List<ComboboxItem> _tipos = new();
+    private string? _codTipoOperacion;
+    private bool _validar, _trabajando, _huboCambios;
+    private List<RegistroCompraArchivoImportado> _resultado = new();
+    private string _resumen = "";
+
+    protected override void OnInitialized()
+    {
+        _tipos = TiposOperacion.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION ?? t.COD_TIPO_OPERACION }).ToList();
+        _codTipoOperacion = CodTipoOperacionInicial;
+    }
+
+    private static async Task<string> MensajeDe(HttpResponseMessage resp)
+    {
+        var cuerpo = await resp.Content.ReadAsStringAsync();
+        try
+        {
+            var r = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<object>>(cuerpo, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (!string.IsNullOrWhiteSpace(r?.Message)) return r!.Message;
+        }
+        catch (System.Text.Json.JsonException) { /* no era JSON: se muestra el estado */ }
+        return $"El servidor respondió {(int)resp.StatusCode}.";
+    }
+
+    private async Task ImportarCarpeta()
+    {
+        _trabajando = true; _resultado = new(); _resumen = "";
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.RegistroComprasImportarCarpeta,
+                new RegistroCompraImportarCarpetaDto { COD_CLASE_OPERACION = CodClaseOperacion, COD_TIPO_OPERACION = _codTipoOperacion, VALIDAR = _validar });
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarMensajeAsync(await MensajeDe(resp), DialogService, nameof(RegistroCompraImportarDialog), "No se pudo importar la carpeta");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RegistroCompraImportarCarpetaResult>>();
+            var d = r?.Data;
+            if (d is null) return;
+            _resultado = d.ARCHIVOS;
+            _resumen = d.NUM_ARCHIVOS == 0 ? $"No hay XML en {d.CARPETA}." : $"{d.CARPETA}: {d.NUM_IMPORTADOS} importado(s), {d.NUM_ERRORES} con error.";
+            _huboCambios |= d.NUM_IMPORTADOS > 0;
+            if (d.NUM_ARCHIVOS == 0) Snackbar.Add("No hay XML en la carpeta.", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraImportarDialog), nameof(ImportarCarpeta));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo importar la carpeta. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraImportarDialog));
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task ArchivosElegidos(InputFileChangeEventArgs e)
+    {
+        _trabajando = true; _resultado = new(); _resumen = "";
+        try
+        {
+            foreach (var f in e.GetMultipleFiles(200))
+            {
+                var fila = new RegistroCompraArchivoImportado { ARCHIVO = f.Name };
+                try
+                {
+                    if (f.Size > MaximoBytes) { fila.MENSAJE = "El archivo pasa de 5 MB."; _resultado.Add(fila); continue; }
+                    await using var s = f.OpenReadStream(MaximoBytes);
+                    using var ms = new MemoryStream();
+                    await s.CopyToAsync(ms);
+                    var resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.RegistroComprasImportarXml,
+                        new RegistroCompraImportarXmlDto { COD_CLASE_OPERACION = CodClaseOperacion, DES_XML = LeeTexto(ms.ToArray()), DES_NOMBRE_ARCHIVO = f.Name, COD_TIPO_OPERACION = _codTipoOperacion, VALIDAR = _validar });
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RegistroCompraImportado>>();
+                        fila.IMPORTADO = true; fila.NUM_REGISTRO = r?.Data?.NUM_REGISTRO; fila.COD_ESTADO_ALIAS_CONCILIACION = r?.Data?.COD_ESTADO_ALIAS_CONCILIACION;
+                        fila.MENSAJE = r?.Data is { } d ? $"{d.NUM_LINEAS} línea(s), {d.NUM_PEDIDOS_ASOCIADOS} orden(es) asociada(s), {d.NUM_LINEAS_VINCULADAS} línea(s) vinculada(s)." : null;
+                        _huboCambios = true;
+                    }
+                    else fila.MENSAJE = await MensajeDe(resp);
+                }
+                catch (Exception ex)
+                {
+                    await ErrorLog.LogAsync(ex, nameof(RegistroCompraImportarDialog), nameof(ArchivosElegidos));
+                    fila.IMPORTADO = false; fila.MENSAJE = ex.Message;
+                }
+                _resultado.Add(fila);
+            }
+            _resumen = $"{_resultado.Count(x => x.IMPORTADO)} importado(s), {_resultado.Count(x => !x.IMPORTADO)} con error.";
+        }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>El texto del XML con la codificación que declara (los de la SUNAT suelen ser ISO-8859-1 o UTF-8); con BOM, la del BOM.</summary>
+    public static string LeeTexto(byte[] bytes)
+    {
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+        var cabecera = Encoding.ASCII.GetString(bytes, 0, Math.Min(bytes.Length, 200));
+        var m = Regex.Match(cabecera, "<\\?xml[^>]*encoding\\s*=\\s*[\"']([^\"']+)[\"']", RegexOptions.IgnoreCase);
+        if (m.Success)
+        {
+            try { return Encoding.GetEncoding(m.Groups[1].Value).GetString(bytes); }
+            catch (ArgumentException) { /* codificación desconocida: se prueba como UTF-8 */ }
+        }
+        return new UTF8Encoding(false, false).GetString(bytes);
+    }
+
+    private void Cerrar() => MudDialog.Close(DialogResult.Ok(_huboCambios));
+}

@@ -1,0 +1,286 @@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Logistica
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@*
+    Pestaña "Devolución" de un movimiento de almacén cuyo tipo es una DEVOLUCIÓN DE COMPRA (comercial, devolución, salida).
+    Se asocian una o varias guías de compra (ingresos comerciales) del MISMO proveedor y almacén, se marcan los items a devolver y se
+    ajustan las cantidades; «Seleccionar todo» arma la devolución total (cantidad = saldo de cada item).
+    Saldo = cantidad recibida − lo ya devuelto en OTRAS devoluciones. La mercadería sale de la UBICACIÓN DE DISTRIBUCIÓN del almacén: lo máximo por item es el menor entre el saldo y el stock del producto/lote en esa zona. «Adicionar al movimiento» crea/reemplaza las líneas del detalle
+    (con el SP estándar: stock, cierre de almacén y bloqueo de guía incluidos); desmarcar un item ya asociado (o dejarlo en 0) lo quita.
+    Las reglas las valida el SQL (script 92); acá solo se arman los datos.
+*@
+
+@if (NumMovimiento is null or 0)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="ma-3" data-aviso="sin-cabecera">
+        Graba la cabecera del movimiento para asociar guías de compra.
+    </MudAlert>
+}
+else if (string.IsNullOrWhiteSpace(CodEntidad))
+{
+    <MudAlert Severity="Severity.Warning" Dense="true" Class="ma-3" data-aviso="sin-proveedor">
+        Elige el proveedor en la pestaña Documento y graba: las guías que se pueden devolver son las de ese proveedor.
+    </MudAlert>
+}
+else
+{
+    @if (MotivoSoloLectura is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">@MotivoSoloLectura</MudAlert>
+    }
+
+    <div class="d-flex align-center gap-2 mb-1">
+        <MudIcon Icon="@Icons.Material.Filled.Inbox" Size="Size.Small" />
+        <MudText Typo="Typo.subtitle2">Guías de compra @(string.IsNullOrWhiteSpace(DesEntidad) ? "del proveedor" : $"de {DesEntidad}")</MudText>
+        <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Title="Volver a consultar" OnClick="RecargarAsync" data-accion="refrescar" />
+    </div>
+
+    @if (_guias.Count == 0)
+    {
+        <MudText Class="mono mb-2" Style="opacity:.6;" data-vacio="guias">No hay guías de compra de este proveedor con saldo por devolver en este almacén.</MudText>
+    }
+    else
+    {
+        <MudSimpleTable Dense="true" Hover="true" Striped="true" Style="max-height:220px; overflow:auto;" data-grilla="guias">
+            <thead>
+                <tr><th></th><th>Guía</th><th>Fecha</th><th style="text-align:right;">Líneas</th><th style="text-align:right;">Recibida</th><th style="text-align:right;">Saldo</th><th>Estado</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (var g in _guias)
+                {
+                    var o = g.NUM_MOVIMIENTO_ALMACEN_ORIGEN;
+                    <tr data-guia="@o">
+                        <td><MudCheckBox T="bool" Value="@_selGuias.Contains(o)" ValueChanged="@((bool v) => MarcaGuiaAsync(o, v))" Dense="true" Disabled="@SoloLectura" data-campo="guia-marcada" /></td>
+                        <td class="mono">@g.DES_GUIA</td>
+                        <td>@g.FEC_MOVIMENTO_ALMACEN?.ToString("dd/MM/yyyy")</td>
+                        <td style="text-align:right;">@g.CAN_LINEAS</td>
+                        <td style="text-align:right;">@g.CAN_RECIBIDA.ToString("0.########")</td>
+                        <td style="text-align:right;">@g.CAN_SALDO.ToString("0.########")</td>
+                        <td>@if (g.FLG_ASOCIADA) { <MudChip T="string" Size="Size.Small" Color="Color.Success">Asociada</MudChip> }</td>
+                        <td>
+                            @if (g.FLG_ASOCIADA && !SoloLectura)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.LinkOff" Size="Size.Small" Title="Quitar esta guía y sus items de la devolución" OnClick="@(() => QuitarGuiaAsync(o))" data-accion="quitar-guia" />
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+    }
+
+    <MudDivider Class="my-2" />
+
+    <div class="d-flex align-center gap-2 mb-1 flex-wrap">
+        <MudIcon Icon="@Icons.Material.Filled.Checklist" Size="Size.Small" />
+        <MudText Typo="Typo.subtitle2">Items a devolver</MudText>
+        <MudSpacer />
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.DoneAll" Disabled="@(SoloLectura || _filas.Count == 0)"
+                   OnClick="SeleccionarTodo" data-accion="seleccionar-todo">Seleccionar todo (devolución total)</MudButton>
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.RemoveDone" Disabled="@(SoloLectura || _filas.Count == 0)"
+                   OnClick="QuitarSeleccion" data-accion="quitar-seleccion">Quitar selección</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.PlaylistAdd"
+                   Disabled="@(SoloLectura || _guardando || _filas.Count == 0)" OnClick="AdicionarAsync" data-accion="adicionar">Adicionar al movimiento</MudButton>
+        <span class="mono" style="opacity:.7;" data-resumen="marcados">@Marcadas items · @TotalADevolver.ToString("0.########") a devolver</span>
+    </div>
+
+    @if (_filas.Count == 0)
+    {
+        <MudText Class="mono" Style="opacity:.6;" data-vacio="items">Marca una o más guías para ver sus items.</MudText>
+    }
+    else
+    {
+        <MudSimpleTable Dense="true" Hover="true" Striped="true" FixedHeader="true" Style="max-height:420px; overflow:auto;" data-grilla="items">
+            <thead>
+                <tr><th></th><th>Guía</th><th>Producto</th><th>Lote</th><th>Unidad</th>
+                    <th style="text-align:right;">Recibida</th><th style="text-align:right;">Ya devuelta</th><th style="text-align:right;">Saldo</th><th style="text-align:right;" title="Stock disponible del producto/lote en la ubicación de distribución">Stock en distribución</th><th style="text-align:right;">Cant. a devolver</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var f in _filas)
+                {
+                    <tr data-item="@($"{f.L.NUM_MOVIMIENTO_ALMACEN_ORIGEN}-{f.L.NUM_SECUENCIA_ORIGEN}")" style="@(f.L.CAN_MAXIMA <= 0 ? "opacity:.5;" : "")">
+                        <td><MudCheckBox T="bool" Value="f.Marcado" ValueChanged="@((bool v) => MarcaFila(f, v))" Dense="true" Disabled="@(SoloLectura || (f.L.CAN_MAXIMA <= 0))" data-campo="item-marcado" /></td>
+                        <td class="mono">@f.L.DES_GUIA</td>
+                        <td>@TextoProducto(f.L)</td>
+                        <td class="mono">@f.L.NUM_LOTE_CONTROL</td>
+                        <td>@f.L.COD_UNIDAD_MEDIDA</td>
+                        <td style="text-align:right;">@f.L.CAN_RECIBIDA.ToString("0.########")</td>
+                        <td style="text-align:right;">@f.L.CAN_YA_DEVUELTA.ToString("0.########")</td>
+                        <td style="text-align:right;">@f.L.CAN_SALDO.ToString("0.########")</td>
+                        <td style="text-align:right;" data-celda="stock-distribucion">@f.L.CAN_STOCK_DISTRIBUCION.ToString("0.########")</td>
+                        <td style="text-align:right;">
+                            <MudNumericField T="decimal?" Value="f.Cant" ValueChanged="@((decimal? v) => CambiaCantidad(f, v))" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                             Min="0" HideSpinButtons="true" Disabled="@(SoloLectura || f.L.CAN_MAXIMA <= 0)" Style="max-width:130px;" data-campo="cantidad-devolver" />
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+    }
+}
+
+@code {
+    [Parameter] public decimal? NumMovimiento { get; set; }
+    [Parameter] public string? CodEntidad { get; set; }
+    [Parameter] public string? DesEntidad { get; set; }
+    [Parameter] public string? MotivoSoloLectura { get; set; }
+    [Parameter] public EventCallback OnDetalleCambiado { get; set; }
+
+    private bool SoloLectura => MotivoSoloLectura is not null;
+
+    private sealed class Fila
+    {
+        public MovimientoDevolucionLinea L { get; init; } = new();
+        public bool Marcado { get; set; }
+        public decimal? Cant { get; set; }
+    }
+
+    private List<MovimientoDevolucionGuia> _guias = new();
+    private readonly HashSet<int> _selGuias = new();
+    private List<Fila> _filas = new();
+    private bool _guardando;
+    private decimal? _numCargado;
+
+    private int Marcadas => _filas.Count(f => f.Marcado && (f.Cant ?? 0) > 0);
+    private decimal TotalADevolver => _filas.Where(f => f.Marcado).Sum(f => f.Cant ?? 0);
+
+    private static string TextoProducto(MovimientoDevolucionLinea l)
+        => string.IsNullOrWhiteSpace(l.DES_PRODUCTO) ? l.COD_PRODUCTO : $"{l.COD_PRODUCTO} · {l.DES_PRODUCTO}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (NumMovimiento is null or 0 || string.IsNullOrWhiteSpace(CodEntidad)) return;
+        if (_numCargado == NumMovimiento) return;
+        _numCargado = NumMovimiento;
+        _selGuias.Clear();
+        await CargarGuiasAsync(marcarAsociadas: true);
+        await CargarFilasAsync();
+    }
+
+    private async Task<T?> GetAsync<T>(string url, string metodo)
+    {
+        try
+        {
+            var resp = await Http.GetAsync(url);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoDevolucionCompraPanel), metodo);
+                return default;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<T>>();
+            return r is null ? default : r.Data;
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoDevolucionCompraPanel), metodo); return default; }
+    }
+
+    private async Task CargarGuiasAsync(bool marcarAsociadas)
+    {
+        _guias = (await GetAsync<List<MovimientoDevolucionGuia>>(ApiRoutes.Logistica.MovimientosAlmacenDevolucionGuiasDisponibles(NumMovimiento!.Value), nameof(CargarGuiasAsync))) ?? new();
+        // Las guías ya asociadas quedan marcadas: es lo que esta devolución ya lleva.
+        if (marcarAsociadas) foreach (var g in _guias.Where(g => g.FLG_ASOCIADA)) _selGuias.Add(g.NUM_MOVIMIENTO_ALMACEN_ORIGEN);
+    }
+
+    private async Task CargarFilasAsync()
+    {
+        if (_selGuias.Count == 0) { _filas = new(); return; }
+        var origenes = string.Join(",", _selGuias.OrderBy(x => x));
+        var lineas = await GetAsync<List<MovimientoDevolucionLinea>>(ApiRoutes.Logistica.MovimientosAlmacenDevolucionLineas(NumMovimiento!.Value, origenes), nameof(CargarFilasAsync)) ?? new();
+        // Lo que el usuario ya escribió sobre una fila se conserva al agregar otra guía.
+        var previas = _filas.ToDictionary(f => (f.L.NUM_MOVIMIENTO_ALMACEN_ORIGEN, f.L.NUM_SECUENCIA_ORIGEN));
+        _filas = lineas.Select(l =>
+            previas.TryGetValue((l.NUM_MOVIMIENTO_ALMACEN_ORIGEN, l.NUM_SECUENCIA_ORIGEN), out var p)
+                ? new Fila { L = l, Marcado = p.Marcado, Cant = p.Cant }
+                : new Fila { L = l, Marcado = l.CAN_DEVOLVER > 0, Cant = l.CAN_DEVOLVER > 0 ? l.CAN_DEVOLVER : null }).ToList();
+    }
+
+    private async Task RecargarAsync()
+    {
+        await CargarGuiasAsync(marcarAsociadas: false);
+        _selGuias.RemoveWhere(o => !_guias.Any(g => g.NUM_MOVIMIENTO_ALMACEN_ORIGEN == o));
+        await CargarFilasAsync();
+    }
+
+    private async Task MarcaGuiaAsync(int origen, bool marcada)
+    {
+        if (marcada) _selGuias.Add(origen); else _selGuias.Remove(origen);
+        await CargarFilasAsync();
+    }
+
+    private void MarcaFila(Fila f, bool marcado)
+    {
+        f.Marcado = marcado;
+        if (marcado && (f.Cant ?? 0) <= 0) f.Cant = f.L.CAN_MAXIMA;
+        if (!marcado) f.Cant = null;
+    }
+
+    private void CambiaCantidad(Fila f, decimal? v)
+    {
+        if (v is > 0)
+        {
+            f.Cant = Math.Min(v.Value, f.L.CAN_MAXIMA);   // nunca más que el saldo ni que el stock en distribución
+            f.Marcado = true;
+        }
+        else { f.Cant = null; f.Marcado = false; }
+    }
+
+    /// <summary>Devolución total: todos los items con algo para devolver, por lo máximo posible (saldo, limitado por el stock en distribución).</summary>
+    private void SeleccionarTodo()
+    {
+        foreach (var f in _filas.Where(f => f.L.CAN_MAXIMA > 0)) { f.Marcado = true; f.Cant = f.L.CAN_MAXIMA; }
+    }
+
+    private void QuitarSeleccion()
+    {
+        foreach (var f in _filas) { f.Marcado = false; f.Cant = null; }
+    }
+
+    private async Task AdicionarAsync()
+    {
+        var items = new List<MovimientoDevolucionItemDto>();
+        foreach (var f in _filas)
+        {
+            var c = f.Marcado ? (f.Cant ?? 0) : 0;
+            // Lo desmarcado que ya estaba asociado viaja con 0: el procedimiento lo quita.
+            if (c > 0 || f.L.NUM_SECUENCIA_DEVOLUCION is not null)
+                items.Add(new MovimientoDevolucionItemDto { NUM_MOVIMIENTO_ALMACEN_ORIGEN = f.L.NUM_MOVIMIENTO_ALMACEN_ORIGEN, NUM_SECUENCIA_ORIGEN = f.L.NUM_SECUENCIA_ORIGEN, CAN_DEVOLVER = c });
+        }
+        if (items.Count == 0) { Snackbar.Add("Marca al menos un item e indica la cantidad a devolver.", Severity.Warning); return; }
+        _guardando = true;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.MovimientosAlmacenDevolucionAdicionar(NumMovimiento!.Value), new MovimientoDevolucionAdicionarDto { Items = items });
+            if (!resp.IsSuccessStatusCode) { await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoDevolucionCompraPanel), nameof(AdicionarAsync), "No se pudo adicionar la devolución"); return; }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<MovimientosAlmacenAgregarResult>>();
+            Snackbar.Add(r?.Data?.DES_MENSAJE ?? "Listo.", Severity.Success);
+            await RecargarTrasCambioAsync();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoDevolucionCompraPanel), nameof(AdicionarAsync)); }
+        finally { _guardando = false; }
+    }
+
+    private async Task QuitarGuiaAsync(int origen)
+    {
+        try
+        {
+            var resp = await Http.DeleteAsync(ApiRoutes.Logistica.MovimientosAlmacenDevolucionGuia(NumMovimiento!.Value, origen));
+            if (!resp.IsSuccessStatusCode) { await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoDevolucionCompraPanel), nameof(QuitarGuiaAsync), "No se pudo quitar la guía"); return; }
+            _selGuias.Remove(origen);
+            Snackbar.Add("Guía quitada de la devolución.", Severity.Success);
+            await RecargarTrasCambioAsync();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoDevolucionCompraPanel), nameof(QuitarGuiaAsync)); }
+    }
+
+    private async Task RecargarTrasCambioAsync()
+    {
+        _filas = new();   // tras grabar se vuelve a leer todo desde la base
+        await CargarGuiasAsync(marcarAsociadas: false);
+        await CargarFilasAsync();
+        await OnDetalleCambiado.InvokeAsync();
+    }
+}

@@ -1,0 +1,687 @@
+@* Panel reutilizable de "Especificaciones Técnicas" de un Producto (ESTANDAR.PRODUCTOS_
+   ESPECIFICACIONES_TECNICAS), extraído de ProductosDialog.razor para poder reusarlo tal
+   cual en cualquier diálogo que necesite mostrar/editar las Especificaciones Técnicas de
+   un Producto — ej. TransporteDocumentoDialog.razor, donde un Transporte "es" (referencia)
+   un Producto vía COD_PRODUCTO_TRANSPORTE y sus Especificaciones Técnicas son las de ESE
+   Producto, no una tabla propia de Transportes.
+
+   Comportamiento y llamadas a la API idénticos a los que tenía ProductosDialog antes de
+   esta extracción — es un refactor puro, sin cambios de UI ni de flujo de grabado ahí. *@
+@using ProductoEspecTecnicaModel = KONSolutions.Shared.Models.Estandar.ProductosEspecificacionesTecnicas
+@using ComboDependienteModel = KONSolutions.Shared.Models.Comercial.EspecificacionesItemsTecnicosComboDependiente
+@using ProductosRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div style="height:calc(98vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+@if (string.IsNullOrWhiteSpace(CodProducto))
+{
+    <MudAlert Severity="Severity.Warning" Icon="@Icons.Material.Filled.Lock" Class="ma-4">@MensajeSinProducto</MudAlert>
+}
+else if (_cargandoEspecificaciones)
+{
+    <div class="d-flex justify-center pa-6"><MudProgressCircular Color="Color.Primary" Indeterminate="true" /></div>
+}
+else if (!_especificacionesAsignadas.Any())
+{
+    <MudText Class="pa-6 mono" Style="opacity:.5;">@MensajeSinEspecificaciones</MudText>
+}
+else
+{
+    @foreach (var grupo in AgruparPorGrupoEspecificacion(_especificacionesAsignadas))
+    {
+        <div class="pet-grupo-box">
+        <MudText Typo="Typo.subtitle2" Class="pet-grupo-titulo">@grupo.DesGrupo</MudText>
+        @foreach (var espec in grupo.Specs)
+        {
+        <div class="mb-3 d-flex align-center gap-2">
+        <div style="flex:1;min-width:0;">
+            @switch (espec.Tipo)
+            {
+                case TipoControlEspec.Lista:
+                    @* Los indicadores de la derecha (el recuadro de color y el valor numérico)
+                       iban con margin-top:16px a mano, para compensar el margin-top:16px que
+                       el AriaCombo traía de fábrica: ese margen corría el recuadro visible
+                       del combo 8px por debajo del centro geométrico del componente, y bajo
+                       align-center había que replicarlo para que quedaran a la misma altura.
+                       Ese margen del combo ahora se anula dentro de los diálogos (app.css),
+                       porque era una separación fija que no seguía a Configuración General y
+                       se sumaba a la del campo de arriba. Sin él ya no hay desfase que
+                       compensar, así que los indicadores van sin margen. *@
+                    <div class="d-flex align-center gap-3">
+                        <AriaCombo TItem="ComboDependienteModel" Items="@ItemsDe(espec.Codigo)"
+                                   TextFunc="@EtiquetaItemLista" ValueFunc="@(i => i.COD_ITEM_TECNICO.ToString())"
+                                   Value="@espec.CodItemTecnico"
+                                   ValueChanged="@(v => OnItemListaSeleccionado(espec, v))"
+                                   Label="@espec.Descripcion" Disabled="@ComboDeshabilitado(espec)" Class="mb-0 flex-grow-1">
+                            <OptionTemplate Context="it">
+                                <div class="d-flex align-center gap-2">
+                                    @if (!string.IsNullOrEmpty(it.DES_COLOR))
+                                    { <div style="width:10px;height:10px;border-radius:50%;background:@it.DES_COLOR;flex-shrink:0;"></div> }
+                                    <span>@EtiquetaItemLista(it)</span>
+                                </div>
+                            </OptionTemplate>
+                        </AriaCombo>
+                        @{
+                            var valorNumerico = ValorNumericoConUnidad(espec);
+                            var colorElegido = ColorDeItemElegido(espec);
+                        }
+                        @if (!string.IsNullOrEmpty(colorElegido))
+                        {
+                            <div title="@colorElegido"
+                                 style="width:72px;height:38px;border-radius:6px;border:1px solid var(--line);background:@colorElegido;flex-shrink:0;"></div>
+                        }
+                        @if (!string.IsNullOrEmpty(valorNumerico))
+                        {
+                            <div style="white-space:nowrap;opacity:.7;height:38px;padding:0 12px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;
+                                        border-radius:6px;border:1px solid var(--line);background:var(--dialog-back, var(--paper, #efe9df));
+                                        font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);flex-shrink:0;">@valorNumerico</div>
+                        }
+                    </div>
+                    @if (ComboDeshabilitado(espec) && !ReadOnly)
+                    {
+                        <MudText Typo="Typo.caption" Style="opacity:.6;">Elija primero "@(PadreDe(espec)?.Descripcion)"</MudText>
+                    }
+                    break;
+
+                case TipoControlEspec.Entero when espec.FlgRange:
+                    <div class="d-flex align-center gap-3">
+                        <MudNumericField T="decimal?" @bind-Value="espec.ValMinimo" Label="@($"{espec.Descripcion} — De")"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Format="@($"N{espec.DecimalesFormato}")" />
+                        <MudNumericField T="decimal?" @bind-Value="espec.ValMaximo" Label="a"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Format="@($"N{espec.DecimalesFormato}")" />
+                        @if (!string.IsNullOrEmpty(espec.UnidadConSimbolo))
+                        {
+                            <MudText Style="@($"{EstiloControl}white-space:nowrap;opacity:.7;")">@espec.UnidadConSimbolo</MudText>
+                        }
+                    </div>
+                    break;
+
+                case TipoControlEspec.Entero:
+                    <div class="d-flex align-center gap-3">
+                        <MudNumericField T="int?" @bind-Value="espec.ValEntero" Label="@espec.Descripcion"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Max="@(espec.CanEntero is int ce ? (int?)Math.Pow(10, ce) - 1 : null)" />
+                        @if (!string.IsNullOrEmpty(espec.UnidadConSimbolo))
+                        {
+                            <MudText Style="@($"{EstiloControl}white-space:nowrap;opacity:.7;")">@espec.UnidadConSimbolo</MudText>
+                        }
+                    </div>
+                    break;
+
+                case TipoControlEspec.Numerico when espec.FlgRange:
+                    <div class="d-flex align-center gap-3">
+                        <MudNumericField T="decimal?" @bind-Value="espec.ValMinimo" Label="@($"{espec.Descripcion} — De")"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Format="@($"N{espec.DecimalesFormato}")" />
+                        <MudNumericField T="decimal?" @bind-Value="espec.ValMaximo" Label="a"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Format="@($"N{espec.DecimalesFormato}")" />
+                        @if (!string.IsNullOrEmpty(espec.UnidadConSimbolo))
+                        {
+                            <MudText Style="@($"{EstiloControl}white-space:nowrap;opacity:.7;")">@espec.UnidadConSimbolo</MudText>
+                        }
+                    </div>
+                    break;
+
+                case TipoControlEspec.Numerico:
+                    <div class="d-flex align-center gap-3">
+                        <MudNumericField T="decimal?" @bind-Value="espec.ValDecimal" Label="@espec.Descripcion"
+                                          Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1" Style="@EstiloControl"
+                                          Format="@($"N{espec.DecimalesFormato}")" />
+                        @if (!string.IsNullOrEmpty(espec.UnidadConSimbolo))
+                        {
+                            <MudText Style="@($"{EstiloControl}white-space:nowrap;opacity:.7;")">@espec.UnidadConSimbolo</MudText>
+                        }
+                    </div>
+                    break;
+
+                case TipoControlEspec.Cadena:
+                    @* El AdornmentText de MudTextField no acepta Style propio (queda en
+                       .mud-input-adornment-text con su propio tamaño/fuente por defecto) —
+                       se muestra el prefijo como una etiqueta aparte, mismo criterio que
+                       ya se usa aquí para la Unidad de Medida. *@
+                    <div class="d-flex align-center gap-3">
+                        @if (!string.IsNullOrEmpty(espec.DesPrefijo))
+                        {
+                            <MudText Style="@($"{EstiloControl}white-space:nowrap;opacity:.7;")">@espec.DesPrefijo</MudText>
+                        }
+                        <CampoTextoEstable @bind-Value="espec.ValTexto" Label="@espec.Descripcion" Style="@EstiloControl"
+                                      Variant="Variant.Outlined" Disabled="ReadOnly" Class="flex-grow-1"
+                                      HelperText="@(!string.IsNullOrEmpty(espec.DesSufijo) ? $"Sufijo: {espec.DesSufijo}" : null)" />
+                    </div>
+                    break;
+
+                case TipoControlEspec.FechaHora:
+                    <div class="d-flex gap-3">
+                        <MudDatePicker @bind-Date="espec.ValFecha" Label="@espec.Descripcion" Variant="Variant.Outlined" Disabled="ReadOnly" Style="@EstiloControl" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        <MudTimePicker @bind-Time="espec.ValHora" Label="Hora" Variant="Variant.Outlined" Disabled="ReadOnly" Style="@EstiloControl" Editable="true" TimeFormat="HH:mm" />
+                    </div>
+                    break;
+
+                case TipoControlEspec.Fecha:
+                    <MudDatePicker @bind-Date="espec.ValFecha" Label="@espec.Descripcion" Variant="Variant.Outlined" Disabled="ReadOnly" Style="@EstiloControl" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    break;
+
+                case TipoControlEspec.Hora:
+                    <MudTimePicker @bind-Time="espec.ValHora" Label="@espec.Descripcion" Variant="Variant.Outlined" Disabled="ReadOnly" Style="@EstiloControl" Editable="true" TimeFormat="HH:mm" />
+                    break;
+
+                case TipoControlEspec.Logico:
+                    <div class="d-flex align-center justify-space-between py-1">
+                        <span style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);color:var(--dialog-fore, var(--control-color, inherit));">@espec.Descripcion</span>
+                        <MudSwitch T="bool?" @bind-Value="espec.ValLogico" Color="Color.Primary" Disabled="ReadOnly" />
+                    </div>
+                    break;
+
+                case TipoControlEspec.Color:
+                    <div class="mb-1" style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);color:var(--dialog-fore, var(--control-color, inherit));">@espec.Descripcion</div>
+                    <ColorConSwatch @bind-Text="espec.ValTexto" Disabled="ReadOnly" />
+                    break;
+
+                default:
+                    <MudText Typo="Typo.body2" Style="opacity:.5;">@espec.Descripcion — sin tipo de dato configurado.</MudText>
+                    break;
+            }
+        </div>
+        <PanelAuditoria CodUsuarioRegistro="@espec.CodUsuarioRegistro"
+                        CodEstacionRegistro="@espec.CodEstacionRegistro"
+                        FecRegistro="@espec.FecRegistro"
+                        CodUsuarioActualizacion="@espec.CodUsuarioActualizacion"
+                        CodEstacionActualizacion="@espec.CodEstacionActualizacion"
+                        FecActualizacion="@espec.FecActualizacion"
+                        Class="flex-shrink-0" />
+        </div>
+        }
+        </div>
+    }
+}
+</div>
+
+@code {
+    [Parameter] public string? CodProducto { get; set; }
+
+    /// <summary>Entidad propietaria del producto.
+    ///
+    /// Cuando viene, las especificaciones marcadas "Depende de Entidad" ofrecen ÚNICAMENTE
+    /// los ítems de esa entidad. El que decide es el SP, no este archivo: acá solo se manda
+    /// el dato. Las demás especificaciones —talla, gramaje, usuario de prenda— no se tocan.
+    ///
+    /// Antes no se mandaba nunca, y por eso un producto de CALZADOS ALLICE SRL veía la
+    /// carta de colores genérica en vez de la suya.</summary>
+    [Parameter] public decimal? CodEntidadPropietaria { get; set; }
+
+    /// <summary>Que el panel averigüe solo la entidad propietaria del producto.
+    ///
+    /// Para los que muestran un producto YA GRABADO y no tienen forma de saber quién es su
+    /// propietaria — el diálogo de Transporte, por ejemplo, donde COD_ENTIDAD_PROPIETARIO es
+    /// el dueño del VEHÍCULO y no del producto. Confundir esos dos habría filtrado los
+    /// colores por la entidad equivocada.
+    ///
+    /// El diálogo de Productos NO lo usa: ahí la propietaria se puede cambiar sin grabar, y
+    /// lo que vale es lo que el usuario tiene elegido en pantalla, no lo que dice la base.
+    /// Por eso son dos parámetros y no uno: quien manda el valor manda, y quien no puede
+    /// saberlo pide que se lo averigüen.</summary>
+    [Parameter] public bool ResolverEntidadDesdeProducto { get; set; }
+
+    /// <summary>La que se averiguó, para no volver a preguntar por el mismo producto.</summary>
+    private decimal? _entidadResuelta;
+
+    /// <summary>La que se manda al SP: la del anfitrión si la dio, si no la averiguada.</summary>
+    private decimal? EntidadEfectiva => CodEntidadPropietaria ?? _entidadResuelta;
+
+    private async Task ResolverEntidadAsync()
+    {
+        _entidadResuelta = null;
+        if (!ResolverEntidadDesdeProducto || string.IsNullOrWhiteSpace(CodProducto)) return;
+        try
+        {
+            var prod = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Estandar.Productos>>(
+                $"{ProductosRoute.Productos}/{Uri.EscapeDataString(CodProducto)}");
+            _entidadResuelta = prod?.Data?.COD_ENTIDAD_PROPIETARIA;
+        }
+        catch
+        {
+            // Si no se pudo averiguar se sigue sin filtrar, que es como funcionaba antes.
+            // Dejar la pantalla sin especificaciones por no haber podido resolver un dato
+            // accesorio sería peor que mostrar el catálogo completo.
+            _entidadResuelta = null;
+        }
+    }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public string MensajeSinProducto { get; set; } = "Elige un Producto para poder cargar sus Especificaciones Técnicas.";
+    [Parameter] public string MensajeSinEspecificaciones { get; set; } = "Este Producto no tiene Especificaciones Técnicas para completar.";
+
+    /// <summary>Avisa al contenedor que cambió algo que él necesita para decidir si habilita
+    /// su botón de guardar: terminó de cargar, empezó a guardar, terminó de guardar.
+    ///
+    /// HACE FALTA POR COMO FUNCIONAN LAS REFERENCIAS EN BLAZOR. El diálogo tiene un @ref a
+    /// este panel y su botón pregunta "_especPanel is null || !_especPanel.TieneEspecificaciones".
+    /// Pero un @ref se completa DESPUÉS de que el render termina, y cuando este panel carga sus
+    /// datos —que es async— quien se vuelve a dibujar es el panel, no el diálogo. Resultado: el
+    /// botón quedaba evaluado contra un panel nulo o todavía vacío, y se quedaba deshabilitado
+    /// para siempre. Sin este aviso, no hay nada que despierte al contenedor.</summary>
+    [Parameter] public EventCallback OnEstadoCambiado { get; set; }
+    // Se dispara después de un GuardarAsync() exitoso — el diálogo contenedor puede usarlo
+    // para refrescar su propio modelo (ej. DES_DETALLADA recalculada), igual que
+    // ProductosDialog hacía con RecargarDesdeShowbyidAsync() antes de esta extracción.
+    [Parameter] public EventCallback OnGuardado { get; set; }
+
+    // Hook mínimo para que un diálogo contenedor pueda "heredar" el valor de una
+    // especificación técnica lógica puntual hacia su propia cabecera — ej.
+    // TransporteDocumentoDialog.razor copia el booleano de "Vehículo de Acarreo" a
+    // FLG_ACARREO. Se dispara al terminar CargarEspecificacionesTecnicas (alta, cambio de
+    // producto y ReloadAsync), con la lista ya cargada — el contenedor la lee con
+    // ObtenerValorLogico(...) en vez de recibir todo el modelo interno (EspecInfo es privado).
+    [Parameter] public EventCallback OnCargado { get; set; }
+
+    /// <summary>Busca, entre las Especificaciones Técnicas Lógicas ya cargadas, la primera
+    /// cuya descripción contenga (sin distinguir mayúsculas/tildes de más) el texto indicado
+    /// — ej. "ACARREO" — y devuelve su valor booleano actual. null si no hay ninguna o el
+    /// Producto no tiene esa especificación asignada.</summary>
+    public bool? ObtenerValorLogico(string descripcionContiene) =>
+        _especificacionesAsignadas
+            .FirstOrDefault(e => e.Tipo == TipoControlEspec.Logico &&
+                                  e.Descripcion.Contains(descripcionContiene, StringComparison.OrdinalIgnoreCase))
+            ?.ValLogico;
+
+    // Fuerza el color de texto de cada control al de fondo del diálogo (--dialog-fore), igual
+    // que app.css hace explícitamente con el título de grupo por la misma inconsistencia.
+    private const string EstiloControl = "color:var(--dialog-fore,var(--control-color,inherit));";
+
+    private enum TipoControlEspec { Ninguno, Lista, Entero, Numerico, Cadena, FechaHora, Fecha, Hora, Logico, Color }
+
+    private class EspecInfo
+    {
+        public string Codigo { get; set; } = "";
+        public string Descripcion { get; set; } = "";
+        public int? NumOrdenPresentacion { get; set; }
+        public string? CodEspecificacionTecnicaPadre { get; set; }
+        public bool? FlgIncluirDescripcion { get; set; }
+        public int? CodGrupoEspecificacionTecnica { get; set; }
+        public string? DesGrupoEspecificacionTecnica { get; set; }
+        public TipoControlEspec Tipo { get; set; }
+        public int? CanEntero { get; set; }
+        public int? CanDecimal { get; set; }
+        public string? DesPrefijo { get; set; }
+        public string? DesSufijo { get; set; }
+
+        public bool FlgRange { get; set; }
+        public string? DesUnidadMedida { get; set; }
+        public string? CodSimbolo { get; set; }
+        public string? DesUnidadMedidaDivisora { get; set; }
+        public string? CodSimboloDivisora { get; set; }
+
+        public string? CodItemTecnico { get; set; }
+        public int? ValEntero { get; set; }
+        public decimal? ValDecimal { get; set; }
+        public decimal? ValMinimo { get; set; }
+        public decimal? ValMaximo { get; set; }
+        public string? ValTexto { get; set; }
+        public DateTime? ValFecha { get; set; }
+        public TimeSpan? ValHora { get; set; }
+        public bool? ValLogico { get; set; }
+
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+
+        /// <summary>Unidad tal como se muestra al costado del campo.
+        ///
+        /// Con divisora se muestran las dos separadas por barra —"LIBRA (lb) / PULGADA (inh)"—
+        /// porque la especificación no mide una magnitud sino una RAZÓN entre dos: la
+        /// resistencia es libras POR pulgada, y mostrar solo "LIBRA (lb)" la nombra mal.
+        ///
+        /// Sin divisora se comporta igual que antes. Se exige que la divisora tenga descripción
+        /// para agregarla: si el SP la devuelve vacía, mejor la unidad sola que una barra
+        /// colgando.</summary>
+        public string UnidadConSimbolo
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(DesUnidadMedida)) return "";
+                var principal = $"{DesUnidadMedida} ({CodSimbolo})";
+                return string.IsNullOrWhiteSpace(DesUnidadMedidaDivisora)
+                    ? principal
+                    : $"{principal} / {DesUnidadMedidaDivisora} ({CodSimboloDivisora})";
+            }
+        }
+
+        public int DecimalesFormato => Math.Min(CanDecimal ?? 2, 6);
+    }
+
+    private static TipoControlEspec DeterminarTipo(ProductoEspecTecnicaModel v) => v switch
+    {
+        { FLG_LISTA: true } => TipoControlEspec.Lista,
+        { FLG_ENTERO: true } => TipoControlEspec.Entero,
+        { FLG_NUMERICO: true } => TipoControlEspec.Numerico,
+        { FLG_CADENA: true } => TipoControlEspec.Cadena,
+        { FLG_FECHA_HORA: true } => TipoControlEspec.FechaHora,
+        { FLG_FECHA: true } => TipoControlEspec.Fecha,
+        { FLG_HORA: true } => TipoControlEspec.Hora,
+        { FLG_LOGICO: true } => TipoControlEspec.Logico,
+        { FLG_COLOR: true } => TipoControlEspec.Color,
+        _ => TipoControlEspec.Ninguno
+    };
+
+    private List<EspecInfo> _especificacionesAsignadas = new();
+    private Dictionary<string, List<ComboDependienteModel>> _itemsPorEspec = new();
+    private bool _cargandoEspecificaciones, _guardandoEspecificaciones;
+    private string? _codProductoCargado;
+
+    /// <summary>true cuando hay algo cargado y grabable — usado por el diálogo contenedor
+    /// para habilitar/deshabilitar su botón "Guardar Especificaciones".</summary>
+    public bool TieneEspecificaciones => _especificacionesAsignadas.Any();
+    public bool Guardando => _guardandoEspecificaciones;
+    public bool Cargando => _cargandoEspecificaciones;
+
+    private List<ComboDependienteModel> ItemsDe(string codEspecificacionTecnica) =>
+        _itemsPorEspec.TryGetValue(codEspecificacionTecnica, out var l) ? l : new();
+
+    private static string EtiquetaItemLista(ComboDependienteModel i) => i.DES_ITEM_TECNICO ?? "";
+
+    private string ValorNumericoConUnidad(EspecInfo espec)
+    {
+        var item = ItemsDe(espec.Codigo).FirstOrDefault(i => i.COD_ITEM_TECNICO.ToString() == espec.CodItemTecnico);
+        if (item?.VAL_NUMERICO is null) return "";
+        var valor = item.VAL_NUMERICO.Value.ToString("0.####");
+        return !string.IsNullOrEmpty(item.COD_SIMBOLO) ? $"{valor} {item.COD_SIMBOLO}" : valor;
+    }
+
+    private string ColorDeItemElegido(EspecInfo espec)
+    {
+        var item = ItemsDe(espec.Codigo).FirstOrDefault(i => i.COD_ITEM_TECNICO.ToString() == espec.CodItemTecnico);
+        return item?.DES_COLOR ?? "";
+    }
+
+    private EspecInfo? PadreDe(EspecInfo hijo) =>
+        string.IsNullOrEmpty(hijo.CodEspecificacionTecnicaPadre) ? null
+        : _especificacionesAsignadas.FirstOrDefault(x => x.Codigo == hijo.CodEspecificacionTecnicaPadre);
+
+    private bool ComboDeshabilitado(EspecInfo espec)
+    {
+        if (ReadOnly) return true;
+        var padre = PadreDe(espec);
+        return padre is not null && string.IsNullOrEmpty(padre.CodItemTecnico);
+    }
+
+    private async Task CargarItemsListaAsync(EspecInfo espec)
+    {
+        var padre = PadreDe(espec);
+        if (padre is not null && string.IsNullOrEmpty(padre.CodItemTecnico))
+        {
+            _itemsPorEspec[espec.Codigo] = new();
+            return;
+        }
+        try
+        {
+            var url = $"{IngenieriaRoute.EspecificacionesItemsTecnicosComboDependientes}?codEspecificacionTecnica={Uri.EscapeDataString(espec.Codigo)}";
+            if (padre is not null) url += $"&codEspecificacionTecnicaDependiente={Uri.EscapeDataString(padre.Codigo)}&codItemTecnicoDependiente={padre.CodItemTecnico}";
+            // Solo si el producto tiene propietaria. Sin ella el SP se comporta igual que
+            // siempre y devuelve el catálogo completo.
+            if (EntidadEfectiva is decimal ent)
+                url += $"&codEntidadDependiente={ent.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboDependienteModel>>>(url);
+            var items = (r?.Data ?? new()).OrderBy(i => i.NUM_ORDEN_PRESENTACION ?? int.MaxValue).ToList();
+            _itemsPorEspec[espec.Codigo] = items;
+
+            if (string.IsNullOrEmpty(espec.CodItemTecnico))
+            {
+                var porDefecto = items.FirstOrDefault(i => i.FLG_DEFAULT == true);
+                if (porDefecto is not null) espec.CodItemTecnico = porDefecto.COD_ITEM_TECNICO.ToString();
+            }
+        }
+        catch { _itemsPorEspec[espec.Codigo] = new(); }
+    }
+
+    private class GrupoEspecificaciones
+    {
+        public string DesGrupo = "";
+        public List<EspecInfo> Specs = new();
+    }
+
+    private static List<GrupoEspecificaciones> AgruparPorGrupoEspecificacion(List<EspecInfo> items)
+    {
+        var grupos = new List<GrupoEspecificaciones>();
+        var porCodigoGrupo = new Dictionary<int, GrupoEspecificaciones>();
+        foreach (var e in items)
+        {
+            var clave = e.CodGrupoEspecificacionTecnica ?? int.MinValue;
+            if (!porCodigoGrupo.TryGetValue(clave, out var grupo))
+            {
+                grupo = new GrupoEspecificaciones { DesGrupo = e.DesGrupoEspecificacionTecnica ?? "Sin Grupo" };
+                porCodigoGrupo[clave] = grupo;
+                grupos.Add(grupo);
+            }
+            grupo.Specs.Add(e);
+        }
+        return grupos;
+    }
+
+    private static List<EspecInfo> OrdenarConDependientes(List<EspecInfo> items)
+    {
+        var ordenOriginal = items.OrderBy(i => i.NumOrdenPresentacion ?? int.MaxValue).ToList();
+        var porCodigo = ordenOriginal.ToDictionary(i => i.Codigo);
+        var raices = ordenOriginal.Where(i => string.IsNullOrEmpty(i.CodEspecificacionTecnicaPadre) || !porCodigo.ContainsKey(i.CodEspecificacionTecnicaPadre));
+
+        var resultado = new List<EspecInfo>();
+        void Agregar(EspecInfo padre)
+        {
+            resultado.Add(padre);
+            var hijos = ordenOriginal.Where(i => i.CodEspecificacionTecnicaPadre == padre.Codigo);
+            foreach (var hijo in hijos) Agregar(hijo);
+        }
+        foreach (var raiz in raices) Agregar(raiz);
+        return resultado;
+    }
+
+    private async Task OnItemListaSeleccionado(EspecInfo espec, string? valor)
+    {
+        espec.CodItemTecnico = valor;
+        var hijos = _especificacionesAsignadas.Where(h => h.CodEspecificacionTecnicaPadre == espec.Codigo).ToList();
+        foreach (var hijo in hijos)
+        {
+            hijo.CodItemTecnico = null;
+            await CargarItemsListaAsync(hijo);
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Se re-carga cuando cambia el Producto (ej. el usuario elige otro Producto de
+        // transporte en la pestaña "Información Básica" de TransporteDocumentoDialog) —
+        // OnParametersSetAsync corre en cada re-render con nuevos parámetros, así que
+        // solo dispara la carga si el código efectivamente cambió desde la última vez.
+        if (CodProducto != _codProductoCargado)
+        {
+            _codProductoCargado = CodProducto;
+            // Averiguar la propietaria ANTES de cargar: las listas se piden dentro de
+            // CargarEspecificacionesTecnicas y ya tienen que salir filtradas.
+            await ResolverEntidadAsync();
+            _entidadCargada     = EntidadEfectiva;
+            if (!string.IsNullOrWhiteSpace(CodProducto)) await CargarEspecificacionesTecnicas();
+            else { _especificacionesAsignadas = new(); _itemsPorEspec = new(); }
+
+            // Recién acá se sabe si hay algo grabable. Ver OnEstadoCambiado.
+            await OnEstadoCambiado.InvokeAsync();
+            return;
+        }
+
+        // La entidad propietaria se puede cambiar con el diálogo abierto. Cuando pasa, las
+        // listas de las especificaciones que dependen de entidad ya no son las que
+        // corresponden: hay que volver a pedirlas.
+        //
+        // NO se recarga todo el panel: eso perdería lo que el usuario ya escribió en las
+        // especificaciones numéricas, de texto y lógicas, que no tienen nada que ver con la
+        // entidad. Solo se rehacen las listas.
+        if (EntidadEfectiva != _entidadCargada)
+        {
+            _entidadCargada = EntidadEfectiva;
+            if (_especificacionesAsignadas.Count > 0) await RecargarListasPorEntidadAsync();
+        }
+    }
+
+    /// <summary>Entidad con la que se pidieron las listas que están en pantalla.</summary>
+    private decimal? _entidadCargada;
+
+    /// <summary>Vuelve a pedir las listas y descarta lo elegido que ya no exista.
+    ///
+    /// LO SEGUNDO IMPORTA: si el producto era de CALZADOS ALLICE y tenía el color NAVY, y se
+    /// le cambia el propietario a otra entidad que no tiene NAVY, dejar el código puesto
+    /// mostraría un combo en blanco pero con un valor adentro — y se grabaría un ítem que no
+    /// pertenece a esa entidad. Se limpia, y el usuario elige de nuevo.</summary>
+    private async Task RecargarListasPorEntidadAsync()
+    {
+        foreach (var espec in _especificacionesAsignadas.Where(e => e.Tipo == TipoControlEspec.Lista))
+        {
+            var elegidoAntes = espec.CodItemTecnico;
+            await CargarItemsListaAsync(espec);
+
+            if (!string.IsNullOrEmpty(elegidoAntes) &&
+                !ItemsDe(espec.Codigo).Any(i => i.COD_ITEM_TECNICO.ToString() == elegidoAntes))
+            {
+                espec.CodItemTecnico = "";
+            }
+        }
+        StateHasChanged();
+        await OnEstadoCambiado.InvokeAsync();
+    }
+
+    /// <summary>Fuerza una recarga aunque el código de producto no haya cambiado — usado
+    /// tras grabar, o si el contenedor necesita refrescar explícitamente.</summary>
+    public Task ReloadAsync() => string.IsNullOrWhiteSpace(CodProducto) ? Task.CompletedTask : CargarEspecificacionesTecnicas();
+
+    private async Task CargarEspecificacionesTecnicas()
+    {
+        if (string.IsNullOrWhiteSpace(CodProducto)) return;
+        _cargandoEspecificaciones = true;
+        _especificacionesAsignadas = new();
+        _itemsPorEspec = new();
+        StateHasChanged();
+
+        try
+        {
+            var rVal = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ProductoEspecTecnicaModel>>>(
+                $"{ProductosRoute.ProductosEspecificacionesTecnicas}?codProducto={Uri.EscapeDataString(CodProducto)}");
+            var filas = (rVal?.Data ?? new()).Where(v => v.FLG_FICHA_TECNICA == true).ToList();
+
+            _especificacionesAsignadas = filas.Select(v =>
+            {
+                var codigo = v.COD_ESPECIFICACION_TECNICA.Trim();
+                var tipo = DeterminarTipo(v);
+                string descripcion = !string.IsNullOrWhiteSpace(v.DES_ESPECIFICACION_TECNICA_SINGULAR)
+                    ? v.DES_ESPECIFICACION_TECNICA_SINGULAR
+                    : (!string.IsNullOrWhiteSpace(v.DES_ESPECIFICACION_TECNICA) ? v.DES_ESPECIFICACION_TECNICA : codigo);
+
+                var info = new EspecInfo
+                {
+                    Codigo = codigo,
+                    Descripcion = descripcion,
+                    NumOrdenPresentacion = v.NUM_ORDEN_PRESENTACION,
+                    FlgIncluirDescripcion = v.FLG_INCLUIR_DESCRIPCION,
+                    CodGrupoEspecificacionTecnica = v.COD_GRUPO_ESPECIFICACION_TECNICA,
+                    DesGrupoEspecificacionTecnica = v.DES_GRUPO_ESPECIFICACION_TECNICA,
+                    CodEspecificacionTecnicaPadre = string.IsNullOrWhiteSpace(v.COD_ESPECIFICACION_TECNICA_PADRE) ? null : v.COD_ESPECIFICACION_TECNICA_PADRE.Trim(),
+                    Tipo = tipo,
+                    CanEntero = v.CAN_ENTERO,
+                    CanDecimal = v.CAN_DECIMAL,
+                    DesPrefijo = v.DES_PREFIJO,
+                    DesSufijo = v.DES_SUFIJO,
+                    FlgRange = v.FLG_RANGE == true,
+                    DesUnidadMedida = v.DES_UNIDAD_MEDIDA,
+                    CodSimbolo = v.COD_SIMBOLO,
+                    DesUnidadMedidaDivisora = v.DES_UNIDAD_MEDIDA_DIVISORA,
+                    CodSimboloDivisora = v.COD_SIMBOLO_DIVISORA,
+                    CodItemTecnico = v.COD_ITEM_TECNICO?.ToString(),
+                    ValTexto = tipo == TipoControlEspec.Cadena ? v.STR_ESPECIFICACION_TENICA : v.VAL_ESPECIFICACION_TENICA,
+                    ValFecha = v.FEC_ESPECIFICACION_TENICA,
+                    ValHora = v.HOR_ESPECIFICACION_TENICA,
+                    ValLogico = v.LOG_ESPECIFICACION_TENICA,
+                    ValMinimo = v.VAL_MINIMO,
+                    ValMaximo = v.VAL_MAXIMO,
+                    CodUsuarioRegistro = v.COD_USUARIO_REGISTRO,
+                    CodEstacionRegistro = v.COD_ESTACION_REGISTRO,
+                    FecRegistro = v.FEC_REGISTRO,
+                    CodUsuarioActualizacion = v.COD_USUARIO_ACTUALIZACION,
+                    CodEstacionActualizacion = v.COD_ESTACION_ACTUALIZACION,
+                    FecActualizacion = v.FEC_ACTUALIZACION,
+                };
+                if (tipo is TipoControlEspec.Entero or TipoControlEspec.Numerico && !info.FlgRange)
+                {
+                    if (tipo == TipoControlEspec.Entero && int.TryParse(v.VAL_ESPECIFICACION_TENICA, out var ei)) info.ValEntero = ei;
+                    if (tipo == TipoControlEspec.Numerico && decimal.TryParse(v.VAL_ESPECIFICACION_TENICA, out var ed)) info.ValDecimal = ed;
+                }
+                return info;
+            }).ToList();
+
+            _especificacionesAsignadas = OrdenarConDependientes(_especificacionesAsignadas);
+
+            _itemsPorEspec = new();
+            foreach (var espec in _especificacionesAsignadas.Where(e => e.Tipo == TipoControlEspec.Lista))
+                await CargarItemsListaAsync(espec);
+        }
+        catch { _especificacionesAsignadas = new(); }
+
+        _cargandoEspecificaciones = false;
+        if (OnCargado.HasDelegate) await OnCargado.InvokeAsync();
+    }
+
+    public async Task GuardarAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodProducto)) return;
+        _guardandoEspecificaciones = true;
+        await OnEstadoCambiado.InvokeAsync();   // el botón pasa a "Guardando..."
+        var huboError = false;
+        foreach (var espec in _especificacionesAsignadas)
+        {
+            var dto = new
+            {
+                COD_PRODUCTO = CodProducto,
+                COD_ESPECIFICACION_TECNICA = espec.Codigo,
+                COD_ITEM_TECNICO = espec.Tipo == TipoControlEspec.Lista && int.TryParse(espec.CodItemTecnico, out var ci) ? ci : (int?)null,
+                FEC_ESPECIFICACION_TENICA = espec.Tipo is TipoControlEspec.Fecha or TipoControlEspec.FechaHora ? espec.ValFecha : null,
+                HOR_ESPECIFICACION_TENICA = espec.Tipo is TipoControlEspec.Hora or TipoControlEspec.FechaHora ? espec.ValHora : null,
+                LOG_ESPECIFICACION_TENICA = espec.Tipo == TipoControlEspec.Logico ? espec.ValLogico : null,
+                STR_ESPECIFICACION_TENICA = espec.Tipo == TipoControlEspec.Cadena ? espec.ValTexto : null,
+                VAL_ESPECIFICACION_TENICA = espec.Tipo switch
+                {
+                    TipoControlEspec.Entero when !espec.FlgRange => espec.ValEntero?.ToString(),
+                    TipoControlEspec.Numerico when !espec.FlgRange => espec.ValDecimal?.ToString(),
+                    TipoControlEspec.Color => espec.ValTexto,
+                    _ => null
+                },
+                VAL_MINIMO = espec.Tipo is TipoControlEspec.Entero or TipoControlEspec.Numerico && espec.FlgRange ? espec.ValMinimo : null,
+                VAL_MAXIMO = espec.Tipo is TipoControlEspec.Entero or TipoControlEspec.Numerico && espec.FlgRange ? espec.ValMaximo : null,
+                NUM_ORDEN_PRESENTACION = espec.NumOrdenPresentacion,
+                FLG_INCLUIR_DESCRIPCION = espec.FlgIncluirDescripcion,
+                COD_GRUPO_ESPECIFICACION_TECNICA = espec.CodGrupoEspecificacionTecnica,
+            };
+            var resp = await Http.PostAsJsonAsync(ProductosRoute.ProductosEspecificacionesTecnicas, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                huboError = true;
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EspecificacionesTecnicasPanel), nameof(GuardarAsync),
+                    $"No se pudo guardar \"{espec.Descripcion}\"");
+            }
+        }
+        if (!huboError)
+        {
+            try { await Http.PostAsync(ProductosRoute.ProductosActualizarDescripcionDetalle(CodProducto), null); }
+            catch { }
+            if (OnGuardado.HasDelegate) await OnGuardado.InvokeAsync();
+        }
+        _guardandoEspecificaciones = false;
+        await OnEstadoCambiado.InvokeAsync();
+        if (!huboError) Snackbar.Add("Especificaciones guardadas.", Severity.Success);
+    }
+}

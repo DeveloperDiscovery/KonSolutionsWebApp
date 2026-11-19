@@ -1,0 +1,617 @@
+@using System.Globalization
+@using System.Net
+@using System.Text
+@using System.Text.RegularExpressions
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject IJSRuntime JS
+
+@* REPORTEADOR · EDITOR DE FÓRMULAS DEL DISEÑO LIBRE (bosquejo C3).
+
+   Sirve para las fórmulas del diseño (se ven en un «campo de fórmula», dentro de un texto con {F.Nombre} o dentro de
+   otra fórmula) y para las condiciones del botón ƒ (no imprimir, negrita, color, fondo, página nueva).
+   Arriba, lo que se puede usar: los datos de la fuente, las funciones con su ayuda y los operadores; doble clic en un
+   dato o una función lo escribe donde está el cursor. «Comprobar» le pide a la API que lea la fórmula: los errores
+   salen con su línea y su columna (clic en uno lleva el cursor ahí) y, si está bien, el tipo de valor que da y cuánto
+   da con la primera fila de la fuente. «Grabar y cerrar» vuelve a comprobar: una fórmula con errores no se acepta.
+   La fórmula la evalúa la API con su propio intérprete: aquí no se ejecuta nada. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <span class="fe-f">ƒ</span>
+            <MudText Typo="Typo.h6">@TituloVisible</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="fe">
+            @if (EsFormula)
+            {
+                <div class="fe-nombre">
+                    <div class="fe-campo" style="flex:0 0 220px;">
+                        <label>Nombre (letras sin tilde, números y _)</label>
+                        <input class="fe-in mono" maxlength="50" value="@_nombre" @oninput="@(e => { _nombre = e.Value?.ToString() ?? ""; _estado = Estado.SinComprobar; })" />
+                    </div>
+                    <div class="fe-campo" style="flex:1 1 auto;">
+                        <label>Descripción (opcional)</label>
+                        <input class="fe-in" maxlength="200" value="@_descripcion" @onchange="@(e => _descripcion = e.Value?.ToString())" />
+                    </div>
+                </div>
+                @if (ErrorNombre is { } en)
+                {
+                    <div class="fe-aviso">@en</div>
+                }
+            }
+            else
+            {
+                <div class="fe-donde"><b>@Donde</b> · @(EsColor ? "tiene que dar un color (Rojo, \"#C62828\", RGB(…)); si da vacío, queda el de siempre." : "tiene que dar Verdadero o Falso; si da vacío, queda lo que diga la propiedad.")</div>
+            }
+
+            <div class="fe-arriba">
+                @* ── DATOS ── *@
+                <div class="fe-panel">
+                    <div class="fe-panel-cab">Datos</div>
+                    <div class="fe-panel-cuerpo">
+                        @foreach (var r in Fuente?.Resultados.OrderBy(x => x.NUM_RESULTADO) ?? Enumerable.Empty<ReporteFuenteResultado>())
+                        {
+                            var rr = r;
+                            <details open="@(rr.NUM_RESULTADO == 1)">
+                                <summary>@($"R{rr.NUM_RESULTADO} · {rr.DES_RESULTADO}")</summary>
+                                @if (rr.NUM_RESULTADO != 1)
+                                {
+                                    <div class="fe-nota">De este resultado se usa su primera fila.</div>
+                                }
+                                @foreach (var c in Columnas(rr.NUM_RESULTADO))
+                                {
+                                    var marca = $"{{R{rr.NUM_RESULTADO}.{c.DES_COLUMNA}}}";
+                                    <div class="fe-item mono" title="@($"{c.DES_ETIQUETA ?? c.DES_COLUMNA} ({c.DES_TIPO_DATO})")" @ondblclick="@(() => Insertar(marca))">@marca</div>
+                                }
+                            </details>
+                        }
+                        <details>
+                            <summary>Parámetros</summary>
+                            @foreach (var p in Fuente?.Parametros.OrderBy(p => p.NUM_ORDEN) ?? Enumerable.Empty<ReporteFuenteParametro>())
+                            {
+                                var marca = "{@" + p.DES_PARAMETRO.Trim().TrimStart('@') + "}";
+                                <div class="fe-item mono" title="@($"{p.DES_ETIQUETA ?? p.DES_PARAMETRO} ({p.DES_TIPO_DATO})")" @ondblclick="@(() => Insertar(marca))">@marca</div>
+                            }
+                            @if (Fuente?.Parametros.Count is null or 0) { <div class="fe-nota">La fuente no tiene parámetros.</div> }
+                        </details>
+                        <details open="@(Otras.Count > 0)">
+                            <summary>Fórmulas</summary>
+                            @foreach (var f in Otras)
+                            {
+                                var marca = $"{{F.{f.DES_NOMBRE}}}";
+                                <div class="fe-item mono" title="@(f.DES_DESCRIPCION ?? f.DES_FORMULA)" @ondblclick="@(() => Insertar(marca))">@marca</div>
+                            }
+                            @if (Otras.Count == 0) { <div class="fe-nota">El diseño no tiene otras fórmulas.</div> }
+                        </details>
+                        <details>
+                            <summary>Resúmenes (del resultado 1)</summary>
+                            <div class="fe-dos">
+                                <select class="fe-in" value="@_resFuncion" @onchange="@(e => _resFuncion = e.Value?.ToString() ?? "Suma")">
+                                    <option value="Suma">Suma</option><option value="Cuenta">Cuenta</option><option value="CuentaDistinta">Cuenta distinta</option>
+                                    <option value="Promedio">Promedio</option><option value="Maximo">Máximo</option><option value="Minimo">Mínimo</option>
+                                </select>
+                                <select class="fe-in" value="@_resDe" @onchange="@(e => _resDe = e.Value?.ToString() ?? "")">
+                                    <option value="">de la sección</option>
+                                    <option value="Informe">del informe</option>
+                                    @for (var g = 1; g <= Grupos.Count; g++)
+                                    {
+                                        <option value="@($"Grupo{g}")">@($"del grupo {g} ({Grupos[g - 1]})")</option>
+                                    }
+                                </select>
+                            </div>
+                            @foreach (var c in Columnas(1).Where(c => _resFuncion is not ("Suma" or "Promedio") || EsNumero(c.DES_TIPO_DATO)))
+                            {
+                                var marca = $"{{Σ.{_resFuncion}.{c.DES_COLUMNA}{(_resDe.Length > 0 ? "." + _resDe : "")}}}";
+                                <div class="fe-item mono" @ondblclick="@(() => Insertar(marca))">@marca</div>
+                            }
+                        </details>
+                        <details>
+                            <summary>Especiales</summary>
+                            @foreach (var (marca, ayuda) in Especiales.Where(x => ConPagina || !x.Marca.Contains("Pagina")))
+                            {
+                                var m = marca;
+                                <div class="fe-item mono" title="@ayuda" @ondblclick="@(() => Insertar(m))">@m</div>
+                            }
+                        </details>
+                        <details>
+                            <summary>Colores</summary>
+                            @foreach (var (nombre, hex) in Colores)
+                            {
+                                var n = nombre;
+                                <div class="fe-item mono" title="@hex" @ondblclick="@(() => Insertar(n))"><span class="fe-muestra" style="background:@hex;"></span>@n</div>
+                            }
+                        </details>
+                    </div>
+                </div>
+
+                @* ── FUNCIONES ── *@
+                <div class="fe-panel">
+                    <div class="fe-panel-cab">Funciones</div>
+                    <div class="fe-panel-cuerpo">
+                        @if (_catalogo is null)
+                        {
+                            <div class="fe-nota">@(_errorCatalogo ?? "Cargando...")</div>
+                        }
+                        else
+                        {
+                            @foreach (var g in _catalogo.GroupBy(f => f.DES_GRUPO))
+                            {
+                                <details open>
+                                    <summary>@g.Key</summary>
+                                    <div class="fe-funciones">
+                                        @foreach (var f in g)
+                                        {
+                                            var ff = f;
+                                            <span class="fe-fn mono @(_ayuda == ff ? "fe-fn-sel" : "")" title="@ff.DES_AYUDA"
+                                                  @onclick="@(() => _ayuda = ff)" @ondblclick="@(() => InsertarFuncion(ff))">@ff.DES_FIRMA</span>
+                                        }
+                                    </div>
+                                </details>
+                            }
+                        }
+                    </div>
+                </div>
+
+                @* ── OPERADORES ── *@
+                <div class="fe-panel fe-ops">
+                    <div class="fe-panel-cab">Operadores</div>
+                    <div class="fe-panel-cuerpo">
+                        <div class="fe-teclas">
+                            @foreach (var (op, ins, atras) in Operadores)
+                            {
+                                var i = ins; var a = atras;
+                                <button type="button" class="fe-tecla mono" @onclick="@(() => Insertar(i, a))">@op</button>
+                            }
+                        </div>
+                        <div class="fe-nota">
+                            &amp; une textos · ; separa los datos de una función · decimales con punto · textos entre "comillas" · // comentario
+                        </div>
+                        <div class="fe-nota">Doble clic en un dato o una función: lo escribe donde está el cursor. Un clic en una función muestra su ayuda.</div>
+                    </div>
+                </div>
+            </div>
+
+            @* ── EL CÓDIGO ── *@
+            <div class="fe-codigo">
+                <div class="fe-lineas" @ref="_lineas">
+                    @for (var n = 1; n <= Lineas; n++)
+                    {
+                        <div>@n</div>
+                    }
+                </div>
+                <div class="fe-capa">
+                    <pre class="fe-pre" @ref="_pre" aria-hidden="true">@((MarkupString)_html)</pre>
+                    <textarea class="fe-ta" @ref="_ta" spellcheck="false" wrap="off" value="@_texto" @oninput="Escribir"
+                              placeholder="@(EsFormula ? "SI({R1.POR_ATENDIDO} >= 100; \"ATENDIDA\"; \"PENDIENTE\")" : EsColor ? "SI({R1.IMP_TOTAL} < 0; Rojo)" : "{R1.IMP_TOTAL} = 0")"></textarea>
+                </div>
+                @if (_ayuda is { } ay)
+                {
+                    <div class="fe-ayuda">
+                        <button type="button" class="fe-cerrar" title="Cerrar la ayuda" @onclick="@(() => _ayuda = null)">✕</button>
+                        <div class="fe-ayuda-firma mono">@ay.DES_FIRMA</div>
+                        <div>@ay.DES_AYUDA</div>
+                        <div class="fe-ayuda-ej mono">@ay.DES_EJEMPLO</div>
+                    </div>
+                }
+            </div>
+
+            @* ── ESTADO ── *@
+            @switch (_estado)
+            {
+                case Estado.Comprobando:
+                    <div class="fe-estado"><MudProgressCircular Size="Size.Small" Indeterminate="true" /> Comprobando...</div>
+                    break;
+                case Estado.Bien:
+                    <div class="fe-estado fe-bien">
+                        <b>✔ Sin errores</b>
+                        <span>Resultado: <b>@_resultado?.DES_TIPO</b></span>
+                        @if (_resultado?.DES_VALOR is { } v)
+                        {
+                            <span>
+                                Con la primera fila: <b class="mono">@v</b>
+                                @if (EsColor && ColorDe(v) is { } hex) { <span class="fe-muestra" style="background:@hex;margin-left:6px;"></span> }
+                            </span>
+                        }
+                        @if (_resultado?.DES_AVISO is { } av) { <span class="fe-nota" style="margin:0;">@av</span> }
+                    </div>
+                    break;
+                case Estado.Errores:
+                    <div class="fe-estado fe-mal">
+                        @foreach (var e in _errores)
+                        {
+                            var ee = e;
+                            <div class="fe-error" title="Llevar el cursor ahí" @onclick="@(() => IrA(ee))">
+                                <span class="mono">@($"Línea {ee.NUM_LINEA}, columna {ee.NUM_COLUMNA}:")</span> @ee.DES_MENSAJE
+                            </div>
+                        }
+                    </div>
+                    break;
+                case Estado.Falla:
+                    <div class="fe-estado fe-mal">@_falla</div>
+                    break;
+                default:
+                    <div class="fe-estado fe-nada">Sin comprobar. «Comprobar» la lee y la prueba con la primera fila de la fuente.</div>
+                    break;
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <div class="d-flex align-center gap-2 pa-2" style="flex-wrap:wrap;width:100%;">
+            @if (!EsFormula && PuedeQuitar)
+            {
+                <MudButton Variant="Variant.Text" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="Quitar">Quitar la condición</MudButton>
+            }
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Check" Disabled="@(_estado == Estado.Comprobando)"
+                       OnClick="@(() => Comprobar(probar: true))">Comprobar</MudButton>
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" StartIcon="@Icons.Material.Filled.Close" OnClick="@(() => MudDialog.Cancel())">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_estado == Estado.Comprobando)"
+                       OnClick="Aceptar">Grabar y cerrar</MudButton>
+        </div>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .fe { display:flex; flex-direction:column; gap:8px; }
+    .fe-f { font-family:'Times New Roman',serif; font-style:italic; font-weight:700; font-size:1.5rem; color:#ef6c00; line-height:1; }
+    .fe .mono { font-family:Consolas,'Courier New',monospace; }
+    .fe-nombre { display:flex; gap:10px; flex-wrap:wrap; }
+    .fe-campo { display:flex; flex-direction:column; gap:1px; min-width:0; }
+    .fe-campo label { font-size:.7rem; opacity:.7; }
+    .fe-in { width:100%; border:1px solid #cfd8dc; border-radius:4px; padding:4px 6px; font-size:.82rem; background:#fff; color:#16130f; }
+    .fe-aviso { font-size:.75rem; color:#c62828; }
+    .fe-donde { font-size:.8rem; padding:6px 8px; border:1px solid #ffe0b2; background:#fff8e1; border-radius:6px; }
+    .fe-arriba { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) 230px; gap:8px; height:230px; }
+    @@media (max-width: 900px) { .fe-arriba { grid-template-columns:1fr; height:auto; } .fe-panel { max-height:200px; } }
+    .fe-panel { border:1px solid var(--line,#cfd8dc); border-radius:6px; display:flex; flex-direction:column; min-height:0; background:#fff; }
+    .fe-panel-cab { font-size:.72rem; font-weight:800; letter-spacing:.4px; text-transform:uppercase; padding:4px 8px; border-bottom:1px solid var(--line,#cfd8dc); color:#163a5f; }
+    .fe-panel-cuerpo { overflow:auto; padding:2px 4px 6px; min-height:0; }
+    .fe-panel details > summary { cursor:pointer; font-weight:700; font-size:.75rem; padding:2px 4px; }
+    .fe-item { font-size:.74rem; padding:1px 6px 1px 16px; cursor:copy; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:none; border-radius:3px; }
+    .fe-item:hover { background:#e3f2fd; }
+    .fe-nota { font-size:.7rem; opacity:.7; padding:2px 6px; }
+    .fe-dos { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:2px 6px 4px 16px; }
+    .fe-dos .fe-in { padding:1px 3px; font-size:.72rem; }
+    .fe-funciones { display:flex; flex-wrap:wrap; gap:2px 6px; padding:0 4px 2px 16px; }
+    .fe-fn { font-size:.72rem; cursor:pointer; padding:0 3px; border-radius:3px; white-space:nowrap; user-select:none; }
+    .fe-fn:hover { background:#e3f2fd; }
+    .fe-fn-sel { background:#bbdefb; }
+    .fe-teclas { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; padding:4px; }
+    .fe-tecla { border:1px solid #cfd8dc; background:#fff; border-radius:4px; font-size:.8rem; padding:3px 0; cursor:pointer; }
+    .fe-tecla:hover { background:#e8eaf6; border-color:#9fa8da; }
+    .fe-muestra { display:inline-block; width:11px; height:11px; border:1px solid rgba(0,0,0,.25); border-radius:2px; margin-right:5px; vertical-align:-1px; }
+    .fe-codigo { position:relative; display:flex; height:190px; border:1px solid #90a4ae; border-radius:6px; overflow:hidden; background:#fff; }
+    .fe-lineas { flex:0 0 38px; overflow:hidden; background:#f5f7f8; border-right:1px solid #e0e0e0; color:#90a4ae; text-align:right; padding:8px 6px 8px 0;
+                 font:13px/20px Consolas,'Courier New',monospace; user-select:none; }
+    .fe-capa { position:relative; flex:1 1 auto; min-width:0; }
+    .fe-pre, .fe-ta { position:absolute; inset:0; margin:0; padding:8px 10px; border:0; box-sizing:border-box; font:13px/20px Consolas,'Courier New',monospace;
+                      white-space:pre; tab-size:4; letter-spacing:0; }
+    .fe-pre { overflow:hidden; color:#263238; pointer-events:none; }
+    .fe-ta { resize:none; overflow:auto; background:transparent; color:transparent; caret-color:#000; outline:none; }
+    .fe-ta::selection { background:rgba(30,136,229,.25); color:transparent; }
+    .fe-ta::placeholder { color:#b0bec5; }
+    .fe-c { color:#78909c; font-style:italic; }
+    .fe-s { color:#2e7d32; }
+    .fe-r { color:#1565c0; }
+    .fe-n { color:#c62828; }
+    .fe-f-n { color:#6a1b9a; }
+    .fe-k { color:#ef6c00; }
+    .fe-o { color:#455a64; }
+    .fe-e { text-decoration:underline wavy #d50000; text-decoration-skip-ink:none; background:rgba(213,0,0,.08); }
+    .fe-ayuda { position:absolute; top:6px; right:8px; max-width:330px; background:#263238; color:#eceff1; border-radius:6px; padding:6px 22px 6px 8px;
+                font-size:.72rem; box-shadow:0 2px 8px rgba(0,0,0,.25); z-index:2; }
+    .fe-ayuda-firma { font-weight:700; color:#fff; margin-bottom:2px; }
+    .fe-ayuda-ej { color:#ffb74d; margin-top:3px; word-break:break-word; }
+    .fe-cerrar { position:absolute; top:2px; right:4px; border:0; background:transparent; color:#b0bec5; cursor:pointer; font-size:.75rem; }
+    .fe-estado { display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; font-size:.78rem; padding:6px 10px; border-radius:6px; border:1px solid #e0e0e0; min-height:34px; }
+    .fe-bien { background:#e8f5e9; border-color:#a5d6a7; color:#1b5e20; }
+    .fe-mal { background:#ffebee; border-color:#ef9a9a; color:#b71c1c; flex-direction:column; align-items:flex-start; gap:2px; }
+    .fe-nada { color:#607d8b; }
+    .fe-error { cursor:pointer; }
+    .fe-error:hover { text-decoration:underline; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>F: una fórmula del diseño. C: una condición (botón ƒ).</summary>
+    [Parameter] public string Modo { get; set; } = "F";
+    /// <summary>El nombre con que la fórmula está grabada (null si es nueva).</summary>
+    [Parameter] public string? Nombre { get; set; }
+    [Parameter] public string? Texto { get; set; }
+    [Parameter] public string? Descripcion { get; set; }
+    /// <summary>Condición: B una sección, O un objeto; la propiedad (SUPRIMIR, NEGRITA, COLOR, FONDO...) y qué es.</summary>
+    [Parameter] public string? Elemento { get; set; }
+    [Parameter] public string? Propiedad { get; set; }
+    [Parameter] public string? Donde { get; set; }
+    /// <summary>Hay una condición grabada que se puede quitar.</summary>
+    [Parameter] public bool PuedeQuitar { get; set; }
+    [Parameter] public int NumFuente { get; set; }
+    [Parameter] public ReporteFuenteDetalle? Fuente { get; set; }
+    /// <summary>Las fórmulas del diseño como están en el lienzo (sin grabar).</summary>
+    [Parameter] public List<ReporteLienzoFormula> Formulas { get; set; } = new();
+    /// <summary>Las columnas de los grupos del lienzo, del nivel 1 al último.</summary>
+    [Parameter] public List<string> Grupos { get; set; } = new();
+
+    /// <summary>Lo que devuelve el diálogo.</summary>
+    public sealed class Resultado
+    {
+        public string  Nombre      { get; init; } = "";
+        public string  Texto       { get; init; } = "";
+        public string? Descripcion { get; init; }
+        /// <summary>Quitar la condición.</summary>
+        public bool    Quitar      { get; init; }
+    }
+
+    private enum Estado { SinComprobar, Comprobando, Bien, Errores, Falla }
+
+    private static List<ReporteFormulaFuncion>? _catalogo;
+    private static readonly Regex NombreValido = new("^[A-Za-z][A-Za-z0-9_]{0,49}$");
+
+    private static readonly (string Marca, string Ayuda)[] Especiales =
+    {
+        ("{#Pagina}", "Número de página"), ("{#TotalPaginas}", "Total de páginas"), ("{#Fecha}", "Fecha de impresión"),
+        ("{#FechaHora}", "Fecha y hora de impresión"), ("{#Usuario}", "Quién genera el reporte"), ("{#Filtros}", "Los filtros usados"),
+        ("{#Titulo}", "Título del diseño"), ("{#Subtitulo}", "Subtítulo del diseño"), ("{#Empresa}", "Nombre de la empresa"),
+        ("{#EmpresaRuc}", "RUC de la empresa"), ("{#EmpresaDireccion}", "Dirección de la empresa"),
+        ("{#Aplicacion}", "Nombre de la aplicación")
+    };
+
+    private static readonly (string Nombre, string Hex)[] Colores =
+    {
+        ("Rojo", "#C62828"), ("Verde", "#2E7D32"), ("Azul", "#1565C0"), ("AzulOscuro", "#163A5F"), ("Celeste", "#0288D1"),
+        ("Negro", "#000000"), ("Gris", "#757575"), ("GrisClaro", "#BDBDBD"), ("Blanco", "#FFFFFF"), ("Naranja", "#EF6C00"),
+        ("Amarillo", "#F9A825"), ("Morado", "#6A1B9A"), ("Rosado", "#AD1457"), ("Marron", "#5D4037")
+    };
+
+    // texto, lo que inserta, cuántos caracteres vuelve el cursor
+    private static readonly (string Op, string Inserta, int Atras)[] Operadores =
+    {
+        ("+", " + ", 0), ("−", " - ", 0), ("*", " * ", 0), ("/", " / ", 0),
+        ("&", " & ", 0), ("%", " % ", 0), ("=", " = ", 0), ("<>", " <> ", 0),
+        ("<", " < ", 0), (">", " > ", 0), ("<=", " <= ", 0), (">=", " >= ", 0),
+        ("( )", "()", 1), (";", "; ", 0), ("\" \"", "\"\"", 1), ("//", "// ", 0)
+    };
+
+    private static readonly HashSet<string> Constantes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Verdadero", "Falso", "Nulo", "Rojo", "Verde", "Azul", "AzulOscuro", "Celeste", "Negro", "Gris", "GrisClaro", "Blanco",
+        "Naranja", "Amarillo", "Morado", "Rosado", "Marron", "Marrón"
+    };
+
+    private ElementReference _ta, _pre, _lineas;
+    private string _texto = "", _nombre = "", _html = "";
+    private string? _descripcion, _errorCatalogo, _falla;
+    private string _resFuncion = "Suma", _resDe = "";
+    private Estado _estado;
+    private ReporteFormulaResultado? _resultado;
+    private List<ReporteFormulaError> _errores = new();
+    private ReporteFormulaFuncion? _ayuda;
+    private bool _enlazado;
+
+    private bool EsFormula => Modo != "C";
+    private bool EsColor => Propiedad is "COLOR" or "FONDO";
+    /// <summary>¿Puede usar el número de página? No en lo que se decide antes de repartir en páginas.</summary>
+    private bool ConPagina => EsFormula || EsColor;
+    private int Lineas => _texto.Count(ch => ch == '\n') + 1;
+    // Fijo: MudDialog toma el título una sola vez (el nombre se ve y se cambia en su cuadro).
+    private string TituloVisible => EsFormula ? (Nombre is null ? "Fórmula nueva" : "Editar fórmula") : "Condición";
+    private List<ReporteLienzoFormula> Otras => Formulas.Where(f => !Igual(f.DES_NOMBRE, Nombre) && !Igual(f.DES_NOMBRE, _nombre))
+                                                        .OrderBy(f => f.DES_NOMBRE, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private string? ErrorNombre
+    {
+        get
+        {
+            var n = _nombre.Trim();
+            if (n.Length == 0) return null;
+            if (!NombreValido.IsMatch(n)) return "El nombre lleva letras sin tilde, números y _, y empieza con una letra.";
+            if (Formulas.Any(f => Igual(f.DES_NOMBRE, n) && !Igual(f.DES_NOMBRE, Nombre))) return $"Ya hay una fórmula «{n}».";
+            return null;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _texto = (Texto ?? "").Replace("\r\n", "\n");
+        _nombre = Nombre ?? "";
+        _descripcion = Descripcion;
+        _html = Resaltar(_texto);
+        if (_catalogo is null)
+        {
+            var (lista, err) = await Reportes.GetAsync<List<ReporteFormulaFuncion>>(ApiRoutes.Reportes.FormulaFunciones);
+            if (lista is not null) _catalogo = lista;
+            else _errorCatalogo = err ?? "No se pudo leer la lista de funciones.";
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_enlazado) return;
+        _enlazado = true;
+        try
+        {
+            await JS.InvokeVoidAsync("formulaEditor.enlazar", _ta, _pre, _lineas);
+            var filas = _texto.Split('\n');
+            await JS.InvokeVoidAsync("formulaEditor.ir", _ta, filas.Length, filas[^1].Length + 1);
+        }
+        catch (JSException) { /* sin el script, el cuadro igual sirve para escribir */ }
+    }
+
+    private void Escribir(ChangeEventArgs e)
+    {
+        _texto = (e.Value?.ToString() ?? "").Replace("\r\n", "\n");
+        // Lo comprobado ya no vale para el texto nuevo.
+        if (_estado != Estado.Comprobando) _estado = Estado.SinComprobar;
+        _errores.Clear();
+        _html = Resaltar(_texto);
+    }
+
+    private async Task Insertar(string texto, int atras = 0)
+    {
+        try { await JS.InvokeVoidAsync("formulaEditor.insertar", _ta, texto, atras); }
+        catch (JSException) { _texto += texto; _html = Resaltar(_texto); }
+    }
+
+    private Task InsertarFuncion(ReporteFormulaFuncion f)
+    {
+        _ayuda = f;
+        var sinDatos = f.DES_FIRMA.EndsWith("()", StringComparison.Ordinal);
+        return Insertar(f.DES_NOMBRE + "()", sinDatos ? 0 : 1);
+    }
+
+    private async Task IrA(ReporteFormulaError e)
+    {
+        try { await JS.InvokeVoidAsync("formulaEditor.ir", _ta, e.NUM_LINEA, e.NUM_COLUMNA); } catch (JSException) { }
+    }
+
+    /// <summary>Le pide a la API que lea la fórmula; con probar, también su valor con la primera fila.</summary>
+    private async Task<bool> Comprobar(bool probar)
+    {
+        if (string.IsNullOrWhiteSpace(_texto))
+        {
+            _estado = Estado.Falla;
+            _falla = "Escribe la fórmula.";
+            return false;
+        }
+        _estado = Estado.Comprobando;
+        StateHasChanged();
+        var dto = new ReporteFormulaComprobarDto
+        {
+            NUM_FUENTE = NumFuente,
+            DES_FORMULA = _texto,
+            DES_NOMBRE = EsFormula && NombreValido.IsMatch(_nombre.Trim()) ? _nombre.Trim() : null,
+            COD_ELEMENTO = EsFormula ? null : Elemento,
+            COD_PROPIEDAD = EsFormula ? null : Propiedad,
+            // La que se edita va con su texto nuevo (la API la pone); con el nombre anterior no va, por si se renombra.
+            Formulas = Formulas.Where(f => !Igual(f.DES_NOMBRE, Nombre)).ToList(),
+            Grupos = Grupos,
+            FLG_PROBAR = probar
+        };
+        var (r, err) = await Reportes.PostAsync<ReporteFormulaResultado>(ApiRoutes.Reportes.FormulaComprobar, dto);
+        if (r is null)
+        {
+            _estado = Estado.Falla;
+            _falla = err ?? "No se pudo comprobar la fórmula.";
+            return false;
+        }
+        _resultado = r;
+        _errores = r.Errores;
+        _estado = r.FLG_VALIDA ? Estado.Bien : Estado.Errores;
+        _html = Resaltar(_texto);
+        if (!r.FLG_VALIDA && _errores.Count > 0) await IrA(_errores[0]);
+        return r.FLG_VALIDA;
+    }
+
+    private async Task Aceptar()
+    {
+        if (EsFormula)
+        {
+            if (_nombre.Trim().Length == 0) { _estado = Estado.Falla; _falla = "Ponle un nombre a la fórmula."; return; }
+            if (ErrorNombre is { } en) { _estado = Estado.Falla; _falla = en; return; }
+        }
+        // Una fórmula con errores no se acepta: se comprueba otra vez (sin ejecutar la fuente).
+        if (_estado != Estado.Bien && !await Comprobar(probar: false))
+        {
+            if (_estado == Estado.Errores) _falla = null;
+            return;
+        }
+        MudDialog.Close(DialogResult.Ok(new Resultado
+        {
+            Nombre = _nombre.Trim(),
+            Texto = _texto.TrimEnd(),
+            Descripcion = string.IsNullOrWhiteSpace(_descripcion) ? null : _descripcion.Trim()
+        }));
+    }
+
+    private void Quitar() => MudDialog.Close(DialogResult.Ok(new Resultado { Quitar = true }));
+
+    // ── Colores del código ──────────────────────────────────────────────────────
+    /// <summary>El texto con colores (comentarios, textos, referencias, números, funciones, constantes) y el error
+    /// subrayado donde empieza. Mantiene cada carácter en su lugar: el &lt;textarea&gt; transparente va encima.</summary>
+    private string Resaltar(string s)
+    {
+        var sb = new StringBuilder();
+        int i = 0, linea = 1, col = 1;
+        var marcas = new HashSet<(int, int)>(_errores.Select(e => (e.NUM_LINEA, e.NUM_COLUMNA)));
+        while (i < s.Length)
+        {
+            var ini = i;
+            var (l0, c0) = (linea, col);
+            var ch = s[i];
+            string? clase;
+            if (ch == '/' && i + 1 < s.Length && s[i + 1] == '/')
+            {
+                while (i < s.Length && s[i] != '\n') i++;
+                clase = "c";
+            }
+            else if (ch == '"')
+            {
+                i++;
+                while (i < s.Length && s[i] != '\n')
+                {
+                    if (s[i] == '"')
+                    {
+                        if (i + 1 < s.Length && s[i + 1] == '"') { i += 2; continue; }
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                clase = "s";
+            }
+            else if (ch == '{')
+            {
+                var fin = s.IndexOfAny(new[] { '}', '\n' }, i + 1);
+                i = fin < 0 ? s.Length : s[fin] == '}' ? fin + 1 : fin;
+                clase = "r";
+            }
+            else if (char.IsDigit(ch))
+            {
+                while (i < s.Length && (char.IsDigit(s[i]) || s[i] == '.')) i++;
+                clase = "n";
+            }
+            else if (char.IsLetter(ch) || ch == '_')
+            {
+                while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_')) i++;
+                var j = i;
+                while (j < s.Length && s[j] == ' ') j++;
+                clase = j < s.Length && s[j] == '(' ? "f-n" : Constantes.Contains(s[ini..i]) ? "k" : null;
+            }
+            else
+            {
+                i++;
+                clase = ch is '+' or '-' or '*' or '/' or '%' or '&' or '=' or '<' or '>' or ';' or '(' or ')' ? "o" : null;
+            }
+            var trozo = s[ini..i];
+            foreach (var c in trozo)
+                if (c == '\n') { linea++; col = 1; } else col++;
+            var error = marcas.Contains((l0, c0));
+            if (error) sb.Append("<span class=\"fe-e\">");
+            if (clase is not null) sb.Append("<span class=\"fe-").Append(clase).Append("\">");
+            sb.Append(WebUtility.HtmlEncode(trozo));
+            if (clase is not null) sb.Append("</span>");
+            if (error) sb.Append("</span>");
+        }
+        // Un error al final (falta algo) se marca con un espacio subrayado.
+        if (marcas.Contains((linea, col))) sb.Append("<span class=\"fe-e\"> </span>");
+        sb.Append('\n');
+        return sb.ToString();
+    }
+
+    private List<ReporteFuenteColumna> Columnas(int resultado)
+        => Fuente?.Columnas.Where(c => c.NUM_RESULTADO == resultado).OrderBy(c => c.NUM_ORDEN).ToList() ?? new();
+
+    private static bool EsNumero(string? t) => (t ?? "").ToLowerInvariant() is "int" or "bigint" or "smallint" or "tinyint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
+
+    private static string? ColorDe(string v)
+    {
+        v = v.Trim();
+        if (Regex.IsMatch(v, "^#[0-9A-Fa-f]{6}$")) return v;
+        return Colores.FirstOrDefault(c => Igual(c.Nombre, v)).Hex;
+    }
+
+    private static bool Igual(string? a, string? b) => string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
+}

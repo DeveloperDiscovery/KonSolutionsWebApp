@@ -1,0 +1,1049 @@
+@page "/logistica/trazabilidad-requerimientos"
+@attribute [Authorize]
+@using Nodo = KONSolutions.Shared.Models.Logistica.TrazabilidadNodo
+@using Entidad = KONSolutions.Shared.Models.Logistica.TrazabilidadEntidad
+@using Franja = KONSolutions.Shared.Models.Logistica.TrazabilidadFranja
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+
+<PageTitle>Trazabilidad de Requerimientos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* Mapa de documentos: parte de un requerimiento y se recorre nodo por nodo. Cada nodo es un
+   documento (requerimiento, reserva, pedido comercial, movimiento de almacén) o un almacén;
+   ◀ trae lo que hay detrás (de dónde viene) y ▶ lo que hay delante (qué generó).
+
+   Es de sólo lectura. El mapa se dibuja en SVG con Blazor, sin librerías de JavaScript: la
+   posición de cada nodo la decide la columna (atrás / adelante del nodo desde el que se abrió)
+   y la primera fila libre de esa columna. *@
+<div class="documento-logistica">
+
+    <div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Trazabilidad de Requerimientos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · @_nodos.Count(n => !n.Value.Fantasma) documento(s) en el mapa
+            </MudText>
+        </div>
+    </div>
+
+    @* ── Barra: de dónde partir, zoom y acciones sobre el mapa ─────────────────────── *@
+    <MudPaper Elevation="0" Class="pa-3 mb-3 d-flex align-center gap-2" Style="border:1px solid var(--line);flex-wrap:wrap;">
+        @* De qué documento partir. Cuando el flujo empiece en el pedido de venta / exportación,
+           se agrega aquí como otra opción. *@
+        <MudSelect T="string" @bind-Value="_tipoInicio" Label="Partir de" Variant="Variant.Outlined"
+                   Margin="Margin.Dense" Dense="true" Style="max-width:220px;">
+            @foreach (var t in TiposInicio)
+            {
+                <MudSelectItem Value="@t.Codigo">@t.Nombre</MudSelectItem>
+            }
+        </MudSelect>
+        <MudNumericField T="int?" @bind-Value="_numeroInicio" Label="N.°" Variant="Variant.Outlined"
+                         Margin="Margin.Dense" HideSpinButtons="true" Style="max-width:130px;"
+                         OnKeyUp="@(e => e.Key == "Enter" ? Buscar() : Task.CompletedTask)" />
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Search"
+                   Disabled="_cargando" OnClick="Buscar">Buscar</MudButton>
+
+        <MudDivider Vertical="true" FlexItem="true" Class="mx-2" />
+
+        <MudTooltip Text="Alejar"><MudIconButton Icon="@Icons.Material.Filled.ZoomOut" Size="Size.Small" OnClick="@(() => Zoom(-0.1))" /></MudTooltip>
+        <MudText Class="mono" Style="min-width:48px;text-align:center;">@((int)Math.Round(_zoom * 100)) %</MudText>
+        <MudTooltip Text="Acercar"><MudIconButton Icon="@Icons.Material.Filled.ZoomIn" Size="Size.Small" OnClick="@(() => Zoom(0.1))" /></MudTooltip>
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.CenterFocusStrong"
+                   OnClick="Centrar">Centrar</MudButton>
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" EndIcon="@Icons.Material.Filled.KeyboardDoubleArrowRight"
+                   Disabled="@(_cargando || _raiz is null)" OnClick="ExpandirTodoAdelante">Expandir todo</MudButton>
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.CleaningServices"
+                   Disabled="@(_cargando || _raiz is null)" OnClick="LimpiarMapa">Limpiar mapa</MudButton>
+
+        <MudDivider Vertical="true" FlexItem="true" Class="mx-2" />
+        @* Dónde se ve la entidad del nodo: en una ficha flotante junto al nodo, o en el panel
+           de la derecha. La elección queda guardada en este navegador. *@
+        <MudTooltip Text="Marcado: la entidad se abre en una ficha flotante junto al nodo. Desmarcado: en el panel de la derecha.">
+            <MudCheckBox T="bool" Value="_fichaFlotante" ValueChanged="CambiarFichaFlotante"
+                         Label="Ficha flotante" Dense="true" Color="Color.Primary" />
+        </MudTooltip>
+        @* Franjas en el orden del flujo que manda la API: cotizaciones, pedidos de venta,
+           requerimientos, reservas, proformas, órdenes de compra, movimientos de almacén, compras
+           y ventas (los pedidos comerciales van en la de su clase). El sentido del flujo (de dónde
+           viene / qué generó) no cambia: sólo se reparte cada nodo en su franja. Horizontales: las
+           franjas van de arriba abajo y el flujo de izquierda a derecha. Verticales: las franjas
+           van de izquierda a derecha y el flujo de arriba abajo. *@
+        <MudTooltip Text="Marcado: el mapa se separa en franjas: cotizaciones, pedidos de venta, requerimientos, reservas, proformas, órdenes de compra, movimientos de almacén, compras y ventas. Desmarcado: sin franjas.">
+            <MudCheckBox T="bool" Value="_separarFranjas" ValueChanged="CambiarSepararFranjas"
+                         Label="Separar por franjas" Dense="true" Color="Color.Primary" />
+        </MudTooltip>
+        <MudSelect T="string" Value="_orientacion" ValueChanged="CambiarOrientacion" Label="Franjas"
+                   Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" Disabled="!_separarFranjas"
+                   Style="max-width:150px;">
+            <MudSelectItem Value="@("H")">Horizontales</MudSelectItem>
+            <MudSelectItem Value="@("V")">Verticales</MudSelectItem>
+        </MudSelect>
+
+        <MudSpacer />
+        @* Leyenda: los mismos colores y letras que los nodos. *@
+        @foreach (var t in new[] { "REQ", "RES", "PC", "MOV", "ALM" })
+        {
+            <span class="d-inline-flex align-center gap-1" style="font-size:.78rem;">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:@ColorTipo(t);color:#fff;font-size:.68rem;font-weight:700;">@Letra(t)</span>
+                @NombreTipo(t)
+            </span>
+        }
+    </MudPaper>
+
+    @if (_cargando)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mb-2" />
+    }
+
+    @* Proformas y órdenes de compra se numeran por tipo de operación: un mismo número puede ser
+       una proforma local y otra de importación. Si la búsqueda trae más de uno, se elige acá. *@
+    @if (_candidatos.Count > 1)
+    {
+        <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Hay @_candidatos.Count documentos con el N° @_numeroInicio. Elige desde cuál partir:
+            </MudText>
+            <div class="d-flex gap-2" style="flex-wrap:wrap;">
+                @foreach (var c in _candidatos)
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => Iniciar(c))">
+                        <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:@ColorTipo(c.TIPO_NODO);color:#fff;font-size:.66rem;font-weight:700;margin-right:6px;">@Letra(c.TIPO_NODO)</span>
+                        @DescribirCandidato(c)
+                    </MudButton>
+                }
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => _candidatos.Clear())">Cancelar</MudButton>
+            </div>
+        </MudPaper>
+    }
+
+    @* data-resizable-grid: gridAutoAlto.js estira este contenedor hasta la barra de estado y lo
+       vuelve a medir al cambiar la ventana o el zoom, igual que las grillas.
+
+       Va en un div PROPIO y la fila mapa + panel va adentro: app.css le pone a todo
+       [data-resizable-grid] flex-direction:column (es para las grillas), y puesto sobre la fila
+       mandaba el panel debajo del mapa. El borde y el fondo que esa regla también agrega se
+       anulan acá: el mapa y el panel ya tienen los suyos. *@
+    <div data-resizable-grid="trazabilidad-requerimientos" style="position:relative;border:none;background:transparent;">
+    <div class="d-flex gap-3" style="flex:1 1 auto;min-height:0;flex-direction:row;align-items:stretch;">
+        @* ── El mapa ─────────────────────────────────────────────────────────────────
+           Se mueve arrastrando el fondo. Los nodos detienen el mousedown para que hacer clic
+           en ellos no empiece un arrastre. *@
+        <div style="flex:1;min-width:0;height:100%;min-height:300px;border:1px solid var(--line);border-radius:8px;overflow:hidden;position:relative;
+                    background-color:var(--mud-palette-surface);background-image:radial-gradient(rgba(120,144,156,.25) 1px, transparent 1px);background-size:24px 24px;
+                    cursor:@(_arrastrando ? "grabbing" : "grab");user-select:none;"
+             @onmousedown="IniciarArrastre" @onmousemove="Arrastrar" @onmouseup="TerminarArrastre" @onmouseleave="TerminarArrastre">
+
+            @if (_raiz is null)
+            {
+                <MudText Class="pa-6 mono" Style="opacity:.5;">Elige desde qué documento partir, escribe su número y toca Buscar.</MudText>
+            }
+            else
+            {
+                <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+                    <g transform="translate(@N(_panX), @N(_panY)) scale(@N(_zoom))">
+                        @* Las franjas se calculan en cada dibujo (son pocos nodos) y van primero:
+                           quedan debajo de las aristas y de los nodos. *@
+                        @if (_separarFranjas)
+                        {
+                            CalcularFranjas();
+                            foreach (var fr in _franjasVisibles)
+                            {
+                                var colorFr = fr.Color;
+                                var (nom1, nom2) = PartirEnDos(fr.Nombre, fr.AnchoNombre, 11);
+                                @* Horizontales: la marca de color va a la izquierda y el nombre en la
+                                   columna de la izquierda. Verticales: la marca va arriba y el nombre
+                                   en la cabecera de la franja. *@
+                                <g>
+                                    <title>@fr.Nombre · @fr.Cantidad documento(s)</title>
+                                    <rect x="@N(fr.Left)" y="@N(fr.Top)" width="@N(fr.Ancho)" height="@N(fr.Alto)" rx="6"
+                                          fill="@colorFr" fill-opacity="0.06" stroke="@colorFr" stroke-opacity="0.35" />
+                                    @if (FranjasVerticales)
+                                    {
+                                        <rect x="@N(fr.Left)" y="@N(fr.Top)" width="@N(fr.Ancho)" height="6" rx="3" fill="@colorFr" />
+                                        <line x1="@N(fr.Left + 10)" y1="@N(fr.Top + CAB_V - 4)" x2="@N(fr.Left + fr.Ancho - 10)" y2="@N(fr.Top + CAB_V - 4)"
+                                              stroke="@colorFr" stroke-opacity="0.3" />
+                                    }
+                                    else
+                                    {
+                                        <rect x="@N(fr.Left)" y="@N(fr.Top)" width="6" height="@N(fr.Alto)" rx="3" fill="@colorFr" />
+                                    }
+                                    <text x="@N(fr.Left + 16)" y="@N(fr.Top + 22)" font-size="11" font-weight="700" fill="@colorFr">@nom1</text>
+                                    @if (!string.IsNullOrEmpty(nom2))
+                                    {
+                                        <g>
+                                            <text x="@N(fr.Left + 16)" y="@N(fr.Top + 36)" font-size="11" font-weight="700" fill="@colorFr">@nom2</text>
+                                        </g>
+                                    }
+                                    <text x="@N(fr.Left + 16)" y="@N(fr.Top + (string.IsNullOrEmpty(nom2) ? 38 : 52))" font-size="10" fill="#78909c" font-family="Consolas, monospace">@fr.Cantidad documento(s)</text>
+                                </g>
+                            }
+                        }
+                        @* Aristas primero: así quedan debajo de los nodos. *@
+                        @foreach (var a in _aristas)
+                        {
+                            if (!_nodos.TryGetValue(a.Desde, out var d) || !_nodos.TryGetValue(a.Hasta, out var h)) continue;
+                            var (x1, y1, x2, y2, vertical) = Extremos(d, h);
+                            var mx = (x1 + x2) / 2;
+                            var my = (y1 + y2) / 2;
+                            var color = a.Fantasma ? "#bdbdbd" : "#90a4ae";
+                            @* La ruta se arma en C# y no con "M@N(x1)" en el atributo: una letra pegada
+                               a la @ hace que Razor lo tome por una dirección de correo y lo deje como
+                               texto literal; la ruta quedaba inválida y la línea no se dibujaba.
+                               Entre nodos uno al lado del otro la curva sale y llega en horizontal; entre
+                               nodos uno encima del otro, en vertical. *@
+                            var curva = vertical
+                                ? $"M{N(x1)},{N(y1)} C{N(x1)},{N(my)} {N(x2)},{N(my)} {N(x2)},{N(y2)}"
+                                : $"M{N(x1)},{N(y1)} C{N(mx)},{N(y1)} {N(mx)},{N(y2)} {N(x2)},{N(y2)}";
+                            var flecha = Flecha(x1, y1, x2, y2, vertical);
+                            <path d="@curva" fill="none" stroke="@color" stroke-width="2" stroke-dasharray="@(a.Fantasma ? "6,5" : "")" />
+                            <path d="@flecha" fill="none" stroke="@color" stroke-width="2" />
+                            @if (!string.IsNullOrWhiteSpace(a.Etiqueta))
+                            {
+                                var ancho = a.Etiqueta.Length * 5.8 + 10;
+                                // En horizontal la etiqueta va encima de la línea; en vertical, sobre ella
+                                // (el fondo blanco tapa el tramo de la curva que queda detrás).
+                                var yEtiqueta = vertical ? my - 7 : my - 17;
+                                @* Envueltos en <g>: dentro de un bloque @if, Razor toma un <text> suelto por
+                                   su propia etiqueta <text> (error RZ1023), no por la de SVG. *@
+                                <g>
+                                    <rect x="@N(mx - ancho / 2)" y="@N(yEtiqueta)" width="@N(ancho)" height="14" rx="3" fill="#ffffff" />
+                                    <text x="@N(mx)" y="@N(yEtiqueta + 11)" text-anchor="middle" font-size="10" fill="#546e7a" font-family="Consolas, monospace">@a.Etiqueta</text>
+                                </g>
+                            }
+                        }
+
+                        @foreach (var n in _nodos.Values)
+                        {
+                            var x = X(n); var y = Y(n); var c = n.Fantasma ? "#9e9e9e" : ColorTipo(n.Datos.TIPO_NODO);
+                            var sel = !n.Fantasma && _seleccionado == n.Id;
+                            <g transform="translate(@N(x), @N(y))" style="cursor:@(n.Fantasma ? "default" : "pointer");"
+                               @onmousedown:stopPropagation="true" @onclick="@(() => Seleccionar(n))">
+                                <title>@(n.Fantasma ? "Próximamente" : $"{Titulo(n.Datos)}\n{n.Datos.DES_DOCUMENTO}")</title>
+                                @if (sel)
+                                {
+                                    <rect x="-5" y="-5" width="@(NW + 10)" height="@(NH + 10)" rx="11" fill="none" stroke="#ffb300" stroke-width="3" />
+                                }
+                                <rect width="@NW" height="@NH" rx="8" fill="@(n.Fantasma ? "#fafafa" : "#ffffff")" stroke="@c"
+                                      stroke-width="@(n.Fantasma ? "1.5" : "2")" stroke-dasharray="@(n.Fantasma ? "6,5" : "")" />
+                                <rect width="6" height="@NH" rx="3" fill="@c" />
+                                <circle cx="24" cy="22" r="11" fill="@c" />
+                                <text x="24" y="26" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">@(n.Fantasma ? "V" : Letra(n.Datos.TIPO_NODO))</text>
+                                @* El título va en hasta dos líneas y se parte por ANCHO, no por cantidad de
+                                   letras: las mayúsculas son mucho más anchas y con un tope por letras se
+                                   salían del nodo. El subtítulo va en monoespaciada, así que ahí el ancho
+                                   sí es exacto por letra. *@
+                                @{ var (lin1, lin2) = PartirEnDos(n.Fantasma ? "Pedido de venta / export." : TituloCorto(n.Datos), AnchoTexto); }
+                                <text x="42" y="19" font-size="12" font-weight="700" fill="@(n.Fantasma ? "#90a4ae" : "#263238")">@lin1</text>
+                                @if (!string.IsNullOrEmpty(lin2))
+                                {
+                                    <g>
+                                        <text x="42" y="33" font-size="12" font-weight="700" fill="@(n.Fantasma ? "#90a4ae" : "#263238")">@lin2</text>
+                                    </g>
+                                }
+                                <text x="42" y="49" font-size="10" fill="#78909c" font-family="Consolas, monospace">@Recortar(n.Fantasma ? "próximamente" : Subtitulo(n.Datos), MaxLetrasSubtitulo)</text>
+                                @if (!n.Fantasma && !string.IsNullOrWhiteSpace(n.Datos.DES_ESTADO))
+                                {
+                                    var est = RecortarAncho(n.Datos.DES_ESTADO, AnchoChip - 14, 9);
+                                    var w = Medir(est, 9) + 14;
+                                    <g>
+                                        <rect x="14" y="60" width="@N(w)" height="17" rx="8" fill="@(n.Datos.DES_BACKCOLOR ?? "#78909c")" />
+                                        <text x="@N(14 + w / 2)" y="72" text-anchor="middle" font-size="9" font-weight="700" fill="@(n.Datos.DES_FORECOLOR ?? "#ffffff")">@est</text>
+                                    </g>
+                                }
+
+                                @* ◀ y ▶ (▲ y ▼ con franjas verticales): sólo si hay algo en ese sentido.
+                                   El número rojo dice cuántos quedan por abrir; desaparece al expandir.
+                                   En vertical van un poco afuera del borde para no tapar el título. *@
+                                @if (!n.Fantasma && (n.Datos.CAN_ATRAS ?? 0) > 0)
+                                {
+                                    var (bx, by) = FranjasVerticales ? (NW / 2, -BOTON_V) : (0.0, NH / 2);
+                                    var (ex, ey) = FranjasVerticales ? (bx + 13, by - 8) : (bx - 9, by - 10);
+                                    <g @onclick="@(() => Expandir(n, "A"))" @onclick:stopPropagation="true">
+                                        <title>Expandir hacia atrás</title>
+                                        <circle cx="@N(bx)" cy="@N(by)" r="11" fill="@(n.AbiertoAtras ? c : "#ffffff")" stroke="@c" stroke-width="1.5" />
+                                        <text x="@N(bx)" y="@N(by + 4)" text-anchor="middle" font-size="10" font-weight="700" fill="@(n.AbiertoAtras ? "#ffffff" : c)">@FlechaAtras</text>
+                                        @if (!n.AbiertoAtras)
+                                        {
+                                            <g>
+                                                <circle cx="@N(ex)" cy="@N(ey)" r="7" fill="#c62828" />
+                                                <text x="@N(ex)" y="@N(ey + 3)" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff">@n.Datos.CAN_ATRAS</text>
+                                            </g>
+                                        }
+                                    </g>
+                                }
+                                @if (!n.Fantasma && (n.Datos.CAN_ADELANTE ?? 0) > 0)
+                                {
+                                    var (bx, by) = FranjasVerticales ? (NW / 2, NH + BOTON_V) : (NW, NH / 2);
+                                    var (ex, ey) = FranjasVerticales ? (bx + 13, by + 8) : (bx + 9, by - 10);
+                                    <g @onclick="@(() => Expandir(n, "D"))" @onclick:stopPropagation="true">
+                                        <title>Expandir hacia adelante</title>
+                                        <circle cx="@N(bx)" cy="@N(by)" r="11" fill="@(n.AbiertoAdelante ? c : "#ffffff")" stroke="@c" stroke-width="1.5" />
+                                        <text x="@N(bx)" y="@N(by + 4)" text-anchor="middle" font-size="10" font-weight="700" fill="@(n.AbiertoAdelante ? "#ffffff" : c)">@FlechaAdelante</text>
+                                        @if (!n.AbiertoAdelante)
+                                        {
+                                            <g>
+                                                <circle cx="@N(ex)" cy="@N(ey)" r="7" fill="#c62828" />
+                                                <text x="@N(ex)" y="@N(ey + 3)" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff">@n.Datos.CAN_ADELANTE</text>
+                                            </g>
+                                        }
+                                    </g>
+                                }
+                            </g>
+                        }
+                    </g>
+                </svg>
+                <MudText Typo="Typo.caption" Style="position:absolute;left:12px;bottom:8px;opacity:.6;pointer-events:none;">
+                    Clic en un nodo: su entidad aparece @(_fichaFlotante ? "en una ficha junto al nodo" : "a la derecha") · @FlechaAtras atrás (de dónde viene) · @FlechaAdelante adelante (qué generó) · arrastra el fondo para mover el mapa
+                </MudText>
+
+                @* ── Ficha flotante ─────────────────────────────────────────────────────
+                   Se pega a la derecha del nodo y acompaña al mapa cuando se arrastra o se hace
+                   zoom. clamp() la mantiene dentro del mapa: si el nodo está cerca del borde
+                   derecho o de abajo, la ficha se corre hacia adentro en vez de quedar cortada.
+                   Detiene el mousedown para que hacer clic o desplazarse dentro de ella no
+                   arrastre el mapa. *@
+                @if (_fichaFlotante && _fichaVisible && SeleccionadoVm is { } f)
+                {
+                    @* Alto: la ficha nunca arranca más abajo del 35 % del mapa, y su alto máximo es
+                       justo lo que queda desde ahí hasta el borde de abajo (el mismo clamp() del
+                       top, restado). Así se ve entera; si el contenido es más largo, se desplaza
+                       por dentro con la cabecera fija arriba. *@
+                    var topFicha = $"clamp(8px, {N(_panY + Y(f) * _zoom)}px, 35%)";
+                    <div @onmousedown:stopPropagation="true"
+                         style="position:absolute;z-index:5;width:418px;overflow:auto;cursor:default;
+                                left:clamp(8px, @(N(_panX + (X(f) + NW + 26) * _zoom))px, calc(100% - 426px));
+                                top:@topFicha;
+                                max-height:calc(100% - @topFicha - 8px);
+                                background:var(--mud-palette-surface);border:1px solid var(--line);border-radius:10px;
+                                box-shadow:0 12px 32px rgba(0,0,0,.28), 0 3px 8px rgba(0,0,0,.16);">
+                        <div class="d-flex align-center pl-3 pr-1" style="background:var(--grilla-cab-fondo,#163a5f);color:var(--grilla-cab-texto,#ffd54f);font-weight:700;border-radius:10px 10px 0 0;min-height:40px;position:sticky;top:0;z-index:1;">
+                            <span style="flex:1;">Entidad seleccionada</span>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Style="color:inherit;"
+                                           OnClick="@(() => _fichaVisible = false)" />
+                        </div>
+                        @ContenidoEntidad(f)
+                    </div>
+                }
+            }
+        </div>
+
+        @* ── La entidad del nodo elegido, en el panel de la derecha (ficha flotante apagada) ── *@
+        @if (!_fichaFlotante)
+        {
+            <MudPaper Elevation="0" Style="width:418px;flex-shrink:0;border:1px solid var(--line);border-radius:8px;height:100%;min-height:300px;overflow:auto;">
+                <div class="pa-3" style="background:var(--grilla-cab-fondo,#163a5f);color:var(--grilla-cab-texto,#ffd54f);font-weight:700;border-radius:8px 8px 0 0;">
+                    Entidad seleccionada
+                </div>
+                @if (SeleccionadoVm is not { } s)
+                {
+                    <MudText Class="pa-4 mono" Style="opacity:.5;font-size:.8rem;">Haz clic en un nodo del mapa.</MudText>
+                }
+                else
+                {
+                    @ContenidoEntidad(s)
+                }
+            </MudPaper>
+        }
+    </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // ── Medidas del mapa ────────────────────────────────────────────────────────
+    private const double NW = 210, NH = 90;          // tarjeta del nodo (alto para dos líneas de título)
+    private const double COLW = 310, ROWH = 120;     // separación entre columnas y filas
+    // Ancho útil dentro de la tarjeta: desde el texto (x = 42) hasta antes del botón ▶ del borde.
+    private const double AnchoTexto = NW - 42 - 16;
+    // El chip de estado arranca en x = 14 y también se detiene antes del botón.
+    private const double AnchoChip  = NW - 14 - 16;
+    // Subtítulo en Consolas 10: cada letra mide 0,55 del tamaño, o sea 5,5 px.
+    private static readonly int MaxLetrasSubtitulo = (int)(AnchoTexto / 5.5);
+    private const double MARGEN = 40;
+    private const int MaxNodos = 200;                // tope de "Expandir todo"
+
+    private sealed class NodoVm
+    {
+        public string Id = "";
+        public Nodo Datos = new();
+        public int Col, Fila;
+        public bool AbiertoAtras, AbiertoAdelante, Fantasma;
+    }
+    private sealed record Arista(string Desde, string Hasta, string? Etiqueta, bool Fantasma = false);
+
+    private readonly Dictionary<string, NodoVm> _nodos = new();
+    private readonly List<Arista> _aristas = new();
+    private readonly HashSet<(int Col, int Fila)> _ocupadas = new();
+    private NodoVm? _raiz;
+    private string? _seleccionado;
+    private Entidad? _entidad;
+
+    private string _tipoInicio = "REQ";
+    private int? _numeroInicio;
+    private bool _cargando, _cargandoEntidad;
+
+    // Ficha flotante (true) o panel lateral (false). _fichaVisible se apaga con la X de la
+    // ficha y se vuelve a prender al elegir otro nodo.
+    private const string ClaveFichaFlotante = "kon.trazabilidad.fichaFlotante";
+    private bool _fichaFlotante, _fichaVisible;
+
+    // ── Franjas: requerimientos, reservas, movimientos y una por clase de operación ─
+    private const string ClaveSepararFranjas    = "kon.trazabilidad.separarFranjas";
+    private const string ClaveOrientacionFranjas = "kon.trazabilidad.orientacionFranjas";
+    private const double PAD_FRANJA = 18;
+    // Horizontales: columna de la izquierda con el nombre de cada franja, y alto de una vacía.
+    private const double GUTTER = 190;
+    private const double ALTO_VACIA_H = 62;
+    // Verticales: cabecera con el nombre, de un paso del flujo al siguiente (deja lugar a la
+    // etiqueta de la flecha), separación entre nodos lado a lado y ancho de una franja vacía.
+    private const double CAB_V = 64;
+    private const double ROWV = NH + 80;
+    private const double SEP_V = 40;
+    private const double ANCHO_VACIA_V = 170;
+    // Verticales: los botones ▲ / ▼ se corren esto afuera del borde para no tapar el título.
+    private const double BOTON_V = 6;
+    private bool _separarFranjas;
+    private string _orientacion = "H";
+    private bool FranjasVerticales => _separarFranjas && _orientacion == "V";
+
+    /// <summary>Las franjas que manda la API (PROC_LOGISTICA_TRAZABILIDAD_FRANJAS), en orden.
+    /// Null mientras no se hayan leído o si la lectura falló.</summary>
+    private List<Franja>? _catalogoFranjas;
+
+    // Colores de las franjas de clase de operación, en el orden en que aparecen; dos franjas
+    // vecinas nunca quedan con tonos parecidos.
+    private static readonly string[] PaletaClases =
+        { "#00838f", "#ad1457", "#ef6c00", "#4527a0", "#5d4037", "#827717", "#bf360c", "#00695c" };
+
+    private sealed record FranjaVisible(string Codigo, string Nombre, string Color, double Left, double Top,
+                                        double Ancho, double Alto, double AnchoNombre, int Cantidad);
+    private readonly List<FranjaVisible> _franjasVisibles = new();
+    private readonly Dictionary<string, (double X, double Y)> _posEnFranja = new();
+
+    // Zoom y desplazamiento del mapa.
+    private double _zoom = 1, _panX, _panY;
+    private bool _arrastrando, _omitirRender;
+    private double _inicioX, _inicioY, _panInicioX, _panInicioY;
+
+    private NodoVm? SeleccionadoVm => _seleccionado is not null && _nodos.TryGetValue(_seleccionado, out var n) ? n : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "TrazabilidadRequerimientos");
+        // La preferencia es de este navegador: si no se puede leer (modo privado, almacenamiento
+        // bloqueado), se queda con el panel lateral.
+        try { _fichaFlotante = await LocalStorage.GetItemAsync<bool>(ClaveFichaFlotante); }
+        catch { _fichaFlotante = false; }
+        try { _separarFranjas = await LocalStorage.GetItemAsync<bool>(ClaveSepararFranjas); }
+        catch { _separarFranjas = false; }
+        try { _orientacion = await LocalStorage.GetItemAsync<string>(ClaveOrientacionFranjas) == "V" ? "V" : "H"; }
+        catch { _orientacion = "H"; }
+        if (_separarFranjas) await CargarFranjasAsync();
+    }
+
+    private async Task CambiarSepararFranjas(bool valor)
+    {
+        _separarFranjas = valor;
+        if (valor) await CargarFranjasAsync();
+        try { await LocalStorage.SetItemAsync(ClaveSepararFranjas, valor); }
+        catch { /* sólo se pierde recordar la elección */ }
+    }
+
+    /// <summary>Cambiar la orientación rearma todo el mapa: se vuelve a la vista inicial.</summary>
+    private async Task CambiarOrientacion(string valor)
+    {
+        _orientacion = valor == "V" ? "V" : "H";
+        Centrar();
+        try { await LocalStorage.SetItemAsync(ClaveOrientacionFranjas, _orientacion); }
+        catch { /* sólo se pierde recordar la elección */ }
+    }
+
+    /// <summary>Lee las franjas de la API una sola vez. Si falla, se vuelve a intentar la próxima
+    /// vez que se marquen las franjas; mientras tanto el mapa usa las franjas fijas más las
+    /// clases que traigan los nodos (FranjasDelMapa).</summary>
+    private async Task CargarFranjasAsync()
+    {
+        if (_catalogoFranjas is not null) return;
+        _catalogoFranjas = await LeerAsync<List<Franja>>(ApiRoutes.Logistica.TrazabilidadFranjas);
+    }
+
+    // Clase de operación de los pedidos de venta: ahí va el nodo "próximamente".
+    private const string FranjaPedidosVenta = "PEDBN";
+
+    /// <summary>En qué franja va el nodo: requerimientos, reservas, movimientos de almacén (también
+    /// los almacenes) o, si es un pedido comercial, la de su clase de operación (CAT_NODO; si no
+    /// viniera, el primer tramo de la clave CLASE|TIPO|NÚMERO). El pedido de venta
+    /// "próximamente" va en la franja de pedidos de venta; si esa franja no está en la lista, con
+    /// los requerimientos.</summary>
+    private string FranjaDe(NodoVm n)
+    {
+        if (n.Fantasma)
+            return _catalogoFranjas?.Any(f => f.COD_FRANJA?.Trim() == FranjaPedidosVenta) == true ? FranjaPedidosVenta : "REQ";
+        return n.Datos.TIPO_NODO switch
+        {
+            "REQ" => "REQ",
+            "RES" => "RES",
+            "MOV" or "ALM" => "MOV",
+            _ => !string.IsNullOrWhiteSpace(n.Datos.CAT_NODO) ? n.Datos.CAT_NODO.Trim()
+               : (n.Datos.CLAVE ?? "").Split('|')[0].Trim() is { Length: > 0 } clase ? clase : "PC"
+        };
+    }
+
+    /// <summary>Las franjas en el orden en que se dibujan (el que manda la API), con su color.
+    /// Salen todas, aunque estén vacías: que una franja salga vacía también informa (por ejemplo,
+    /// que no hubo reservas). Si un nodo trae una clase que no está en la lista (o la lista no se
+    /// pudo leer), su franja se agrega al final con el código como nombre.</summary>
+    private List<(string Codigo, string Nombre, string Color)> FranjasDelMapa()
+    {
+        var lista = _catalogoFranjas is { Count: > 0 }
+            ? _catalogoFranjas.OrderBy(f => f.NUM_ORDEN)
+                              .Where(f => !string.IsNullOrWhiteSpace(f.COD_FRANJA))
+                              .Select(f => (Codigo: f.COD_FRANJA!.Trim(), Nombre: f.DES_FRANJA ?? f.COD_FRANJA!.Trim()))
+                              .ToList()
+            : new List<(string Codigo, string Nombre)> { ("REQ", "REQUERIMIENTOS"), ("RES", "RESERVAS"), ("MOV", "MOVIMIENTOS DE ALMACEN") };
+        var faltan = _nodos.Values.Select(FranjaDe).Distinct()
+                           .Where(c => !lista.Any(l => l.Codigo == c)).OrderBy(c => c).ToList();
+        lista.AddRange(faltan.Select(c => (c, c)));
+
+        var iClase = 0;
+        return lista.Select(l => (l.Codigo, l.Nombre, l.Codigo switch
+        {
+            "REQ" => "#163a5f", "RES" => "#6a1b9a", "MOV" => "#2e7d32",
+            _ => PaletaClases[iClase++ % PaletaClases.Length]
+        })).ToList();
+    }
+
+    /// <summary>Reparte los nodos en las franjas y guarda la posición de cada uno. El paso del
+    /// flujo (la columna de siempre: atrás / adelante) no cambia; lo que cambia es hacia dónde
+    /// avanza.
+    /// Horizontales: el flujo va de izquierda a derecha; dentro de cada franja, los nodos de un
+    /// mismo paso se apilan en el orden en que estaban (su fila), y el alto de la franja es el de
+    /// su paso más poblado.
+    /// Verticales: cada franja es una columna y el flujo va de arriba abajo; los nodos de un
+    /// mismo paso van lado a lado, y el ancho de la franja es el de su paso más poblado.</summary>
+    private void CalcularFranjas()
+    {
+        _franjasVisibles.Clear();
+        _posEnFranja.Clear();
+        var colMin = ColMin;
+        var pasos = _nodos.Count == 0 ? 1 : _nodos.Values.Max(n => n.Col) - colMin + 1;
+        var porFranja = _nodos.Values.GroupBy(FranjaDe).ToDictionary(g => g.Key, g => g.ToList());
+
+        if (FranjasVerticales)
+        {
+            var alto = CAB_V + 2 * PAD_FRANJA + pasos * ROWV - (ROWV - NH);
+            var left = 10.0;
+            foreach (var (codigo, nombre, color) in FranjasDelMapa())
+            {
+                var nodos = porFranja.TryGetValue(codigo, out var l) ? l : new List<NodoVm>();
+                var porPaso = nodos.GroupBy(n => n.Col)
+                                   .Select(g => g.OrderBy(n => n.Fila).ThenBy(n => n.Id).ToList()).ToList();
+                var maxLado = porPaso.Count == 0 ? 0 : porPaso.Max(p => p.Count);
+                var ancho = Math.Max(ANCHO_VACIA_V, maxLado * (NW + SEP_V) - SEP_V + 2 * PAD_FRANJA);
+                foreach (var paso in porPaso)
+                {
+                    // Los nodos de un paso van centrados en la franja.
+                    var x0 = left + (ancho - (paso.Count * (NW + SEP_V) - SEP_V)) / 2;
+                    for (var i = 0; i < paso.Count; i++)
+                        _posEnFranja[paso[i].Id] = (x0 + i * (NW + SEP_V), 10 + CAB_V + PAD_FRANJA + (paso[i].Col - colMin) * ROWV);
+                }
+                _franjasVisibles.Add(new FranjaVisible(codigo, nombre, color, left, 10, ancho, alto, ancho - 28,
+                                                       nodos.Count(n => !n.Fantasma)));
+                left += ancho + 8;
+            }
+        }
+        else
+        {
+            var ancho = GUTTER + MARGEN + pasos * COLW;
+            var top = 10.0;
+            foreach (var (codigo, nombre, color) in FranjasDelMapa())
+            {
+                var nodos = porFranja.TryGetValue(codigo, out var l) ? l : new List<NodoVm>();
+                var filas = 0;
+                foreach (var paso in nodos.GroupBy(n => n.Col))
+                {
+                    var orden = paso.OrderBy(n => n.Fila).ThenBy(n => n.Id).ToList();
+                    for (var i = 0; i < orden.Count; i++)
+                        _posEnFranja[orden[i].Id] = (MARGEN + GUTTER + (orden[i].Col - colMin) * COLW, top + PAD_FRANJA + i * ROWH);
+                    filas = Math.Max(filas, orden.Count);
+                }
+                var alto = filas == 0 ? ALTO_VACIA_H : filas * ROWH - (ROWH - NH) + 2 * PAD_FRANJA;
+                _franjasVisibles.Add(new FranjaVisible(codigo, nombre, color, 0, top, ancho, alto, GUTTER - 30,
+                                                       nodos.Count(n => !n.Fantasma)));
+                top += alto + 8;
+            }
+        }
+    }
+
+    private async Task CambiarFichaFlotante(bool valor)
+    {
+        _fichaFlotante = valor;
+        _fichaVisible = valor && _seleccionado is not null;
+        try { await LocalStorage.SetItemAsync(ClaveFichaFlotante, valor); }
+        catch { /* sólo se pierde recordar la elección; la pantalla sigue igual */ }
+    }
+
+    /// <summary>Mover el mouse sobre el mapa sin arrastrar no cambia nada: no se vuelve a dibujar.</summary>
+    protected override bool ShouldRender()
+    {
+        if (!_omitirRender) return true;
+        _omitirRender = false;
+        return false;
+    }
+
+    // ── Buscar / limpiar ────────────────────────────────────────────────────────
+    /// <summary>Los documentos desde los que se puede partir. PRF y OC son pedidos comerciales:
+    /// la API los resuelve por la clase de órdenes de compra de Configuración General (y las
+    /// proformas, por el tipo que sincroniza a esa clase).</summary>
+    private static readonly (string Codigo, string Nombre)[] TiposInicio =
+    {
+        ("REQ", "Requerimiento"),
+        ("RES", "Reserva"),
+        ("PRF", "Proforma"),
+        ("OC",  "Orden de compra"),
+        ("MOV", "Movimiento de almacén"),
+    };
+
+    // Documentos encontrados con el número buscado, cuando hay más de uno para elegir.
+    private List<Nodo> _candidatos = new();
+
+    private async Task Buscar()
+    {
+        _candidatos = new();
+        if (_numeroInicio is not { } numero || numero <= 0)
+        {
+            Snackbar.Add("Escribe el número del documento.", Severity.Info);
+            return;
+        }
+        _cargando = true;
+        var encontrados = await LeerAsync<List<Nodo>>($"{ApiRoutes.Logistica.TrazabilidadBuscar}?tipo={_tipoInicio}&numero={numero}");
+        _cargando = false;
+        if (encontrados is null || encontrados.Count == 0) return;
+
+        if (encontrados.Count == 1) { await Iniciar(encontrados[0]); return; }
+        _candidatos = encontrados;
+    }
+
+    /// <summary>"Proforma local de bienes N° 2 · 02/10/2026 · CONVERTIDA EN ORDEN DE COMPRA".</summary>
+    private static string DescribirCandidato(Nodo c)
+        => string.Join(" · ", new[] { Titulo(c), c.FEC_DOCUMENTO?.ToString("dd/MM/yyyy"), c.DES_ESTADO }
+                                  .Where(x => !string.IsNullOrWhiteSpace(x)));
+
+    /// <summary>Arma el mapa con el documento elegido como único nodo.</summary>
+    private async Task Iniciar(Nodo raiz)
+    {
+        _candidatos = new();
+        ReiniciarMapa();
+        _raiz = Agregar(raiz, 0, 0);
+        // El origen que todavía no existe: el pedido de venta / exportación. Sólo cuando se parte
+        // de un requerimiento: se dibuja en gris y punteado, sin acciones, para que se vea dónde
+        // va a ir.
+        if (raiz.TIPO_NODO == "REQ")
+        {
+            var fantasma = new NodoVm { Id = "PV:proximamente", Fantasma = true, Col = -1, Fila = 0 };
+            _nodos[fantasma.Id] = fantasma; _ocupadas.Add((-1, 0));
+            _aristas.Add(new Arista(fantasma.Id, _raiz.Id, "origen", Fantasma: true));
+        }
+        Centrar();
+        await Seleccionar(_raiz);
+    }
+
+    /// <summary>Vuelve a dejar sólo el documento de partida, releído (sus conteos pueden haber
+    /// cambiado).</summary>
+    private async Task LimpiarMapa()
+    {
+        if (_raiz is null) return;
+        var datos = _raiz.Datos;
+        var fresco = await LeerAsync<Nodo>(
+            $"{ApiRoutes.Logistica.TrazabilidadNodo}?tipo={Uri.EscapeDataString(datos.TIPO_NODO ?? "")}&clave={Uri.EscapeDataString(datos.CLAVE ?? "")}");
+        await Iniciar(fresco ?? datos);
+    }
+
+    private void ReiniciarMapa()
+    {
+        _nodos.Clear(); _aristas.Clear(); _ocupadas.Clear();
+        _raiz = null; _seleccionado = null; _entidad = null;
+    }
+
+    // ── Nodos y aristas ─────────────────────────────────────────────────────────
+    private static string IdDe(Nodo n) => $"{n.TIPO_NODO}:{n.CLAVE}";
+
+    /// <summary>Pone el nodo en la columna pedida, en la primera fila libre desde la sugerida.</summary>
+    private NodoVm Agregar(Nodo datos, int col, int filaSugerida)
+    {
+        var fila = Math.Max(0, filaSugerida);
+        while (_ocupadas.Contains((col, fila))) fila++;
+        var vm = new NodoVm { Id = IdDe(datos), Datos = datos, Col = col, Fila = fila };
+        _nodos[vm.Id] = vm;
+        _ocupadas.Add((col, fila));
+        return vm;
+    }
+
+    private void Enlazar(string desde, string hasta, string? etiqueta)
+    {
+        if (_aristas.Any(a => a.Desde == desde && a.Hasta == hasta)) return;
+        _aristas.Add(new Arista(desde, hasta, etiqueta));
+    }
+
+    /// <summary>Trae los vecinos del nodo en un sentido. Los que ya están en el mapa no se
+    /// repiten: sólo se agrega la arista. Así un documento al que se llega por dos caminos
+    /// (por ejemplo, un movimiento que atiende un requerimiento y sale de su reserva) aparece
+    /// una sola vez, con las dos flechas.</summary>
+    private async Task Expandir(NodoVm n, string sentido)
+    {
+        if (n.Fantasma || _cargando) return;
+        _cargando = true;
+        var vecinos = await LeerAsync<List<Nodo>>(
+            $"{ApiRoutes.Logistica.TrazabilidadVecinos}?tipo={Uri.EscapeDataString(n.Datos.TIPO_NODO ?? "")}&clave={Uri.EscapeDataString(n.Datos.CLAVE ?? "")}&sentido={sentido}");
+        _cargando = false;
+        if (vecinos is null) return;
+        AgregarVecinos(n, sentido, vecinos);
+        if (vecinos.Count == 0)
+            Snackbar.Add(sentido == "A" ? "No hay documentos hacia atrás." : "No hay documentos hacia adelante.", Severity.Info);
+    }
+
+    private void AgregarVecinos(NodoVm n, string sentido, List<Nodo> vecinos)
+    {
+        var col = sentido == "A" ? n.Col - 1 : n.Col + 1;
+        var fila = n.Fila;
+        foreach (var v in vecinos)
+        {
+            var id = IdDe(v);
+            if (!_nodos.TryGetValue(id, out var vm))
+            {
+                vm = Agregar(v, col, fila);
+                fila = vm.Fila + 1;
+            }
+            if (sentido == "A") Enlazar(vm.Id, n.Id, v.DES_RELACION);
+            else Enlazar(n.Id, vm.Id, v.DES_RELACION);
+        }
+        if (sentido == "A") n.AbiertoAtras = true; else n.AbiertoAdelante = true;
+    }
+
+    /// <summary>Abre hacia adelante todo lo que se pueda, por capas, hasta el tope de nodos.
+    /// Los almacenes no se abren: son terminales.</summary>
+    private async Task ExpandirTodoAdelante()
+    {
+        _cargando = true;
+        try
+        {
+            for (var capa = 0; capa < 12 && _nodos.Count < MaxNodos; capa++)
+            {
+                var pendientes = _nodos.Values
+                    .Where(n => !n.Fantasma && !n.AbiertoAdelante && (n.Datos.CAN_ADELANTE ?? 0) > 0)
+                    .ToList();
+                if (pendientes.Count == 0) break;
+                foreach (var n in pendientes)
+                {
+                    if (_nodos.Count >= MaxNodos) break;
+                    var vecinos = await LeerAsync<List<Nodo>>(
+                        $"{ApiRoutes.Logistica.TrazabilidadVecinos}?tipo={Uri.EscapeDataString(n.Datos.TIPO_NODO ?? "")}&clave={Uri.EscapeDataString(n.Datos.CLAVE ?? "")}&sentido=D");
+                    if (vecinos is null) return;
+                    AgregarVecinos(n, "D", vecinos);
+                }
+                StateHasChanged();
+            }
+            if (_nodos.Count >= MaxNodos)
+                Snackbar.Add($"Se llegó al tope de {MaxNodos} nodos: sigue expandiendo a mano desde el nodo que te interese.", Severity.Warning);
+        }
+        finally { _cargando = false; }
+    }
+
+    private async Task Seleccionar(NodoVm n)
+    {
+        if (n.Fantasma) return;
+        _seleccionado = n.Id;
+        _fichaVisible = true;
+        _entidad = null;
+        _cargandoEntidad = true;
+        StateHasChanged();
+        _entidad = await LeerAsync<Entidad>(
+            $"{ApiRoutes.Logistica.TrazabilidadEntidad}?tipo={Uri.EscapeDataString(n.Datos.TIPO_NODO ?? "")}&clave={Uri.EscapeDataString(n.Datos.CLAVE ?? "")}");
+        _cargandoEntidad = false;
+    }
+
+    // ── Llamadas a la API ───────────────────────────────────────────────────────
+    /// <summary>GET que devuelve ApiResponse. Si la API responde con error, muestra su mensaje;
+    /// si la llamada misma falla, lo deja en el log.</summary>
+    private async Task<T?> LeerAsync<T>(string url) where T : class
+    {
+        try
+        {
+            var r = await Http.GetAsync(url);
+            var cuerpo = await r.Content.ReadFromJsonAsync<ApiResponse<T>>();
+            if (cuerpo is null || !cuerpo.Success)
+            {
+                Snackbar.Add(string.IsNullOrWhiteSpace(cuerpo?.Message) ? "No se pudo consultar la trazabilidad." : cuerpo!.Message, Severity.Warning);
+                return null;
+            }
+            return cuerpo.Data;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TrazabilidadRequerimientos), nameof(LeerAsync), url);
+            Snackbar.Add("No se pudo consultar la trazabilidad. Ver detalle en el log de errores.", Severity.Error);
+            return null;
+        }
+    }
+
+    // ── Zoom y arrastre ─────────────────────────────────────────────────────────
+    private void Zoom(double delta) => _zoom = Math.Clamp(Math.Round(_zoom + delta, 1), 0.3, 2.0);
+
+    /// <summary>Lleva el nodo de partida a la vista: el mapa crece hacia la izquierda cuando se
+    /// abre hacia atrás, así que la columna más a la izquierda queda pegada al margen.</summary>
+    private void Centrar() { _zoom = 1; _panX = 0; _panY = 0; }
+
+    private void IniciarArrastre(MouseEventArgs e)
+    {
+        if (e.Button != 0) return;
+        _arrastrando = true;
+        _inicioX = e.ClientX; _inicioY = e.ClientY;
+        _panInicioX = _panX; _panInicioY = _panY;
+    }
+
+    private void Arrastrar(MouseEventArgs e)
+    {
+        if (!_arrastrando) { _omitirRender = true; return; }
+        _panX = _panInicioX + (e.ClientX - _inicioX);
+        _panY = _panInicioY + (e.ClientY - _inicioY);
+    }
+
+    private void TerminarArrastre() => _arrastrando = false;
+
+    // ── Posiciones ──────────────────────────────────────────────────────────────
+    private int ColMin => _nodos.Count == 0 ? 0 : _nodos.Values.Min(n => n.Col);
+    // Con franjas, la posición sale de la franja (CalcularFranjas); sin franjas, de la columna
+    // y la fila libre.
+    private double X(NodoVm n) => _separarFranjas && _posEnFranja.TryGetValue(n.Id, out var p) ? p.X : MARGEN + (n.Col - ColMin) * COLW;
+    private double Y(NodoVm n) => _separarFranjas && _posEnFranja.TryGetValue(n.Id, out var p) ? p.Y : MARGEN + n.Fila * ROWH;
+
+    /// <summary>De dónde sale y a dónde llega la flecha, y si va en vertical.
+    /// Con franjas verticales, entre nodos de distinto paso (uno encima del otro) sale por abajo
+    /// o por arriba, donde están ▼ y ▲; entre nodos del mismo paso, por los costados.
+    /// Si no, sale por el lado del nodo que mira al otro: por la derecha si el destino está a la
+    /// derecha, por la izquierda si quedó a la izquierda; y si los dos están en la misma columna,
+    /// por abajo o por arriba.</summary>
+    private (double X1, double Y1, double X2, double Y2, bool Vertical) Extremos(NodoVm d, NodoVm h)
+    {
+        double xd = X(d), yd = Y(d), xh = X(h), yh = Y(h);
+        var vertical = FranjasVerticales ? Math.Abs(yh - yd) > NH / 2 : Math.Abs(xh - xd) < NW;
+        if (vertical)
+        {
+            // Con franjas verticales, por fuera de los botones ▲ / ▼; si no, pegado al borde.
+            var s = FranjasVerticales ? BOTON_V + 11 : 4;
+            double cd = xd + NW / 2, ch = xh + NW / 2;
+            return yh >= yd ? (cd, yd + NH + s, ch, yh - s, true) : (cd, yd - s, ch, yh + NH + s, true);
+        }
+        return xh >= xd ? (xd + NW + 11, yd + NH / 2, xh - 11, yh + NH / 2, false)
+                        : (xd - 11, yd + NH / 2, xh + NW + 11, yh + NH / 2, false);
+    }
+
+    /// <summary>La punta de la flecha mira hacia donde llega la curva: a la derecha o a la
+    /// izquierda en horizontal, abajo o arriba en vertical.</summary>
+    private static string Flecha(double x1, double y1, double x2, double y2, bool vertical)
+    {
+        if (vertical)
+        {
+            var dy = y2 >= y1 ? -7 : 7;
+            return $"M{N(x2 - 5)},{N(y2 + dy)} L{N(x2)},{N(y2)} L{N(x2 + 5)},{N(y2 + dy)}";
+        }
+        var dx = x2 >= x1 ? -7 : 7;
+        return $"M{N(x2 + dx)},{N(y2 - 5)} L{N(x2)},{N(y2)} L{N(x2 + dx)},{N(y2 + 5)}";
+    }
+
+    private string FlechaAtras    => FranjasVerticales ? "▲" : "◀";
+    private string FlechaAdelante => FranjasVerticales ? "▼" : "▶";
+
+    // ── Presentación ────────────────────────────────────────────────────────────
+    // Se llama ColorTipo y no Color: un método "Color" en la página tapa al enum Color de
+    // MudBlazor, y Color="Color.Primary" deja de compilar (CS0119).
+    private static string ColorTipo(string? tipo) => tipo switch
+    {
+        "REQ" => "#163a5f", "RES" => "#6a1b9a", "PC" => "#ef6c00", "MOV" => "#1565c0", "ALM" => "#2e7d32", _ => "#78909c"
+    };
+    private static string Letra(string? tipo) => tipo switch
+    {
+        "REQ" => "Q", "RES" => "R", "PC" => "P", "MOV" => "M", "ALM" => "A", _ => "?"
+    };
+    private static string NombreTipo(string tipo) => tipo switch
+    {
+        "REQ" => "Requerimiento", "RES" => "Reserva", "PC" => "Pedido comercial", "MOV" => "Movimiento", "ALM" => "Almacén", _ => tipo
+    };
+
+    /// <summary>"Requerimiento N° 3", "Orden de compra N° 22", "Salida · ... N° 4", "Almacén 00000".</summary>
+    private static string Titulo(Nodo n) => n.TIPO_NODO == "ALM"
+        ? (string.IsNullOrWhiteSpace(n.DES_DOCUMENTO) ? "Almacén" : n.DES_DOCUMENTO!)
+        : $"{n.DES_TIPO_NODO} N° {n.NUM_DOCUMENTO}";
+
+    /// <summary>Para la tarjeta: el número va primero para que no lo corte el recorte del texto.</summary>
+    private static string TituloCorto(Nodo n) => n.TIPO_NODO switch
+    {
+        "REQ" => $"Requerimiento N° {n.NUM_DOCUMENTO}",
+        "RES" => $"Reserva N° {n.NUM_DOCUMENTO}",
+        "MOV" => $"{(n.FLG_POSITIVO == true ? "Ingreso" : "Salida")} · Mov. N° {n.NUM_DOCUMENTO}",
+        // El almacén se muestra por su nombre (DES_DOCUMENTO trae DES_ALMACEN), sin el código.
+        "ALM" => string.IsNullOrWhiteSpace(n.DES_DOCUMENTO) ? "Almacén" : n.DES_DOCUMENTO!,
+        _     => $"N° {n.NUM_DOCUMENTO} · {n.DES_TIPO_NODO}"
+    };
+
+    private static string Subtitulo(Nodo n)
+    {
+        // En el almacén el nombre ya va en el título: abajo sólo se dice qué es.
+        if (n.TIPO_NODO == "ALM") return "Almacén";
+        var fecha = n.FEC_DOCUMENTO?.ToString("dd/MM/yyyy");
+        return string.Join(" · ", new[] { fecha, n.DES_DOCUMENTO }.Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    /// <summary>Ancho aproximado de un texto en negrita, por tipo de letra. Va con márgenes
+    /// generosos a propósito: es preferible cortar una letra antes que salirse del nodo. Las
+    /// medidas son para 12 px y se escalan al tamaño pedido.</summary>
+    private static double Medir(string? s, double tamano = 12)
+    {
+        if (string.IsNullOrEmpty(s)) return 0;
+        double ancho = 0;
+        foreach (var ch in s)
+            ancho += char.IsUpper(ch) ? 8.2
+                   : char.IsLower(ch) ? 6.7
+                   : char.IsDigit(ch) ? 7.0
+                   : ch == ' '        ? 3.6
+                   : 4.8;
+        return ancho * tamano / 12;
+    }
+
+    /// <summary>Recorta con "…" hasta que el texto quepa en el ancho dado.</summary>
+    private static string RecortarAncho(string? s, double max, double tamano = 12)
+    {
+        if (string.IsNullOrEmpty(s) || Medir(s, tamano) <= max) return s ?? "";
+        var t = s;
+        while (t.Length > 1 && Medir(t + "…", tamano) > max) t = t[..^1];
+        return t.TrimEnd() + "…";
+    }
+
+    /// <summary>Parte el título en dos líneas por palabras, cada una dentro del ancho; lo que
+    /// no entra en la segunda se recorta con "…". Una palabra más larga que la línea se corta
+    /// por letras. El tamaño es el de la letra con que se va a dibujar.</summary>
+    private static (string, string) PartirEnDos(string? s, double max, double tamano = 12)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return ("", "");
+        if (Medir(s, tamano) <= max) return (s, "");
+        var palabras = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var linea1 = "";
+        var i = 0;
+        while (i < palabras.Length)
+        {
+            var prueba = linea1.Length == 0 ? palabras[i] : linea1 + " " + palabras[i];
+            if (Medir(prueba, tamano) > max) break;
+            linea1 = prueba;
+            i++;
+        }
+        if (linea1.Length == 0)
+        {
+            // La primera palabra sola ya no entra: se corta por letras y el resto pasa abajo.
+            var palabra = palabras[0];
+            var corte = palabra.Length;
+            while (corte > 1 && Medir(palabra[..corte], tamano) > max) corte--;
+            linea1 = palabra[..corte];
+            palabras[0] = palabra[corte..];
+            i = 0;
+        }
+        var resto = string.Join(" ", palabras.Skip(i).Where(p => p.Length > 0));
+        return (linea1, RecortarAncho(resto, max, tamano));
+    }
+
+    private static string Recortar(string? s, int max)
+        => string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    private static string Num(decimal? v) => (v ?? 0).ToString("N2");
+
+    /// <summary>Lo que se muestra de la entidad: el mismo contenido en el panel lateral y en la
+    /// ficha flotante.</summary>
+    private RenderFragment ContenidoEntidad(NodoVm s) => __builder =>
+    {
+            <div class="pa-3">
+                <div class="d-flex align-center gap-2 mb-1">
+                    <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:@ColorTipo(s.Datos.TIPO_NODO);color:#fff;font-weight:700;">@Letra(s.Datos.TIPO_NODO)</span>
+                    <div>
+                        <div style="font-weight:700;">@Titulo(s.Datos)</div>
+                        <div class="mono" style="font-size:.74rem;opacity:.6;">@s.Datos.DES_TIPO_NODO</div>
+                    </div>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(s.Datos.DES_ESTADO))
+                {
+                    <EstadoChip Estado="@s.Datos.DES_ESTADO" BackColor="@s.Datos.DES_BACKCOLOR" ForeColor="@s.Datos.DES_FORECOLOR" />
+                }
+
+                @if (_cargandoEntidad)
+                {
+                    <MudProgressLinear Indeterminate="true" Class="my-3" />
+                }
+                else if (_entidad is not null)
+                {
+                    <div class="mt-3">
+                        @foreach (var campo in _entidad.Campos)
+                        {
+                            <div class="mb-2">
+                                <div style="font-size:.7rem;opacity:.6;">@campo.DES_ETIQUETA</div>
+                                <div style="font-size:.82rem;">@campo.DES_VALOR</div>
+                            </div>
+                        }
+                    </div>
+
+                    @if (_entidad.Lineas.Count > 0)
+                    {
+                        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Líneas</MudText>
+                        <table class="tabla-simple-editable" style="width:100%;font-size:.74rem;">
+                            <thead>
+                                <tr>
+                                    <th style="width:28px;">Sec</th>
+                                    <th>Producto</th>
+                                    <th style="text-align:right;">Cantidad</th>
+                                    <th style="text-align:right;">Atend.</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var l in _entidad.Lineas)
+                                {
+                                    <tr title="@l.DES_DETALLE">
+                                        <td class="mono">@l.NUM_SECUENCIA</td>
+                                        <td>
+                                            <div class="mono" style="font-size:.66rem;opacity:.6;">@l.COD_PRODUCTO</div>
+                                            <div>@l.DES_PRODUCTO</div>
+                                            @if (!string.IsNullOrWhiteSpace(l.DES_DETALLE))
+                                            {
+                                                <div class="mono" style="font-size:.64rem;opacity:.55;">@l.DES_DETALLE</div>
+                                            }
+                                        </td>
+                                        <td class="mono" style="text-align:right;">@Num(l.CAN_PRODUCTO) @l.COD_UNIDAD_MEDIDA</td>
+                                        <td class="mono" style="text-align:right;color:var(--mud-palette-success);">@(l.CAN_ATENDIDA is null ? "" : Num(l.CAN_ATENDIDA))</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                }
+
+                <div class="d-flex gap-2 mt-4">
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" FullWidth="true"
+                               StartIcon="@(FranjasVerticales ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ChevronLeft)"
+                               Disabled="@(_cargando || (s.Datos.CAN_ATRAS ?? 0) == 0 || s.AbiertoAtras)"
+                               OnClick="@(() => Expandir(s, "A"))">Atrás</MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" FullWidth="true"
+                               EndIcon="@(FranjasVerticales ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)"
+                               Disabled="@(_cargando || (s.Datos.CAN_ADELANTE ?? 0) == 0 || s.AbiertoAdelante)"
+                               OnClick="@(() => Expandir(s, "D"))">Adelante</MudButton>
+                </div>
+            </div>
+    };
+
+    /// <summary>Números para atributos SVG siempre con punto decimal, sin importar la cultura de
+    /// la aplicación (en es-PE el ToString usaría coma y el SVG no lo entiende).</summary>
+    private static string N(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

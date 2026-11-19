@@ -1,0 +1,94 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Avance · @Item.DES_TAREA</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Avance actual: <b>@(_avance.ToString("0.#"))%</b>
+            @if (Item.FLG_REQUIERE_CONFIRMACION == true) { <span> · requiere confirmación al llegar al 100 %</span> }
+        </MudText>
+        <div class="prog-mini mb-3" style="height:10px;"><i style="width:@(Math.Min(100m, _avance).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></i></div>
+        <MudDatePicker @bind-Date="_fecReal" Label="Fecha real del avance" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                       MaxDate="@DateTime.Today" Class="mb-3" HelperText="@HelpFecha" />
+
+        @if (Item.FLG_CONTROL_EJECUCION_MANUAL == true)
+        {
+            <MudNumericField T="decimal?" @bind-Value="_tas" Label="Avance (%)" Variant="Variant.Outlined" Min="0m" Max="100m" Format="0.##" />
+        }
+        else if (_subs.Count > 0)
+        {
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Marca las subtareas terminadas</MudText>
+            @foreach (var s in _subs)
+            {
+                var sub = s;
+                <MudCheckBox T="bool" Value="@(sub.FLG_TERMINADA == true)" ValueChanged="@(v => CambiarSubAsync(sub, v))" Color="Color.Success" Label="@sub.DES_SUB_TAREA" />
+            }
+        }
+        else
+        {
+            <MudNumericField T="decimal?" @bind-Value="_can" Label="@($"Cantidad ejecutada ({Item.DES_UNIDAD ?? "unidades"}) de {Item.CAN_PROGRAMADAS:0.##}")" Variant="Variant.Outlined" Min="0m" />
+            @if ((Item.CAN_PROGRAMADAS ?? 0) <= 0) { <MudText Typo="Typo.caption" Style="color:var(--mud-palette-warning);">La tarea no tiene cantidad programada: el avance por cantidades no se puede calcular. Edita la tarea.</MudText> }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cerrar" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+        @if (Item.FLG_CONTROL_EJECUCION_MANUAL == true || _subs.Count == 0)
+        {
+            <MudButton OnClick="Registrar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Registrar avance</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter, EditorRequired] public ExpedienteTarea Item { get; set; } = default!;
+    [Parameter] public List<ExpedienteSubTarea> SubTareas { get; set; } = new();
+    /// <summary>Si se llama desde «Mis tareas», las acciones van por la ruta de esa pantalla (otro permiso).</summary>
+    [Parameter] public bool DesdeMisTareas { get; set; }
+
+    private decimal _avance;
+    private decimal? _tas, _can;
+    private DateTime? _fecReal = DateTime.Today;
+    private string HelpFecha => Item.FEC_INICIO_EJECUTADO is { } i ? $"El inicio real de la tarea es {i:dd/MM/yyyy}; la fecha no puede ser anterior. Define el inicio real (si aún no tiene) y el fin real (si llega al 100 %)." : "Si es el primer avance, esta fecha será el inicio real de la tarea (y el fin real si llega al 100 %).";
+    private bool _guardando, _huboCambios;
+    private List<ExpedienteSubTarea> _subs = new();
+
+    protected override void OnInitialized()
+    {
+        _avance = Item.TAS_EJECUCION ?? 0; _tas = Item.TAS_EJECUCION; _can = Item.CAN_EJECUTADAS;
+        _subs = SubTareas.Where(s => s.COD_TAREA == Item.COD_TAREA).OrderBy(s => s.COD_SUB_TAREA).ToList();
+    }
+
+    private void Cerrar() => MudDialog.Close(_huboCambios ? DialogResult.Ok(true) : DialogResult.Cancel());
+
+    private string UrlAvance => DesdeMisTareas ? $"{ApiRoutes.Proyectos.MisTareas}/{NumProyecto}/{Item.COD_TAREA}/avance" : ApiRoutes.Proyectos.Exp(NumProyecto, $"tareas/{Item.COD_TAREA}/avance");
+
+    private async Task Registrar()
+    {
+        _guardando = true;
+        var cuerpo = Item.FLG_CONTROL_EJECUCION_MANUAL == true ? new { CanEjecutadas = (decimal?)null, TasEjecucion = _tas, FecReal = _fecReal } : new { CanEjecutadas = _can, TasEjecucion = (decimal?)null, FecReal = _fecReal };
+        var resp = await Http.PutAsJsonAsync(UrlAvance, cuerpo);
+        var r = await resp.Content.ReadFromJsonAsync<ApiResponse<ExpedienteAvanceResult>>();
+        _guardando = false;
+        if (r is { Success: true, Data: not null })
+        {
+            Snackbar.Add(r.Message ?? "Avance registrado.", Severity.Success);
+            _huboCambios = true; _avance = r.Data.TAS_EJECUCION ?? 0;
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else Snackbar.Add(string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo registrar el avance." : r!.Message, Severity.Warning);
+    }
+
+    private async Task CambiarSubAsync(ExpedienteSubTarea s, bool terminada)
+    {
+        var cuerpo = new { NUM_PROYECTO = NumProyecto, COD_TAREA = Item.COD_TAREA, COD_SUB_TAREA = s.COD_SUB_TAREA, DES_SUB_TAREA = s.DES_SUB_TAREA, FLG_TERMINADA = terminada };
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.SubTareas, cuerpo);
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo cambiar la subtarea.", Severity.Warning); return; }
+        s.FLG_TERMINADA = terminada; _huboCambios = true;
+        await ProyectoApi.RecalcularAsync(Http, NumProyecto, _fecReal);
+        if (_subs.Count > 0) _avance = 100m * _subs.Count(x => x.FLG_TERMINADA == true) / _subs.Count;
+    }
+}

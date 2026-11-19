@@ -1,0 +1,132 @@
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   FICHA DE LA GUÍA: número, estado, lo que respondió SUNAT, bajar el XML y la constancia (CDR) y el
+   historial de envíos.
+
+   La usan dos pantallas con puertas distintas, y por eso las rutas vienen de afuera:
+     · la pestaña "Guía de remisión" del movimiento pide todo por el número del MOVIMIENTO
+       (permiso de Movimientos de almacén);
+     · la bandeja de guías lo pide por el número de la GUÍA (permiso de la bandeja).
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+@if (Guia is { } g)
+{
+    <div class="pa-3 mb-3" style="border:1px solid var(--line);border-radius:8px;">
+        <div class="d-flex align-center gap-3 flex-wrap">
+            <span class="mono" style="font-size:1.35rem;font-weight:700;">@g.NUM_GUIA</span>
+            <EstadoChip Estado="@g.DES_ESTADO" BackColor="@g.DES_BACKCOLOR" ForeColor="@g.DES_FORECOLOR" />
+            <span style="opacity:.65;font-size:.85rem;">Emitida el @g.FEC_HORA_EMISION.ToString("dd/MM/yyyy HH:mm")</span>
+        </div>
+        <div class="mt-2" style="font-size:.88rem;">
+            <span>@g.NUM_INTENTOS envío@(g.NUM_INTENTOS == 1 ? "" : "s")</span>
+            @if (!string.IsNullOrWhiteSpace(g.NUM_TICKET))
+            {
+                <span class="mono" style="opacity:.7;"> · ticket @g.NUM_TICKET</span>
+            }
+            @if (g.FEC_ACEPTACION is { } fa)
+            {
+                <span> · aceptada el @fa.ToString("dd/MM/yyyy HH:mm")</span>
+            }
+        </div>
+        @if (!string.IsNullOrWhiteSpace(g.DES_RESPUESTA_SUNAT) || !string.IsNullOrWhiteSpace(g.COD_RESPUESTA_SUNAT))
+        {
+            <div class="mt-2" style="font-size:.88rem;color:@(g.COD_ESTADO_ALIAS == "REC" ? "var(--mud-palette-error)" : "inherit");">
+                <b>SUNAT:</b> @g.COD_RESPUESTA_SUNAT @g.DES_RESPUESTA_SUNAT
+            </div>
+        }
+        <div class="d-flex gap-2 mt-3 flex-wrap">
+            @if (g.FLG_TIENE_XML)
+            {
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Code"
+                           OnClick="@(() => Descargar(RutaXml, $"{g.NUM_GUIA}.xml", "application/xml"))">Descargar XML</MudButton>
+            }
+            @if (g.FLG_TIENE_CDR)
+            {
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Verified"
+                           OnClick="@(() => Descargar(RutaCdr, $"R-{g.NUM_GUIA}.zip", "application/zip"))">Descargar constancia (CDR)</MudButton>
+            }
+            @if (g.NUM_INTENTOS > 0)
+            {
+                <MudButton Variant="Variant.Text" Size="Size.Small"
+                           StartIcon="@(_verEnvios ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                           OnClick="AlternarEnvios">Historial de envíos</MudButton>
+            }
+        </div>
+        @if (_verEnvios)
+        {
+            <MudSimpleTable Dense="true" Hover="true" Class="mt-2 grilla-simple" Style="font-size:.82rem;">
+                <thead><tr><th>Intento</th><th>Enviado</th><th>Ticket</th><th>Respuesta de SUNAT</th></tr></thead>
+                <tbody>
+                    @foreach (var e in _envios)
+                    {
+                        <tr>
+                            <td class="mono">@e.NUM_INTENTO</td>
+                            <td>@e.FEC_HORA_ENVIO.ToString("dd/MM/yyyy HH:mm")</td>
+                            <td class="mono">@e.NUM_TICKET</td>
+                            <td>@(e.FEC_HORA_RESPUESTA is null ? "Sin respuesta todavía" : $"{e.COD_RESPUESTA_SUNAT} {e.DES_RESPUESTA_SUNAT}")</td>
+                        </tr>
+                    }
+                    @if (_envios.Count == 0) { <tr><td colspan="4" style="opacity:.55;">Sin envíos.</td></tr> }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>La guía que se muestra. Sin guía no se dibuja nada.</summary>
+    [Parameter] public GuiaRemision? Guia { get; set; }
+    /// <summary>De dónde se piden el historial de envíos, el XML y el CDR de ESA guía (ver arriba por qué vienen de afuera).</summary>
+    [Parameter] public string RutaEnvios { get; set; } = "";
+    [Parameter] public string RutaXml { get; set; } = "";
+    [Parameter] public string RutaCdr { get; set; } = "";
+
+    private List<GuiaRemisionEnvio> _envios = new();
+    private bool _verEnvios;
+    private int? _guiaMostrada;
+
+    protected override void OnParametersSet()
+    {
+        // Otra guía (o la misma recargada): el historial abierto era de la anterior.
+        if (Guia?.NUM_GUIA_REMISION != _guiaMostrada)
+        {
+            _guiaMostrada = Guia?.NUM_GUIA_REMISION;
+            _verEnvios = false; _envios = new();
+        }
+    }
+
+    private async Task AlternarEnvios()
+    {
+        _verEnvios = !_verEnvios;
+        if (!_verEnvios) return;
+        var lista = await Http.SafeGetAsync<List<GuiaRemisionEnvio>>(RutaEnvios);
+        _envios = lista ?? new();
+    }
+
+    /// <summary>Baja el XML firmado o el CDR: pide los bytes con el HttpClient autenticado (un enlace directo no
+    /// llevaría el token) y los entrega al navegador.</summary>
+    private async Task Descargar(string ruta, string nombre, string contentType)
+    {
+        try
+        {
+            var resp = await Http.GetAsync(ruta);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(GuiaRemisionFicha), nameof(Descargar), "No se pudo descargar el archivo");
+                return;
+            }
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            await JS.InvokeVoidAsync("blobViewer.descargar", bytes, nombre, contentType);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionFicha), nameof(Descargar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo descargar el archivo. Ver detalle en el log de errores.", DialogService, nameof(GuiaRemisionFicha));
+        }
+    }
+}

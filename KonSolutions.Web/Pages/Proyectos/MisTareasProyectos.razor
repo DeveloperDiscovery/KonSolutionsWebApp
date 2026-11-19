@@ -1,0 +1,153 @@
+@page "/proyectos/mis-tareas-proyectos"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Mis tareas · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Mis tareas" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema PROYECTOS · @_items.Count tareas</MudText>
+    </div>
+    <div style="min-width:280px;max-width:420px;flex:1;">
+        <AriaCombo TItem="ComboboxItem" Items="_entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_persona" ValueChanged="CambioPersona" Label="Persona" Class="" />
+    </div>
+    <MudCheckBox T="bool" Value="_soloAbiertas" ValueChanged="CambioAbiertas" Color="Color.Primary" Label="Solo abiertas" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="CargarAsync" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+@if (!decimal.TryParse(_persona, out _))
+{
+    <MudText Class="pa-6 mono" Style="opacity:.6;">Elige la persona para ver sus tareas. Se recuerda la última que elegiste en este navegador.</MudText>
+}
+else
+{
+    <div class="d-flex gap-2 flex-wrap mb-3">
+        <div class="pk"><b class="mono">@_items.Count</b><span>Tareas</span></div>
+        <div class="pk"><b class="mono" style="color:@(_items.Any(i => i.COD_SITUACION == "ATR") ? "#c0392b" : "inherit");">@_items.Count(i => i.COD_SITUACION == "ATR")</b><span>Atrasadas</span></div>
+        <div class="pk"><b class="mono" style="color:@(_items.Any(i => i.FLG_POR_CONFIRMAR) ? "#8e6bbf" : "inherit");">@_items.Count(i => i.FLG_POR_CONFIRMAR)</b><span>Por confirmar por esta persona</span></div>
+    </div>
+    <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+        <div data-resizable-grid="mis-tareas-proyectos" style="position:relative;">
+            <MudDataGrid T="MiTarea" Items="_items" Dense="true" Hover="true" Striped="true" Height="100%" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+                <Columns>
+                    <PropertyColumn Property="x => x.DES_PROYECTO" Title="Proyecto" />
+                    <PropertyColumn Property="x => x.DES_TAREA" Title="Tarea" />
+                    <PropertyColumn Property="x => x.DES_FASE" Title="Fase" />
+                    <PropertyColumn Property="x => x.DES_ROLES" Title="Mi rol" />
+                    <PropertyColumn Property="x => x.FEC_FINAL_PROGRAMADO" Title="Fin prog." Format="dd/MM/yyyy" />
+                    <TemplateColumn Title="Avance" Sortable="false" Filterable="false">
+                        <CellTemplate><div class="d-flex align-center gap-1"><div class="prog-mini"><i style="width:@(Math.Min(100m, context.Item.TAS_EJECUCION ?? 0).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%"></i></div><span class="mono">@((context.Item.TAS_EJECUCION ?? 0).ToString("0"))%</span></div></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Situación" Sortable="false" Filterable="false"><CellTemplate><span class="sit sit-@context.Item.COD_SITUACION">@ProyectoApi.Situacion(context.Item.COD_SITUACION)</span></CellTemplate></TemplateColumn>
+                    <TemplateColumn Title="" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                        <CellTemplate>
+                            @if (context.Item.FLG_POR_CONFIRMAR)
+                            {
+                                <MudButton OnClick="@(() => Confirmar(context.Item))" Variant="Variant.Filled" Color="Color.Secondary" Size="Size.Small" StartIcon="@Icons.Material.Filled.FactCheck">Confirmar</MudButton>
+                            }
+                            else if (context.Item.FEC_FINAL_EJECUTADO is null && context.Item.COD_SITUACION != "POR")
+                            {
+                                <MudButton OnClick="@(() => RegistrarAvance(context.Item))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.TrendingUp">Registrar avance</MudButton>
+                            }
+                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" OnClick="@(() => Abrir(context.Item))" title="Abrir el expediente del proyecto" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Esta persona no tiene tareas abiertas.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="MiTarea" /></PagerContent>
+            </MudDataGrid>
+            <div class="grid-resize-handle"></div>
+        </div>
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const string ClaveRecuerdo = "proyectos.mis-tareas.persona";
+    private List<ComboboxItem> _entidades = new();
+    private List<MiTarea> _items = new();
+    private string? _persona;
+    private bool _soloAbiertas = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("PROYECTOS", "MisTareasProyectos");
+        _entidades = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.EntidadesCombobox) ?? new();
+        try { _persona = await JS.InvokeAsync<string?>("localStorage.getItem", ClaveRecuerdo); } catch { /* sin almacenamiento: no se recuerda */ }
+        await CargarAsync();
+    }
+
+    private async Task CambioPersona(string? v)
+    {
+        _persona = v;
+        try { await JS.InvokeVoidAsync("localStorage.setItem", ClaveRecuerdo, v ?? ""); } catch { }
+        await CargarAsync();
+    }
+
+    private Task CambioAbiertas(bool v) { _soloAbiertas = v; return CargarAsync(); }
+
+    private async Task CargarAsync()
+    {
+        if (!decimal.TryParse(_persona, out var ent)) { _items = new(); return; }
+        try { _items = await Http.SafeGetAsync<List<MiTarea>>($"{ApiRoutes.Proyectos.MisTareas}?entidad={ent:0}&soloAbiertas={_soloAbiertas.ToString().ToLowerInvariant()}") ?? new(); }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MisTareasProyectos), nameof(CargarAsync));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar las tareas. Ver detalle en el log de errores.", DialogService, nameof(MisTareasProyectos));
+            _items = new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        Snackbar.Add($"El botón «{b.DES_BOTON_OPCION}» no tiene un reporte asignado en esta pantalla. Asígnale un diseño en Reportes > Asignación a botones.", Severity.Info);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>La tarea completa (y las subtareas del proyecto) para los diálogos de avance y confirmación.</summary>
+    private async Task<(ExpedienteTarea? Tarea, List<ExpedienteSubTarea> Subs)> LeerAsync(MiTarea m)
+    {
+        var plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(m.NUM_PROYECTO, "planificacion"));
+        return (plan?.Tareas.FirstOrDefault(t => t.COD_TAREA == m.COD_TAREA), plan?.SubTareas ?? new());
+    }
+
+    private static readonly DialogOptions Opc = new() { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+
+    private async Task RegistrarAvance(MiTarea m)
+    {
+        var (t, subs) = await LeerAsync(m);
+        if (t is null) { Snackbar.Add("No se encontró la tarea.", Severity.Warning); return; }
+        var dlg = await DialogService.ShowAsync<ProyectoAvanceDialog>("Avance", new DialogParameters { ["NumProyecto"] = m.NUM_PROYECTO, ["Item"] = t, ["SubTareas"] = subs, ["DesdeMisTareas"] = true }, Opc);
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();
+    }
+
+    private async Task Confirmar(MiTarea m)
+    {
+        var (t, _) = await LeerAsync(m);
+        if (t is null) { Snackbar.Add("No se encontró la tarea.", Severity.Warning); return; }
+        var dlg = await DialogService.ShowAsync<ProyectoConfirmarDialog>("Confirmar tarea",
+            new DialogParameters { ["NumProyecto"] = m.NUM_PROYECTO, ["Item"] = t, ["Entidades"] = _entidades, ["DesdeMisTareas"] = true, ["EntidadActual"] = decimal.TryParse(_persona, out var e) ? (decimal?)e : null }, Opc);
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();
+    }
+
+    private async Task Abrir(MiTarea m)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoExpedienteDialog>($"Proyecto {m.NUM_PROYECTO} · {m.DES_PROYECTO}",
+            new DialogParameters { ["NumProyecto"] = m.NUM_PROYECTO }, new DialogOptions { FullScreen = true, CloseButton = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();
+    }
+}

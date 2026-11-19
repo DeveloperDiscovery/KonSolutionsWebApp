@@ -1,0 +1,29 @@
+@using System.Globalization
+@inject IJSRuntime JS
+
+@* Visor de PDF nitido: el iframe del visor del navegador, con la escala del zoom propio de la aplicacion compensada.
+   El zoom de la aplicacion (appZoom.js) es un transform:scale sobre #app. Al visor de PDF del navegador eso no le sirve: lo dibuja a su tamano y
+   despues lo estira como una imagen, y el PDF se ve borroso con cualquier zoom del visor. Por eso el iframe se agranda en la misma proporcion y se
+   le aplica la escala inversa: su escala final es 1 y se dibuja nitido. Ocupa lo mismo en pantalla; es la tecnica del visor de reportes.
+   Uso: <PdfFrame Src="@_blobUrl" Title="PDF del comprobante" />  (llena el alto y el ancho de su contenedor). *@
+<div style="position:relative;width:100%;height:100%;overflow:hidden;">
+    <iframe src="@Src" title="@Title" data-visor="pdf" style="@Estilo"></iframe>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string? Src { get; set; }
+    [Parameter] public string? Title { get; set; }
+
+    /// <summary>La escala del zoom de la aplicacion al abrir el visor.</summary>
+    private double _escala = 1;
+
+    private string Estilo => Math.Abs(_escala - 1) < 0.001
+        ? "position:absolute;left:0;top:0;width:100%;height:100%;border:0;"
+        : string.Create(CultureInfo.InvariantCulture, $"position:absolute;left:0;top:0;border:0;transform-origin:top left;width:{100 * _escala:0.###}%;height:{100 * _escala:0.###}%;transform:scale({1 / _escala:0.######});");
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { var s = await JS.InvokeAsync<double>("appZoom.getScale"); _escala = s > 0 ? s : 1; }
+        catch { _escala = 1; }   // index.html anterior sin appZoom: sin compensar
+    }
+}

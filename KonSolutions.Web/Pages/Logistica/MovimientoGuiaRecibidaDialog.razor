@@ -1,0 +1,432 @@
+@using KONSolutions.Shared.Models.Finanzas
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using KONSolutions.Web.Pages.Comercial
+@using System.Net.Http.Json
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject MenuService MenuService
+@inject ConfiguracionGeneralService ConfigGeneral
+
+@* Traer una guía de remisión recibida por correo a Movimientos de Almacén. El servicio de XML recibidos ya bajó los XML (y los PDF) de las guías de los proveedores; aquí se elige una, se completa el
+   producto de la empresa de cada línea (lo que no salió solo de la ficha del proveedor ni del código de barras), se elige el almacén, el tipo de movimiento y, si el almacén tiene varias, la ubicación,
+   y se genera el ingreso con su detalle. Los almacenes y los tipos de movimiento son los del rol activo, igual que en el movimiento; solo se ofrecen tipos de ingreso. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Traer guía recibida</MudText></TitleContent>
+    <DialogContent>
+        @if (_sel is null)
+        {
+            <MudGrid Spacing="2" Class="mb-2">
+                <MudItem xs="12" md="5">
+                    <MudTextField T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Buscar (número, remitente, RUC o producto)" @bind-Value="_texto" Immediate="true"
+                                  OnKeyUp="@(async (KeyboardEventArgs e) => { if (e.Key == "Enter") await BuscarAsync(); })" data-campo="buscar-texto" />
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudSelect T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Estado" Value="_estado" ValueChanged="@(v => { _estado = v ?? ""; return BuscarAsync(); })" data-campo="estado">
+                        <MudSelectItem T="string" Value="@("PEN")">Pendientes</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("USA")">Ya usadas</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("DES")">Descartadas</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("")">Todas</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4" Class="d-flex align-center" Style="gap:8px;">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="BuscarAsync" Disabled="_cargando" data-accion="buscar">Buscar</MudButton>
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.MarkEmailUnread" OnClick="CargarAhoraAsync" Disabled="@(_cargando || _trabajando)" data-accion="cargar-ahora">Traer las nuevas del correo</MudButton>
+                </MudItem>
+            </MudGrid>
+            @if (_cargando || _trabajando)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" data-estado="cargando" />
+            }
+            @if (_items.Count == 0 && !_cargando)
+            {
+                <MudText Class="pa-4 mono" Style="opacity:.6;" data-vacio="guias-recibidas">@(_errorLista ?? "No hay guías recibidas con ese filtro.")</MudText>
+            }
+            else
+            {
+                <div style="max-height:440px;overflow:auto;">
+                    <MudSimpleTable Dense="true" Hover="true" Bordered="true" FixedHeader="true">
+                        <thead>
+                            <tr><th>Emisión</th><th>Tipo</th><th>Número</th><th>Remitente</th><th>Motivo del traslado</th><th style="text-align:center;">Líneas sin producto</th><th>Estado</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var x in _items)
+                            {
+                                <tr @onclick="@(() => ElegirAsync(x))" style="cursor:pointer;" data-gre="@x.NUM_GRE.ToString("0")">
+                                    <td class="mono">@x.FEC_EMISION.ToString("dd/MM/yyyy")</td>
+                                    <td>@x.DES_TIPO_GUIA</td>
+                                    <td class="mono">@x.NUM_GUIA</td>
+                                    <td>@(string.IsNullOrWhiteSpace(x.DES_ENTIDAD) ? x.DES_REMITENTE : x.DES_ENTIDAD) <span class="mono" style="opacity:.6;">@(x.NUM_RUC_REMITENTE ?? x.NUM_RUC_EMISOR)</span></td>
+                                    <td>@x.DES_MOTIVO_TRASLADO</td>
+                                    <td class="mono" style="text-align:center;">@(x.NUM_LINEAS_SIN_PRODUCTO > 0 ? x.NUM_LINEAS_SIN_PRODUCTO.ToString() : "")</td>
+                                    <td><MudChip T="string" Size="Size.Small" Color="@ColorEstado(x.COD_ESTADO_USO)">@x.DES_ESTADO_USO@(x.NUM_MOVIMIENTO_ALMACEN is { } n ? $" · movimiento {n:0}" : "")</MudChip></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+                <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.7;" data-resumen="lista">@_items.Count guía@(_items.Count == 1 ? "" : "s"). Haz clic en una para revisarla y traerla.</MudText>
+            }
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" data-accion="cerrar">Cerrar</MudButton>
+            </MudStack>
+        }
+        else
+        {
+            <MudStack Row="true" Spacing="2" Class="mb-2" AlignItems="AlignItems.Center">
+                <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Volver" Disabled="_trabajando" data-accion="volver">Volver a la lista</MudButton>
+                <MudText Typo="Typo.subtitle1" data-titulo="guia">@_sel.DES_TIPO_GUIA @_sel.NUM_GUIA</MudText>
+                <MudChip T="string" Size="Size.Small" Color="@ColorEstado(_sel.COD_ESTADO_USO)" data-chip="estado">@_sel.DES_ESTADO_USO</MudChip>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Code" OnClick="VerXmlAsync" data-accion="ver-xml">Ver XML</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.PictureAsPdf" OnClick="VerPdfAsync" Disabled="@string.IsNullOrWhiteSpace(_sel.DES_NOMBRE_ARCHIVO_PDF)" data-accion="ver-pdf">Ver PDF</MudButton>
+            </MudStack>
+
+            @if (_sel.COD_ESTADO_USO == "USA")
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-aviso="usada">Esta guía ya generó el movimiento de almacén N° @_sel.NUM_MOVIMIENTO_ALMACEN?.ToString("0"). No se puede traer otra vez.</MudAlert>
+            }
+            else if (_sel.COD_ESTADO_USO == "DES")
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="descartada">Está descartada. Devuélvela a pendiente si quieres traerla.</MudAlert>
+            }
+
+            <MudPaper Elevation="0" Class="pa-3 mb-2" Style="border:1px solid var(--line);" data-panel="cabecera">
+                <MudGrid Spacing="1">
+                    <MudItem xs="12" md="6"><MudText Typo="Typo.caption" Style="opacity:.7;">Remitente</MudText><MudText data-dato="remitente">@(string.IsNullOrWhiteSpace(_sel.DES_ENTIDAD) ? _sel.DES_REMITENTE : _sel.DES_ENTIDAD) · RUC @(_sel.NUM_RUC_REMITENTE ?? _sel.NUM_RUC_EMISOR)</MudText></MudItem>
+                    <MudItem xs="6" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Emisión</MudText><MudText class="mono">@_sel.FEC_EMISION.ToString("dd/MM/yyyy")</MudText></MudItem>
+                    <MudItem xs="6" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Inicio del traslado</MudText><MudText class="mono">@(_sel.FEC_INICIO_TRASLADO?.ToString("dd/MM/yyyy") ?? "—")</MudText></MudItem>
+                    <MudItem xs="12" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Motivo</MudText><MudText>@_sel.DES_MOTIVO_TRASLADO</MudText></MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            @if (Editable)
+            {
+                <MudGrid Spacing="2" Class="mb-1">
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_almacenes"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_codAlmacen" ValueChanged="OnAlmacenChanged"
+                                   Disabled="_trabajando" Label="Almacén de ingreso" Class="mb-1" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_codTipoMovimiento" ValueChanged="@(v => _codTipoMovimiento = string.IsNullOrWhiteSpace(v) ? null : v)"
+                                   Disabled="@(_trabajando || string.IsNullOrWhiteSpace(_codAlmacen))" Label="Tipo de movimiento (ingreso)" Class="mb-1" />
+                    </MudItem>
+                    @if (_ubicaciones.Count > 1)
+                    {
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_ubicaciones"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_codUbicacion" ValueChanged="@(v => _codUbicacion = string.IsNullOrWhiteSpace(v) ? null : v)"
+                                       Disabled="_trabajando" Label="Ubicación donde queda el stock" Class="mb-1" />
+                        </MudItem>
+                    }
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.caption" Style="opacity:.85;" data-aviso="destino">@TextoDestino</MudText>
+                    </MudItem>
+                </MudGrid>
+            }
+            @if (Editable && _sel.NUM_LINEAS_SIN_PRODUCTO > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="sin-producto">
+                    Faltan los productos de la empresa en @_sel.NUM_LINEAS_SIN_PRODUCTO línea@(_sel.NUM_LINEAS_SIN_PRODUCTO == 1 ? "" : "s"): elígelos abajo. Un ingreso a almacén no se genera con líneas sin producto.
+                </MudAlert>
+            }
+            <div style="max-height:300px;overflow:auto;">
+                <MudSimpleTable Dense="true" Bordered="true" FixedHeader="true">
+                    <thead>
+                        <tr><th>#</th><th>Producto del proveedor</th><th>Unidad</th><th style="text-align:right;">Cantidad</th><th>Lote</th><th>Vence</th><th style="min-width:300px;">Producto de la empresa</th><th>Cómo salió</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var l in _lineas)
+                        {
+                            <tr data-linea="@l.NUM_ITEM">
+                                <td class="mono">@l.NUM_ITEM</td>
+                                <td>@if (!string.IsNullOrWhiteSpace(l.COD_PRODUCTO_VENDEDOR)) { <span class="mono">@l.COD_PRODUCTO_VENDEDOR · </span> }@l.DES_PRODUCTO</td>
+                                <td>@l.COD_UNIDAD_SUNAT</td>
+                                <td class="mono" style="text-align:right;">@l.CAN_PRODUCTO?.ToString("0.######")</td>
+                                <td class="mono" data-celda="lote">@l.NUM_LOTE</td>
+                                <td class="mono">@l.FEC_VENCIMIENTO_LOTE?.ToString("dd/MM/yyyy")</td>
+                                <td>
+                                    <AriaCombo TItem="ProductoModel" Items="_productos"
+                                               TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")" ValueFunc="@(x => x.COD_PRODUCTO)"
+                                               Value="@l.COD_PRODUCTO" ValueChanged="@(v => AsignarAsync(l, v))"
+                                               SearchFunc="BuscarProductoAsync" MinCharacters="2"
+                                               TextoInicial="@(string.IsNullOrWhiteSpace(l.COD_PRODUCTO) ? null : $"{l.COD_PRODUCTO} — {l.DES_PRODUCTO_EMPRESA}")"
+                                               Disabled="@(!Editable || _trabajando)" Label="Producto" Class="mb-0" />
+                                </td>
+                                <td data-celda="origen">@Origen(l.COD_ORIGEN_ASIGNACION)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+
+            @if (Editable)
+            {
+                <MudStack Row="true" Spacing="3" Class="mt-2" AlignItems="AlignItems.Center">
+                    <MudSwitch T="bool" @bind-Value="_recordar" Color="Color.Primary" Label="Recordar en la ficha del proveedor los productos que asigné a mano" data-campo="recordar" />
+                </MudStack>
+            }
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+                @if (_sel.COD_ESTADO_USO == "PEN")
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="@(() => DescartarAsync(true))" Disabled="_trabajando" data-accion="descartar">Descartar</MudButton>
+                }
+                else if (_sel.COD_ESTADO_USO == "DES")
+                {
+                    <MudButton Variant="Variant.Outlined" OnClick="@(() => DescartarAsync(false))" Disabled="_trabajando" data-accion="devolver">Devolver a pendiente</MudButton>
+                }
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_trabajando" data-accion="cancelar">Cerrar</MudButton>
+                @if (Editable)
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="GenerarAsync" Disabled="@(_trabajando || !PuedeGenerar)" data-accion="generar">Generar ingreso a almacén</MudButton>
+                }
+            </MudStack>
+        }
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>La clase de movimiento de almacén; vacía usa la de Configuración general.</summary>
+    [Parameter] public string? CodClaseMovimiento { get; set; }
+
+    private List<GreRecibida> _items = new();
+    private string _texto = "", _estado = "PEN";
+    private bool _cargando, _trabajando;
+    private string? _errorLista;
+
+    private GreRecibida? _sel;
+    private List<GreRecibidaLinea> _lineas = new();
+    private bool _recordar = true;
+    private List<ProductoModel> _productos = new();
+
+    private string _clase = "";
+    private List<ComboboxItem> _almacenes = new(), _tipos = new(), _ubicaciones = new();
+    private List<TiposMovimiento> _ingresos = new();     // los tipos de ingreso (FLG_POSITIVO) de la clase
+    private string? _codAlmacen, _codTipoMovimiento, _codUbicacion;
+
+    private bool Editable => _sel is { COD_ESTADO_USO: "PEN" };
+    private bool PuedeGenerar => Editable && _sel!.NUM_LINEAS_SIN_PRODUCTO == 0 && !string.IsNullOrWhiteSpace(_codAlmacen) && !string.IsNullOrWhiteSpace(_codTipoMovimiento)
+                                 && (_ubicaciones.Count <= 1 || !string.IsNullOrWhiteSpace(_codUbicacion));
+
+    private static Color ColorEstado(string? e) => e switch { "PEN" => Color.Warning, "USA" => Color.Success, _ => Color.Default };
+    private static string Origen(string? o) => o switch { "EQU" => "ficha del proveedor", "GTI" => "código de barras", "MAN" => "asignado a mano", "COM" => "código del comprador", _ => "" };
+
+    /// <summary>Qué falta elegir para el destino, o dónde quedará el stock.</summary>
+    private string TextoDestino
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(MenuService.RolActivo)) return "No hay un rol activo: sin rol no se pueden ofrecer almacenes.";
+            if (_almacenes.Count == 0) return "Tu rol no tiene almacenes asignados.";
+            if (string.IsNullOrWhiteSpace(_codAlmacen)) return "Elige el almacén al que ingresa la mercadería.";
+            if (_tipos.Count == 0) return "Tu rol no tiene tipos de movimiento de ingreso en ese almacén.";
+            if (_ubicaciones.Count == 0) return "El almacén no tiene ubicaciones: créalas antes en Almacenes.";
+            return _ubicaciones.Count == 1 ? $"El stock queda en la única ubicación del almacén ({_ubicaciones[0].Texto})." : "El almacén tiene varias ubicaciones: elige en cuál queda el stock.";
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _clase = string.IsNullOrWhiteSpace(CodClaseMovimiento) ? ((await ConfigGeneral.GetParaLayoutAsync())?.COD_CLASE_MOVIMIENTO_ALMACEN ?? "").Trim() : CodClaseMovimiento.Trim();
+            var rol = MenuService.RolActivo;
+            var tAlm = string.IsNullOrWhiteSpace(rol) ? Task.FromResult<List<ComboboxItem>?>(new()) : Http.SafeGetAsync<List<ComboboxItem>>($"{ApiRoutes.Seguridad.RolesAlmacenes}/combobox/{Uri.EscapeDataString(rol)}");
+            var tTip = Http.SafeGetAsync<List<TiposMovimiento>>(ApiRoutes.Logistica.TiposMovimiento);
+            await Task.WhenAll(tAlm, tTip);
+            _almacenes = tAlm.Result ?? new();
+            _ingresos = (tTip.Result ?? new()).Where(x => x.COD_CLASE_MOVIMIENTO == _clase && x.FLG_POSITIVO == true).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(OnInitializedAsync)); }
+        await BuscarAsync();
+    }
+
+    private async Task BuscarAsync()
+    {
+        _cargando = true; _errorLista = null;
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.GreRecibidas}?NUM_FILAS=200"
+                    + (string.IsNullOrWhiteSpace(_estado) ? "" : $"&COD_ESTADO_USO={Uri.EscapeDataString(_estado)}")
+                    + (string.IsNullOrWhiteSpace(_texto) ? "" : $"&SEARCH={Uri.EscapeDataString(_texto.Trim())}");
+            var resp = await Http.GetAsync(url);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<GreRecibida>>>();
+            if (!resp.IsSuccessStatusCode || r is not { Success: true }) { _items = new(); _errorLista = string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo leer la lista de guías." : r!.Message; }
+            else _items = r.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(BuscarAsync));
+            _items = new(); _errorLista = "No se pudo leer la lista de guías. Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Corre ahora el servicio que baja los XML del correo y vuelve a buscar.</summary>
+    private async Task CargarAhoraAsync()
+    {
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PostAsync(ApiRoutes.Logistica.GreRecibidas + "/servicio/ejecutar", null);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<XmlRecibidosCiclo>>();
+            if (!resp.IsSuccessStatusCode || r is not { Success: true })
+            {
+                await ErrorDialogHelper.MostrarAvisoAsync(string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo revisar el correo." : r!.Message, DialogService, nameof(MovimientoGuiaRecibidaDialog), "No se pudo revisar el correo");
+                return;
+            }
+            var c = r.Data ?? new();
+            Snackbar.Add(c.Correos == 0 ? "No hay correos nuevos." :
+                $"Se revisaron {c.Correos} correo{(c.Correos == 1 ? "" : "s")}: {c.XmlCargados} XML cargado{(c.XmlCargados == 1 ? "" : "s")}"
+                + (c.XmlRepetidos > 0 ? $", {c.XmlRepetidos} repetido{(c.XmlRepetidos == 1 ? "" : "s")}" : "")
+                + (c.CorreosConError > 0 ? $", {c.CorreosConError} con error" : "") + ".", c.CorreosConError > 0 ? Severity.Warning : Severity.Success);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(CargarAhoraAsync)); Snackbar.Add("No se pudo revisar el correo. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+        await BuscarAsync();
+    }
+
+    private async Task ElegirAsync(GreRecibida x)
+    {
+        _trabajando = true;
+        try
+        {
+            _lineas = await Http.SafeGetAsync<List<GreRecibidaLinea>>(ApiRoutes.Logistica.GreRecibida(x.NUM_GRE, "lineas")) ?? new();
+            _productos = _lineas.Where(l => !string.IsNullOrWhiteSpace(l.COD_PRODUCTO)).Select(l => new ProductoModel { COD_PRODUCTO = l.COD_PRODUCTO!, DES_PRODUCTO = l.DES_PRODUCTO_EMPRESA ?? "" }).ToList();
+            _codAlmacen = null; _codTipoMovimiento = null; _codUbicacion = null; _tipos = new(); _ubicaciones = new();
+            // con un solo almacén no hay nada que elegir
+            if (_almacenes.Count == 1) await OnAlmacenChanged(_almacenes[0].Id);
+            _sel = x;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(ElegirAsync));
+            Snackbar.Add("No se pudo leer la guía. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task Volver() { _sel = null; _lineas = new(); await BuscarAsync(); }
+
+    /// <summary>Cambiar de almacén cambia qué tipos de movimiento hay (los del rol en ese almacén) y qué ubicaciones.</summary>
+    private async Task OnAlmacenChanged(string? v)
+    {
+        _codAlmacen = string.IsNullOrWhiteSpace(v) ? null : v;
+        _codTipoMovimiento = null; _codUbicacion = null; _tipos = new(); _ubicaciones = new();
+        if (_codAlmacen is null) return;
+        var rol = MenuService.RolActivo;
+        if (string.IsNullOrWhiteSpace(rol)) return;
+        var tTipos = Http.SafeGetAsync<List<ComboboxItem>>($"{ApiRoutes.Seguridad.RolesAlmacenesTiposMovimiento}/combobox/{Uri.EscapeDataString(rol)}/{Uri.EscapeDataString(_codAlmacen)}");
+        var tUbi = Http.SafeGetAsync<List<AlmacenesUbicacionesAlmacen>>($"{ApiRoutes.Logistica.AlmacenesUbicaciones}/{Uri.EscapeDataString(_codAlmacen)}");
+        await Task.WhenAll(tTipos, tUbi);
+        // solo los de ingreso: una guía recibida es mercadería que entra
+        var deIngreso = _ingresos.Select(i => i.COD_TIPO_MOVIMIENTO).ToHashSet();
+        _tipos = (tTipos.Result ?? new()).Where(t => deIngreso.Contains(t.Id)).ToList();
+        _ubicaciones = (tUbi.Result ?? new()).Select(u => new ComboboxItem { Id = u.COD_UBICACION_ALMACEN, Texto = u.DES_UBICACION_ALMACEN }).ToList();
+        if (_tipos.Count == 1) _codTipoMovimiento = _tipos[0].Id;
+    }
+
+    private async Task<IEnumerable<ProductoModel>> BuscarProductoAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>($"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto)}", ct);
+            var lista = r?.Data ?? new();
+            _productos = _productos.Where(p => lista.All(l => l.COD_PRODUCTO != p.COD_PRODUCTO)).Concat(lista).ToList();
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ProductoModel>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(BuscarProductoAsync)); return Enumerable.Empty<ProductoModel>(); }
+    }
+
+    private async Task AsignarAsync(GreRecibidaLinea l, string? cod)
+    {
+        if (_sel is null) return;
+        cod = string.IsNullOrWhiteSpace(cod) ? null : cod;
+        if (cod == l.COD_PRODUCTO) return;
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Logistica.GreRecibida(_sel.NUM_GRE, $"lineas/{l.NUM_ITEM}/producto"), new RecibidoAsignarProductoDto { COD_PRODUCTO = cod });
+            if (!resp.IsSuccessStatusCode)
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoGuiaRecibidaDialog), nameof(AsignarAsync), $"No se pudo asignar el producto de la línea {l.NUM_ITEM}");
+            var r = await Http.SafeGetAsync<List<GreRecibidaLinea>>(ApiRoutes.Logistica.GreRecibida(_sel.NUM_GRE, "lineas"));
+            _lineas = r ?? _lineas;
+            _sel.NUM_LINEAS_SIN_PRODUCTO = _lineas.Count(x => string.IsNullOrWhiteSpace(x.COD_PRODUCTO));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(AsignarAsync)); Snackbar.Add("No se pudo asignar el producto. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+    }
+
+    private async Task DescartarAsync(bool descartar)
+    {
+        if (_sel is null) return;
+        if (descartar)
+        {
+            var ok = await DialogService.ShowMessageBox("Descartar guía",
+                $"¿Descartar la guía {_sel.NUM_GUIA}? Dejará de salir entre las pendientes; puedes devolverla a pendiente cuando quieras.",
+                yesText: "Descartar", cancelText: "Cancelar");
+            if (ok != true) return;
+        }
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Logistica.GreRecibida(_sel.NUM_GRE, "descartar"), new RecibidoDescartarDto { FLG_DESCARTAR = descartar });
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoGuiaRecibidaDialog), nameof(DescartarAsync), descartar ? "No se pudo descartar" : "No se pudo devolver a pendiente");
+                return;
+            }
+            Snackbar.Add(descartar ? "Guía descartada." : "Guía devuelta a pendiente.", Severity.Success);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(DescartarAsync)); Snackbar.Add("No se pudo cambiar el estado. Ver detalle en el log de errores.", Severity.Error); return; }
+        finally { _trabajando = false; }
+        await Volver();
+    }
+
+    private Task VerXmlAsync()
+        => DialogService.ShowAsync<RecibidoXmlDialog>("", new DialogParameters { ["Url"] = ApiRoutes.Logistica.GreRecibida(_sel!.NUM_GRE, "xml"), ["Titulo"] = $"XML de {_sel.NUM_GUIA}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private Task VerPdfAsync()
+        => DialogService.ShowAsync<RecibidoPdfDialog>("", new DialogParameters { ["Url"] = ApiRoutes.Logistica.GreRecibida(_sel!.NUM_GRE, "pdf"), ["Titulo"] = $"PDF de {_sel.NUM_GUIA}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private async Task GenerarAsync()
+    {
+        if (_sel is null || !PuedeGenerar) return;
+        _trabajando = true;
+        try
+        {
+            var dto = new GreRecibidaGenerarDto
+            {
+                COD_ALMACEN = _codAlmacen, COD_CLASE_MOVIMIENTO = string.IsNullOrWhiteSpace(_clase) ? null : _clase, COD_TIPO_MOVIMIENTO = _codTipoMovimiento,
+                COD_UBICACION_ALMACEN = _ubicaciones.Count > 1 ? _codUbicacion : null, FLG_RECORDAR_EQUIVALENCIAS = _recordar
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.GreRecibida(_sel.NUM_GRE, "generar-movimiento"), dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoGuiaRecibidaDialog), nameof(GenerarAsync), "No se pudo generar el ingreso a almacén");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<GreRecibidaGenerarResult>>();
+            var d = r?.Data ?? new GreRecibidaGenerarResult();
+            var msg = $"Movimiento de almacén N° {d.NUM_MOVIMIENTO_ALMACEN:0} generado con {d.NUM_LINEAS} línea{(d.NUM_LINEAS == 1 ? "" : "s")}.";
+            if (d.NUM_LINEAS_UNIDAD_SIN_EQUIVALENCIA > 0) msg += $" {d.NUM_LINEAS_UNIDAD_SIN_EQUIVALENCIA} línea{(d.NUM_LINEAS_UNIDAD_SIN_EQUIVALENCIA == 1 ? " viene" : "s vienen")} en una unidad sin equivalencia con la del producto: revísala{(d.NUM_LINEAS_UNIDAD_SIN_EQUIVALENCIA == 1 ? "" : "s")} en el movimiento.";
+            if (d.NUM_EQUIVALENCIAS_RECORDADAS > 0) msg += $" Se recordaron {d.NUM_EQUIVALENCIAS_RECORDADAS} producto{(d.NUM_EQUIVALENCIAS_RECORDADAS == 1 ? "" : "s")} en la ficha del proveedor.";
+            Snackbar.Add(msg, d.NUM_LINEAS_UNIDAD_SIN_EQUIVALENCIA > 0 ? Severity.Warning : Severity.Success);
+            MudDialog.Close(DialogResult.Ok(d.NUM_MOVIMIENTO_ALMACEN));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(MovimientoGuiaRecibidaDialog), nameof(GenerarAsync)); Snackbar.Add("No se pudo generar el ingreso. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+    }
+}

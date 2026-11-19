@@ -1,0 +1,359 @@
+﻿@using Modelo = KONSolutions.Shared.Models.Logistica.Inventarios
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using AdministracionRoute = KONSolutions.Web.Services.ApiRoutes.Administracion
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Estandar
+@using System.Globalization
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Class="dialog-ancho-ampliado">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@(_esNuevo ? null : _model.NUM_INVENTARIO.ToString())" Descripcion="@_model.DES_INVENTARIO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <div style="height:calc(90vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+
+            <CampoTexto Tabla="LOGISTICA.INVENTARIOS" Columna="DES_INVENTARIO"
+                        @bind-Value="_model.DES_INVENTARIO"
+                        Disabled="_readonly" />
+
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="6">
+                    @* Entidad responsable: acotado a Jefaturas de Contabilidad vía Etiqueta de
+                       Búsqueda (PROC_ADMINISTRACION_AREAS_CARGOS_ENTIDADES), mismo mecanismo que
+                       SolicitudesComercialesAsignarResponsableDialog — no el combo general de
+                       Entidades. *@
+                    @* CultureInfo.InvariantCulture en los DOS sentidos: el controller arma el
+                       Id del combo con InvariantCulture, así que compararlo contra un
+                       ToString() de cultura local es pedir que un día no coincidan. *@
+                    <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                               TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_ENTIDAD_RESPONSABLE?.ToString(CultureInfo.InvariantCulture))"
+                               ValueChanged="@(v => _model.COD_ENTIDAD_RESPONSABLE = decimal.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null)"
+                               Label="Entidad responsable" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposInventario"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               @bind-Value="_model.COD_TIPO_INVENTARIO"
+                               Label="Tipo de inventario" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            @* Tipo de motivo / Motivo: cascada, mismo criterio que TiposMovimientoDialog. *@
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposMotivo"
+                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_TIPO_MOTIVO?.ToString())"
+                               ValueChanged="OnTipoMotivoChanged"
+                               Label="Tipo de motivo" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_motivos"
+                               TextFunc="@(m => $"{m.Id} - {m.Texto}")" ValueFunc="@(m => m.Id)"
+                               Value="@(_model.COD_MOTIVO?.ToString())"
+                               ValueChanged="@(v => _model.COD_MOTIVO = int.TryParse(v, out var n) ? n : null)"
+                               Label="Motivo" Disabled="@(_readonly || _model.COD_TIPO_MOTIVO is null)" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            @* Cuatro fechas/horas independientes: Date + Time por separado (mismo control que
+               EspecificacionesTecnicasPanel usa para TipoControlEspec.FechaHora), combinadas en
+               el DateTime? del modelo por las propiedades de abajo. *@
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecInicioProgramadaFecha" DateChanged="@(d => SetFecha(d, ref _fecInicioProgramadaFecha, v => _model.FEC_INICIO_PROGRAMADA = v, () => _model.FEC_INICIO_PROGRAMADA))"
+                                   Label="Inicio programado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_INICIO_PROGRAMADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_INICIO_PROGRAMADA = v, _model.FEC_INICIO_PROGRAMADA))"
+                                   Label="Inicio programado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecFinalProgramadaFecha" DateChanged="@(d => SetFecha(d, ref _fecFinalProgramadaFecha, v => _model.FEC_FINAL_PROGRAMADA = v, () => _model.FEC_FINAL_PROGRAMADA))"
+                                   Label="Final programado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_FINAL_PROGRAMADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_FINAL_PROGRAMADA = v, _model.FEC_FINAL_PROGRAMADA))"
+                                   Label="Final programado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+            </MudGrid>
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecInicioEfectuadaFecha" DateChanged="@(d => SetFecha(d, ref _fecInicioEfectuadaFecha, v => _model.FEC_INICIO_EFECTUADA = v, () => _model.FEC_INICIO_EFECTUADA))"
+                                   Label="Inicio efectuado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_INICIO_EFECTUADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_INICIO_EFECTUADA = v, _model.FEC_INICIO_EFECTUADA))"
+                                   Label="Inicio efectuado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecFinalEfectuadaFecha" DateChanged="@(d => SetFecha(d, ref _fecFinalEfectuadaFecha, v => _model.FEC_FINAL_EFECTUADA = v, () => _model.FEC_FINAL_EFECTUADA))"
+                                   Label="Final efectuado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_FINAL_EFECTUADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_FINAL_EFECTUADA = v, _model.FEC_FINAL_EFECTUADA))"
+                                   Label="Final efectuado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+            </MudGrid>
+
+            <CampoTexto Tabla="LOGISTICA.INVENTARIOS" Columna="DES_OBSERVACION"
+                        @bind-Value="_model.DES_OBSERVACION"
+                        Lines="3" Disabled="_readonly" />
+
+            @* El estado del inventario lo mueven los botones de proceso (Iniciar/Terminar/etc.),
+               no la edición manual — a pedido explícito, deshabilitado siempre en todo el
+               módulo de Inventarios. *@
+            <EstadoCombo DesTabla="LOGISTICA.INVENTARIOS" @bind-Value="_model.COD_ESTADO"
+                         CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)" Disabled="true" Class="mb-3" />
+
+            @* Notificación en curso, justo debajo del estado: las dos cosas dicen en qué
+               punto está el inventario, una por el documento y otra por el flujo de
+               aprobación. Si no hay notificación no se dibuja nada. *@
+            <NotificacionLinea Numero="@_model.NUM_NOTIFICACION" Descripcion="@_model.DES_NOTIFICACION"
+                               Fecha="@_model.FEC_NOTIFICACION" Estado="@_model.DES_ESTADO_NOTIFICACION"
+                               BackColor="@_model.DES_BACKCOLOR_NOTIFICACION" ForeColor="@_model.DES_FORECOLOR_NOTIFICACION" />
+
+            </div>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _entidades = new();
+    private List<ComboboxItem> _tiposInventario = new();
+    private List<ComboboxItem> _tiposMotivo = new();
+    private List<ComboboxItem> _motivos = new();
+
+    // Parte "fecha" de cada par Fecha+Hora, para no perderla al setear solo la hora del par.
+    private DateTime? _fecInicioProgramadaFecha;
+    private DateTime? _fecFinalProgramadaFecha;
+    private DateTime? _fecInicioEfectuadaFecha;
+    private DateTime? _fecFinalEfectuadaFecha;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        var urlEntidades = $"{AdministracionRoute.AsesoresPorEtiqueta}?codEtiquetaBusqueda={Uri.EscapeDataString("JEFATURAS_CONTABILIDAD")}";
+        _entidades = (await Http.SafeGetAsync<List<ComboboxItem>>(urlEntidades)) ?? new();
+        _tiposInventario = (await Http.SafeGetAsync<List<ComboboxItem>>(LogisticaRoute.TiposInventarioCombobox)) ?? new();
+        _tiposMotivo = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.TiposMotivosCombobox)) ?? new();
+
+        AsegurarEntidadResponsableEnCombo();
+
+        if (_model.COD_TIPO_MOTIVO is not null)
+            await CargarMotivos(_model.COD_TIPO_MOTIVO.Value);
+
+        SincronizarFechas();
+    }
+
+    /// <summary>
+    /// El combo de Entidad responsable NO trae todas las entidades: trae sólo las personas
+    /// asignadas a los cargos del área enlazada a la etiqueta JEFATURAS_CONTABILIDAD. Eso
+    /// está bien para ELEGIR un responsable nuevo, pero rompe la CONSULTA de un inventario
+    /// existente: si el responsable guardado ya no figura en esa lista —porque cambió de
+    /// cargo, de área, o porque se guardó antes de que existiera el filtro— el AriaCombo no
+    /// encuentra el Id y deja el campo VACÍO, aunque la grilla sí muestre el nombre.
+    ///
+    /// Es exactamente lo que estaba pasando: el registro tiene responsable y el combo lo
+    /// mostraba en blanco.
+    ///
+    /// La solución es la habitual para un combo filtrado con valores históricos: si el valor
+    /// guardado no está en la lista, se lo agrega. Se usa el DES_NOMBRE_COMPLETO que ya
+    /// devuelve el SP, así que no hace falta ninguna llamada extra.
+    ///
+    /// Se marca "(fuera de la lista actual)" a propósito: quien mira la pantalla tiene que
+    /// poder distinguir un responsable vigente de uno que ya no cumple el criterio de la
+    /// etiqueta. Mostrarlo sin aclaración sería más prolijo y menos honesto.
+    /// </summary>
+    private void AsegurarEntidadResponsableEnCombo()
+    {
+        var cod = _model.COD_ENTIDAD_RESPONSABLE;
+        if (cod is null) return;
+
+        var id = cod.Value.ToString(CultureInfo.InvariantCulture);
+        if (_entidades.Any(e => e.Id == id)) return;
+
+        var nombre = string.IsNullOrWhiteSpace(_model.DES_NOMBRE_COMPLETO)
+            ? $"Entidad {id}"          // sin nombre a mano: que al menos se vea el código
+            : _model.DES_NOMBRE_COMPLETO!;
+
+        _entidades.Insert(0, new ComboboxItem { Id = id, Texto = $"{nombre} (fuera de la lista actual)" });
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            NUM_INVENTARIO           = m.NUM_INVENTARIO,
+            DES_INVENTARIO           = m.DES_INVENTARIO,
+            COD_ENTIDAD_RESPONSABLE  = m.COD_ENTIDAD_RESPONSABLE,
+            // Se copia aunque no se edite: es el nombre del responsable tal como lo devuelve
+            // el SP, y es lo único con lo que se puede mostrar el combo cuando esa persona
+            // quedó fuera del filtro por etiqueta (ver AsegurarEntidadResponsableEnCombo).
+            DES_NOMBRE_COMPLETO      = m.DES_NOMBRE_COMPLETO,
+            COD_TIPO_INVENTARIO      = m.COD_TIPO_INVENTARIO,
+            COD_TIPO_MOTIVO          = m.COD_TIPO_MOTIVO,
+            COD_MOTIVO               = m.COD_MOTIVO,
+            FEC_INICIO_PROGRAMADA    = m.FEC_INICIO_PROGRAMADA,
+            FEC_FINAL_PROGRAMADA     = m.FEC_FINAL_PROGRAMADA,
+            FEC_INICIO_EFECTUADA     = m.FEC_INICIO_EFECTUADA,
+            FEC_FINAL_EFECTUADA      = m.FEC_FINAL_EFECTUADA,
+            DES_OBSERVACION          = m.DES_OBSERVACION,
+            COD_TIPO_ESTADO          = m.COD_TIPO_ESTADO,
+            COD_ESTADO               = m.COD_ESTADO,
+            // Sólo lectura, para la línea de notificación. Si no se copiaran acá, el
+            // diálogo mostraría el documento sin su notificación aunque el SP la traiga.
+            NUM_NOTIFICACION           = m.NUM_NOTIFICACION,
+            DES_NOTIFICACION           = m.DES_NOTIFICACION,
+            FEC_NOTIFICACION           = m.FEC_NOTIFICACION,
+            DES_ESTADO_NOTIFICACION    = m.DES_ESTADO_NOTIFICACION,
+            DES_BACKCOLOR_NOTIFICACION = m.DES_BACKCOLOR_NOTIFICACION,
+            DES_FORECOLOR_NOTIFICACION = m.DES_FORECOLOR_NOTIFICACION,
+        };
+        SincronizarFechas();
+    }
+
+    /// <summary>Refresca la parte "solo fecha" de cada par a partir del DateTime? combinado del
+    /// modelo — se llama después de mapear/recargar, para que el MudDatePicker arranque con el
+    /// valor correcto.</summary>
+    private void SincronizarFechas()
+    {
+        _fecInicioProgramadaFecha = _model.FEC_INICIO_PROGRAMADA?.Date;
+        _fecFinalProgramadaFecha  = _model.FEC_FINAL_PROGRAMADA?.Date;
+        _fecInicioEfectuadaFecha  = _model.FEC_INICIO_EFECTUADA?.Date;
+        _fecFinalEfectuadaFecha   = _model.FEC_FINAL_EFECTUADA?.Date;
+    }
+
+    /// <summary>Combina la fecha nueva con la hora que ya tenía el campo (o 00:00 si no tenía).</summary>
+    private void SetFecha(DateTime? fecha, ref DateTime? cacheFecha, Action<DateTime?> setter, Func<DateTime?> getterActual)
+    {
+        cacheFecha = fecha;
+        var horaActual = getterActual()?.TimeOfDay ?? TimeSpan.Zero;
+        setter(fecha?.Date + horaActual);
+    }
+
+    /// <summary>Combina la hora nueva con la fecha que ya tenía el campo — si todavía no hay
+    /// fecha elegida, no hay dónde anclar la hora y se ignora.</summary>
+    private void SetHora(TimeSpan? hora, Action<DateTime?> setter, DateTime? actual)
+    {
+        if (actual is null && hora is null) { setter(null); return; }
+        var fechaBase = (actual ?? DateTime.Today).Date;
+        setter(hora is null ? fechaBase : fechaBase + hora.Value);
+    }
+
+    /// <summary>Trae el registro fresco desde SHOWBYID: evita editar sobre datos que la grilla
+    /// puede tener desactualizados.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{LogisticaRoute.Inventarios}/{_model.NUM_INVENTARIO}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnTipoMotivoChanged(string? val)
+    {
+        _model.COD_TIPO_MOTIVO = int.TryParse(val, out var n) ? n : null;
+        _model.COD_MOTIVO = null;
+        _motivos = new();
+        if (_model.COD_TIPO_MOTIVO is not null)
+            await CargarMotivos(_model.COD_TIPO_MOTIVO.Value);
+    }
+
+    private async Task CargarMotivos(int codTipoMotivo)
+    {
+        // El endpoint MotivosPorTipo devuelve KONSolutions.Shared.Models.Motivo (COD_MOTIVO/DES_MOTIVO),
+        // no ComboboxItem — hay que mapearlo aquí, mismo criterio que TiposMovimientoDialog.
+        var motivos = await Http.SafeGetAsync<List<Motivo>>($"{EstandarRoute.MotivosPorTipo}/{codTipoMotivo}") ?? new();
+        _motivos = motivos
+            .Where(m => m.COD_MOTIVO is not null)
+            .Select(m => new ComboboxItem { Id = m.COD_MOTIVO!.Value.ToString(), Texto = m.DES_MOTIVO ?? "" })
+            .ToList();
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    /// <summary>Fin (programado o efectuado) no puede ser menor a su propio inicio. Sin
+    /// tocar el SP: valida antes de mandar, con el mismo diálogo de error que usa
+    /// OnInvalidSubmit para los campos obligatorios.</summary>
+    private async Task<bool> FechasValidasAsync()
+    {
+        string? error =
+            _model.FEC_INICIO_PROGRAMADA is not null && _model.FEC_FINAL_PROGRAMADA is not null
+                && _model.FEC_FINAL_PROGRAMADA < _model.FEC_INICIO_PROGRAMADA
+                ? "La fecha/hora de Final programado no puede ser menor a la de Inicio programado."
+            : _model.FEC_INICIO_EFECTUADA is not null && _model.FEC_FINAL_EFECTUADA is not null
+                && _model.FEC_FINAL_EFECTUADA < _model.FEC_INICIO_EFECTUADA
+                ? "La fecha/hora de Final efectuado no puede ser menor a la de Inicio efectuado."
+            : null;
+
+        if (error is null) return true;
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters { ["Titulo"] = "Fechas inválidas", ["Mensaje"] = error },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+        return false;
+    }
+
+    private async Task Submit()
+    {
+        if (!await FechasValidasAsync()) return;
+        _saving = true;
+        var ruta = LogisticaRoute.Inventarios;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_INVENTARIO}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(InventariosDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear (NUM_INVENTARIO lo genera el SP vía SCOPE_IDENTITY), PUT al modificar.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosDialog), nameof(Submit));
+    }
+}

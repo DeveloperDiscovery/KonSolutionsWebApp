@@ -1,0 +1,156 @@
+@using CalculoRoute = KONSolutions.Web.Services.ApiRoutes.Comercial
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using ClaseOperacionModel = KONSolutions.Shared.Models.Estandar.ClaseOperacion
+@using TipoOperacionModel = KONSolutions.Shared.Models.Estandar.TipoOperacion
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Copiar cálculo a otro tipo de operación</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+            Copia los Tipos de Operación de Cálculo (y sus valores afectados) de
+            <b>@CodTipoOperacionOrigenTexto</b> hacia el tipo de operación destino que elijas.
+            Puedes elegir <b>varios</b> tipos de operación destino. Los datos existentes en cada destino se <b>reemplazan</b>.
+        </MudText>
+        <AriaCombo TItem="ComboboxItem" Items="_clasesOperacion"
+                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                   Value="@_codClaseDestino" ValueChanged="OnClaseDestinoChanged"
+                   Label="Clase de operación destino" Class="mb-3" />
+        @* Varios destinos: marca los tipos de la clase elegida; lo marcado se conserva al cambiar de clase. *@
+        <MudSelect T="string" Label="Tipos de operación destino" MultiSelection="true" SelectAll="true"
+                   SelectAllText="Todos los tipos de la clase" Variant="Variant.Outlined" Margin="Margin.Dense"
+                   Disabled="@(string.IsNullOrEmpty(_codClaseDestino))"
+                   SelectedValues="@SeleccionActual" SelectedValuesChanged="OnSeleccionChanged"
+                   MultiSelectionTextFunc="@(v => v is null || !v.Any() ? "" : $"{v.Count()} seleccionado(s)")">
+            @foreach (var t in _tiposDestino)
+            {
+                <MudSelectItem T="string" Value="@t.Id">@t.Id - @t.Texto</MudSelectItem>
+            }
+        </MudSelect>
+        @if (TotalSeleccionados > 0)
+        {
+            <MudText Typo="Typo.caption" Class="mt-3 d-block" Style="opacity:.7;">Se copiará a @TotalSeleccionados tipo(s):</MudText>
+            <div class="d-flex flex-wrap gap-1 mt-1">
+                @foreach (var (clase, tipo) in Destinos())
+                {
+                    var c = clase; var t = tipo;
+                    <MudChip T="string" Size="Size.Small" OnClose="@(() => Quitar(c, t))">@c / @t</MudChip>
+                }
+            </div>
+        }
+
+        <div class="d-flex justify-end gap-2 mt-4">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_saving || TotalSeleccionados == 0)" OnClick="Copiar">
+                @(_saving ? "Copiando..." : "Copiar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodClaseOperacionOrigen { get; set; } = "";
+    [Parameter] public string CodTipoOperacionOrigen { get; set; } = "";
+    [Parameter] public string DesTipoOperacionOrigen { get; set; } = "";
+
+    private string CodTipoOperacionOrigenTexto => string.IsNullOrEmpty(DesTipoOperacionOrigen)
+        ? CodTipoOperacionOrigen : $"{CodTipoOperacionOrigen} - {DesTipoOperacionOrigen}";
+
+    private List<ComboboxItem> _clasesOperacion = new();
+    private List<ComboboxItem> _tiposDestino = new();
+    private string? _codClaseDestino;
+    private bool _saving;
+
+    // Tipos marcados por clase destino (se conservan al cambiar de clase).
+    private readonly Dictionary<string, HashSet<string>> _seleccion = new();
+
+    private IEnumerable<string> SeleccionActual =>
+        _codClaseDestino is not null && _seleccion.TryGetValue(_codClaseDestino, out var h) ? h : Enumerable.Empty<string>();
+    private int TotalSeleccionados => _seleccion.Values.Sum(h => h.Count);
+    private IEnumerable<(string Clase, string Tipo)> Destinos() =>
+        _seleccion.SelectMany(kv => kv.Value.Select(t => (kv.Key, t)));
+
+    private void OnSeleccionChanged(IEnumerable<string>? valores)
+    {
+        if (_codClaseDestino is null) return;
+        var h = (valores ?? Enumerable.Empty<string>()).ToHashSet();
+        if (h.Count == 0) _seleccion.Remove(_codClaseDestino); else _seleccion[_codClaseDestino] = h;
+    }
+
+    private void Quitar(string clase, string tipo)
+    {
+        if (!_seleccion.TryGetValue(clase, out var h)) return;
+        h.Remove(tipo);
+        if (h.Count == 0) _seleccion.Remove(clase);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var r = await Http.SafeGetAsync<List<ClaseOperacionModel>>(EstandarRoute.ClasesOperacion);
+        _clasesOperacion = (r ?? new())
+            .Select(c => new ComboboxItem { Id = c.COD_CLASE_OPERACION.Trim(), Texto = c.DES_CLASE_OPERACION })
+            .ToList();
+    }
+
+    private async Task OnClaseDestinoChanged(string? codClase)
+    {
+        _codClaseDestino = codClase;
+        await CargarTiposDestino(codClase);
+    }
+
+    private async Task CargarTiposDestino(string? codClase)
+    {
+        if (string.IsNullOrEmpty(codClase)) { _tiposDestino = new(); return; }
+        var r = await Http.SafeGetAsync<List<TipoOperacionModel>>(
+            $"{EstandarRoute.TiposOperacion}?codClaseOperacion={Uri.EscapeDataString(codClase)}");
+        // El tipo de origen no se ofrece como destino de sí mismo.
+        _tiposDestino = (r ?? new())
+            .Where(t => !(codClase.Trim() == CodClaseOperacionOrigen.Trim() && t.COD_TIPO_OPERACION == CodTipoOperacionOrigen))
+            .Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION })
+            .ToList();
+    }
+
+    private async Task Copiar()
+    {
+        var destinos = Destinos().ToList();
+        if (destinos.Count == 0) return;
+        _saving = true;
+        var fallidos = new List<string>();
+        HttpResponseMessage? ultimoError = null;
+        foreach (var (clase, tipo) in destinos)
+        {
+            var dto = new
+            {
+                COD_CLASE_OPERACION = CodClaseOperacionOrigen,
+                COD_TIPO_OPERACION = CodTipoOperacionOrigen,
+                COD_CLASE_OPERACION_DESTINO = clase,
+                COD_TIPO_OPERACION_DESTINO = tipo
+            };
+            var resp = await Http.PostAsJsonAsync(CalculoRoute.TiposOperacionCalculoCopy, dto);
+            if (!resp.IsSuccessStatusCode) { fallidos.Add($"{clase}/{tipo}"); ultimoError = resp; }
+        }
+        _saving = false;
+        var ok = destinos.Count - fallidos.Count;
+        if (fallidos.Count == 0)
+        {
+            Snackbar.Add(destinos.Count == 1 ? "Copiado correctamente." : $"Copiado a {ok} tipos de operación.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+            return;
+        }
+        // Se quedan marcados solo los que fallaron, para reintentar.
+        var fallaron = fallidos.ToHashSet();
+        foreach (var k in _seleccion.Keys.ToList())
+        {
+            _seleccion[k].RemoveWhere(t => !fallaron.Contains($"{k}/{t}"));
+            if (_seleccion[k].Count == 0) _seleccion.Remove(k);
+        }
+        Snackbar.Add($"Copiado a {ok} de {destinos.Count}. Fallaron: {string.Join(", ", fallidos)}.", Severity.Warning);
+        await ErrorDialogHelper.MostrarAsync(ultimoError!, ErrorLog, DialogService, nameof(TiposOperacionCalculoCopyDialog), nameof(Copiar));
+    }
+}

@@ -1,0 +1,304 @@
+@* Dibujar la forma de un molde (o de un defecto de tela) que no es un rectangulo. Se parte de una plantilla (trapecio, triangulo, paralelogramo, forma en L,
+   elipse, poligono regular, rectangulo redondeado) o de cero, y se arma punto por punto: clic en el dibujo agrega un punto (con la rejilla), arrastrar un
+   punto lo mueve y la tabla permite escribir las coordenadas, insertar y quitar puntos. Tambien se pueden pegar los puntos como texto "x,y x,y ...". *@
+@using KONSolutions.Shared.Tizado
+@using Poligono = KONSolutions.Shared.Tizado.Poligono
+@using Punto = KONSolutions.Shared.Tizado.Punto
+@using System.Globalization
+@inject IJSRuntime JS
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.Polyline" />
+            <MudText Typo="Typo.h6">@(Modo == "defecto" ? "Forma del defecto" : "Forma del molde")</MudText>
+            <MudText Typo="Typo.caption" Style="opacity:.7;">Eje X = largo de la tela · eje Y = ancho (hacia abajo)</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+        <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="plantilla">
+            <MudSelect T="string" Value="_plantilla" ValueChanged="CambiaPlantilla" Label="Plantilla" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:230px;" data-campo="plantilla">
+                @foreach (var p in Plantillas) { <MudSelectItem T="string" Value="@p.Clave">@p.Nombre</MudSelectItem> }
+            </MudSelect>
+            @foreach (var c in Campos())
+            {
+                var cc = c;
+                <MudNumericField T="double" Value="_p[cc.I]" ValueChanged="@(v => _p[cc.I] = v)" Label="@cc.Etiqueta" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="@("p" + (cc.I + 1))" />
+            }
+            @if (_plantilla == "tri")
+            {
+                <MudNumericField T="double?" @bind-Value="_verticeTri" Label="Vértice a (mm, vacío = centro)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:190px;" data-campo="vertice" />
+            }
+            @if (Modo == "defecto")
+            {
+                <MudNumericField T="double" @bind-Value="_ox" Label="Desde X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="desde-x" />
+                <MudNumericField T="double" @bind-Value="_oy" Label="Desde Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="desde-y" />
+            }
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" OnClick="Generar" Disabled="@(_plantilla == "libre")" data-accion="generar">Generar</MudButton>
+            <MudNumericField T="double" @bind-Value="_rejilla" Label="Rejilla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:110px;" data-campo="rejilla" />
+        </div>
+
+        <div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
+            <div style="flex:1 1 480px;min-width:0;">
+                <div data-zona="dibujo" style="background:#fff;border:1px solid var(--mud-palette-lines-default);">
+                    <svg @ref="_svg" viewBox="@ViewBox" style="width:100%;height:340px;display:block;touch-action:none;" preserveAspectRatio="xMinYMin meet"
+                         @onpointerdown="OnDownFondo" @onpointermove="OnMove" @onpointerup="OnUp" @onpointercancel="OnUp">
+                        @foreach (var g in Rejilla_()) { <line x1="@Num(g.X1)" y1="@Num(g.Y1)" x2="@Num(g.X2)" y2="@Num(g.Y2)" stroke="#d7dbe4" stroke-width="@Num(Math.Max(VbAncho, VbAlto) / 600)" data-rejilla="1" /> }
+                        @if (_pts.Count >= 3) { <polygon points="@Formas.ATexto(_pts)" fill="#9db8e8" fill-opacity="0.45" stroke="#2a4a99" stroke-width="@Num(Math.Max(VbAncho, VbAlto) / 300)" style="pointer-events:none;" data-forma="1" /> }
+                        else if (_pts.Count == 2) { <line x1="@Num(_pts[0].X)" y1="@Num(_pts[0].Y)" x2="@Num(_pts[1].X)" y2="@Num(_pts[1].Y)" stroke="#2a4a99" stroke-width="@Num(Math.Max(VbAncho, VbAlto) / 300)" style="pointer-events:none;" /> }
+                        @for (int i = 0; i < _pts.Count; i++)
+                        {
+                            var idx = i;
+                            <circle cx="@Num(_pts[i].X)" cy="@Num(_pts[i].Y)" r="@Num(Math.Max(VbAncho, VbAlto) / 90)" fill="@(i == _sel ? "#d62728" : "#2a4a99")" stroke="#fff" stroke-width="@Num(Math.Max(VbAncho, VbAlto) / 600)"
+                                    style="cursor:grab;" data-punto="@(i + 1)" @onpointerdown="@(e => OnDownPunto(idx, e))" @onpointerdown:stopPropagation="true"><title>Punto @(i + 1)</title></circle>
+
+                        }
+                        @((MarkupString)Etiquetas())
+                    </svg>
+                </div>
+                <div class="d-flex align-center gap-2 flex-wrap mt-1">
+                    <MudChip T="string" Size="Size.Small" data-chip="puntos">@_pts.Count punto(s)</MudChip>
+                    @if (_pts.Count >= 3 && Problema is null) { <MudChip T="string" Size="Size.Small" Color="Color.Primary" data-chip="medidas">@Num(Caja.MaxX - Caja.MinX) × @Num(Caja.MaxY - Caja.MinY) mm · @Num(new Poligono(_pts).Area / 100) cm²</MudChip> }
+                    @if (Problema is not null) { <MudText Typo="Typo.caption" Style="color:#d62728;" data-aviso="problema">@Problema</MudText> }
+                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="Limpiar" data-accion="limpiar">Borrar todo</MudButton>
+                </div>
+                <MudText Typo="Typo.caption" Style="opacity:.7;">Clic en el dibujo = agregar punto · arrastrar un punto = moverlo. Los puntos se unen en el orden de la tabla.</MudText>
+            </div>
+
+            <div style="flex:0 0 330px;min-width:260px;">
+                <div style="max-height:300px;overflow:auto;">
+                    <table style="width:100%;border-collapse:collapse;" data-tabla="puntos">
+                        <thead><tr><th>#</th><th>X (mm)</th><th>Y (mm)</th><th></th></tr></thead>
+                        <tbody>
+                            @for (int i = 0; i < _pts.Count; i++)
+                            {
+                                var idx = i;
+                                <tr data-fila="@(i + 1)" style="@(i == _sel ? "background:rgba(214,39,40,.12);" : "")">
+                                    <td @onclick="@(() => _sel = idx)">@(i + 1)</td>
+                                    <td><MudNumericField T="double" Value="_pts[i].X" ValueChanged="@(v => _pts[idx] = new Punto(v, _pts[idx].Y))" Variant="Variant.Text" Margin="Margin.Dense" Style="width:95px;" data-campo="x" /></td>
+                                    <td><MudNumericField T="double" Value="_pts[i].Y" ValueChanged="@(v => _pts[idx] = new Punto(_pts[idx].X, v))" Variant="Variant.Text" Margin="Margin.Dense" Style="width:95px;" data-campo="y" /></td>
+                                    <td>
+                                        <MudTooltip Text="Insertar un punto entre este y el siguiente"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="Size.Small" OnClick="@(() => Insertar(idx))" data-accion="insertar" /></MudTooltip>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => Quitar(idx))" data-accion="quitar-punto" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <MudTextField T="string" @bind-Value="_texto" Label="Pegar puntos: x,y x,y ..." Variant="Variant.Outlined" Margin="Margin.Dense" Lines="2" Class="mt-2" data-campo="texto" />
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" Class="mt-1" OnClick="UsarTexto" data-accion="usar-texto">Usar texto</MudButton>
+                <MudButton Size="Size.Small" Variant="Variant.Text" Class="mt-1 ml-1" OnClick="VerTexto" data-accion="ver-texto">Ver como texto</MudButton>
+            </div>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancelar" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(Problema is not null)" OnClick="Aceptar" data-accion="aceptar">Aceptar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>"molde" (el contorno se lleva despues a la esquina 0,0) o "defecto" (coordenadas de la tela).</summary>
+    [Parameter] public string Modo { get; set; } = "molde";
+    /// <summary>Contorno de partida "x,y x,y ..." (vacio = dibujar de cero).</summary>
+    [Parameter] public string Contorno { get; set; } = "";
+    /// <summary>Area de trabajo del dibujo, mm (se agranda sola si la forma la pasa).</summary>
+    [Parameter] public double AreaAncho { get; set; } = 600;
+    [Parameter] public double AreaAlto { get; set; } = 400;
+
+    /// <summary>Lo que devuelve el dialogo al aceptar.</summary>
+    public record Resultado(string Contorno);
+
+    private sealed record Plantilla(string Clave, string Nombre);
+    private static readonly Plantilla[] Plantillas =
+    {
+        new("libre", "Libre (punto por punto)"), new("rect", "Rectángulo"), new("trap", "Trapecio"), new("tri", "Triángulo"), new("para", "Paralelogramo"),
+        new("L", "Forma en L"), new("elipse", "Elipse / círculo"), new("reg", "Polígono regular"), new("red", "Rectángulo redondeado")
+    };
+    private sealed record Campo(int I, string Etiqueta);
+
+    private IEnumerable<Campo> Campos() => _plantilla switch
+    {
+        "rect" => new[] { new Campo(0, "Largo (mm)"), new Campo(1, "Ancho (mm)") },
+        "trap" => new[] { new Campo(0, "Base inferior (mm)"), new Campo(1, "Base superior (mm)"), new Campo(2, "Alto (mm)") },
+        "tri" => new[] { new Campo(0, "Base (mm)"), new Campo(1, "Alto (mm)") },
+        "para" => new[] { new Campo(0, "Ancho (mm)"), new Campo(1, "Alto (mm)"), new Campo(2, "Sesgo (mm)") },
+        "L" => new[] { new Campo(0, "Ancho (mm)"), new Campo(1, "Alto (mm)"), new Campo(2, "Recorte ancho (mm)"), new Campo(3, "Recorte alto (mm)") },
+        "elipse" => new[] { new Campo(0, "Radio X (mm)"), new Campo(1, "Radio Y (mm)"), new Campo(2, "Segmentos") },
+        "reg" => new[] { new Campo(0, "Radio (mm)"), new Campo(1, "Lados") },
+        "red" => new[] { new Campo(0, "Largo (mm)"), new Campo(1, "Ancho (mm)"), new Campo(2, "Radio (mm)"), new Campo(3, "Segmentos por esquina") },
+        _ => Array.Empty<Campo>()
+    };
+
+    private ElementReference _svg;
+    private List<Punto> _pts = new();
+    private string _plantilla = "libre", _texto = "", _error = "";
+    private readonly double[] _p = new double[4];
+    private double? _verticeTri;
+    private double _ox, _oy, _rejilla = 5;
+    private int _sel = -1;
+    private int _arrastrando = -1;
+
+    /// <summary>Los numeros de los puntos (se arman como texto: la etiqueta text de SVG choca con la de Razor).</summary>
+    private string Etiquetas()
+    {
+        double m = Math.Max(VbAncho, VbAlto);
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < _pts.Count; i++)
+            sb.Append($"<text x=\"{Num(_pts[i].X + m / 80)}\" y=\"{Num(_pts[i].Y - m / 80)}\" font-size=\"{Num(m / 45)}\" fill=\"#333\" style=\"pointer-events:none;\" data-etiqueta=\"{i + 1}\">{i + 1}</text>");
+        return sb.ToString();
+    }
+
+    private string? Problema => _pts.Count == 0 ? "Dibuja el contorno: elige una plantilla o haz clic en el dibujo." : Formas.Problema(_pts);
+    private (double MinX, double MinY, double MaxX, double MaxY) Caja => new Poligono(_pts).Limites;
+    private double VbAncho => Math.Max(Math.Max(AreaAncho, 50), _pts.Count == 0 ? 0 : (_pts.Max(p => p.X) * 1.12 + 10));
+    private double VbAlto => Math.Max(Math.Max(AreaAlto, 50), _pts.Count == 0 ? 0 : (_pts.Max(p => p.Y) * 1.12 + 10));
+    private string ViewBox => $"0 0 {Num(VbAncho)} {Num(VbAlto)}";
+    private static string Num(double d) => d.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private IEnumerable<(double X1, double Y1, double X2, double Y2)> Rejilla_()
+    {
+        var paso = _rejilla > 0 ? _rejilla : 0;
+        if (paso <= 0) yield break;
+        // si la rejilla es muy fina para el area, se dibuja cada n-esima raya (la de ajuste sigue siendo la pedida)
+        while ((VbAncho / paso) + (VbAlto / paso) > 120) paso *= 2;
+        for (double x = 0; x <= VbAncho + 1e-9; x += paso) yield return (x, 0, x, VbAlto);
+        for (double y = 0; y <= VbAlto + 1e-9; y += paso) yield return (0, y, VbAncho, y);
+    }
+
+    protected override void OnInitialized()
+    {
+        var l = Formas.Leer(Contorno);
+        if (l is { Count: > 0 }) _pts = l;
+        Defaults("rect");
+    }
+
+    private void Defaults(string clave)
+    {
+        switch (clave)
+        {
+            case "rect": _p[0] = 100; _p[1] = 60; break;
+            case "trap": _p[0] = 120; _p[1] = 70; _p[2] = 60; break;
+            case "tri": _p[0] = 100; _p[1] = 80; break;
+            case "para": _p[0] = 100; _p[1] = 60; _p[2] = 25; break;
+            case "L": _p[0] = 120; _p[1] = 100; _p[2] = 50; _p[3] = 40; break;
+            case "elipse": _p[0] = 50; _p[1] = 35; _p[2] = 48; break;
+            case "reg": _p[0] = 50; _p[1] = 6; break;
+            case "red": _p[0] = 100; _p[1] = 70; _p[2] = 12; _p[3] = 8; break;
+        }
+    }
+
+    private void CambiaPlantilla(string clave)
+    {
+        _plantilla = clave; _error = "";
+        if (clave == "libre") return;
+        Defaults(clave); _verticeTri = null;
+        Generar();
+    }
+
+    private void Generar()
+    {
+        _error = "";
+        try
+        {
+            var l = _plantilla switch
+            {
+                "rect" => Formas.Rectangulo(_p[0], _p[1]),
+                "trap" => Formas.Trapecio(_p[0], _p[1], _p[2]),
+                "tri" => Formas.Triangulo(_p[0], _p[1], _verticeTri),
+                "para" => Formas.Paralelogramo(_p[0], _p[1], _p[2]),
+                "L" => Formas.FormaL(_p[0], _p[1], _p[2], _p[3]),
+                "elipse" => Formas.Elipse(_p[0], _p[1], (int)Math.Round(_p[2])),
+                "reg" => Formas.PoligonoRegular(_p[0], (int)Math.Round(_p[1])),
+                "red" => Formas.Redondeado(_p[0], _p[1], _p[2], (int)Math.Round(_p[3])),
+                _ => null
+            };
+            if (l is null) return;
+            if (l.Count == 0) { _error = "Las medidas deben ser mayores que cero."; return; }
+            _pts = Modo == "defecto" ? l.Select(p => new Punto(Math.Round(p.X + _ox, 3), Math.Round(p.Y + _oy, 3))).ToList() : l;
+            _sel = -1;
+        }
+        catch (ArgumentException ex) { _error = ex.Message; }
+    }
+
+    private void Limpiar() { _pts = new(); _sel = -1; _error = ""; _plantilla = "libre"; }
+
+    private void Quitar(int i) { if (i < 0 || i >= _pts.Count) return; _pts.RemoveAt(i); _sel = -1; }
+
+    private void Insertar(int i)
+    {
+        if (i < 0 || i >= _pts.Count) return;
+        var a = _pts[i]; var b = _pts[(i + 1) % _pts.Count];
+        _pts.Insert(i + 1, new Punto(Math.Round((a.X + b.X) / 2, 3), Math.Round((a.Y + b.Y) / 2, 3)));
+        _sel = i + 1;
+    }
+
+    private void UsarTexto()
+    {
+        _error = "";
+        var l = Formas.Leer(_texto);
+        if (l is null) { _error = "El texto no es válido: usa puntos \"x,y\" separados por espacio, con punto decimal."; return; }
+        if (l.Count == 0) { _error = "Escribe o pega los puntos."; return; }
+        _pts = l; _sel = -1; _plantilla = "libre";
+    }
+
+    private void VerTexto() => _texto = Formas.ATexto(_pts);
+
+    // ---------- dibujo con el puntero ----------
+    private IJSObjectReference? _modulo;
+
+    private async Task<(double X, double Y)?> PuntoAsync(double clientX, double clientY)
+    {
+        try
+        {
+            _modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/tizadoEditor.js");
+            if (_modulo is null) return null;
+            var p = await _modulo.InvokeAsync<double[]>("puntoSvg", _svg, clientX, clientY);
+            return p is { Length: >= 2 } ? (p[0], p[1]) : null;
+        }
+        catch (Exception) { _error = "El dibujo con el puntero no está disponible: escribe las coordenadas en la tabla."; return null; }
+    }
+
+    private double Snap(double v) => _rejilla > 0 ? Math.Round(v / _rejilla) * _rejilla : Math.Round(v, 2);
+
+    private async Task OnDownFondo(Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        var p = await PuntoAsync(e.ClientX, e.ClientY);
+        if (p is null) return;
+        _pts.Add(new Punto(Math.Max(0, Snap(p.Value.X)), Math.Max(0, Snap(p.Value.Y))));
+        _sel = _pts.Count - 1; _plantilla = _plantilla == "libre" ? "libre" : _plantilla;
+    }
+
+    private async Task OnDownPunto(int i, Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        _sel = i; _arrastrando = i;
+        try { _modulo ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/tizadoEditor.js"); if (_modulo is not null) await _modulo.InvokeVoidAsync("capturarPuntero", _svg, e.PointerId); } catch (Exception) { }
+    }
+
+    private async Task OnMove(Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        if (_arrastrando < 0 || _arrastrando >= _pts.Count) return;
+        var p = await PuntoAsync(e.ClientX, e.ClientY);
+        if (p is null || _arrastrando < 0 || _arrastrando >= _pts.Count) return;
+        _pts[_arrastrando] = new Punto(Math.Max(0, Snap(p.Value.X)), Math.Max(0, Snap(p.Value.Y)));
+    }
+
+    private async Task OnUp(Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        if (_arrastrando < 0) return;
+        _arrastrando = -1;
+        try { if (_modulo is not null) await _modulo.InvokeVoidAsync("liberarPuntero", _svg, e.PointerId); } catch (Exception) { }
+    }
+
+    private void Aceptar()
+    {
+        if (Problema is not null) return;
+        MudDialog.Close(DialogResult.Ok(new Resultado(Formas.ATexto(_pts))));
+    }
+
+    private void Cancelar() => MudDialog.Cancel();
+}

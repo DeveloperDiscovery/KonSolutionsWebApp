@@ -1,0 +1,87 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+@* Memorias del proyecto: la descripción detallada de lo ocurrido, con fecha y usuario que la registró. Pueden ligarse a un evento (retraso o no),
+   a una fase o a una tarea. Un evento puede tener varias memorias; desde la pestaña Eventos se abre una ya ligada a él. *@
+<div class="d-flex align-center gap-2 flex-wrap mb-2">
+    @if (!ReadOnly) { <MudButton OnClick="@(() => Editar(null))" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.NoteAdd">Nueva memoria</MudButton> }
+    <MudSpacer />
+    <MudText Class="mono" Style="opacity:.6;font-size:.82rem;">@_items.Count memorias · @_items.Count(m => m.NUM_SECUENCIA_EVENTO != null) ligadas a un evento</MudText>
+    <GridRefreshButton OnRefresh="CargarAsync" />
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <MudDataGrid T="ExpedienteMemoria" Items="_items" Dense="true" Hover="true" Striped="true" FixedHeader="true" SortMode="SortMode.Multiple" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterMenu" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Title="Fecha" SortBy="x => x.FEC_REGISTRO" Filterable="false" HeaderStyle="width:140px;">
+                <CellTemplate><span class="mono">@context.Item.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</span>@if (context.Item.FEC_ACTUALIZACION != null) { <div class="mono" style="font-size:.7rem;opacity:.6;">mod. @context.Item.FEC_ACTUALIZACION?.ToString("dd/MM/yyyy HH:mm") · @context.Item.COD_USUARIO_ACTUALIZACION</div> }</CellTemplate>
+            </TemplateColumn>
+            <PropertyColumn Property="x => x.COD_USUARIO_REGISTRO" Title="Usuario" />
+            <TemplateColumn Title="Evento" SortBy="x => x.DES_EVENTO">
+                <CellTemplate>
+                    @if (context.Item.NUM_SECUENCIA_EVENTO is not null)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@(context.Item.FLG_RETRASO == true ? Color.Error : Color.Default)" Variant="Variant.Outlined">@(context.Item.FLG_RETRASO == true ? "Retraso · " : "")@context.Item.DES_EVENTO</MudChip>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Fase / tarea" SortBy="x => x.DES_TAREA"><CellTemplate>@(context.Item.DES_TAREA ?? context.Item.DES_FASE ?? "Proyecto")</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Memoria" Sortable="false" Filterable="false"><CellTemplate><div style="white-space:pre-wrap;">@context.Item.DES_MEMORIA</div></CellTemplate></TemplateColumn>
+            @if (!ReadOnly)
+            {
+                <TemplateColumn Title="Acciones" Sortable="false" Filterable="false" CellStyle="white-space:nowrap;">
+                    <CellTemplate>
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Editar(context.Item))" title="Editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small" OnClick="@(() => Quitar(context.Item))" title="Quitar" />
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Todavía no hay memorias. Registra la descripción detallada de lo ocurrido en el proyecto.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="ExpedienteMemoria" /></PagerContent>
+    </MudDataGrid>
+</MudPaper>
+
+@code {
+    [Inject] private ConfigService ConfigSvc { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private List<ExpedienteMemoria> _items = new();
+    private List<ExpedienteEvento> _eventos = new();
+    private ExpedientePlanificacion _plan = new();
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    public async Task CargarAsync()
+    {
+        try
+        {
+            _items = await Http.SafeGetAsync<List<ExpedienteMemoria>>(ApiRoutes.Proyectos.Exp(NumProyecto, "memorias")) ?? new();
+            _eventos = await Http.SafeGetAsync<List<ExpedienteEvento>>(ApiRoutes.Proyectos.Exp(NumProyecto, "eventos")) ?? new();
+            _plan = await Http.SafeGetAsync<ExpedientePlanificacion>(ApiRoutes.Proyectos.Exp(NumProyecto, "planificacion")) ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoMemorias), nameof(CargarAsync)); Snackbar.Add("No se pudo cargar las memorias. Ver detalle en el log de errores.", Severity.Error); }
+    }
+
+    private async Task Editar(ExpedienteMemoria? m)
+    {
+        var dlg = await DialogService.ShowAsync<ProyectoMemoriaDialog>(m is null ? "Nueva memoria" : "Editar memoria",
+            new DialogParameters { ["NumProyecto"] = NumProyecto, ["Item"] = m, ["Notas"] = _items, ["Fases"] = _plan.Fases, ["Tareas"] = _plan.Tareas, ["Eventos"] = _eventos },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+    }
+
+    private async Task Quitar(ExpedienteMemoria m)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar memoria", "¿Quitar esta memoria del proyecto?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var (exito, msg) = await ProyectoApi.DeleteAsync(Http, $"{ApiRoutes.Proyectos.Memoria}/{NumProyecto}/{m.NUM_SECUENCIA}");
+        if (!exito) { Snackbar.Add(msg ?? "No se pudo quitar la memoria.", Severity.Warning); return; }
+        await CargarAsync(); await OnCambio.InvokeAsync();
+    }
+}

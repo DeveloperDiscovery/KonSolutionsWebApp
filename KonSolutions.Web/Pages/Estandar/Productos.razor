@@ -1,0 +1,465 @@
+@page "/estandar/productos"
+@attribute [Authorize]
+@using ProductosModel = KONSolutions.Shared.Models.Estandar.Productos
+@using FamiliaModel = KONSolutions.Shared.Models.Estandar.FamiliasProducto
+@using SubFamiliaModel = KONSolutions.Shared.Models.Estandar.SubFamiliasProducto
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Productos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Productos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema ESTANDAR · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar código o descripción de producto..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    @* HasFilters cuenta los tres combos ademas de los filtros de columna: si no, con solo
+       un grupo elegido el boton aparecia apagado y no habia forma de volver atras. *@
+    <GridClearFiltersButton OnClear="LimpiarFiltros"
+                            HasFilters="@(_filtros.Any(f => f.Value is not null)
+                                          || !string.IsNullOrEmpty(_codGrupo)
+                                          || !string.IsNullOrEmpty(_codFamilia)
+                                          || !string.IsNullOrEmpty(_codSubFamilia)
+                                          || !string.IsNullOrEmpty(_filtroEspecs))" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        @* Plegar el panel es tan importante como tenerlo: cerrado, la grilla recupera sus
+           270px. Quien no usa el filtro no lo paga. El icono queda resaltado mientras haya
+           checks puestos, para que nadie deje un filtro activo detras de un panel cerrado. *@
+        <MudTooltip Text="@(_panelEspecs ? "Ocultar filtro de especificaciones" : "Filtrar por especificaciones técnicas")">
+            <MudIconButton Icon="@Icons.Material.Filled.Tune"
+                           Color="@(string.IsNullOrEmpty(_filtroEspecs) ? Color.Default : Color.Primary)"
+                           Variant="@(_panelEspecs ? Variant.Filled : Variant.Outlined)"
+                           Size="Size.Medium" OnClick="@(() => _panelEspecs = !_panelEspecs)" />
+        </MudTooltip>
+        <GridRefreshButton OnRefresh="Load" />
+        @* El botón de alta vive en la cabecera: abierta como consulta, la cabecera no
+           tiene nada que ofrecer. *@
+        @if (!SoloConsulta)
+        {
+            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                             Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+        }
+    </div>
+</div>
+
+@* ── Filtros por clasificacion ────────────────────────────────────────────────
+   Van en su propia barra y no en el encabezado: ahi ya conviven el buscador, el
+   limpiar filtros, el refrescar y los botones de accion, y tres combos mas lo
+   dejaban ilegible en pantallas chicas.
+
+   Filtran EN LA BASE, no en memoria: el SHOWALL y el SEARCH reciben los tres
+   codigos. Es lo correcto para un maestro que puede crecer a miles de productos
+   —traerlos todos para descartarlos en el navegador no escala—, y ademas es lo
+   que ya hacia el buscador de texto. *@
+<MudPaper Class="pa-3 mb-3" Elevation="0" Style="border:1px solid var(--line);">
+    <MudGrid>
+        <MudItem xs="12" sm="4">
+            <AriaCombo TItem="ComboboxItem" Items="_grupos"
+                       TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+                       Value="@_codGrupo" ValueChanged="@(v => OnGrupoChanged(v))"
+                       Label="Grupo de Producto" />
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <AriaCombo TItem="ComboboxItem" Items="_familias"
+                       TextFunc="@(f => $"{f.Id} - {f.Texto}")" ValueFunc="@(f => f.Id)"
+                       Value="@_codFamilia" ValueChanged="@(v => OnFamiliaChanged(v))"
+                       Label="Familia de Producto" Disabled="@string.IsNullOrEmpty(_codGrupo)" />
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <AriaCombo TItem="ComboboxItem" Items="_subFamilias"
+                       TextFunc="@(sf => $"{sf.Id} - {sf.Texto}")" ValueFunc="@(sf => sf.Id)"
+                       Value="@_codSubFamilia" ValueChanged="@(v => OnSubFamiliaChanged(v))"
+                       Label="Sub Familia de Producto" Disabled="@string.IsNullOrEmpty(_codFamilia)" />
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<div class="fila-panel-grilla">
+
+@if (_panelEspecs)
+{
+    <div class="filtro-esp-contenedor">
+        <FiltroEspecificacionesPanel CodGrupo="@_codGrupo" CodFamilia="@_codFamilia"
+                                     CodSubFamilia="@_codSubFamilia"
+                                     FiltroChanged="OnFiltroEspecsChanged" />
+    </div>
+}
+
+<MudPaper Elevation="0" Class="flex-grow-1" Style="border:1px solid var(--line);min-width:0;">
+    <div data-resizable-grid="productos" style="position:relative;">
+    <MudDataGrid T="ProductosModel" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Código" Width="120">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="COD_PRODUCTO" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(0)" ValorDe="@(x=>x.COD_PRODUCTO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>Filtro(0,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.COD_PRODUCTO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Descripción">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_PRODUCTO" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(1)" ValorDe="@(x=>x.DES_PRODUCTO)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_PRODUCTO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Tipo de Producto" Width="170">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_TIPO_PRODUCTO" Activo="@(_ordenColumna == 2)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(2))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(2)" ValorDe="@(x=>x.DES_TIPO_PRODUCTO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v=>Filtro(2,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_PRODUCTO</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Sub Familia" Width="170">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_SUB_FAMILIA_PRODUCTO" Activo="@(_ordenColumna == 3)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(3))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(3)" ValorDe="@(x=>x.DES_SUB_FAMILIA_PRODUCTO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v=>Filtro(3,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_SUB_FAMILIA_PRODUCTO</CellTemplate>
+            </TemplateColumn>
+            @* Propietario. El indice 6 NO sigue el orden visual a proposito: los indices son la
+               clave de _filtros y de Ordenar, asi que renumerar las columnas de al lado para
+               insertar esta en el medio obligaria a tocar dos switch enteros. Agregar el
+               siguiente libre es un cambio de una linea por lugar. *@
+            <TemplateColumn Sortable="false" Title="Propietario" Width="170">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ENTIDAD_PROPIETARIA" Activo="@(_ordenColumna == 6)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(6))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(6)" ValorDe="@(x=>x.DES_ENTIDAD_PROPIETARIA ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v=>Filtro(6,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_ENTIDAD_PROPIETARIA</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Unidad de Medida" Width="150">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_UNIDAD_MEDIDA" Activo="@(_ordenColumna == 4)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(4))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(4)" ValorDe="@(x=>x.DES_UNIDAD_MEDIDA ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v=>Filtro(4,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_UNIDAD_MEDIDA</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Estado" Sortable="false" Width="130">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="DES_ESTADO" Activo="@(_ordenColumna == 5)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(5))" />
+                        <FiltroExcelColumna T="ProductosModel" ItemsBase="@Base(5)" ValorDe="@(x=>x.DES_ESTADO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v=>Filtro(5,v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>
+                    <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <div @onclick:stopPropagation="true">
+                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))"
+                                     Filtro="@FiltroBotones"
+                                     CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="ProductosModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+</div>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Cuando la pantalla se abre COMO CONSULTA desde otra (el botón "Ver el
+    /// producto" / "Ver el lote" de Stocks de Almacén), se deja sólo el botón de consulta.
+    /// Se llega ahí para MIRAR un dato del stock que se está revisando, no para dar de alta
+    /// ni para borrar; ofrecer el resto invita a editar un maestro de paso, desde una
+    /// pantalla a la que se entró por otra cosa.
+    ///
+    /// Es un filtro de PRESENTACIÓN, no un permiso: lo que cada rol puede hacer lo sigue
+    /// mandando Seguridad, y entrando por el menú la pantalla se comporta igual que siempre.</summary>
+    [Parameter] public bool SoloConsulta { get; set; }
+
+    /// <summary>Texto con el que arranca el buscador. Sirve para que la pantalla abra ya
+    /// mostrando el registro por el que se vino, en vez del listado completo.</summary>
+    [Parameter] public string? BusquedaInicial { get; set; }
+
+    private Func<BotonTreeviewItem, bool>? FiltroBotones => SoloConsulta ? EsSoloConsulta : null;
+
+    /// <summary>Consulta = GET y nada más. Un botón de Modificar suele traer GET y PUT a la
+    /// vez (para editar primero hay que leer) y un Eliminar, GET y DELETE: preguntar sólo
+    /// por GET los dejaría pasar a los dos.</summary>
+    private static bool EsSoloConsulta(BotonTreeviewItem b)
+        => b.FLG_ACCION_GET == true
+        && b.FLG_ACCION_PUT != true && b.FLG_ACCION_POST != true && b.FLG_ACCION_DELETE != true
+        && !AccionesBotones.EsNuevo(b);
+
+
+    private List<ProductosModel> _items = new();
+    private string _search = "";
+
+    // ── Filtros por clasificacion ──────────────────────────────────────────
+    private List<ComboboxItem> _grupos = new(), _familias = new(), _subFamilias = new();
+    private string? _codGrupo, _codFamilia, _codSubFamilia;
+
+    // ── Panel de especificaciones ──────────────────────────────────────────
+    private bool _panelEspecs;
+    /// <summary>Lo que el panel devuelve: 'esp:item;esp:item'. La pantalla no lo interpreta,
+    /// solo lo reenvia al SP — quien sabe armarlo es el componente.</summary>
+    private string _filtroEspecs = "";
+
+    private async Task OnFiltroEspecsChanged(string filtro)
+    {
+        _filtroEspecs = filtro ?? "";
+        await Load();
+    }
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private List<ProductosModel> Ordenar(List<ProductosModel> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_PRODUCTO).ToList() : items.OrderByDescending(x => x.COD_PRODUCTO).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_PRODUCTO).ToList() : items.OrderByDescending(x => x.DES_PRODUCTO).ToList(),
+        2 => _ordenAscendente ? items.OrderBy(x => x.DES_TIPO_PRODUCTO).ToList() : items.OrderByDescending(x => x.DES_TIPO_PRODUCTO).ToList(),
+        3 => _ordenAscendente ? items.OrderBy(x => x.DES_SUB_FAMILIA_PRODUCTO).ToList() : items.OrderByDescending(x => x.DES_SUB_FAMILIA_PRODUCTO).ToList(),
+        4 => _ordenAscendente ? items.OrderBy(x => x.DES_UNIDAD_MEDIDA).ToList() : items.OrderByDescending(x => x.DES_UNIDAD_MEDIDA).ToList(),
+        5 => _ordenAscendente ? items.OrderBy(x => x.DES_ESTADO).ToList() : items.OrderByDescending(x => x.DES_ESTADO).ToList(),
+        6 => _ordenAscendente ? items.OrderBy(x => x.DES_ENTIDAD_PROPIETARIA).ToList() : items.OrderByDescending(x => x.DES_ENTIDAD_PROPIETARIA).ToList(),
+        _ => items
+    };
+    private List<ProductosModel> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<ProductosModel> Base(int col) => Aplicar(_items, col);
+
+    private List<ProductosModel> Aplicar(List<ProductosModel> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<ProductosModel> q = src;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.COD_PRODUCTO)),
+                1 => q.Where(x => v.Contains(x.DES_PRODUCTO)),
+                2 => q.Where(x => v.Contains(x.DES_TIPO_PRODUCTO ?? "")),
+                3 => q.Where(x => v.Contains(x.DES_SUB_FAMILIA_PRODUCTO ?? "")),
+                4 => q.Where(x => v.Contains(x.DES_UNIDAD_MEDIDA ?? "")),
+                5 => q.Where(x => v.Contains(x.DES_ESTADO ?? "")),
+                6 => q.Where(x => v.Contains(x.DES_ENTIDAD_PROPIETARIA ?? "")),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    /// <summary>El boton de limpiar ahora baja TAMBIEN los tres combos de clasificacion.
+    /// Si limpiara solo los filtros de columna, el usuario veria el boton "sin filtros" y la
+    /// grilla seguiria acotada por el grupo elegido arriba: no hay peor filtro que el que
+    /// sigue puesto y parece apagado.
+    ///
+    /// Pasa a async porque limpiar la clasificacion obliga a volver a pedir los datos: esos
+    /// tres no se filtran en memoria, se filtran en la base.</summary>
+    private async Task LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+
+        var habiaClasificacion = !string.IsNullOrEmpty(_codGrupo)
+                              || !string.IsNullOrEmpty(_codFamilia)
+                              || !string.IsNullOrEmpty(_codSubFamilia)
+                              || !string.IsNullOrEmpty(_filtroEspecs);
+
+        _codGrupo = null; _codFamilia = null; _codSubFamilia = null;
+        _familias = new(); _subFamilias = new();
+        // Limpiar la clasificacion hace que el panel recargue su arbol, y al recargarlo el
+        // propio panel suelta sus checks y avisa. Aca se baja igual, por si el panel esta
+        // cerrado y no hay componente vivo que se entere.
+        _filtroEspecs = "";
+
+        if (habiaClasificacion) await Load();
+        StateHasChanged();
+    }
+
+    private async Task Buscar() => _items = string.IsNullOrWhiteSpace(_search) ? await Fetch() : await FetchSearch(_search);
+
+    /// <summary>La cascada. Cambiar el grupo invalida familia y sub familia, y cambiar la
+    /// familia invalida la sub familia: si no se limpiaran, quedaria un filtro apuntando a
+    /// una familia que ya no pertenece al grupo elegido y la grilla saldria vacia sin que
+    /// se entienda por que.</summary>
+    private async Task OnGrupoChanged(string? val)
+    {
+        _codGrupo = val; _codFamilia = null; _codSubFamilia = null;
+        _familias = new(); _subFamilias = new();
+
+        if (!string.IsNullOrEmpty(val))
+        {
+            var fam = await Http.SafeGetAsync<List<FamiliaModel>>(
+                $"{EstandarRoute.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(val)}");
+            _familias = (fam ?? new())
+                .Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO })
+                .ToList();
+        }
+        await Load();
+    }
+
+    private async Task OnFamiliaChanged(string? val)
+    {
+        _codFamilia = val; _codSubFamilia = null;
+        _subFamilias = new();
+
+        if (!string.IsNullOrEmpty(val) && !string.IsNullOrEmpty(_codGrupo))
+        {
+            var sub = await Http.SafeGetAsync<List<SubFamiliaModel>>(
+                $"{EstandarRoute.SubFamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(_codGrupo)}"
+              + $"&codFamiliaProducto={Uri.EscapeDataString(val)}");
+            _subFamilias = (sub ?? new())
+                .Select(sf => new ComboboxItem { Id = sf.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = sf.DES_SUB_FAMILIA_PRODUCTO })
+                .ToList();
+        }
+        await Load();
+    }
+
+    private async Task OnSubFamiliaChanged(string? val)
+    {
+        _codSubFamilia = val;
+        await Load();
+    }
+
+    /// <summary>Los tres filtros como query string, o cadena vacia si no hay ninguno.
+    /// Se arma en un solo lugar para que el SHOWALL y el SEARCH no puedan divergir.</summary>
+    private string QueryFiltros(bool primerParametro)
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrEmpty(_codGrupo))      partes.Add($"COD_GRUPO_PRODUCTO={Uri.EscapeDataString(_codGrupo)}");
+        if (!string.IsNullOrEmpty(_codFamilia))    partes.Add($"COD_FAMILIA_PRODUCTO={Uri.EscapeDataString(_codFamilia)}");
+        if (!string.IsNullOrEmpty(_codSubFamilia)) partes.Add($"COD_SUB_FAMILIA_PRODUCTO={Uri.EscapeDataString(_codSubFamilia)}");
+        if (!string.IsNullOrEmpty(_filtroEspecs))  partes.Add($"FILTRO_ESPECIFICACIONES={Uri.EscapeDataString(_filtroEspecs)}");
+        if (partes.Count == 0) return "";
+        return (primerParametro ? "?" : "&") + string.Join("&", partes);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ESTANDAR", "Productos");
+
+        // Antes de Load(): el buscador es lo que decide si se pide el listado completo o el
+        // filtrado, así que sembrarlo después obligaría a una segunda vuelta al servidor.
+        if (!string.IsNullOrWhiteSpace(BusquedaInicial)) _search = BusquedaInicial!;
+
+        // Los grupos salen del mismo loadcombos que usa el dialogo de Producto, asi que no
+        // hace falta endpoint nuevo. Familias y sub familias se piden recien al elegir el
+        // nivel de arriba: son cascada, no listas completas.
+        var lc = await Http.SafeGetAsync<ProductosLoadCombosResult>(EstandarRoute.ProductosLoadcombos);
+        if (lc is not null) _grupos = lc.Grupos;
+
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("ESTANDAR.PRODUCTOS", _onCambio);
+    }
+
+    private async Task Load() => _items = string.IsNullOrWhiteSpace(_search) ? await Fetch() : await FetchSearch(_search);
+
+    private async Task<List<ProductosModel>> Fetch()
+    {
+        try
+        {
+            // Siempre el mismo endpoint, haya o no checks marcados: sin filtros el SP se
+            // comporta igual que el SHOWALL. Tener dos caminos segun el estado del panel es
+            // como se terminan comportando distinto sin que nadie se de cuenta.
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ProductosModel>>>(
+                $"{ApiRoutes.Estandar.ProductosFiltrarEspecificaciones}{QueryFiltros(primerParametro: true)}");
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Productos), nameof(Fetch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Productos));
+            return new();
+        }
+    }
+
+    private async Task<List<ProductosModel>> FetchSearch(string s)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ProductosModel>>>(
+                $"{ApiRoutes.Estandar.ProductosFiltrarEspecificaciones}?search={Uri.EscapeDataString(s)}{QueryFiltros(primerParametro: false)}");
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Productos), nameof(FetchSearch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Productos));
+            return new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(ProductosModel item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(ProductosModel? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo producto",
+            CrudModo.Delete => $"Eliminar · {item?.DES_PRODUCTO}",
+            CrudModo.Read   => $"Consultar · {item?.DES_PRODUCTO}",
+            _               => $"Editar · {item?.DES_PRODUCTO}"
+        };
+        var dlg = await DialogService.ShowAsync<ProductosDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose() => Cambios.Desuscribir("ESTANDAR.PRODUCTOS", _onCambio ?? (() => Task.CompletedTask));
+}

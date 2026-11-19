@@ -1,0 +1,100 @@
+@* Alta y cambio de una matriz de operaciones (script SQL 130): nombre y, si se quiere, la sub familia de producto a la que sirve (grupo, familia y sub familia:
+   las tres o ninguna). Una matriz sin sub familia sirve para cualquier producto. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using FamiliasProductoModel = KONSolutions.Shared.Models.Estandar.FamiliasProducto
+@using SubFamiliasProductoModel = KONSolutions.Shared.Models.Estandar.SubFamiliasProducto
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudTextField T="string" @bind-Value="_m.DES_RUTA" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" data-campo="nombre" />
+        <MudText Typo="Typo.caption" Class="mb-1" Style="opacity:.7;">Sub familia de producto (opcional): la matriz se sugiere a los diseños de esa sub familia.</MudText>
+        <AriaCombo TItem="ComboboxItem" Items="_grupos" TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+                   Value="@_m.COD_GRUPO_PRODUCTO" ValueChanged="@(v => OnGrupo(v))" Label="Grupo de producto" />
+        <AriaCombo TItem="ComboboxItem" Items="_familias" TextFunc="@(f => $"{f.Id} - {f.Texto}")" ValueFunc="@(f => f.Id)"
+                   Value="@_m.COD_FAMILIA_PRODUCTO" ValueChanged="@(v => OnFamilia(v))" Label="Familia de producto" Disabled="@(string.IsNullOrEmpty(_m.COD_GRUPO_PRODUCTO))" />
+        <AriaCombo TItem="ComboboxItem" Items="_subs" TextFunc="@(s => $"{s.Id} - {s.Texto}")" ValueFunc="@(s => s.Id)"
+                   Value="@_m.COD_SUB_FAMILIA_PRODUCTO" ValueChanged="@(v => _m.COD_SUB_FAMILIA_PRODUCTO = Vacio(v))" Label="Sub familia de producto" Disabled="@(string.IsNullOrEmpty(_m.COD_FAMILIA_PRODUCTO))" />
+        @if (!string.IsNullOrEmpty(_m.COD_GRUPO_PRODUCTO))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="QuitarSubFamilia" data-accion="sin-sub-familia">Dejarla sin sub familia</MudButton>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>La matriz que se cambia; sin ella es una matriz nueva.</summary>
+    [Parameter] public MatrizResumen? Matriz { get; set; }
+
+    private readonly MatrizGuardarDto _m = new();
+    private List<ComboboxItem> _grupos = new(), _familias = new(), _subs = new();
+    private bool _guardando;
+    private string _error = "";
+
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Matriz is not null)
+        {
+            _m.COD_RUTA_PRODUCCION = Matriz.COD_RUTA_PRODUCCION; _m.DES_RUTA = Matriz.DES_RUTA_PRODUCCION ?? ""; _m.COD_TIPO_RUTA = Matriz.COD_TIPO_RUTA_PRODUCCION ?? "PRD";
+            _m.COD_GRUPO_PRODUCTO = Vacio(Matriz.COD_GRUPO_PRODUCTO); _m.COD_FAMILIA_PRODUCTO = Vacio(Matriz.COD_FAMILIA_PRODUCTO); _m.COD_SUB_FAMILIA_PRODUCTO = Vacio(Matriz.COD_SUB_FAMILIA_PRODUCTO);
+        }
+        _grupos = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.GruposProductoCombobox)) ?? new();
+        if (_m.COD_GRUPO_PRODUCTO is not null) await CargarFamilias(_m.COD_GRUPO_PRODUCTO);
+        if (_m.COD_GRUPO_PRODUCTO is not null && _m.COD_FAMILIA_PRODUCTO is not null) await CargarSubs(_m.COD_GRUPO_PRODUCTO, _m.COD_FAMILIA_PRODUCTO);
+    }
+
+    private async Task CargarFamilias(string g)
+    {
+        var l = (await Http.SafeGetAsync<List<FamiliasProductoModel>>($"{EstandarRoute.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(g)}")) ?? new();
+        _familias = l.Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO }).ToList();
+    }
+
+    private async Task CargarSubs(string g, string f)
+    {
+        var l = (await Http.SafeGetAsync<List<SubFamiliasProductoModel>>(EstandarRoute.SubFamiliasProductoLista(g, f))) ?? new();
+        _subs = l.Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = s.DES_SUB_FAMILIA_PRODUCTO }).ToList();
+    }
+
+    private async Task OnGrupo(string? v)
+    {
+        _m.COD_GRUPO_PRODUCTO = Vacio(v); _m.COD_FAMILIA_PRODUCTO = _m.COD_SUB_FAMILIA_PRODUCTO = null; _familias = new(); _subs = new();
+        if (_m.COD_GRUPO_PRODUCTO is not null) await CargarFamilias(_m.COD_GRUPO_PRODUCTO);
+    }
+
+    private async Task OnFamilia(string? v)
+    {
+        _m.COD_FAMILIA_PRODUCTO = Vacio(v); _m.COD_SUB_FAMILIA_PRODUCTO = null; _subs = new();
+        if (_m.COD_GRUPO_PRODUCTO is not null && _m.COD_FAMILIA_PRODUCTO is not null) await CargarSubs(_m.COD_GRUPO_PRODUCTO, _m.COD_FAMILIA_PRODUCTO);
+    }
+
+    private void QuitarSubFamilia() { _m.COD_GRUPO_PRODUCTO = _m.COD_FAMILIA_PRODUCTO = _m.COD_SUB_FAMILIA_PRODUCTO = null; _familias = new(); _subs = new(); }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_m.DES_RUTA)) { _error = "Escribe el nombre de la matriz."; return; }
+        var n = new[] { _m.COD_GRUPO_PRODUCTO, _m.COD_FAMILIA_PRODUCTO, _m.COD_SUB_FAMILIA_PRODUCTO }.Count(x => !string.IsNullOrWhiteSpace(x));
+        if (n is not (0 or 3)) { _error = "Elige el grupo, la familia y la sub familia completos, o ninguno."; return; }
+        _guardando = true;
+        var nuevo = Matriz is null;
+        string? cod = _m.COD_RUTA_PRODUCCION;
+        bool ok; string? msg;
+        if (nuevo) { var r = await OperacionesApi.EnviarAsync<string>(Http, HttpMethod.Post, IngRoute.Matrices, _m); ok = r.Ok; msg = r.Mensaje; cod = r.Data; }
+        else { var r = await OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Put, IngRoute.Matrices, _m); ok = r.Ok; msg = r.Mensaje; }
+        _guardando = false;
+        if (!ok) { _error = msg ?? "No se pudo guardar."; return; }
+        Snackbar.Add(nuevo ? "Matriz creada." : "Matriz guardada.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(cod ?? ""));
+    }
+}

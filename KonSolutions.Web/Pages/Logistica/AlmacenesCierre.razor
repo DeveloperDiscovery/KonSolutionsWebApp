@@ -1,0 +1,361 @@
+@page "/logistica/almacenes-cierre"
+@attribute [Authorize]
+@using CierreModel = KONSolutions.Shared.Models.Logistica.AlmacenesCierre
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Cierre de Almacenes · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* CIERRE DE ALMACENES — LOGISTICA.ALMACENES_CIERRE.
+
+   Una fila es un cierre de UN almacén para un periodo (desde – hasta, ambos inclusive). Mientras está CERRADO, el almacén no admite
+   movimientos, ajustes ni transferencias con fecha dentro del periodo, ni operaciones hechas HOY si hoy cae dentro del periodo: lo
+   rechazan los propios procedimientos de la base (error 50590), así que vale para todas las pantallas, las interfaces y los lectores.
+
+   · «Nuevo cierre» (cabecera) cierra uno o VARIOS almacenes con el mismo periodo, todo o nada.
+   · «Modificar» cambia el periodo o la observación de un cierre vigente.
+   · «Reabrir» pide el motivo y NO borra el cierre: queda REABIERTO con quién, cuándo y por qué.
+   · «Eliminar» solo borra un cierre que ya fue reabierto.
+   Qué botones ve cada rol lo decide Seguridad (opciones y botones del rol), como en las demás pantallas. *@
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Cierre de Almacenes" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);" data-resumen="cierres">
+            Schema LOGISTICA · @_visibles.Count de @_items.Count cierres · @_items.Count(x => x.FLG_CERRADO) vigentes · @_items.Count(x => x.FLG_EN_CURSO) cerrando HOY
+        </MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar almacén, observación, usuario, fecha..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+    @* Los tres filtros miden LO MISMO y arrancan en la misma línea. AriaCombo mide 51.25 px (el alto de un campo Outlined con Margin normal, por eso el Estado y la fecha no llevan
+       Margin.Dense); como el alto real de MudSelect/MudDatePicker cambia un poco con la fuente, se fija el mismo número en los tres. El combo trae 16 px arriba y los otros 8 (el hueco de su
+       etiqueta): se igualan para que no se vea uno más bajo. *@
+    <style>
+        .filtros-cierre { align-items: flex-start !important; }
+        .filtros-cierre .aria-combo { margin-top: 8px !important; }
+        .filtros-cierre .mud-input-control-input-container,
+        .filtros-cierre .mud-input-control-input-container .mud-input { height: 51.25px !important; min-height: 51.25px !important; }
+    </style>
+    <div class="d-flex gap-3 filtros-cierre" style="flex-wrap:wrap;" data-filtros="cierre">
+        <div style="flex:1 1 260px;min-width:0;max-width:380px;">
+            <AriaCombo TItem="ComboboxItem" Items="_almacenesCombo"
+                       TextFunc="@(t => t.Id == Todos ? t.Texto : $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       Value="@_codAlmacen" ValueChanged="OnAlmacenChanged" Label="Almacén" Class="" />
+        </div>
+        <div style="flex:0 1 200px;min-width:160px;">
+            <MudSelect T="string" Label="Estado" Variant="Variant.Outlined" Value="_estado" ValueChanged="OnEstadoChanged" data-filtro="estado">
+                <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+                <MudSelectItem T="string" Value="@("V")">Cerrados (vigentes)</MudSelectItem>
+                <MudSelectItem T="string" Value="@("H")">Cerrando hoy</MudSelectItem>
+                <MudSelectItem T="string" Value="@("R")">Reabiertos</MudSelectItem>
+            </MudSelect>
+        </div>
+        <div style="flex:0 1 220px;min-width:180px;">
+            <MudDatePicker Label="Que incluya la fecha" Variant="Variant.Outlined" Date="_fecha" DateChanged="OnFechaChanged"
+                           Clearable="true" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+        </div>
+    </div>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="almacenes-cierre" style="position:relative;">
+    <MudDataGrid T="CierreModel" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica"
+                 RowStyleFunc="@RowStyle">
+        <Columns>
+            @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+            {
+                <TemplateColumn Sortable="false" Title="@c.Titulo" CellStyle="@c.Estilo">
+                    <HeaderTemplate>
+                        <div class="d-flex align-center gap-1">
+                            <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenColumna == idx)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(idx))" />
+                            <FiltroExcelColumna T="CierreModel" ItemsBase="@Base(idx)" ValorDe="@c.Valor"
+                                                ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtro(idx, v))" />
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (idx == ColEstado)
+                        {
+                            <div style="display:flex;flex-direction:column;gap:2px;align-items:flex-start;">
+                                <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@(context.Item.FLG_CERRADO ? "#ffcdd2" : "#c8e6c9")" ForeColor="@(context.Item.FLG_CERRADO ? "#b71c1c" : "#1b5e20")" />
+                                @if (context.Item.FLG_EN_CURSO)
+                                {
+                                    <span style="font-size:.68rem;font-weight:700;color:#b71c1c;" title="Hoy está dentro del periodo: el almacén no opera ahora mismo." data-en-curso="@context.Item.NUM_CIERRE_ALMACEN">CERRADO HOY</span>
+                                }
+                            </div>
+                        }
+                        else if (idx == ColAlmacen)
+                        {
+                            <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                <span class="mono" style="font-size:.72rem;opacity:.6;">@context.Item.COD_ALMACEN</span>
+                                <span>@context.Item.DES_ALMACEN</span>
+                            </div>
+                        }
+                        else
+                        {
+                            @c.Valor(context.Item)
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+            <TemplateColumn Title="Observación" Sortable="false" Width="260">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Observación" /></HeaderTemplate>
+                <CellTemplate>
+                    <span style="font-size:.82rem;" title="@context.Item.DES_OBSERVACION">@context.Item.DES_OBSERVACION</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Cerrado por" Sortable="false" Width="170">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Cerrado por" /></HeaderTemplate>
+                <CellTemplate>
+                    <div style="display:flex;flex-direction:column;line-height:1.25;font-size:.78rem;">
+                        <span class="mono">@context.Item.COD_USUARIO_REGISTRO</span>
+                        <span style="opacity:.6;">@context.Item.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</span>
+                    </div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Reapertura" Sortable="false" Width="230">
+                <HeaderTemplate><EncabezadoOrdenable Texto="Reapertura" /></HeaderTemplate>
+                <CellTemplate>
+                    @if (!context.Item.FLG_CERRADO)
+                    {
+                        <div style="display:flex;flex-direction:column;line-height:1.25;font-size:.78rem;" title="@context.Item.DES_MOTIVO_REAPERTURA" data-reapertura="@context.Item.NUM_CIERRE_ALMACEN">
+                            <span><span class="mono">@context.Item.COD_USUARIO_REAPERTURA</span> · <span style="opacity:.6;">@context.Item.FEC_REAPERTURA?.ToString("dd/MM/yyyy HH:mm")</span></span>
+                            <span style="opacity:.8;">@context.Item.DES_MOTIVO_REAPERTURA</span>
+                        </div>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    @* @key: los botones de la fila dependen del estado del cierre (reabrir/modificar solo vigentes, eliminar solo reabiertos) y el componente guarda sus botones: al cambiar el estado se vuelve a crear. *@
+                    <AccionesBotones @key="@($"{item.NUM_CIERRE_ALMACEN}|{item.FLG_CERRADO}")" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" Filtro="@(b => BotonAplica(item, b))"
+                                     OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin cierres.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="CierreModel" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    /// <summary>Valor del combo de almacén para «todos».</summary>
+    private const string Todos = "*";
+    private const int ColEstado = 0, ColAlmacen = 1;
+
+    /// <summary>Una columna filtrable y ordenable. Valor es lo que se muestra, se filtra y se ordena como texto; Clave, si hace
+    /// falta, es por lo que se ordena (las fechas, por fecha y no por su texto).</summary>
+    private sealed record Col(string Titulo, Func<CierreModel, string?> Valor, Func<CierreModel, IComparable?>? Clave = null, string? Estilo = null);
+
+    private static string? Fecha(DateTime? f) => f?.ToString("dd/MM/yyyy");
+
+    private readonly Col[] _cols =
+    {
+        new("Estado",  x => x.DES_ESTADO),
+        new("Almacén", x => string.IsNullOrWhiteSpace(x.DES_ALMACEN) ? x.COD_ALMACEN : $"{x.COD_ALMACEN} - {x.DES_ALMACEN}", x => x.COD_ALMACEN),
+        new("Desde",   x => Fecha(x.FEC_DESDE), x => x.FEC_DESDE, "white-space:nowrap;"),
+        new("Hasta",   x => Fecha(x.FEC_HASTA), x => x.FEC_HASTA, "white-space:nowrap;"),
+        new("Días",    x => x.NUM_DIAS.ToString(), x => x.NUM_DIAS, "text-align:right;"),
+    };
+
+    private List<CierreModel> _items = new();
+    private List<ComboboxItem> _almacenesCombo = new() { new() { Id = Todos, Texto = "Todos los almacenes" } };
+    private string _search = "";
+    private string? _codAlmacen = Todos;
+    private string _estado = "";
+    private DateTime? _fecha;
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+
+    private bool HayFiltros => _filtros.Any(f => f.Value is not null) || !string.IsNullOrWhiteSpace(_search)
+                            || _codAlmacen != Todos || _estado != "" || _fecha is not null;
+
+    // ── Filtros: todo en memoria (la tabla es corta: unos pocos cierres por almacén por año) ──────────────
+    private bool CoincideRapido(CierreModel x)
+    {
+        if (_codAlmacen != Todos && !string.Equals(x.COD_ALMACEN, _codAlmacen, StringComparison.OrdinalIgnoreCase)) return false;
+        if (_estado == "V" && !x.FLG_CERRADO) return false;
+        if (_estado == "H" && !x.FLG_EN_CURSO) return false;
+        if (_estado == "R" && x.FLG_CERRADO) return false;
+        if (_fecha is { } f && !(x.FEC_DESDE <= f.Date && f.Date <= x.FEC_HASTA)) return false;
+        var t = _search?.Trim();
+        if (string.IsNullOrEmpty(t)) return true;
+        return Contiene(x.COD_ALMACEN, t) || Contiene(x.DES_ALMACEN, t) || Contiene(x.DES_OBSERVACION, t) || Contiene(x.DES_MOTIVO_REAPERTURA, t)
+            || Contiene(x.COD_USUARIO_REGISTRO, t) || Contiene(x.COD_USUARIO_REAPERTURA, t) || Contiene(x.DES_ESTADO, t)
+            || Contiene(Fecha(x.FEC_DESDE), t) || Contiene(Fecha(x.FEC_HASTA), t);
+    }
+
+    private static bool Contiene(string? texto, string buscado)
+        => texto is not null && texto.Contains(buscado, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Lo visible, menos el filtro de UNA columna (la que se está abriendo): así el filtro de cada columna ofrece los
+    /// valores que quedan según los demás filtros.</summary>
+    private List<CierreModel> Aplicar(int ex)
+    {
+        IEnumerable<CierreModel> q = _items.Where(CoincideRapido);
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(_cols[c].Valor(x) ?? ""));
+        }
+        return q.ToList();
+    }
+
+    private List<CierreModel> Base(int col) => Aplicar(col);
+
+    private List<CierreModel> _visibles => Ordenar(Aplicar(-1));
+
+    private List<CierreModel> Ordenar(List<CierreModel> items)
+    {
+        if (_ordenColumna is not { } col) return items;
+        var c = _cols[col];
+        Func<CierreModel, object?> clave = x => c.Clave is not null ? c.Clave(x) : c.Valor(x);
+        return _ordenAscendente ? items.OrderBy(clave).ToList() : items.OrderByDescending(clave).ToList();
+    }
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+
+    private void LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _search = ""; _codAlmacen = Todos; _estado = ""; _fecha = null;
+        StateHasChanged();
+    }
+
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+    private void OnAlmacenChanged(string? v) { _codAlmacen = string.IsNullOrWhiteSpace(v) ? Todos : v; StateHasChanged(); }
+    private void OnEstadoChanged(string? v) { _estado = v ?? ""; StateHasChanged(); }
+    private void OnFechaChanged(DateTime? v) { _fecha = v; StateHasChanged(); }
+
+    /// <summary>Un cierre que está parando el almacén AHORA se resalta.</summary>
+    private string RowStyle(CierreModel x, int i) => x.FLG_EN_CURSO ? "background:rgba(198,40,40,.07);" : string.Empty;
+
+    // ── Carga ────────────────────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "AlmacenesCierre");
+        await CargarAlmacenes();
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("LOGISTICA.ALMACENES_CIERRE", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task CargarAlmacenes()
+    {
+        var lista = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.AlmacenesCombobox) ?? new();
+        _almacenesCombo = new List<ComboboxItem> { new() { Id = Todos, Texto = "Todos los almacenes" } };
+        _almacenesCombo.AddRange(lista);
+    }
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<CierreModel>>>(ApiRoutes.Logistica.AlmacenesCierre);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(AlmacenesCierre), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(AlmacenesCierre));
+            _items = new();
+        }
+    }
+
+    // ── Botones (los pone Seguridad: opción + rol) ───────────────────────────────────────
+    private static bool EsReabrir(BotonTreeviewItem b)
+        => string.Equals(b.DES_METODO?.Trim(), "Reabrir", StringComparison.OrdinalIgnoreCase)
+        || (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").Contains("REABR", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Qué botones de la fila tienen sentido: reabrir y modificar, solo en un cierre vigente; eliminar, solo en uno reabierto
+    /// (un cierre vigente primero se reabre, para que quede el motivo). Consultar, siempre.</summary>
+    private static bool BotonAplica(CierreModel x, BotonTreeviewItem b)
+    {
+        if (EsReabrir(b)) return x.FLG_CERRADO;
+        if (b.FLG_ACCION_DELETE == true) return !x.FLG_CERRADO;
+        if (b.FLG_ACCION_PUT == true) return x.FLG_CERRADO;
+        return true;
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(CierreModel item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico (ver Tipos de Almacén): Reabrir lleva PUT marcado, así que tiene que ir antes que Modificar.
+        if (EsReabrir(b))                return Reabrir(item);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(CierreModel? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Cerrar almacén",
+            CrudModo.Delete => $"Eliminar cierre · {item?.COD_ALMACEN}",
+            CrudModo.Read   => $"Consultar cierre · {item?.COD_ALMACEN}",
+            _               => $"Editar cierre · {item?.COD_ALMACEN}"
+        };
+        var dlg = await DialogService.ShowAsync<AlmacenesCierreDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Reabrir(CierreModel item)
+    {
+        var dlg = await DialogService.ShowAsync<AlmacenesCierreReabrirDialog>("Reabrir almacén",
+            new DialogParameters { ["Item"] = item },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("LOGISTICA.ALMACENES_CIERRE", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

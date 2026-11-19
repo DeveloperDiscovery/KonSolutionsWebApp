@@ -1,0 +1,117 @@
+@* Ficha técnica de un botón de acción: Clase / Método / SP / Ruta, cada uno copiable.
+   Se abre con clic derecho sobre cualquier botón de AccionesBotones (grilla, cabecera o
+   diálogo) y sólo para perfiles de Seguridad, Auditoría o Developer.
+
+   Es una herramienta de diagnóstico, no una pantalla de negocio: por eso no lleva los
+   colores de diálogo configurables ni botones de acción, sólo lectura y copiado. *@
+@using KONSolutions.Shared.Models.Diagnostico
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Code" Size="Size.Small" />
+            <MudText Typo="Typo.h6" Class="mono">Ficha técnica</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (Info is null)
+        {
+            <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;display:block;margin-bottom:10px;">
+                @(Info.Boton ?? "(botón sin nombre)")@(string.IsNullOrWhiteSpace(Info.Verbo) ? "" : $" · {Info.Verbo}")
+            </MudText>
+
+            <table class="tabla-simple-editable" style="width:100%;">
+                <tbody>
+                    @* La observación va PRIMERO: cuando no se pudo resolver es EL dato útil,
+                       y dejarla al final se lee después de tres filas vacías. Ahora se muestra
+                       también cuando SÍ se resolvió, porque hay acciones que se resuelven bien
+                       pero necesitan una aclaración — el caso de las notificaciones, donde la
+                       sentencia no es un SP sino un comando que viaja en los datos.
+                       La severidad distingue los dos casos sin tener que leer el texto. *@
+                    @if (!string.IsNullOrWhiteSpace(Info.Observacion))
+                    {
+                        <tr>
+                            <td colspan="3" style="padding:8px;">
+                                <MudAlert Severity="@(Info.Resuelto ? Severity.Normal : Severity.Info)"
+                                          Dense="true" Class="mono" Style="font-size:.78rem;">
+                                    @Info.Observacion
+                                </MudAlert>
+                            </td>
+                        </tr>
+                    }
+                    @foreach (var f in Filas())
+                    {
+                        <tr>
+                            <td style="width:150px;opacity:.6;white-space:nowrap;">@f.Etiqueta</td>
+                            <td class="mono" style="word-break:break-all;">
+                                @(string.IsNullOrWhiteSpace(f.Valor) ? "—" : f.Valor)
+                            </td>
+                            <td style="width:44px;text-align:center;">
+                                @if (!string.IsNullOrWhiteSpace(f.Valor))
+                                {
+                                    <MudTooltip Text="@($"Copiar {f.Etiqueta.ToLowerInvariant()}")">
+                                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
+                                                       OnClick="@(() => CopiarAsync(f.Valor!))" />
+                                    </MudTooltip>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+        @if (Info is not null)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.ContentCopy"
+                       OnClick="@(() => CopiarAsync(TextoCompleto()))">Copiar todo</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public AccionTecnica? Info { get; set; }
+
+    private record Fila(string Etiqueta, string? Valor);
+
+    private IEnumerable<Fila> Filas()
+    {
+        if (Info is null) yield break;
+        yield return new("Pantalla",         Info.Formulario);
+        yield return new("Clase",            Info.Clase);
+        yield return new("Método",           Info.Metodo);
+        yield return new("Ruta",             Info.Ruta);
+        yield return new("Stored procedure", Info.StoredProcedure);
+    }
+
+    private string TextoCompleto()
+        => string.Join(Environment.NewLine,
+            Filas().Where(f => !string.IsNullOrWhiteSpace(f.Valor))
+                   .Select(f => $"{f.Etiqueta}: {f.Valor}"));
+
+    /// <summary>El navegador puede negar el portapapeles (sin HTTPS, o sin permiso). Si pasa,
+    /// se avisa en vez de quedar en silencio haciendo creer que se copió.</summary>
+    private async Task CopiarAsync(string texto)
+    {
+        if (string.IsNullOrWhiteSpace(texto)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", texto);
+            Snackbar.Add("Copiado.", Severity.Success);
+        }
+        catch
+        {
+            Snackbar.Add("El navegador no permitió copiar. Selecciona el texto y cópialo a mano.", Severity.Warning);
+        }
+    }
+}

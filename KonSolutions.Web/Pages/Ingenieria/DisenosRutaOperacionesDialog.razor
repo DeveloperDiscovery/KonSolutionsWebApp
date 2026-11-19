@@ -1,0 +1,217 @@
+@* Ruta de operaciones de una version de diseno (scripts SQL 130 y 132). La version tiene UNA ruta, que es una COPIA independiente: se arma asignando una matriz de operaciones
+   (copia completa, con los tiempos vigentes a la fecha que se elija), copiando otra ruta o empezando en blanco, y despues se edita con el mismo editor de arbol de Rutas con tiempos
+   sin tocar la matriz ni otras versiones. Si la ruta la comparten varias versiones (rutas antiguas) se avisa y se puede dar a esta version su propia copia.
+   Una version bloqueada (o una ruta usada por una version bloqueada) es de solo lectura. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using KONSolutions.Shared.Common
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog ContentStyle="display:flex;flex-direction:column;min-height:0;">
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" />
+            <MudText Typo="Typo.h6">Ruta de operaciones · @CodDiseno v@(NumVersion)</MudText>
+            <MudSpacer />
+            <MudTooltip Text="@(_ampliado ? "Restaurar tamaño" : "Ampliar a pantalla completa")">
+                <MudIconButton Icon="@(_ampliado ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="Size.Small" Color="Color.Inherit" OnClick="AlternarAmpliado" data-accion="ampliar" />
+            </MudTooltip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="estado-ruta">
+            @if (_info?.COD_RUTA_PRODUCCION is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Success" data-ruta="1">@_info.COD_RUTA_PRODUCCION</MudChip>
+                @if (_info.COD_RUTA_ORIGEN is not null)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info" data-origen="1" title="@(_info.FEC_ORIGEN is { } f ? "Copiada el " + f.ToString("dd/MM/yyyy") : "")">Copia @(_info.FLG_ORIGEN_MATRIZ ? "de la matriz" : "de la ruta") @_info.DES_RUTA_ORIGEN</MudChip>
+                }
+                else { <MudChip T="string" Size="Size.Small" data-origen="propia">Ruta propia</MudChip> }
+                @if (_info.USADA_POR > 1) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" data-compartida="1">Compartida con @(_info.USADA_POR - 1) versión(es)</MudChip> }
+            }
+            @if (SoloLectura) { <MudChip T="string" Color="Color.Error" Size="Size.Small" Icon="@Icons.Material.Filled.Lock" data-estado="bloqueada">Solo lectura</MudChip> }
+        </div>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (SoloLectura)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="solo-lectura">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <span>@(_info!.FLG_BLOQUEADO ? "La versión está bloqueada: la ruta no se puede modificar." : "La ruta la usa otra versión bloqueada: no se puede modificar.")</span>
+                    @if (_info.FLG_BLOQUEADO)
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Warning" Size="Size.Small" StartIcon="@Icons.Material.Filled.LockOpen" Disabled="_trabajando" OnClick="DesbloquearAsync" data-accion="desbloquear">Desbloquear versión</MudButton>
+                    }
+                </div>
+            </MudAlert>
+        }
+        @if (_info is { COD_RUTA_PRODUCCION: not null } && _info.USADA_POR > 1 && !_info.FLG_BLOQUEADO)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-aviso="compartida">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <span>Esta ruta también la usan otras @(_info.USADA_POR - 1) versión(es): lo que cambies aquí las afecta. Dale a esta versión su propia copia para editarla sin tocar las demás.</span>
+                    <MudButton Variant="Variant.Filled" Color="Color.Info" Size="Size.Small" StartIcon="@Icons.Material.Filled.CallSplit" Disabled="_trabajando" OnClick="IndependizarAsync" data-accion="independizar">Darle su propia copia</MudButton>
+                </div>
+            </MudAlert>
+        }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+
+        @if (_info is not null && (_info.COD_RUTA_PRODUCCION is null || _reemplazando))
+        {
+            @if (_reemplazando) { <MudText Typo="Typo.body2" Class="mb-2" data-aviso="reemplazo" Style="opacity:.8;">Elige otra matriz para esta versión. La ruta actual no se borra: solo deja de ser la de esta versión.</MudText> }
+            else { <MudText Typo="Typo.body2" Class="mb-2" Style="opacity:.8;">Esta versión no tiene ruta de operaciones. Asigna una matriz (se crea una copia que puedes editar), copia otra ruta o empieza en blanco.</MudText> }
+            <MudGrid Spacing="2" data-panel="sin-ruta">
+                <MudItem xs="12" md="@(_reemplazando ? 12 : 5)">
+                    <MudPaper Outlined="true" Class="pa-3" data-tarjeta="matriz">
+                        <MudText Typo="Typo.overline" Style="opacity:.7;">Asignar una matriz</MudText>
+                        <AriaCombo TItem="ComboboxItem" Items="_opcionesMatriz" TextFunc="@(c => c.Texto)" ValueFunc="@(c => c.Id)" @bind-Value="_matriz" Label="Matriz de operaciones" />
+                        @if (_matrices.Count == 0) { <MudText Typo="Typo.caption" Style="opacity:.65;" data-vacio="matrices">Todavía no hay matrices. Créalas en «Matrices de operaciones» o guarda la ruta de otra versión como matriz.</MudText> }
+                        <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" data-campo="fecha" />
+                        <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Se hace una copia independiente; los tiempos de cada operación se toman de la versión vigente a esa fecha.</MudText>
+                        <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrEmpty(_matriz) || _trabajando)" OnClick="AsignarMatrizAsync" data-accion="asignar-matriz">Asignar matriz</MudButton>
+                        @if (_reemplazando) { <MudButton Class="mt-2 ml-2" Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => _reemplazando = false)" data-accion="cancelar-reemplazo">Cancelar</MudButton> }
+                    </MudPaper>
+                </MudItem>
+                @if (!_reemplazando)
+                {
+                    <MudItem xs="12" md="4">
+                        <MudPaper Outlined="true" Class="pa-3" data-tarjeta="copiar">
+                            <MudText Typo="Typo.overline" Style="opacity:.7;">Copiar de otra ruta</MudText>
+                            <AriaCombo TItem="ComboboxItem" Items="_rutas" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" @bind-Value="_origen" Label="Ruta a copiar" />
+                            <MudTextField T="string" @bind-Value="_nombreCopia" Label="Nombre (opcional)" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" Disabled="SoloLectura" />
+                            <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrEmpty(_origen) || _trabajando)" OnClick="CopiarAsync" data-accion="copiar">Copiar ruta</MudButton>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudPaper Outlined="true" Class="pa-3" data-tarjeta="vacia">
+                            <MudText Typo="Typo.overline" Style="opacity:.7;">Empezar en blanco</MudText>
+                            <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la ruta" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="SoloLectura" data-campo="nombre" />
+                            <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrWhiteSpace(_nombre) || _trabajando)" OnClick="CrearAsync" data-accion="crear">Crear ruta</MudButton>
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+        else if (_info is not null)
+        {
+            <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="acciones-ruta">
+                <MudText Typo="Typo.subtitle1" data-nombre="1">@_info.DES_RUTA_PRODUCCION</MudText>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.SwapHoriz" Disabled="SoloLectura" OnClick="@(() => _reemplazando = true)" data-accion="reemplazar">Reemplazar con otra matriz</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Bookmark" OnClick="GuardarComoMatrizAsync" data-accion="guardar-como-matriz">Guardar como matriz</MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" StartIcon="@Icons.Material.Filled.LinkOff" Disabled="SoloLectura" OnClick="QuitarRutaAsync" data-accion="quitar-ruta">Quitar de la versión</MudButton>
+            </div>
+            <RutaArbolEditor Ruta="_rutaEditor" SoloLectura="SoloLectura" LlenaAlto="true" OnCambio="Cambio" EtiquetaTotal="MINUTOS ESTÁNDAR POR UNIDAD" />
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(_hubo)))" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+
+    private DisenosRutaOperacionesInfo? _info;
+    private RutaTiempoResumen? _rutaEditor;
+    private DisenosRutaCatalogos _cat = new();
+    private List<MatrizParaVersion> _matrices = new();
+    private List<ComboboxItem> _rutas = new();
+    private string _error = "", _nombre = "", _nombreCopia = "", _origen = "", _matriz = "";
+    private DateTime? _fecha = DateTime.Today;
+    private bool _cargando, _hubo, _trabajando, _reemplazando, _ampliado;
+
+    // Pantalla completa: el MudDialog no admite estilo dinamico; se cambia con SetOptions (FullScreen). El arbol llena el alto por CSS (AltoLlenaEstilos).
+    private void AlternarAmpliado()
+    {
+        _ampliado = !_ampliado;
+        MudDialog.SetOptions(new DialogOptions { FullScreen = _ampliado, MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private bool SoloLectura => _info is not null && (_info.FLG_BLOQUEADO || _info.BLOQUEADAS > 0);
+
+    private List<ComboboxItem> _opcionesMatriz => _matrices.Select(m => new ComboboxItem
+    {
+        Id = m.COD_RUTA_PRODUCCION,
+        Texto = (m.FLG_SUGERIDA ? "★ " : "") + m.DES_RUTA_PRODUCCION + " · " + (m.DES_SUB_FAMILIA_PRODUCTO ?? "cualquier producto") + " · " + m.CAN_ELEMENTOS + " elementos" + (m.CAN_HOJAS_CATALOGO > 0 ? " · " + OperacionesApi.Min(m.VAL_SAM_TOTAL) + " min" : "")
+    }).ToList();
+
+    // La ruta de operaciones se abre a pantalla completa (el arbol necesita el espacio); el boton de la barra la vuelve a la ventana normal.
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        _ampliado = true;
+        MudDialog.SetOptions(new DialogOptions { FullScreen = true, MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        StateHasChanged();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cat = await Http.SafeGetAsync<DisenosRutaCatalogos>(IngRoute.DisenosRutaCatalogos) ?? new();
+        _rutas = _cat.Rutas.Select(c => new ComboboxItem { Id = c.Id, Texto = c.Texto }).ToList();
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = ""; StateHasChanged();
+        var i = await OperacionesApi.LeerAsync<DisenosRutaOperacionesInfo>(Http, IngRoute.DisenosRutaOperaciones(CodDiseno, NumVersion));
+        if (!i.Ok || i.Data is null) { _error = i.Mensaje ?? "No se pudo leer la ruta de la versión."; _cargando = false; return; }
+        _info = i.Data;
+        _rutaEditor = _info.COD_RUTA_PRODUCCION is null ? null : new RutaTiempoResumen
+        {
+            COD_RUTA_PRODUCCION = _info.COD_RUTA_PRODUCCION, DES_RUTA_PRODUCCION = _info.DES_RUTA_PRODUCCION, COD_TIPO_RUTA_PRODUCCION = _info.COD_TIPO_RUTA_PRODUCCION, VAL_SAM_TOTAL = _info.VAL_SAM_TOTAL
+        };
+        var m = await OperacionesApi.LeerAsync<List<MatrizParaVersion>>(Http, IngRoute.DisenosMatricesDeVersion(CodDiseno, NumVersion));
+        _matrices = m.Data ?? new();
+        if (!m.Ok) _error = m.Mensaje ?? "No se pudieron leer las matrices.";
+        _cargando = false;
+    }
+
+    private async Task Ejecutar<T>(Task<(bool Ok, T? Data, string? Mensaje)> tarea, string exito)
+    {
+        _trabajando = true;
+        var r = await tarea;
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo completar la operación."; Snackbar.Add(_error, Severity.Error); return; }
+        _hubo = true; _reemplazando = false; _matriz = ""; Snackbar.Add(exito, Severity.Success);
+        await CargarAsync();
+    }
+
+    private Task Cambio() { _hubo = true; return Task.CompletedTask; }
+
+    private Task AsignarMatrizAsync() => Ejecutar(OperacionesApi.EnviarAsync<MatrizAsignarResultado>(Http, HttpMethod.Post, IngRoute.DisenosMatrizAsignar,
+        new MatrizAsignarDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_MATRIZ = _matriz, FEC_TIEMPOS = _fecha, REEMPLAZAR = _info?.COD_RUTA_PRODUCCION is not null }), "Matriz asignada: la versión tiene su propia copia.");
+
+    private Task CopiarAsync() => Ejecutar(OperacionesApi.EnviarAsync<DisenosRutaResultado>(Http, HttpMethod.Post, IngRoute.DisenosRutaCopiar,
+        new DisenosRutaCopiarDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_RUTA_ORIGEN = _origen, DES_RUTA = string.IsNullOrWhiteSpace(_nombreCopia) ? null : _nombreCopia.Trim() }), "Ruta copiada y asignada a la versión.");
+
+    private Task CrearAsync() => Ejecutar(OperacionesApi.EnviarAsync<DisenosRutaResultado>(Http, HttpMethod.Post, IngRoute.DisenosRutaCrear,
+        new DisenosRutaCrearDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, DES_RUTA = _nombre.Trim(), COD_TIPO_RUTA = _cat.TiposRuta.FirstOrDefault()?.Id ?? "PRD" }), "Ruta creada y asignada a la versión.");
+
+    private Task IndependizarAsync() => Ejecutar(OperacionesApi.EnviarAsync<RutaIndependizarResultado>(Http, HttpMethod.Post, IngRoute.DisenosRutaIndependizar(CodDiseno, NumVersion)), "La versión tiene ahora su propia copia de la ruta.");
+
+    private async Task QuitarRutaAsync()
+    {
+        if (await DialogService.ShowMessageBox("Quitar ruta", "La versión quedará sin ruta (la ruta no se borra).", yesText: "Quitar", cancelText: "Cancelar") != true) return;
+        await Ejecutar(OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Post, IngRoute.DisenosRutaAsignar, new DisenosRutaAsignarDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_RUTA = null }), "Ruta quitada de la versión.");
+    }
+
+    private async Task DesbloquearAsync()
+    {
+        if (await DialogService.ShowMessageBox("Desbloquear versión", "Se podrá modificar de nuevo la estructura y la ruta de esta versión.", yesText: "Desbloquear", cancelText: "Cancelar") != true) return;
+        await Ejecutar(OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Post, IngRoute.DisenosEstructuraDesbloquear, new DisenosVersionClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion }), "Versión desbloqueada.");
+    }
+
+    private async Task GuardarComoMatrizAsync()
+    {
+        var dlg = await DialogService.ShowAsync<GuardarComoMatrizDialog>("Guardar como matriz", new DialogParameters { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var r = await dlg.Result;
+        if (r is { Canceled: false }) { _hubo = true; await CargarAsync(); }
+    }
+}

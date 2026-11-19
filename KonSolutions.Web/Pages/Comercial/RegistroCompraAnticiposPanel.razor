@@ -1,0 +1,120 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@*
+    Pestaña Anticipos del Registro de Compras. Un anticipo es una factura cuyo tipo de operación tiene FLG_ANTICIPO (ESTANDAR.TIPOS_OPERACION).
+    Se aplica por su MONTO TOTAL a la factura real; se pueden aplicar varios, del mismo proveedor y moneda, y la suma no puede exceder el total de la factura.
+    El concepto de cálculo con FLG_ANTICIPO (ANTICIPOS) suma los anticipos aplicados y rebaja el importe a pagar. Las reglas las valida el SQL (script 95).
+*@
+
+<MudText Typo="Typo.subtitle2" Class="mb-1">Anticipos aplicados a esta factura</MudText>
+@if (_aplicados.Count == 0)
+{
+    <MudText Class="mono mb-2" Style="opacity:.6;" data-vacio="anticipos">Sin anticipos aplicados.</MudText>
+}
+else
+{
+    <MudDataGrid T="RegistroCompraAnticipo" Items="_aplicados" Dense="true" Hover="true" Striped="true" FixedHeader="true" Class="mb-2" data-grilla="anticipos-aplicados">
+        <Columns>
+            <TemplateColumn Title="Comprobante" Sortable="false"><CellTemplate><span class="mono" data-anticipo="@context.Item.NUM_REGISTRO.ToString("0")">@context.Item.NUM_COMPROBANTE_PAGO</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Fecha" Sortable="false"><CellTemplate>@context.Item.FEC_COMPROBANTE_PAGO?.ToString("dd/MM/yyyy")</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate><span data-celda="descripcion" title="@context.Item.DES_DETALLE">@context.Item.DES_DETALLE</span></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Estado" Sortable="false"><CellTemplate><MudChip T="string" Size="Size.Small" Color="@ColorEstado(context.Item.COD_ESTADO_ALIAS)" data-celda="estado">@(context.Item.DES_ESTADO ?? context.Item.COD_ESTADO_ALIAS)</MudChip></CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Tipo de operación" Sortable="false"><CellTemplate>@context.Item.DES_TIPO_OPERACION</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Moneda" Sortable="false"><CellTemplate>@context.Item.COD_MONEDA</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Monto total" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.VAL_TOTAL.ToString("N2")</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="" Sortable="false">
+                <CellTemplate>
+                    @if (!SoloLectura)
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Color="Color.Error" Title="Quitar el anticipo" OnClick="@(() => QuitarAsync(context.Item))" data-accion="anticipo-quitar" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+    </MudDataGrid>
+    <div class="d-flex justify-end mb-2"><span class="mono">Total anticipos: <b data-total="anticipos">@TotalAnticipos.ToString("N2")</b></span></div>
+}
+
+@if (NumRegistro <= 0)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" data-aviso="sin-cabecera">Graba la factura para aplicar anticipos.</MudAlert>
+}
+else if (!SoloLectura)
+{
+    <MudDivider Class="my-2" />
+    <div class="d-flex align-center gap-2 flex-wrap">
+        <MudSelect T="decimal?" @bind-Value="_sel" Label="Anticipo del proveedor" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:460px;" Clearable="true" data-campo="anticipo-disponible">
+            @foreach (var a in _disponibles)
+            {
+                <MudSelectItem T="decimal?" Value="@((decimal?)a.NUM_REGISTRO)">@($"{a.NUM_COMPROBANTE_PAGO} · {a.FEC_COMPROBANTE_PAGO:dd/MM/yyyy} · {a.COD_MONEDA} {a.VAL_TOTAL:N2}" + (string.IsNullOrWhiteSpace(a.DES_DETALLE) ? "" : $" · {a.DES_DETALLE}") + $" · {a.DES_ESTADO ?? a.COD_ESTADO_ALIAS}")</MudSelectItem>
+            }
+        </MudSelect>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AttachMoney" Disabled="@(_sel is null || _saving)" OnClick="AplicarAsync" data-accion="anticipo-aplicar">Aplicar anticipo</MudButton>
+    </div>
+    @if (_disponibles.Count == 0)
+    {
+        <MudText Class="mono mt-1" Style="opacity:.5;font-size:.8rem;" data-vacio="anticipos-disponibles">No hay anticipos disponibles de este proveedor y moneda (tipo de operación con «Anticipo», sin anular y sin aplicar a otra factura).</MudText>
+    }
+    <MudText Class="mono mt-2" Style="opacity:.6;font-size:.8rem;">El anticipo se aplica por su monto total; la suma de los anticipos no puede exceder el total de la factura.</MudText>
+}
+
+@code {
+    [Parameter] public decimal NumRegistro { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>Se avisa al documento para que recargue totales y conceptos.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private List<RegistroCompraAnticipo> _aplicados = new(), _disponibles = new();
+    private decimal? _sel;
+    private bool _saving;
+    private decimal _cargado;
+    private string Url => $"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/anticipos";
+    private static Color ColorEstado(string? alias) => alias switch { "ANU" => Color.Error, "CON" => Color.Success, "APR" => Color.Success, "VAL" => Color.Info, _ => Color.Default };
+    private decimal TotalAnticipos => _aplicados.Sum(a => a.VAL_TOTAL);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (NumRegistro <= 0 || _cargado == NumRegistro) return;
+        _cargado = NumRegistro;
+        await CargarAsync();
+    }
+
+    private async Task CargarAsync()
+    {
+        try
+        {
+            _aplicados = (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraAnticipo>>>(Url))?.Data ?? new();
+            _disponibles = SoloLectura ? new() : (await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraAnticipo>>>($"{Url}/disponibles"))?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraAnticiposPanel), nameof(CargarAsync)); _aplicados = new(); _disponibles = new(); }
+    }
+
+    private async Task AplicarAsync()
+    {
+        if (_sel is not { } a) return;
+        _saving = true;
+        var resp = await Http.PostAsync($"{Url}/{a:0}", null);
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Anticipo aplicado a la factura.", Severity.Success);
+            _sel = null;
+            await CargarAsync();
+            await OnCambio.InvokeAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraAnticiposPanel), nameof(AplicarAsync), "No se pudo aplicar el anticipo");
+    }
+
+    private async Task QuitarAsync(RegistroCompraAnticipo a)
+    {
+        var resp = await Http.DeleteAsync($"{Url}/{a.NUM_REGISTRO:0}");
+        if (resp.IsSuccessStatusCode) { await CargarAsync(); await OnCambio.InvokeAsync(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraAnticiposPanel), nameof(QuitarAsync), "No se pudo quitar el anticipo");
+    }
+}

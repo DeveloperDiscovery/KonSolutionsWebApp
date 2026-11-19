@@ -1,0 +1,412 @@
+@using Microsoft.JSInterop
+@using Modelo = KONSolutions.Shared.Models.Logistica.Transportes
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+<MudDialog Class="dialog-alto-ampliado dialog-ancho-ampliado">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@_model.COD_TRANSPORTE" Descripcion="@_model.DES_TRANSPORTE" />
+    </TitleContent>
+    <DialogContent>
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-3" @bind-ActivePanelIndex="_tabActiva">
+        <MudTabPanel Text="Información Básica">
+        <div style="height:calc(98vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+        <div @ref="_formRoot">
+        <EditForm EditContext="_editContext" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+
+            @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+            <CampoTexto Tabla="LOGISTICA.TRANSPORTES" Columna="COD_TRANSPORTE"
+                        @bind-Value="_model.COD_TRANSPORTE"
+                        Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+            <CampoTexto Tabla="LOGISTICA.TRANSPORTES" Columna="DES_TRANSPORTE"
+                        @bind-Value="_model.DES_TRANSPORTE"
+                        Disabled="_readonly" />
+
+            <AriaCombo TItem="ComboboxItem" Items="_tiposTransporte"
+                       TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       @bind-Value="_model.COD_TIPO_TRANSPORTE"
+                       Label="Tipo de transporte" Disabled="_readonly" />
+
+            @* Producto: se busca en el servidor (SP _SEARCH) en vez de precargar todo el
+               catálogo, igual criterio que Ubigeo/Entidad en otras pantallas del sistema. *@
+            <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                       TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                       @bind-Value="_model.COD_PRODUCTO_TRANSPORTE"
+                       SearchFunc="BuscarProducto" MinCharacters="2"
+                       TextoInicial="@(string.IsNullOrWhiteSpace(Item?.COD_PRODUCTO_TRANSPORTE) ? null : $"{Item!.COD_PRODUCTO_TRANSPORTE} — {Item.DES_PRODUCTO}")"
+                       Label="Producto de transporte" Disabled="_readonly" />
+
+            @* Propio/Acarreo van ANTES de Entidad propietaria/conductora: "Propio" determina
+               el valor forzado de "Entidad propietaria" (ver OnPropioChanged) y conviene que
+               el usuario vea ese interruptor antes de llegar al combo que afecta. *@
+            <MudGrid>
+                <MudItem xs="12" sm="6">
+                    <div class="d-flex align-center gap-2" style="height:40px;">
+                        <MudIcon Icon="@Icons.Material.Filled.Home"
+                                 Color="@(_model.FLG_PROPIO == true ? Color.Primary : Color.Default)"
+                                 Style="@(_model.FLG_PROPIO == true ? "" : "opacity:.35;")" />
+                        <MudSwitch T="bool?" Value="_model.FLG_PROPIO" ValueChanged="OnPropioChanged" Disabled="_readonly"
+                                   Color="Color.Primary" Label="Propio" />
+                    </div>
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <div class="d-flex align-center gap-2" style="height:40px;">
+                        <MudIcon Icon="@Icons.Material.Filled.LocalShipping"
+                                 Color="@(_model.FLG_ACARREO == true ? Color.Primary : Color.Default)"
+                                 Style="@(_model.FLG_ACARREO == true ? "" : "opacity:.35;")" />
+                        @* Puede venir heredado desde la especificación técnica "Vehículo de Acarreo"
+                           del Producto de transporte (ver EspecPanel_OnCargado) — el usuario igual
+                           puede pisarlo a mano, es solo el valor inicial/sugerido. *@
+                        <MudSwitch T="bool?" @bind-Value="_model.FLG_ACARREO" Disabled="_readonly"
+                                   Color="Color.Primary" Label="Acarreo" />
+                    </div>
+                </MudItem>
+            </MudGrid>
+
+            @* Entidad propietaria: ya no es búsqueda libre — precarga UNA vez todas las
+               entidades de tipo 'ETR' (dueños) vía PROC_ESTANDAR_ENTIDADES_TIPOS_ENTIDAD_
+               MODULESHOWALL, igual criterio que el combo "Tipo de transporte" de más arriba.
+               Si "Propio" está activo se fuerza y deshabilita en 1 (ver OnPropioChanged). *@
+            <AriaCombo TItem="ComboboxItem" Items="_entidadesPropietarias"
+                       TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                       Value="@(_model.COD_ENTIDAD_PROPIETARIO?.ToString())"
+                       ValueChanged="OnPropietarioChanged"
+                       Label="Entidad propietaria" Disabled="@(_readonly || _model.FLG_PROPIO == true)" />
+
+            @* Entidad conductora: entidades de tipo 'TRN' que además dependen (COD_ENTIDAD_
+               DEPENDENCIA) de la propietaria elegida arriba — PROC_ESTANDAR_ENTIDADES_TIPOS_
+               ENTIDAD_DEPENDIENTES_MODULESHOWALL. Se recarga cada vez que cambia la
+               propietaria (OnPropietarioChanged) y queda deshabilitado/vacío hasta que haya
+               una propietaria elegida — mismo criterio "cascada deshabilitada hasta elegir el
+               padre" que Grupo→Familia→SubFamilia en StocksAlmacen.razor. *@
+            <AriaCombo TItem="ComboboxItem" Items="_entidadesConductoras"
+                       TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                       Value="@(_model.COD_ENTIDAD_CONDUCTOR?.ToString())"
+                       ValueChanged="@(v => _model.COD_ENTIDAD_CONDUCTOR = decimal.TryParse(v, out var d) ? d : null)"
+                       Label="Entidad conductora" Disabled="@(_readonly || _model.COD_ENTIDAD_PROPIETARIO is null)" />
+
+            <EstadoCombo DesTabla="LOGISTICA.TRANSPORTES" @bind-Value="_model.COD_ESTADO"
+                         CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)" Disabled="_readonly" Class="mb-3" />
+
+        </EditForm>
+        </div>
+        </div>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Especificaciones Técnicas">
+            @* Las Especificaciones Técnicas de un Transporte SON las de su Producto de
+               transporte (COD_PRODUCTO_TRANSPORTE, ESTANDAR.PRODUCTOS_ESPECIFICACIONES_TECNICAS)
+               — ya no una tabla propia de Transportes. Se reusa el mismo panel que
+               ProductosDialog.razor, keyeado por COD_PRODUCTO_TRANSPORTE, que se recarga solo
+               cuando ese código cambia (EspecificacionesTecnicasPanel.OnParametersSetAsync).
+               Aquí SIEMPRE de solo lectura: se editan desde el módulo de Productos, no desde
+               Transportes — este módulo solo las consulta. *@
+            @if (_esNuevo)
+            {
+                <div style="height:calc(98vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+                <MudText Class="pa-6 mono" Style="opacity:.5;">Graba el transporte primero para poder ver sus Especificaciones Técnicas.</MudText>
+                </div>
+            }
+            else
+            {
+                @* ResolverEntidadDesdeProducto y NO CodEntidadPropietaria="@_model.COD_ENTIDAD_PROPIETARIO".
+                   La diferencia importa: acá COD_ENTIDAD_PROPIETARIO es el dueño del VEHÍCULO,
+                   no del producto. Pasarlo habría filtrado los ítems por la entidad
+                   equivocada, que es peor que no filtrar: se vería una lista creíble y
+                   ajena.
+
+                   Lo que manda es la propietaria del producto de transporte, y este diálogo
+                   no la tiene: se la averigua el panel. *@
+                <EspecificacionesTecnicasPanel @ref="_especPanel" CodProducto="@_model.COD_PRODUCTO_TRANSPORTE" ReadOnly="true"
+                                                ResolverEntidadDesdeProducto="true"
+                                                MensajeSinProducto="Elige un Producto de transporte en Información Básica para ver sus especificaciones técnicas."
+                                                OnCargado="EspecPanel_OnCargado" />
+            }
+        </MudTabPanel>
+        </MudTabs>
+    </DialogContent>
+    <DialogActions>
+        @if (!_esNuevo)
+        {
+            <div class="d-flex align-center gap-1 mr-auto">
+                <PanelAuditoria CodUsuarioRegistro="@_model.COD_USUARIO_REGISTRO"
+                                CodEstacionRegistro="@_model.COD_ESTACION_REGISTRO"
+                                FecRegistro="@_model.FEC_REGISTRO"
+                                CodUsuarioActualizacion="@_model.COD_USUARIO_ACTUALIZACION"
+                                CodEstacionActualizacion="@_model.COD_ESTACION_ACTUALIZACION"
+                                FecActualizacion="@_model.FEC_ACTUALIZACION" />
+            </div>
+        }
+        @* Botones configurados con FLG_DIALOG para esta opción, a la izquierda de Cancelar y
+           separados por una línea, como en RequerimientoDocumento. Sólo sobre un registro que
+           ya existe; su estado decide si cada uno está habilitado. *@
+        @if (!_esNuevo && !string.IsNullOrWhiteSpace(CodAplicacion))
+        {
+            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                             Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                             CodTipoEstado="@_model.COD_TIPO_ESTADO" CodEstadoActual="@_model.COD_ESTADO" />
+            <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+        }
+        @if (!(Modo == CrudModo.Read && _tabActiva == 0))
+        {
+            <MudButton OnClick="@Cerrar" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        }
+        @* La pestaña "Especificaciones Técnicas" es de solo consulta aquí (se editan desde
+           Productos), así que no tiene botón de grabado propio — solo Cancelar/Modificar de
+           la cabecera, sin importar cuál pestaña esté activa. *@
+        @if (_tabActiva == 0)
+        {
+            @if (Modo == CrudModo.Read)
+            {
+                @* Consulta: solo "Regresar" (antes salia "Modificar" y, al pulsarlo, guardaba). *@
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => Cerrar())" Style="@EstilosBoton.Confirmar">Regresar</MudButton>
+            }
+            else
+            {
+                @* El texto, el icono y el color dependen del modo, igual que CrudDialogActions: Eliminar sale en rojo. *@
+                <MudButton Variant="Variant.Filled" Color="@(Modo == CrudModo.Delete ? Color.Error : Color.Primary)" Disabled="_saving" OnClick="IntentarSubmit"
+                           StartIcon="@(Modo == CrudModo.Delete ? Icons.Material.Filled.DeleteForever : (_esNuevo ? Icons.Material.Filled.NoteAdd : Icons.Material.Filled.Save))"
+                           Style="@(Modo == CrudModo.Delete ? EstilosBoton.Eliminar : EstilosBoton.Confirmar)">
+                    @(_saving ? (Modo == CrudModo.Delete ? "Eliminando..." : "Guardando...") : (Modo == CrudModo.Delete ? "Eliminar" : (_esNuevo ? "Crear" : "Modificar")))
+                </MudButton>
+            }
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre). Con ella el pie muestra los botones
+    // marcados como Diálogo.
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    // Los botones de diálogo se conectan acá, por su código. Mientras uno no tenga su acción,
+    // tocarlo avisa en vez de no hacer nada (mismo criterio que RequerimientoDocumento).
+    private Task OnAccionDialog(BotonTreeviewItem b) => AvisarBotonSinConectar(b);
+
+    private async Task AvisarBotonSinConectar(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre {_model.COD_TRANSPORTE}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(TransporteDocumentoDialog), "Acción pendiente");
+    }
+
+    private Modelo _model = new();
+    private EditContext _editContext = default!;
+    private ElementReference _formRoot;
+    private int _tabActiva;
+
+    private List<ComboboxItem> _tiposTransporte = new();
+    private List<ComboboxItem> _entidadesPropietarias = new();
+    private List<ComboboxItem> _entidadesConductoras = new();
+    private EspecificacionesTecnicasPanel? _especPanel;
+
+    // Códigos de ESTANDAR.ENTIDADES_TIPOS_ENTIDADES usados por los combos de este diálogo —
+    // ver PROC_ESTANDAR_ENTIDADES_TIPOS_ENTIDAD_MODULESHOWALL / _DEPENDIENTES_MODULESHOWALL.
+    private const string TipoEntidadPropietario = "ETR";
+    private const string TipoEntidadConductor = "TRN";
+    // COD_ENTIDAD fija usada por convención cuando el Transporte es "Propio" (FLG_PROPIO).
+    private const decimal CodEntidadPropio = 1m;
+
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    // Crear/Modificar ya cierran el diálogo directo con DialogResult.Ok al grabar (ver Submit),
+    // así que Cancelar solo se usa para salir sin haber grabado nada.
+    private void Cerrar() => MudDialog.Close(DialogResult.Cancel());
+
+
+    /// <summary>Lleva el foco al primer campo obligatorio vacío. Va en try/catch a propósito:
+    /// esto es una ayuda visual, no parte del guardado, y si el helper de JS no estuviera
+    /// cargado la excepción tumbaba el render del diálogo entero — el usuario veía un error
+    /// de Blazor en vez del aviso de que le falta un campo.</summary>
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        try { await JS.InvokeVoidAsync("validationFocus.focusFirstInvalid", _formRoot); }
+        catch (JSException) { /* sin foco automático, pero el diálogo sigue en pie */ }
+    }
+
+    // Los botones ahora viven en DialogActions (fijos, fuera del EditForm) — no hay un
+    // <button type="submit"> dentro del form que dispare OnValidSubmit solo. Se valida el
+    // EditContext a mano y recién ahí se llama a Submit()/OnInvalidSubmit().
+    private async Task IntentarSubmit()
+    {
+        if (_editContext.Validate()) await Submit();
+        else await OnInvalidSubmit(_editContext);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        // Se relee del SHOWBYID en vez de usar la fila que trajo la grilla: esa fila es el
+        // snapshot de la última carga del listado y puede estar vieja. Si la lectura falla,
+        // se cae a la fila de la grilla para no dejar la pantalla en blanco.
+        if (Item is not null)
+            _model = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Logistica.Transportes}/{Uri.EscapeDataString(Item.COD_TRANSPORTE)}") ?? Item;
+        _editContext = new EditContext(_model);
+
+        // El COD_TIPO_TRANSPORTE de la cabecera de TRANSPORTES referencia LOGISTICA.TIPOS_TRANSPORTE
+        // (no COMERCIAL.TIPOS_TRANSPORTE, que es a lo que apunta el JOIN del SP — ver nota en el
+        // combobox de LogisticaTiposTransporteController).
+        _tiposTransporte = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.TiposTransporteCombobox)) ?? new();
+
+        _entidadesPropietarias = await CargarEntidadesPorTipoAsync(TipoEntidadPropietario);
+        if (_model.COD_ENTIDAD_PROPIETARIO is decimal codPropietario)
+            _entidadesConductoras = await CargarEntidadesDependientesAsync(TipoEntidadConductor, codPropietario);
+        // Las Especificaciones Técnicas ya no se cargan aquí — las carga solo
+        // EspecificacionesTecnicasPanel, keyeado por COD_PRODUCTO_TRANSPORTE.
+    }
+
+    /// <summary>Busca en el servidor (PROC_ESTANDAR_PRODUCTOS_SEARCH), igual criterio que
+    /// Ubigeo/Entidad en otras pantallas: no precarga todo el catálogo.</summary>
+    private async Task<IEnumerable<ComboboxItem>> BuscarProducto(string? texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Trim().Length < 2) return Enumerable.Empty<ComboboxItem>();
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Productos>>>(
+                $"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto.Trim())}", ct);
+            return (r?.Data ?? new())
+                .Select(p => new ComboboxItem { Id = p.COD_PRODUCTO, Texto = $"{p.COD_PRODUCTO} — {p.DES_PRODUCTO}" })
+                .Take(30).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumentoDialog), nameof(BuscarProducto));
+            return Enumerable.Empty<ComboboxItem>();
+        }
+    }
+
+    /// <summary>PROC_ESTANDAR_ENTIDADES_TIPOS_ENTIDAD_MODULESHOWALL — todas las entidades del
+    /// COD_TIPO_ENTIDAD indicado (ej. 'ETR' = propietarias), precargadas una sola vez (no es
+    /// búsqueda libre como el resto de los combos de Entidad en otras pantallas).</summary>
+    private async Task<List<ComboboxItem>> CargarEntidadesPorTipoAsync(string codTipoEntidad)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(
+                ApiRoutes.Estandar.EntidadesPorTipo(codTipoEntidad));
+            return (r?.Data ?? new())
+                .Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = e.DES_NOMBRE_COMPLETO })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumentoDialog), nameof(CargarEntidadesPorTipoAsync));
+            return new();
+        }
+    }
+
+    /// <summary>PROC_ESTANDAR_ENTIDADES_TIPOS_ENTIDAD_DEPENDIENTES_MODULESHOWALL — entidades
+    /// del COD_TIPO_ENTIDAD indicado (ej. 'TRN' = conductoras) que además dependen
+    /// (COD_ENTIDAD_DEPENDENCIA) de la entidad dada.</summary>
+    private async Task<List<ComboboxItem>> CargarEntidadesDependientesAsync(string codTipoEntidad, decimal codEntidadDependencia)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(
+                ApiRoutes.Estandar.EntidadesDependientes(codTipoEntidad, codEntidadDependencia.ToString()));
+            return (r?.Data ?? new())
+                .Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = e.DES_NOMBRE_COMPLETO })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumentoDialog), nameof(CargarEntidadesDependientesAsync));
+            return new();
+        }
+    }
+
+    /// <summary>La Entidad conductora depende de la propietaria elegida — al cambiar la
+    /// propietaria se recarga la lista de conductoras y se limpia la conductora elegida
+    /// previamente (puede no ser válida para la nueva propietaria), mismo criterio "limpiar
+    /// el hijo al cambiar el padre" que Grupo→Familia→SubFamilia en StocksAlmacen.razor.</summary>
+    private async Task OnPropietarioChanged(string? valor)
+    {
+        _model.COD_ENTIDAD_PROPIETARIO = decimal.TryParse(valor, out var d) ? d : null;
+        _model.COD_ENTIDAD_CONDUCTOR = null;
+        _entidadesConductoras = _model.COD_ENTIDAD_PROPIETARIO is decimal codPropietario
+            ? await CargarEntidadesDependientesAsync(TipoEntidadConductor, codPropietario)
+            : new();
+    }
+
+    /// <summary>"Si es propia, que la entidad [propietaria] sea 1": al activar "Propio" se
+    /// fuerza y deshabilita Entidad propietaria en el código 1 (ver Disabled del combo); al
+    /// desactivarlo se re-habilita el combo pero NO se limpia el valor, para no ser
+    /// destructivo con lo que el usuario ya tenía elegido.</summary>
+    private async Task OnPropioChanged(bool? valor)
+    {
+        _model.FLG_PROPIO = valor;
+        if (valor == true) await OnPropietarioChanged(CodEntidadPropio.ToString());
+    }
+
+    /// <summary>Se dispara cuando EspecificacionesTecnicasPanel termina de cargar las
+    /// Especificaciones Técnicas del Producto de transporte elegido — si entre ellas hay una
+    /// Lógica cuya descripción contiene "ACARREO" (ej. "Vehículo de Acarreo"), su valor se
+    /// copia a FLG_ACARREO. No hay un código de catálogo estable para esa especificación en
+    /// este repo (INGENIERIA.ESPECIFICACIONES_TECNICAS es data, no esquema), así que se
+    /// matchea por texto — es de solo lectura en este diálogo (herencia de una sola vía).
+    private void EspecPanel_OnCargado()
+    {
+        var valLogico = _especPanel?.ObtenerValorLogico("ACARREO");
+        if (valLogico is not null)
+        {
+            _model.FLG_ACARREO = valLogico;
+            StateHasChanged();
+        }
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Logistica.Transportes;
+
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                // Ya no se borran filas de LOGISTICA.TRANSPORTES_ESPECIFICACIONES_TECNICAS aquí —
+                // ese tab ahora muestra/edita las Especificaciones Técnicas del Producto de
+                // transporte (ESTANDAR.PRODUCTOS_ESPECIFICACIONES_TECNICAS), que pertenecen al
+                // Producto, no al Transporte, y no se eliminan al eliminar el Transporte.
+                var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TRANSPORTE)}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Transporte eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TransporteDocumentoDialog), nameof(Submit), "No se pudo eliminar el transporte");
+                return;
+            }
+
+            var esAlta = _esNuevo;
+            var resp = await Http.GuardarAsync(ruta, _model, esAlta);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TransporteDocumentoDialog), nameof(Submit));
+                return;
+            }
+
+            // Antes se dejaba el diálogo abierto tras el alta para "cargar las especificaciones
+            // técnicas" del transporte — ya no aplica: esa pestaña ahora solo consulta las del
+            // Producto vinculado (de solo lectura aquí), así que no hay nada más que hacer en
+            // este diálogo una vez grabada la cabecera. Crear y Modificar cierran igual.
+            Snackbar.Add(esAlta ? $"Transporte {_model.COD_TRANSPORTE} creado." : "Transporte actualizado.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumentoDialog), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(TransporteDocumentoDialog));
+        }
+        finally { _saving = false; }
+    }
+}

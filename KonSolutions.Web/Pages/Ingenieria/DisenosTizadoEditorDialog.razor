@@ -1,0 +1,353 @@
+@* Ajuste manual de un tizado guardado (etapa G). Se arrastran las piezas con el puntero (o se mueven con las flechas / coordenadas), se giran y se espejan;
+   el dibujo marca en rojo las que se pisan, salen de la tela o caen sobre un defecto, y en naranja las que quedan a menos de la separacion o se apartan de su raya.
+   Los errores impiden guardar; los avisos no. Al guardar se crea un tizado nuevo (el original no se toca) y el servidor vuelve a validar todo. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Tizado
+@using Poligono = KONSolutions.Shared.Tizado.Poligono
+@using Punto = KONSolutions.Shared.Tizado.Punto
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Globalization
+@using System.Net.Http.Json
+@using System.Text.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+<style>
+    .te-visor { overflow: auto; max-height: 62vh; border: 1px solid var(--mud-palette-lines-default); background: #fff; touch-action: none; }
+    .te-pieza { cursor: grab; }
+    .te-pieza:active { cursor: grabbing; }
+    .te-lista { list-style: none; margin: 0; padding: 0; }
+    .te-lista li { padding: 2px 0; font-size: .82rem; cursor: pointer; }
+</style>
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.OpenWith" />
+            <MudText Typo="Typo.h6">Ajuste manual · @NombreTizado</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="resumen">
+            @if (_calculo is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" data-chip="largo">Largo: @((_medidas.Largo / 1000).ToString("0.00", CultureInfo.CurrentCulture)) m</MudChip>
+                <MudChip T="string" Size="Size.Small" data-chip="eficiencia">Aprovechamiento: @_medidas.Eficiencia.ToString("P1", CultureInfo.CurrentCulture)</MudChip>
+                @if (Consumo is double cp) { <MudChip T="string" Size="Size.Small" data-chip="consumo">Consumo: @cp.ToString("0.000", CultureInfo.CurrentCulture) m/prenda</MudChip> }
+                <MudChip T="string" Size="Size.Small" Color="@(Errores > 0 ? Color.Error : Avisos > 0 ? Color.Warning : Color.Success)" data-chip="estado">@(Errores > 0 ? $"{Errores} error(es)" : Avisos > 0 ? $"{Avisos} aviso(s)" : "Sin problemas")</MudChip>
+            }
+        </div>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+        @if (_calculo is not null)
+        {
+            <div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
+                <div style="flex:1 1 620px;min-width:0;">
+                    <div class="d-flex align-center gap-2 mb-1">
+                        <MudText Typo="Typo.caption">Zoom</MudText>
+                        <MudSlider T="int" @bind-Value="_zoom" Min="50" Max="600" Step="25" Style="max-width:220px;" data-campo="zoom" />
+                        <MudText Typo="Typo.caption" Class="mono">@_zoom %</MudText>
+                        <MudText Typo="Typo.caption" Style="opacity:.7;">Arrastra una pieza para moverla. Rojo = error, naranja = aviso, azul = punto de coincidencia.</MudText>
+                    </div>
+                    <div class="te-visor" data-visor="1">
+                        <svg @ref="_svg" viewBox="@ViewBox" style="@($"width:{_zoom}%;min-width:100%;display:block;")" preserveAspectRatio="xMinYMin meet"
+                             @onpointermove="OnPointerMove" @onpointerup="OnPointerUp" @onpointercancel="OnPointerUp">
+                            <rect x="0" y="0" width="@Num(VbAncho)" height="@Num(_reglas.AnchoTela)" fill="none" stroke="#888" stroke-width="2" />
+                            @foreach (var x in Rayas(_reglas.PeriodoX, VbAncho)) { <line x1="@Num(x)" y1="0" x2="@Num(x)" y2="@Num(_reglas.AnchoTela)" stroke="#6a8fd8" stroke-width="1" stroke-dasharray="6 6" opacity="0.55" data-raya="x" /> }
+                            @foreach (var y in Rayas(_reglas.PeriodoY, _reglas.AnchoTela)) { <line x1="0" y1="@Num(y)" x2="@Num(VbAncho)" y2="@Num(y)" stroke="#6a8fd8" stroke-width="1" stroke-dasharray="6 6" opacity="0.55" data-raya="y" /> }
+                            @for (int i = 0; i < _piezas.Count; i++)
+                            {
+                                var idx = i; var c = _piezas[i]; var gr = Gravedad(i);
+                                <polygon class="te-pieza" points="@c.Contorno.ATexto()" fill="@Color_(c.Talla)" fill-opacity="@(i == _sel ? "0.95" : "0.75")"
+                                         stroke="@(gr == 2 ? "#d62728" : gr == 1 ? "#ff7f0e" : i == _sel ? "#000" : "#333")" stroke-width="@(gr > 0 || i == _sel ? "3" : "1")"
+                                         data-pieza="@i" @onpointerdown="@(e => OnPointerDownPieza(idx, e))" @onpointerdown:stopPropagation="true"><title>@c.Nombre @c.Talla #@c.Copia</title></polygon>
+                            }
+                            @foreach (var d in _reglas.Defectos)
+                            {
+                                <polygon points="@d.Contorno.ATexto()" fill="#d62728" fill-opacity="0.4" stroke="#d62728" stroke-width="1.5" style="pointer-events:none;" data-defecto="@d.Nombre" />
+                            }
+                            @foreach (var c in _piezas.Where(c => c.PuntoCoincidencia is not null))
+                            {
+                                <circle cx="@Num(c.PuntoCoincidencia!.Value.X)" cy="@Num(c.PuntoCoincidencia!.Value.Y)" r="@Num(Math.Max(3, c.Contorno.Limites.MaxX - c.Contorno.Limites.MinX < 1 ? 3 : Math.Min(c.Contorno.Limites.MaxX - c.Contorno.Limites.MinX, c.Contorno.Limites.MaxY - c.Contorno.Limites.MinY) / 25))" fill="#1f4fd8" stroke="#fff" stroke-width="1" style="pointer-events:none;" data-coincide="1" />
+                            }
+                        </svg>
+                    </div>
+                </div>
+
+                <div style="flex:0 0 300px;min-width:260px;" data-zona="panel">
+                    @if (_sel >= 0 && _sel < _piezas.Count)
+                    {
+                        var s = _piezas[_sel]; var l = s.Contorno.Limites;
+                        <MudText Typo="Typo.subtitle2" data-sel="1">@s.Nombre · @s.Talla · #@s.Copia@(s.Espejada ? " (espejo)" : "")</MudText>
+                        <MudText Typo="Typo.caption" Class="mono" data-angulo="1">Giro: @s.Angulo.ToString("0.##", CultureInfo.CurrentCulture)°</MudText>
+                        <div class="d-flex gap-2 flex-wrap mt-1">
+                            <MudNumericField T="double" Value="Math.Round(l.MinX, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, v, c.Contorno.Limites.MinY)))" Label="X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:120px;" data-campo="x" />
+                            <MudNumericField T="double" Value="Math.Round(l.MinY, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, c.Contorno.Limites.MinX, v)))" Label="Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:120px;" data-campo="y" />
+                        </div>
+                        <div class="d-flex align-center gap-1 mt-1">
+                            <MudNumericField T="double" @bind-Value="_paso" Label="Paso (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0.1" Style="max-width:110px;" data-campo="paso" />
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" OnClick="@(() => Mover(-_paso, 0))" data-accion="izq" />
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" OnClick="@(() => Mover(_paso, 0))" data-accion="der" />
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => Mover(0, -_paso))" data-accion="arriba" />
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => Mover(0, _paso))" data-accion="abajo" />
+                        </div>
+                        <div class="d-flex align-center gap-1 flex-wrap mt-1">
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(c => Ajuste.Girar(c, -90)))" data-accion="girar-90m">↺ 90°</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(c => Ajuste.Girar(c, 90)))" data-accion="girar-90">↻ 90°</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(c => Ajuste.Girar(c, 180)))" data-accion="girar-180">180°</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(Ajuste.Espejar))" data-accion="espejar">Espejar</MudButton>
+                        </div>
+                        <div class="d-flex align-center gap-1 mt-1">
+                            <MudNumericField T="double" @bind-Value="_giro" Label="Giro libre (°)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="giro" />
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(c => Ajuste.Girar(c, _giro)))" data-accion="girar-libre">Girar</MudButton>
+                        </div>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.caption" Style="opacity:.7;" data-aviso="sin-seleccion">Toca una pieza para moverla, girarla o espejarla.</MudText>
+                    }
+
+                    <div class="d-flex gap-1 mt-3">
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="@(_undo.Count == 0)" OnClick="Deshacer" data-accion="deshacer">Deshacer</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="@(!HayCambios)" OnClick="Restablecer" data-accion="restablecer">Restablecer todo</MudButton>
+                    </div>
+
+                    <MudText Typo="Typo.subtitle2" Class="mt-3">Problemas</MudText>
+                    @if (_problemas.Count == 0) { <MudText Typo="Typo.caption" Style="opacity:.7;" data-aviso="sin-problemas">Ninguno.</MudText> }
+                    else
+                    {
+                        <ul class="te-lista" data-lista="problemas">
+                            @foreach (var p in _problemas.Take(60))
+                            {
+                                var pp = p;
+                                <li data-problema="@pp.Tipo" data-gravedad="@pp.Gravedad" style="@(pp.Gravedad == GravedadAjuste.Error ? "color:#d62728;" : "color:#c96a00;")" @onclick="@(() => _sel = pp.A >= 0 ? pp.A : pp.B)">@pp.Mensaje</li>
+                            }
+                        </ul>
+                        @if (_problemas.Count > 60) { <MudText Typo="Typo.caption">… y @(_problemas.Count - 60) más.</MudText> }
+                    }
+
+                    <MudText Typo="Typo.subtitle2" Class="mt-3">Guardar</MudText>
+                    <MudTextField T="string" @bind-Value="_nombre" Label="Nombre del tizado nuevo" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" data-campo="nombre-ajuste" />
+                    <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Class="mt-1" Disabled="@(_guardando || Errores > 0 || !HayCambios || string.IsNullOrWhiteSpace(_nombre))" OnClick="GuardarAsync" data-accion="guardar">Guardar como nuevo</MudButton>
+                    @if (Errores > 0) { <MudText Typo="Typo.caption" Style="color:#d62728;" data-aviso="no-guardar">Corrige los errores para poder guardar.</MudText> }
+                </div>
+            </div>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cerrar" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    /// <summary>Tizado guardado del que se parte.</summary>
+    [Parameter] public int NumSecuencia { get; set; }
+    [Parameter] public string NombreTizado { get; set; } = "";
+
+    private static readonly string[] Paleta = { "#e8b4b8", "#b4c7e8", "#b8e8c0", "#e8dcb4", "#cdb4e8", "#b4e8e4", "#e8c8b4", "#c8e8b4" };
+
+    private ElementReference _svg;
+    private DisenosTizadoCalculo? _calculo;
+    private ReglasAjuste _reglas = new();
+    private List<Colocacion> _original = new();
+    private List<Colocacion> _piezas = new();
+    private readonly Stack<List<Colocacion>> _undo = new();
+    private List<ProblemaAjuste> _problemas = new();
+    private (double Largo, double Area, double Eficiencia) _medidas;
+    private readonly List<string> _tallas = new();
+    private int _sel = -1, _zoom = 100;
+    private double _paso = 5, _giro = 15;
+    private string _nombre = "", _error = "";
+    private bool _cargando, _guardando;
+
+    // arrastre
+    private sealed record Arrastre(int Indice, double X0, double Y0, Colocacion Inicial, List<Colocacion> Antes);
+    private Arrastre? _drag;
+    private bool _huboMovimiento;
+
+    private int Errores => _problemas.Count(p => p.Gravedad == GravedadAjuste.Error);
+    private int Avisos => _problemas.Count(p => p.Gravedad == GravedadAjuste.Aviso);
+    private double? Consumo => _calculo is { NUM_PRENDAS: > 0 } c && _medidas.Largo > 0 ? _medidas.Largo / 1000.0 / c.NUM_PRENDAS : null;
+    private bool HayCambios => _piezas.Count == _original.Count && _piezas.Where((c, i) => c.Contorno.ATexto() != _original[i].Contorno.ATexto() || c.Espejada != _original[i].Espejada).Any();
+
+    private double VbAncho => Math.Max(Math.Max(_calculo?.Geometria.Largo ?? 0, _piezas.Count == 0 ? 0 : _piezas.Max(c => c.Contorno.Limites.MaxX) + _reglas.Margen), 100) + 300;
+    private string ViewBox => $"0 0 {Num(VbAncho)} {Num(_reglas.AnchoTela)}";
+
+    private static string Num(double d) => d.ToString("0.###", CultureInfo.InvariantCulture);
+    private string Color_(string talla) { var k = _tallas.IndexOf(talla); return Paleta[Math.Max(0, k) % Paleta.Length]; }
+
+    /// <summary>0 = sin problema, 1 = aviso, 2 = error, para la pieza i.</summary>
+    private int Gravedad(int i)
+    {
+        int g = 0;
+        foreach (var p in _problemas) if (p.A == i || p.B == i) { if (p.Gravedad == GravedadAjuste.Error) return 2; g = 1; }
+        return g;
+    }
+
+    private static IEnumerable<double> Rayas(double periodo, double total)
+    {
+        if (periodo <= 0 || total / periodo > 400) yield break;
+        for (double v = 0; v <= total + 1e-9; v += periodo) yield return v;
+    }
+
+    private static Poligono? Leer(string? t)
+    {
+        var pts = new List<Punto>();
+        foreach (var tok in (t ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var xy = tok.Split(',');
+            if (xy.Length != 2 || !double.TryParse(xy[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) || !double.TryParse(xy[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) return null;
+            pts.Add(new Punto(x, y));
+        }
+        var p = new Poligono(pts); return p.EsValido ? p : null;
+    }
+
+    private static Punto? LeerPunto(string? t)
+    {
+        var xy = (t ?? "").Split(',');
+        return xy.Length == 2 && double.TryParse(xy[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) && double.TryParse(xy[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y) ? new Punto(x, y) : null;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _nombre = $"{NombreTizado} (ajustado)".Trim();
+        _cargando = true;
+        try
+        {
+            var resp = await Http.GetAsync(IngenieriaRoute.DisenosTizadoDetalle(CodDiseno, NumVersion, NumSecuencia));
+            ApiResponse<DisenosTizadoCalculo>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<DisenosTizadoCalculo>>(); } catch (JsonException) { }
+            if (!resp.IsSuccessStatusCode || r is null || !r.Success || r.Data is null) { _error = !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : $"No se pudo leer el tizado (error {(int)resp.StatusCode})."; _cargando = false; return; }
+            Construir(r.Data);
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        _cargando = false;
+    }
+
+    private void Construir(DisenosTizadoCalculo c)
+    {
+        var g = c.Geometria;
+        var lista = new List<Colocacion>();
+        foreach (var p in g.Colocadas)
+        {
+            var poli = Leer(p.Puntos);
+            if (poli is null) { _error = $"La pieza {p.Nombre} {p.Talla} #{p.Copia} no tiene un contorno válido."; return; }
+            lista.Add(new Colocacion { PiezaId = p.PiezaId, Nombre = p.Nombre, Talla = p.Talla, Copia = p.Copia, Espejada = p.Espejada, Angulo = p.Angulo, Contorno = poli, PuntoCoincidencia = LeerPunto(p.Coincidencia), FaseX = p.FaseX, FaseY = p.FaseY });
+        }
+        _reglas = new ReglasAjuste
+        {
+            AnchoTela = g.Ancho > 0 ? g.Ancho : c.VAL_ANCHO_TELA, Separacion = g.Separacion, Margen = g.Margen, PeriodoX = g.PeriodoX, PeriodoY = g.PeriodoY,
+            Defectos = g.Defectos.Select(d => new Defecto { Nombre = d.Nombre, Contorno = Leer(d.Puntos) ?? new Poligono(Array.Empty<Punto>()) }).Where(d => d.Contorno.EsValido).ToList()
+        };
+        _tallas.Clear(); _tallas.AddRange(lista.Select(x => x.Talla).Distinct());
+        _original = lista; _piezas = lista.ToList(); _calculo = c;
+        Revalidar();
+    }
+
+    private void Revalidar()
+    {
+        _problemas = Ajuste.Validar(_piezas, _reglas);
+        _medidas = Ajuste.Medidas(_piezas, _reglas);
+    }
+
+    // ---------- operaciones ----------
+    private void Aplicar(Func<Colocacion, Colocacion> f)
+    {
+        if (_sel < 0 || _sel >= _piezas.Count) return;
+        _undo.Push(_piezas.ToList());
+        _piezas[_sel] = f(_piezas[_sel]);
+        Revalidar();
+    }
+
+    private void Mover(double dx, double dy) => Aplicar(c => Ajuste.Mover(c, dx, dy));
+
+    private void Deshacer() { if (_undo.Count == 0) return; _piezas = _undo.Pop(); Revalidar(); }
+
+    private void Restablecer() { if (!HayCambios) return; _undo.Push(_piezas.ToList()); _piezas = _original.ToList(); Revalidar(); }
+
+    // ---------- arrastre con el puntero ----------
+    private IJSObjectReference? _modulo;
+
+    private async Task<IJSObjectReference?> ModuloAsync()
+    {
+        if (_modulo is not null) return _modulo;
+        try { _modulo = await JS.InvokeAsync<IJSObjectReference>("import", "./js/tizadoEditor.js"); return _modulo; }
+        catch (Exception) { _error = "El arrastre no está disponible (no se pudo cargar tizadoEditor.js): usa las flechas y las coordenadas."; return null; }
+    }
+
+    private async Task<(double X, double Y)?> PuntoAsync(double clientX, double clientY)
+    {
+        try
+        {
+            var m = await ModuloAsync();
+            if (m is null) return null;
+            var p = await m.InvokeAsync<double[]>("puntoSvg", _svg, clientX, clientY);
+            return p is { Length: >= 2 } ? (p[0], p[1]) : null;
+        }
+        catch (Exception) { return null; }
+    }
+
+    private async Task OnPointerDownPieza(int i, Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        _sel = i;
+        var p = await PuntoAsync(e.ClientX, e.ClientY);
+        if (p is null) return;
+        _drag = new Arrastre(i, p.Value.X, p.Value.Y, _piezas[i], _piezas.ToList()); _huboMovimiento = false;
+        try { var m = await ModuloAsync(); if (m is not null) await m.InvokeVoidAsync("capturarPuntero", _svg, e.PointerId); } catch (Exception) { }
+    }
+
+    private async Task OnPointerMove(Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        if (_drag is null) return;
+        var p = await PuntoAsync(e.ClientX, e.ClientY);
+        if (p is null || _drag is null) return;
+        _piezas[_drag.Indice] = Ajuste.Mover(_drag.Inicial, p.Value.X - _drag.X0, p.Value.Y - _drag.Y0);
+        _huboMovimiento = true;
+    }
+
+    private async Task OnPointerUp(Microsoft.AspNetCore.Components.Web.PointerEventArgs e)
+    {
+        var d = _drag; _drag = null;
+        if (d is null) return;
+        try { var m = await ModuloAsync(); if (m is not null) await m.InvokeVoidAsync("liberarPuntero", _svg, e.PointerId); } catch (Exception) { }
+        if (!_huboMovimiento) return;
+        var c = _piezas[d.Indice]; var l = c.Contorno.Limites;
+        _piezas[d.Indice] = Ajuste.Ubicar(c, Math.Round(l.MinX, 1), Math.Round(l.MinY, 1));         // posiciones limpias (0,1 mm)
+        _undo.Push(d.Antes);
+        Revalidar();
+    }
+
+    // ---------- guardar ----------
+    private async Task GuardarAsync()
+    {
+        if (_guardando || Errores > 0 || !HayCambios) return;
+        _guardando = true; _error = "";
+        var dto = new DisenosTizadoAjusteDto
+        {
+            COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, NUM_SECUENCIA = NumSecuencia, DES_TIZADO = _nombre.Trim(),
+            Piezas = _piezas.Select(c => new DisenosTizadoPieza
+            {
+                PiezaId = c.PiezaId, Nombre = c.Nombre, Talla = c.Talla, Copia = c.Copia, Espejada = c.Espejada, Angulo = c.Angulo, Puntos = c.Contorno.ATexto(),
+                Coincidencia = c.PuntoCoincidencia is { } q ? Num(q.X) + "," + Num(q.Y) : null
+            }).ToList()
+        };
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(IngenieriaRoute.DisenosTizadoAjustar, dto);
+            ApiResponse<DisenosTizadoCalculo>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<DisenosTizadoCalculo>>(); } catch (JsonException) { }
+            if (!resp.IsSuccessStatusCode || r is null || !r.Success) { _error = !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : $"Error {(int)resp.StatusCode}"; _guardando = false; return; }
+            Snackbar.Add($"Tizado ajustado guardado (N° {r.Data?.NUM_SECUENCIA}).", Severity.Success);
+            _guardando = false;
+            MudDialog.Close(DialogResult.Ok(r.Data?.NUM_SECUENCIA ?? 0));
+        }
+        catch (Exception ex) { _error = ex.Message; _guardando = false; }
+    }
+
+    private void Cerrar() => MudDialog.Cancel();
+}

@@ -1,0 +1,110 @@
+@page "/proyectos/parametros-proyectos"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Parámetros de proyectos · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Parámetros de proyectos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema PROYECTOS</MudText>
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-4" Style="border:1px solid var(--line);max-width:760px;">
+    <MudText Typo="Typo.subtitle1" Class="mb-2">Ruta de archivos de los proyectos</MudText>
+    <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.8;">
+        Elige la ruta (de «Rutas de archivos») donde se guardan los documentos de los proyectos. Cada proyecto tiene su propia subcarpeta con el número a 10 dígitos
+        (por ejemplo <span class="mono">0000000001</span>), que se crea sola al grabar el proyecto.
+    </MudText>
+    @if (_cargando)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+    else
+    {
+        <AriaCombo TItem="ComboboxItem" Items="_rutas" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_clave" ValueChanged="@(v => { _clave = v; })" Label="Ruta de archivos de proyectos" />
+        <MudText Class="mono mt-2" Style="opacity:.75;">@(string.IsNullOrWhiteSpace(_clave) ? "Sin ruta elegida: los proyectos no podrán guardar archivos." : $"Ejemplo: {RutaDe(_clave)}{Separador}{ejemplo}")</MudText>
+        <MudText Typo="Typo.subtitle1" Class="mt-4 mb-1">Costo de las facturas</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2" Style="opacity:.8;">
+            Tipo de valor de cálculo del comprobante de pago que se suma al costo del proyecto (el valor sin impuestos). Si la <b>Configuración general</b> tiene un «Subtotal (sin impuestos)», ese manda sobre este; si no, se usa este y, si tampoco hay, <span class="mono">IMTOT</span>.
+        </MudText>
+        <AriaCombo TItem="ComboboxItem" Items="_tiposValor" TextFunc="@(t => $"{t.Id} – {t.Texto}")" ValueFunc="@(t => t.Id)" Value="@_tipoValor" ValueChanged="@(v => { _tipoValor = v; })" Label="Tipo de valor de cálculo del costo" />
+        <div class="d-flex gap-2 mt-4">
+            <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Guardar</MudButton>
+        </div>
+    }
+</MudPaper>
+
+<MudPaper Elevation="0" Class="pa-4 mt-4" Style="border:1px solid var(--line);max-width:760px;">
+    <MudText Typo="Typo.subtitle1" Class="mb-2">Personal propio de la empresa</MudText>
+    <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.8;">
+        Marca los tipos de entidad que son trabajadores de la empresa. A las personas de esos tipos, al asignarlas a una tarea, se les pide la <b>utilidad (%)</b> sobre su costo
+        (horas efectivas × costo por hora).
+    </MudText>
+    @if (_tipos.Count == 0) { <MudText Class="mono" Style="opacity:.6;">No hay tipos de entidad.</MudText> }
+    @foreach (var t in _tipos)
+    {
+        var tipo = t;
+        <MudCheckBox T="bool" Value="tipo.FLG_PERSONAL_PROPIO" ValueChanged="@(v => tipo.FLG_PERSONAL_PROPIO = v)" Color="Color.Primary" Label="@($"{tipo.COD_TIPO_ENTIDAD} — {tipo.DES_TIPO_ENTIDAD}")" />
+    }
+    <div class="d-flex gap-2 mt-3">
+        <MudButton OnClick="GuardarTipos" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Guardar</MudButton>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<ComboboxItem> _rutas = new();
+    private List<ExpedienteTipoPropio> _tipos = new();
+    private List<ComboboxItem> _tiposValor = new();
+    private string? _tipoValor;
+    private string? _clave;
+    private bool _cargando = true, _guardando;
+    private const string ejemplo = "0000000001";
+    private string Separador => (RutaDe(_clave)?.Contains('\\') ?? false) ? "\\" : "/";
+    private string? RutaDe(string? clave) => string.IsNullOrWhiteSpace(clave) ? null : (_rutas.FirstOrDefault(r => r.Id == clave)?.Texto ?? (_rutaTexto.TryGetValue(clave, out var t) ? t : clave));
+    private readonly Dictionary<string, string> _rutaTexto = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("PROYECTOS", "ParametrosProyectos");
+        try
+        {
+            _rutas = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Entorno.PathFilesCombobox) ?? new();
+            var p = await Http.SafeGetAsync<ProyectosParametrosModelo>(ApiRoutes.Proyectos.Parametros);
+            _tipos = await Http.SafeGetAsync<List<ExpedienteTipoPropio>>(ApiRoutes.Proyectos.TiposPropios) ?? new();
+            _tiposValor = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Comercial.TiposValorCalculoCombobox) ?? new();
+            _tipoValor = p?.COD_TIPO_VALOR_CALCULO_COSTO;
+            _clave = p?.COD_KEY_PATHFILE_PROYECTOS;
+            if (!string.IsNullOrWhiteSpace(_clave) && !string.IsNullOrWhiteSpace(p?.DES_PATH_FILE)) _rutaTexto[_clave!] = p!.DES_PATH_FILE!;
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ParametrosProyectos), nameof(OnInitializedAsync)); Snackbar.Add("No se pudieron cargar los parámetros. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _cargando = false; }
+    }
+
+    private async Task GuardarTipos()
+    {
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.TiposPropios, _tipos.Where(t => t.FLG_PERSONAL_PROPIO).Select(t => t.COD_TIPO_ENTIDAD).ToList());
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudieron guardar los tipos.", Severity.Warning); return; }
+        Snackbar.Add("Personal propio guardado.", Severity.Success);
+    }
+
+    private async Task Guardar()
+    {
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.Parametros, new { COD_KEY_PATHFILE_PROYECTOS = string.IsNullOrWhiteSpace(_clave) ? null : _clave, COD_TIPO_VALOR_CALCULO_COSTO = string.IsNullOrWhiteSpace(_tipoValor) ? null : _tipoValor });
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudieron guardar los parámetros.", Severity.Warning); return; }
+        Snackbar.Add("Parámetros guardados.", Severity.Success);
+    }
+}

@@ -1,0 +1,316 @@
+@* InventariosAlmacenesDialog.razor
+   -----------------------------------------------------------------------
+   Alta/edición de UN almacén dentro del detalle de un Inventario
+   (LOGISTICA.INVENTARIOS_ALMACENES, clave compuesta NUM_INVENTARIO +
+   COD_ALMACEN). Reemplaza el combo+botón suelto que había antes arriba de
+   la grilla: ahora "Agregar almacén" abre este diálogo completo, mismo
+   criterio de fechas/campos que InventariosDialog.razor. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenes
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Class="dialog-ancho-ampliado">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@_model.COD_ALMACEN" Descripcion="@_model.DES_NOMBRE_COMPLETO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <div style="height:calc(90vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+
+            @* Fechas del Inventario dueño, solo a modo referencial (no se editan aquí) — para
+               que se vea de un vistazo el rango dentro del cual deben caer las fechas del
+               almacén, sin tener que volver a la pantalla anterior. *@
+            <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px dashed var(--line);">
+                <MudText Style="opacity:.6;font-size:.68rem;" Class="mb-1">Fechas del inventario (referencial)</MudText>
+                <MudGrid Spacing="1">
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Style="opacity:.6;font-size:.6rem;">Inicio programado</MudText>
+                        <MudText Class="mono" Style="font-size:.72rem;">@(InventarioFecInicioProgramada?.ToString("dd/MM/yyyy HH:mm") ?? "—")</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Style="opacity:.6;font-size:.6rem;">Final programado</MudText>
+                        <MudText Class="mono" Style="font-size:.72rem;">@(InventarioFecFinalProgramada?.ToString("dd/MM/yyyy HH:mm") ?? "—")</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Style="opacity:.6;font-size:.6rem;">Inicio efectuado</MudText>
+                        <MudText Class="mono" Style="font-size:.72rem;">@(InventarioFecInicioEfectuada?.ToString("dd/MM/yyyy HH:mm") ?? "—")</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Style="opacity:.6;font-size:.6rem;">Final efectuado</MudText>
+                        <MudText Class="mono" Style="font-size:.72rem;">@(InventarioFecFinalEfectuada?.ToString("dd/MM/yyyy HH:mm") ?? "—")</MudText>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <AriaCombo TItem="ComboboxItem" Items="_almacenesDisponibles"
+                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       @bind-Value="_model.COD_ALMACEN"
+                       Label="Almacén" Obligatorio="true" Disabled="@(!_esNuevo || _readonly)" Class="mb-3" />
+
+            @* Ícono + MudSwitch + etiqueta, mismo formato estándar que UsuarioDialog.razor
+               (Login con credenciales/facial/huella) — íconos representativos (Summarize /
+               Lock, este último igual al que ya usa la columna "Inmovilización" de la
+               grilla) en vez de switches lisos sin ícono. *@
+            <div class="campos-config" style="grid-template-columns:1fr 1fr;">
+                <div class="d-flex align-center gap-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Summarize" Color="Color.Primary" Size="Size.Medium" />
+                    <MudSwitch Value="_model.FLG_TOTAL" ValueChanged="@((bool? v) => _model.FLG_TOTAL = v)"
+                               Color="Color.Primary" Disabled="_readonly" Label="Total" />
+                </div>
+                <div class="d-flex align-center gap-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Lock" Color="Color.Primary" Size="Size.Medium" />
+                    <MudSwitch Value="_model.FLG_INMOVILIZACION" ValueChanged="@((bool? v) => _model.FLG_INMOVILIZACION = v)"
+                               Color="Color.Primary" Disabled="_readonly" Label="Inmovilización" />
+                </div>
+            </div>
+
+            @* Entidad responsable: sin tipo restringido, mismo criterio que InventariosDialog. *@
+            <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                       Value="@(_model.COD_ENTIDAD_RESPONSABLE?.ToString())"
+                       ValueChanged="@(v => _model.COD_ENTIDAD_RESPONSABLE = decimal.TryParse(v, out var d) ? d : null)"
+                       Label="Entidad responsable" Disabled="_readonly" Class="mb-3" />
+
+            @* Cinco fechas/horas independientes: Date + Time por separado, combinadas en el
+               DateTime? del modelo — mismo patrón que InventariosDialog.razor. *@
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecInicioProgramadaFecha" DateChanged="@(d => SetFecha(d, ref _fecInicioProgramadaFecha, v => _model.FEC_INICIO_PROGRAMADA = v, () => _model.FEC_INICIO_PROGRAMADA))"
+                                   Label="Inicio programado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_INICIO_PROGRAMADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_INICIO_PROGRAMADA = v, _model.FEC_INICIO_PROGRAMADA))"
+                                   Label="Inicio programado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecFinalProgramadaFecha" DateChanged="@(d => SetFecha(d, ref _fecFinalProgramadaFecha, v => _model.FEC_FINAL_PROGRAMADA = v, () => _model.FEC_FINAL_PROGRAMADA))"
+                                   Label="Final programado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_FINAL_PROGRAMADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_FINAL_PROGRAMADA = v, _model.FEC_FINAL_PROGRAMADA))"
+                                   Label="Final programado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+            </MudGrid>
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecInicioEfectuadaFecha" DateChanged="@(d => SetFecha(d, ref _fecInicioEfectuadaFecha, v => _model.FEC_INICIO_EFECTUADA = v, () => _model.FEC_INICIO_EFECTUADA))"
+                                   Label="Inicio efectuado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_INICIO_EFECTUADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_INICIO_EFECTUADA = v, _model.FEC_INICIO_EFECTUADA))"
+                                   Label="Inicio efectuado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecFinalEfectuadaFecha" DateChanged="@(d => SetFecha(d, ref _fecFinalEfectuadaFecha, v => _model.FEC_FINAL_EFECTUADA = v, () => _model.FEC_FINAL_EFECTUADA))"
+                                   Label="Final efectuado (fecha)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_FINAL_EFECTUADA?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_FINAL_EFECTUADA = v, _model.FEC_FINAL_EFECTUADA))"
+                                   Label="Final efectuado (hora)" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+            </MudGrid>
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="3">
+                    <MudDatePicker Date="_fecCorteFecha" DateChanged="@(d => SetFecha(d, ref _fecCorteFecha, v => _model.FEC_CORTE = v, () => _model.FEC_CORTE))"
+                                   Label="Fecha de corte" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudTimePicker Time="_model.FEC_CORTE?.TimeOfDay" TimeChanged="@(t => SetHora(t, v => _model.FEC_CORTE = v, _model.FEC_CORTE))"
+                                   Label="Hora de corte" Variant="Variant.Outlined" ReadOnly="_readonly" Class="mb-3" Editable="true" TimeFormat="HH:mm" />
+                </MudItem>
+            </MudGrid>
+
+            <MudTextField T="string" @bind-Value="_model.DES_OBSERVACION" Label="Observación" Lines="3"
+                          Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+
+            @* El estado lo mueven los botones de proceso, no la edición manual — a pedido
+               explícito, deshabilitado siempre en todo el módulo de Inventarios. *@
+            <EstadoCombo DesTabla="LOGISTICA.INVENTARIOS_ALMACENES" @bind-Value="_model.COD_ESTADO"
+                         CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)" Disabled="true" Class="mb-3" />
+
+            </div>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    /// <summary>Inventario dueño de este almacén — fija NUM_INVENTARIO al grabar.</summary>
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    /// <summary>Almacenes ya agregados a este inventario, para no ofrecerlos de nuevo en el
+    /// combo al crear uno nuevo.</summary>
+    [Parameter] public List<string> AlmacenesYaAgregados { get; set; } = new();
+    /// <summary>Fechas del Inventario dueño — Inicio se usa para validar (el almacén no puede
+    /// iniciar antes que su inventario, ver FechasValidasAsync); las 4 se muestran arriba solo
+    /// a modo referencial.</summary>
+    [Parameter] public DateTime? InventarioFecInicioProgramada { get; set; }
+    [Parameter] public DateTime? InventarioFecFinalProgramada { get; set; }
+    [Parameter] public DateTime? InventarioFecInicioEfectuada { get; set; }
+    [Parameter] public DateTime? InventarioFecFinalEfectuada { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _almacenes = new();
+    private List<ComboboxItem> _entidades = new();
+
+    private List<ComboboxItem> _almacenesDisponibles => _esNuevo
+        ? _almacenes.Where(a => !AlmacenesYaAgregados.Contains(a.Id)).ToList()
+        : _almacenes;
+
+    private DateTime? _fecInicioProgramadaFecha;
+    private DateTime? _fecFinalProgramadaFecha;
+    private DateTime? _fecInicioEfectuadaFecha;
+    private DateTime? _fecFinalEfectuadaFecha;
+    private DateTime? _fecCorteFecha;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else _model.NUM_INVENTARIO = NumInventario;
+        // Trae el registro fresco desde SHOWBYID al editar/ver — la fila de la grilla puede
+        // no traer las 5 fechas completas (ej. si el SHOWALL no las incluye), mismo criterio
+        // que InventariosDialog.RecargarDesdeShowbyidAsync.
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        _almacenes = (await Http.SafeGetAsync<List<ComboboxItem>>(LogisticaRoute.AlmacenesCombobox)) ?? new();
+        _entidades = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.EntidadesCombobox)) ?? new();
+
+        SincronizarFechas();
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{LogisticaRoute.InventariosAlmacenes}/{_model.NUM_INVENTARIO}/{Uri.EscapeDataString(_model.COD_ALMACEN)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            NUM_INVENTARIO           = m.NUM_INVENTARIO,
+            COD_ALMACEN              = m.COD_ALMACEN,
+            FLG_TOTAL                = m.FLG_TOTAL,
+            FLG_INMOVILIZACION       = m.FLG_INMOVILIZACION,
+            COD_ENTIDAD_RESPONSABLE  = m.COD_ENTIDAD_RESPONSABLE,
+            FEC_INICIO_PROGRAMADA    = m.FEC_INICIO_PROGRAMADA,
+            FEC_FINAL_PROGRAMADA     = m.FEC_FINAL_PROGRAMADA,
+            FEC_INICIO_EFECTUADA     = m.FEC_INICIO_EFECTUADA,
+            FEC_FINAL_EFECTUADA      = m.FEC_FINAL_EFECTUADA,
+            FEC_CORTE                = m.FEC_CORTE,
+            DES_OBSERVACION          = m.DES_OBSERVACION,
+            COD_TIPO_ESTADO          = m.COD_TIPO_ESTADO,
+            COD_ESTADO               = m.COD_ESTADO,
+            DES_NOMBRE_COMPLETO      = m.DES_NOMBRE_COMPLETO,
+        };
+        SincronizarFechas();
+    }
+
+    private void SincronizarFechas()
+    {
+        _fecInicioProgramadaFecha = _model.FEC_INICIO_PROGRAMADA?.Date;
+        _fecFinalProgramadaFecha  = _model.FEC_FINAL_PROGRAMADA?.Date;
+        _fecInicioEfectuadaFecha  = _model.FEC_INICIO_EFECTUADA?.Date;
+        _fecFinalEfectuadaFecha   = _model.FEC_FINAL_EFECTUADA?.Date;
+        _fecCorteFecha            = _model.FEC_CORTE?.Date;
+    }
+
+    private void SetFecha(DateTime? fecha, ref DateTime? cacheFecha, Action<DateTime?> setter, Func<DateTime?> getterActual)
+    {
+        cacheFecha = fecha;
+        var horaActual = getterActual()?.TimeOfDay ?? TimeSpan.Zero;
+        setter(fecha?.Date + horaActual);
+    }
+
+    private void SetHora(TimeSpan? hora, Action<DateTime?> setter, DateTime? actual)
+    {
+        if (actual is null && hora is null) { setter(null); return; }
+        var fechaBase = (actual ?? DateTime.Today).Date;
+        setter(hora is null ? fechaBase : fechaBase + hora.Value);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    /// <summary>Fin no puede ser menor a su propio inicio (programado/efectuado), y el inicio
+    /// del almacén no puede ser menor al inicio del Inventario dueño — mismo criterio que
+    /// InventariosDialog.FechasValidasAsync.</summary>
+    private async Task<bool> FechasValidasAsync()
+    {
+        string? error =
+            _model.FEC_INICIO_PROGRAMADA is not null && _model.FEC_FINAL_PROGRAMADA is not null
+                && _model.FEC_FINAL_PROGRAMADA < _model.FEC_INICIO_PROGRAMADA
+                ? "La fecha/hora de Final programado no puede ser menor a la de Inicio programado."
+            : _model.FEC_INICIO_EFECTUADA is not null && _model.FEC_FINAL_EFECTUADA is not null
+                && _model.FEC_FINAL_EFECTUADA < _model.FEC_INICIO_EFECTUADA
+                ? "La fecha/hora de Final efectuado no puede ser menor a la de Inicio efectuado."
+            : InventarioFecInicioProgramada is not null && _model.FEC_INICIO_PROGRAMADA is not null
+                && _model.FEC_INICIO_PROGRAMADA < InventarioFecInicioProgramada
+                ? "El Inicio programado del almacén no puede ser menor al Inicio programado del inventario."
+            : InventarioFecInicioEfectuada is not null && _model.FEC_INICIO_EFECTUADA is not null
+                && _model.FEC_INICIO_EFECTUADA < InventarioFecInicioEfectuada
+                ? "El Inicio efectuado del almacén no puede ser menor al Inicio efectuado del inventario."
+            : null;
+
+        if (error is null) return true;
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters { ["Titulo"] = "Fechas inválidas", ["Mensaje"] = error },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+        return false;
+    }
+
+    private async Task Submit()
+    {
+        if (!await FechasValidasAsync()) return;
+        _saving = true;
+        var ruta = LogisticaRoute.InventariosAlmacenes;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_INVENTARIO}/{_model.COD_ALMACEN}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(InventariosAlmacenesDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Almacén agregado." : "Almacén actualizado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesDialog), nameof(Submit));
+    }
+}

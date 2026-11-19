@@ -1,0 +1,697 @@
+@* Tizado 2D de una version de diseno (confeccion). Scripts SQL 115 y API api/v1/ingenieria/disenos-tizado.
+   Pestana MOLDES: las piezas del patron de la version. Se traen de un archivo DXF (contornos cerrados) o se agregan rectangulos; cada una lleva su
+   talla (U = unica: se corta para todas las prendas), cuantas por prenda, cuantas de ellas espejadas y los giros permitidos (hilo).
+   Pestana TIZADO: ancho de tela, separacion, margen, tallas con sus prendas -> CALCULAR (lo hace el servidor) -> largo, aprovechamiento, consumo por
+   prenda y el dibujo. Se puede guardar con un nombre, volver a verlo y descargar su DXF.
+   Una version bloqueada no admite cambios en sus moldes (se puede desbloquear desde aqui); los tizados guardados siempre se pueden ver. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Tizado
+@using Poligono = KONSolutions.Shared.Tizado.Poligono
+@using Punto = KONSolutions.Shared.Tizado.Punto
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Globalization
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Forms
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+<style>
+    .tz-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .tz-tabla th, .tz-tabla td { padding: 4px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .tz-tabla th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+    .tz-tabla tbody tr:hover { background: rgba(128,128,128,.12); }
+</style>
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.ContentCut" />
+            <MudText Typo="Typo.h6">Tizado 2D · @CodDiseno v@(NumVersion)</MudText>
+            <MudText Class="mono" Style="opacity:.65;font-size:.82rem;">@DesDiseno</MudText>
+            @if (_bloqueada) { <MudChip T="string" Color="Color.Error" Size="Size.Small" Icon="@Icons.Material.Filled.Lock" data-estado="bloqueada">Bloqueada</MudChip> }
+            <MudChip T="string" Size="Size.Small" data-conteo="moldes">@_moldes.Count molde(s)</MudChip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+        @if (_bloqueada)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="bloqueada">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <span>La versión está bloqueada: sus moldes no se pueden modificar (los tizados sí se pueden calcular y guardar).</span>
+                    <MudButton Variant="Variant.Filled" Color="Color.Warning" Size="Size.Small" StartIcon="@Icons.Material.Filled.LockOpen" Disabled="_trabajando" OnClick="DesbloquearAsync" data-accion="desbloquear">Desbloquear versión</MudButton>
+                </div>
+            </MudAlert>
+        }
+
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_pestana">
+            @* ===================== MOLDES ===================== *@
+            <MudTabPanel Text="Moldes" Icon="@Icons.Material.Filled.Texture" data-pestana="moldes">
+                @if (!_bloqueada)
+                {
+                    <div class="d-flex align-center gap-3 flex-wrap mb-2" data-zona="importar">
+                        <MudFileUpload T="IBrowserFile" Accept=".dxf" FilesChanged="ImportarAsync" Disabled="_trabajando">
+                            <ActivatorContent>
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.UploadFile" Disabled="_trabajando" data-accion="importar">Importar DXF</MudButton>
+                            </ActivatorContent>
+                        </MudFileUpload>
+                        <MudNumericField T="double?" @bind-Value="_mmPorUnidad" Label="mm por unidad (vacío = el del archivo)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:260px;" data-campo="mm" />
+                        <MudText Typo="Typo.caption" Style="opacity:.7;">Solo contornos cerrados (LWPOLYLINE, POLYLINE, CIRCLE). DXF de texto (ASCII).</MudText>
+                    </div>
+                    <div class="d-flex align-center gap-2 flex-wrap mb-3" data-zona="rectangulo">
+                        <MudText Typo="Typo.caption">Agregar un rectángulo:</MudText>
+                        <MudTextField @bind-Value="_rectNombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="rect-nombre" />
+                        <MudNumericField T="double" @bind-Value="_rectAncho" Label="Largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="rect-ancho" />
+                        <MudNumericField T="double" @bind-Value="_rectAlto" Label="Ancho (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="rect-alto" />
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarRectangulo" data-accion="rectangulo">Agregar</MudButton>
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Polyline" OnClick="DibujarFormaAsync" data-accion="forma">Dibujar otra forma…</MudButton>
+                    </div>
+                }
+
+                @foreach (var a in _avisos) { <MudAlert Severity="Severity.Info" Dense="true" Class="mb-1" data-aviso="dxf">@a</MudAlert> }
+
+                @if (_nuevos.Count > 0)
+                {
+                    <MudText Typo="Typo.subtitle2" Class="mt-2">Por guardar (@_nuevos.Count(n => n.Sel) de @_nuevos.Count)</MudText>
+                    <div style="overflow-x:auto;"><table class="tz-tabla" data-tabla="nuevos">
+                        <thead><tr><th></th><th>Vista</th><th>Nombre</th><th>Talla</th><th>Cant.</th><th>Espejadas</th><th>Giros</th><th>Medidas (mm)</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var n in _nuevos)
+                            {
+                                <tr data-nuevo="@n.Nombre">
+                                    <td><MudCheckBox T="bool" @bind-Value="n.Sel" Dense="true" data-campo="sel" /></td>
+                                    <td>@((MarkupString)Mini(n.Contorno))</td>
+                                    <td><MudTextField @bind-Value="n.Nombre" Variant="Variant.Text" Margin="Margin.Dense" data-campo="nombre" /></td>
+                                    <td><MudTextField @bind-Value="n.Talla" Variant="Variant.Text" Margin="Margin.Dense" Style="width:70px;" data-campo="talla" /></td>
+                                    <td><MudNumericField T="int" @bind-Value="n.Cant" Variant="Variant.Text" Margin="Margin.Dense" Min="0" Style="width:70px;" data-campo="cant" /></td>
+                                    <td><MudNumericField T="int" @bind-Value="n.Esp" Variant="Variant.Text" Margin="Margin.Dense" Min="0" Style="width:70px;" data-campo="esp" /></td>
+                                    <td><MudTextField @bind-Value="n.Giros" Variant="Variant.Text" Margin="Margin.Dense" Style="width:110px;" data-campo="giros" /></td>
+                                    <td class="mono">@Medidas(n.Largo, n.Alto)</td>
+                                    <td><MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => _nuevos.Remove(n))" data-accion="quitar-nuevo" /></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table></div>
+                    <div class="mt-2 mb-3">
+                        <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_trabajando || !_nuevos.Any(n => n.Sel))" OnClick="GuardarNuevosAsync" data-accion="guardar-seleccion">Guardar seleccionados como moldes</MudButton>
+                        <MudButton Variant="Variant.Text" Class="ml-2" OnClick="@(() => { _nuevos.Clear(); _avisos.Clear(); })" data-accion="descartar-nuevos">Descartar</MudButton>
+                    </div>
+                }
+
+                <MudText Typo="Typo.subtitle2" Class="mt-2">Moldes de la versión</MudText>
+                @if (_filas.Count == 0 && !_cargando)
+                {
+                    <MudText Class="pa-4 mono" Style="opacity:.55;" data-aviso="sin-moldes">Esta versión todavía no tiene moldes: importa un DXF o agrega rectángulos.</MudText>
+                }
+                else
+                {
+                    <div style="overflow-x:auto;"><table class="tz-tabla" data-tabla="moldes">
+                        <thead><tr><th>N°</th><th>Vista</th><th>Nombre</th><th>Talla</th><th>Cant.</th><th>Espejadas</th><th>Giros</th><th>Medidas (mm)</th><th>Área (cm²)</th><th>Rayas</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var f in _filas)
+                            {
+                                <tr data-molde="@f.Sec">
+                                    <td>@f.Sec</td>
+                                    <td>@((MarkupString)Mini(f.Contorno))</td>
+                                    <td><MudTextField T="string" Value="f.Nombre" ValueChanged="@(v => { f.Nombre = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" data-campo="nombre" /></td>
+                                    <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" Style="width:70px;" data-campo="talla" /></td>
+                                    <td><MudNumericField T="int" Value="f.Cant" Variant="Variant.Text" Margin="Margin.Dense" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Cant = v; f.Sucio = true; })" Style="width:70px;" data-campo="cant" /></td>
+                                    <td><MudNumericField T="int" Value="f.Esp" Variant="Variant.Text" Margin="Margin.Dense" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Esp = v; f.Sucio = true; })" Style="width:70px;" data-campo="esp" /></td>
+                                    <td><MudTextField T="string" Value="f.Giros" ValueChanged="@(v => { f.Giros = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" Style="width:110px;" data-campo="giros" /></td>
+                                    <td class="mono">@Medidas(f.Largo, f.Alto)</td>
+                                    <td class="mono">@((f.Area / 100m).ToString("0.#", CultureInfo.CurrentCulture))</td>
+                                    <td>
+                                        @if (!_bloqueada)
+                                        {
+                                            <MudTooltip Text="@(f.CX || f.CY ? "Coincidencia de rayas activa: cambiar" : "Coincidencia de rayas (telas a rayas o cuadros)")"><MudIconButton Icon="@Icons.Material.Filled.ViewWeek" Size="Size.Small" Color="@(f.CX || f.CY ? Color.Success : Color.Default)" Disabled="_trabajando" OnClick="@(() => RayasAsync(f))" data-accion="rayas" /></MudTooltip>
+                                        }
+                                        @if (f.CX || f.CY) { <span class="mono" data-rayas="@f.Sec">@(f.CX ? "X" : "")@(f.CY ? "Y" : "")</span> }
+                                    </td>
+                                    <td>
+                                        @if (!_bloqueada)
+                                        {
+                                            <MudTooltip Text="Editar la forma del molde (mover, agregar o quitar puntos)"><MudIconButton Icon="@Icons.Material.Filled.Polyline" Size="Size.Small" Color="Color.Primary" Disabled="_trabajando" OnClick="@(() => EditarFormaAsync(f))" data-accion="forma-molde" /></MudTooltip>
+                                            <MudTooltip Text="Gradar: generar otras tallas desde este molde"><MudIconButton Icon="@Icons.Material.Filled.Straighten" Size="Size.Small" Color="Color.Primary" Disabled="_trabajando" OnClick="@(() => GradarAsync(f))" data-accion="gradar" /></MudTooltip>
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" Disabled="_trabajando" OnClick="@(() => EliminarMoldeAsync(f))" data-accion="eliminar-molde" />
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table></div>
+                    @if (!_bloqueada)
+                    {
+                        <div class="mt-2">
+                            <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_trabajando || !_filas.Any(f => f.Sucio))" OnClick="GuardarCambiosAsync" data-accion="guardar-moldes">Guardar cambios</MudButton>
+                        </div>
+                    }
+                }
+            </MudTabPanel>
+
+            @* ===================== TIZADO ===================== *@
+            <MudTabPanel Text="Tizado" Icon="@Icons.Material.Filled.GridView" data-pestana="tizado">
+                <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="parametros">
+                    <MudNumericField T="double" @bind-Value="_ancho" Label="Ancho de tela (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="100" Max="5000" Style="max-width:160px;" data-campo="ancho" />
+                    <MudNumericField T="double" @bind-Value="_separacion" Label="Separación (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="50" Style="max-width:140px;" data-campo="separacion" />
+                    <MudNumericField T="double" @bind-Value="_margen" Label="Margen (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="100" Style="max-width:130px;" data-campo="margen" />
+                    <MudNumericField T="double" @bind-Value="_celda" Label="Celda (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Max="20" Style="max-width:120px;" data-campo="celda" />
+                    <MudNumericField T="int" @bind-Value="_intentos" Label="Intentos" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Max="30" Style="max-width:110px;" data-campo="intentos" />
+                </div>
+                <MudText Typo="Typo.caption" Style="opacity:.7;">Celda más chica = más precisión y más tiempo. Más intentos = prueba más órdenes de colocación y se queda con el de menor largo.</MudText>
+
+                <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Telas a rayas o cuadros</MudText>
+                <div class="d-flex align-center gap-2 flex-wrap" data-zona="rayas">
+                    <MudNumericField T="double" @bind-Value="_periodoX" Label="Periodo de la raya en el largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-x" />
+                    <MudNumericField T="double" @bind-Value="_periodoY" Label="Periodo en el ancho, cuadros (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-y" />
+                </div>
+                <MudText Typo="Typo.caption" Style="opacity:.7;">0 = tela lisa. Los moldes con coincidencia de rayas (botón de rayas en la pestaña Moldes) quedan con su punto sobre una raya; el tizado sale más largo.</MudText>
+
+                <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Defectos de la tela (zonas donde no se corta)</MudText>
+                @foreach (var d in _defectos)
+                {
+                    var def = d;
+                    <div class="d-flex align-center gap-2 flex-wrap mb-1" data-defecto="@def.Nombre">
+                        <MudTextField T="string" @bind-Value="def.Nombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:200px;" data-campo="def-nombre" />
+                        <MudTextField T="string" @bind-Value="def.Contorno" Label="Contorno x,y x,y ... (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:320px;flex:1;" data-campo="def-contorno" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Polyline" Size="Size.Small" OnClick="@(() => EditarDefectoAsync(def))" data-accion="editar-defecto" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => _defectos.Remove(def))" data-accion="quitar-defecto" />
+                    </div>
+                }
+                <div class="d-flex align-center gap-2 flex-wrap" data-zona="nuevo-defecto">
+                    <MudTextField T="string" @bind-Value="_defNombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:180px;" data-campo="nd-nombre" />
+                    <MudNumericField T="double" @bind-Value="_defX" Label="Desde X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:120px;" data-campo="nd-x" />
+                    <MudNumericField T="double" @bind-Value="_defY" Label="Desde Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:120px;" data-campo="nd-y" />
+                    <MudNumericField T="double" @bind-Value="_defLargo" Label="Largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="nd-largo" />
+                    <MudNumericField T="double" @bind-Value="_defAncho" Label="Ancho (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="nd-ancho" />
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarDefecto" data-accion="agregar-defecto">Agregar defecto</MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Polyline" OnClick="DibujarDefectoAsync" data-accion="forma-defecto">Dibujar otra forma…</MudButton>
+                </div>
+                <MudText Typo="Typo.caption" Style="opacity:.7;">X es el largo de la tela (desde el inicio del tendido) e Y el ancho (0 a @_ancho.ToString("0.##", CultureInfo.CurrentCulture) mm). Ninguna pieza pisa un defecto ni queda a menos de la separación.</MudText>
+
+                <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Prendas por talla</MudText>
+                @if (_prendas.Count == 0)
+                {
+                    <MudText Class="pa-2 mono" Style="opacity:.55;" data-aviso="sin-tallas">Primero carga los moldes de la versión.</MudText>
+                }
+                else
+                {
+                    <div class="d-flex align-center gap-3 flex-wrap" data-zona="tallas">
+                        @foreach (var t in _prendas.Keys.ToList())
+                        {
+                            var talla = t;
+                            <MudNumericField T="int" Value="_prendas[talla]" ValueChanged="@(v => _prendas[talla] = v)" Label="@(talla == "U" ? "Prendas (talla única)" : $"Talla {talla}")" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:150px;" data-talla="@talla" />
+                        }
+                    </div>
+                    <MudText Typo="Typo.caption" Style="opacity:.7;">Los moldes de talla U (única) se cortan para todas las prendas.</MudText>
+                }
+
+                <div class="d-flex align-center gap-2 flex-wrap mt-3 mb-2">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.PlayArrow" Disabled="@(_trabajando || _prendas.Count == 0)" OnClick="CalcularAsync" data-accion="calcular">Calcular</MudButton>
+                    <MudTextField @bind-Value="_nombreTizado" Label="Nombre del tizado" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:260px;" data-campo="nombre-tizado" />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_trabajando || _prendas.Count == 0 || string.IsNullOrWhiteSpace(_nombreTizado))" OnClick="GuardarTizadoAsync" data-accion="guardar-tizado">Calcular y guardar</MudButton>
+                </div>
+                @if (_calculando) { <MudProgressLinear Indeterminate="true" data-calculando="1" /> <MudText Typo="Typo.caption">Calculando en el servidor… puede tardar unos segundos.</MudText> }
+
+                @if (_calculo is not null)
+                {
+                    <div class="d-flex align-center gap-2 flex-wrap mt-2" data-resultado="1">
+                        @if (_calculo.NUM_SECUENCIA is int ns) { <MudChip T="string" Size="Size.Small" Color="Color.Success" data-chip="guardado">Guardado · N° @ns</MudChip> }
+                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" data-chip="largo">Largo: @((_calculo.VAL_LARGO / 1000).ToString("0.00", CultureInfo.CurrentCulture)) m</MudChip>
+                        <MudChip T="string" Size="Size.Small" data-chip="eficiencia">Aprovechamiento: @_calculo.VAL_EFICIENCIA.ToString("P1", CultureInfo.CurrentCulture)</MudChip>
+                        @if (_calculo.VAL_CONSUMO_PRENDA is double cp) { <MudChip T="string" Size="Size.Small" data-chip="consumo">Consumo: @cp.ToString("0.000", CultureInfo.CurrentCulture) m/prenda</MudChip> }
+                        <MudChip T="string" Size="Size.Small" data-chip="piezas">@_calculo.NUM_PIEZAS pieza(s) · @_calculo.NUM_PRENDAS prenda(s)</MudChip>
+                    </div>
+                    var conRaya = _calculo.Geometria.Colocadas.Where(c => c.ErrorX is not null || c.ErrorY is not null).ToList();
+                    @if (conRaya.Count > 0)
+                    {
+                        <MudAlert Severity="@(conRaya.Max(c => Math.Max(c.ErrorX ?? 0, c.ErrorY ?? 0)) < 0.5 ? Severity.Success : Severity.Warning)" Dense="true" Class="mt-2" data-aviso="coincidencia">
+                            Coincidencia de rayas en @conRaya.Count pieza(s): desvío máximo @conRaya.Max(c => Math.Max(c.ErrorX ?? 0, c.ErrorY ?? 0)).ToString("0.###", CultureInfo.CurrentCulture) mm.
+                        </MudAlert>
+                    }
+                    @if (_calculo.Geometria.Defectos.Count > 0)
+                    {
+                        <MudText Typo="Typo.caption" Style="opacity:.75;" data-aviso="defectos">Defectos evitados: @string.Join(", ", _calculo.Geometria.Defectos.Select(d => d.Nombre)) (en rojo).</MudText>
+                    }
+                    @if (_calculo.Geometria.NoColocadas.Count > 0)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2" data-aviso="no-colocadas">
+                            No se pudieron colocar @_calculo.Geometria.NoColocadas.Count pieza(s):
+                            @string.Join("; ", _calculo.Geometria.NoColocadas.GroupBy(n => (n.Nombre, n.Talla, n.Motivo)).Select(g => $"{g.Key.Nombre} {g.Key.Talla} ×{g.Count()} ({g.Key.Motivo})"))
+                        </MudAlert>
+                    }
+                    <div class="d-flex align-center gap-2 mt-2">
+                        <MudText Typo="Typo.caption">Zoom</MudText>
+                        <MudSlider T="int" @bind-Value="_zoom" Min="100" Max="600" Step="50" Style="max-width:240px;" data-campo="zoom" />
+                        <MudText Typo="Typo.caption" Class="mono">@_zoom %</MudText>
+                    </div>
+                    <div class="tz-visor" style="overflow:auto;max-height:55vh;border:1px solid var(--mud-palette-lines-default);background:#fff;" data-visor="1">
+                        <div style="width:@(_zoom)%;min-width:100%;">@((MarkupString)_calculo.Svg)</div>
+                    </div>
+                }
+
+                <MudText Typo="Typo.subtitle2" Class="mt-4">Tizados guardados</MudText>
+                @if (_tizados.Count == 0)
+                {
+                    <MudText Class="pa-2 mono" Style="opacity:.55;" data-aviso="sin-tizados">Todavía no hay tizados guardados en esta versión.</MudText>
+                }
+                else
+                {
+                    <div style="overflow-x:auto;"><table class="tz-tabla" data-tabla="tizados">
+                        <thead><tr><th>N°</th><th>Nombre</th><th>Tallas</th><th>Tela (mm)</th><th>Largo (m)</th><th>Aprov.</th><th>m/prenda</th><th>Fecha</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var t in _tizados)
+                            {
+                                <tr data-tizado="@t.NUM_SECUENCIA">
+                                    <td>@t.NUM_SECUENCIA</td>
+                                    <td>@t.DES_TIZADO</td>
+                                    <td class="mono">@t.DES_TALLAS</td>
+                                    <td class="mono">@t.VAL_ANCHO_TELA.ToString("0.#", CultureInfo.CurrentCulture)</td>
+                                    <td class="mono">@((t.VAL_LARGO / 1000).ToString("0.00", CultureInfo.CurrentCulture))</td>
+                                    <td class="mono">@t.VAL_EFICIENCIA.ToString("P1", CultureInfo.CurrentCulture)</td>
+                                    <td class="mono">@(t.VAL_CONSUMO_PRENDA?.ToString("0.000", CultureInfo.CurrentCulture) ?? "")</td>
+                                    <td class="mono">@(t.FEC_REGISTRO?.ToString("g", CultureInfo.CurrentCulture))</td>
+                                    <td>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Disabled="_trabajando" OnClick="@(() => VerAsync(t))" data-accion="ver" />
+                                        <MudTooltip Text="Ajuste manual: mover, girar y espejar piezas (se guarda como tizado nuevo)"><MudIconButton Icon="@Icons.Material.Filled.OpenWith" Size="Size.Small" Disabled="_trabajando" OnClick="@(() => AjustarAsync(t))" data-accion="ajustar" /></MudTooltip>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Download" Size="Size.Small" Disabled="_trabajando" OnClick="@(() => DescargarAsync(t))" data-accion="dxf" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" Disabled="_trabajando" OnClick="@(() => EliminarTizadoAsync(t))" data-accion="eliminar-tizado" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table></div>
+                }
+            </MudTabPanel>
+        </MudTabs>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cerrar" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public string? DesDiseno { get; set; }
+    [Parameter] public int NumVersion { get; set; }
+
+    /// <summary>Un molde guardado, editable en la grilla.</summary>
+    private class Fila
+    {
+        public int Sec { get; set; }
+        public string Nombre { get; set; } = "";
+        public string Talla { get; set; } = "U";
+        public int Cant { get; set; } = 1;
+        public int Esp { get; set; }
+        public string Giros { get; set; } = "0,180";
+        public string Contorno { get; set; } = "";
+        public decimal Largo { get; set; }
+        public decimal Alto { get; set; }
+        public decimal Area { get; set; }
+        public bool Sucio { get; set; }
+        // coincidencia de rayas (script 118)
+        public bool CX { get; set; }
+        public bool CY { get; set; }
+        public double? PX { get; set; }
+        public double? PY { get; set; }
+        public double FX { get; set; }
+        public double FY { get; set; }
+    }
+
+    /// <summary>Defecto de la tela: zona prohibida. El contorno se escribe "x,y x,y ..." en mm de la tela (X = largo, Y = ancho).</summary>
+    private class DefectoFila { public string Nombre { get; set; } = ""; public string Contorno { get; set; } = ""; }
+
+    /// <summary>Un contorno que aun no se guardo (traido de un DXF o un rectangulo).</summary>
+    private class Nuevo
+    {
+        public bool Sel { get; set; } = true;
+        public string Nombre { get; set; } = "";
+        public string Talla { get; set; } = "U";
+        public int Cant { get; set; } = 1;
+        public int Esp { get; set; }
+        public string Giros { get; set; } = "0,180";
+        public string Contorno { get; set; } = "";
+        public decimal Largo { get; set; }
+        public decimal Alto { get; set; }
+    }
+
+    private List<DisenosMolde> _moldes = new();
+    private List<Fila> _filas = new();
+    private readonly List<Nuevo> _nuevos = new();
+    private readonly List<string> _avisos = new();
+    private List<DisenosTizadoResumen> _tizados = new();
+    private DisenosTizadoCalculo? _calculo;
+    private readonly Dictionary<string, int> _prendas = new();
+    private bool _cargando, _trabajando, _calculando, _bloqueada;
+    private string _error = "";
+    private int _pestana;
+    private double? _mmPorUnidad;
+    private string _rectNombre = "";
+    private double _rectAncho = 100, _rectAlto = 100;
+    private double _ancho = 1500, _separacion = 3, _margen = 10, _celda = 5;
+    private int _intentos = 6, _zoom = 100;
+    private string _nombreTizado = "";
+    private double _periodoX, _periodoY;
+    private readonly List<DefectoFila> _defectos = new();
+    private string _defNombre = "";
+    private double _defX, _defY, _defLargo = 100, _defAncho = 100;
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    // ---------- API ----------
+    private async Task<(bool Ok, string Mensaje, T? Data)> GetAsync<T>(string url)
+    {
+        try
+        {
+            var resp = await Http.GetAsync(url);
+            ApiResponse<T>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<ApiResponse<T>>(); } catch (System.Text.Json.JsonException) { }
+            if (!resp.IsSuccessStatusCode || r is null || !r.Success) return (false, !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message : $"Error {(int)resp.StatusCode}", default);
+            return (true, r.Message ?? "", r.Data);
+        }
+        catch (Exception ex) { return (false, ex.Message, default); }
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = "";
+        StateHasChanged();
+        var m = await GetAsync<List<DisenosMolde>>(IngenieriaRoute.DisenosTizadoMoldes(CodDiseno, NumVersion));
+        if (!m.Ok) { _moldes = new(); _filas = new(); _error = m.Mensaje; }
+        else
+        {
+            _moldes = m.Data ?? new();
+            _bloqueada = _moldes.Any(x => x.FLG_BLOQUEADO);
+            _filas = _moldes.Select(x => new Fila
+            {
+                Sec = x.NUM_SECUENCIA, Nombre = x.DES_MOLDE, Talla = x.DES_TALLA, Cant = x.NUM_CANTIDAD, Esp = x.NUM_CANTIDAD_ESPEJADA, Giros = x.DES_ROTACIONES,
+                Contorno = x.DES_CONTORNO, Largo = x.VAL_LARGO ?? 0, Alto = x.VAL_ALTO ?? 0, Area = x.VAL_AREA ?? 0,
+                CX = x.FLG_COINCIDE_X, CY = x.FLG_COINCIDE_Y, PX = (double?)x.VAL_PUNTO_X, PY = (double?)x.VAL_PUNTO_Y, FX = (double)x.VAL_FASE_X, FY = (double)x.VAL_FASE_Y
+            }).ToList();
+            ActualizarTallas();
+        }
+        await CargarTizadosAsync();
+        _cargando = false;
+    }
+
+    private async Task CargarTizadosAsync()
+    {
+        var t = await GetAsync<List<DisenosTizadoResumen>>(IngenieriaRoute.DisenosTizados(CodDiseno, NumVersion));
+        if (t.Ok) _tizados = t.Data ?? new(); else if (string.IsNullOrEmpty(_error)) _error = t.Mensaje;
+    }
+
+    /// <summary>Una fila de prendas por cada talla que tenga moldes (sin la U); si solo hay moldes de talla U, una sola fila U.</summary>
+    private void ActualizarTallas()
+    {
+        var tallas = _filas.Select(f => (f.Talla ?? "U").Trim()).Where(t => !t.Equals("U", StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.OrdinalIgnoreCase).ToList();
+        if (tallas.Count == 0 && _filas.Count > 0) tallas.Add("U");
+        foreach (var t in _prendas.Keys.Where(k => !tallas.Contains(k)).ToList()) _prendas.Remove(t);
+        foreach (var t in tallas) if (!_prendas.ContainsKey(t)) _prendas[t] = 1;
+    }
+
+    // ---------- moldes ----------
+    private async Task ImportarAsync(IBrowserFile? archivo)
+    {
+        if (archivo is null) return;
+        _error = ""; _avisos.Clear(); _trabajando = true;
+        try
+        {
+            string texto;
+            using (var s = archivo.OpenReadStream(5_000_000)) using (var rd = new StreamReader(s)) texto = await rd.ReadToEndAsync();
+            var r = await Http.PostAsync<DisenosMoldeImportarResultado>(IngenieriaRoute.DisenosTizadoImportarDxf, new DisenosMoldeImportarDto { DXF = texto, MM_POR_UNIDAD = _mmPorUnidad });
+            if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); }
+            else
+            {
+                _avisos.AddRange(r.Data!.Advertencias);
+                int n = _nuevos.Count;
+                foreach (var c in r.Data.Contornos)
+                    _nuevos.Add(new Nuevo { Nombre = $"Pieza {++n}", Contorno = c.DES_CONTORNO, Largo = c.VAL_LARGO, Alto = c.VAL_ALTO });
+                Snackbar.Add($"{r.Data.Contornos.Count} contorno(s) leído(s) (1 unidad = {r.Data.MilimetrosPorUnidad:0.####} mm).", r.Data.Contornos.Count > 0 ? Severity.Success : Severity.Warning);
+            }
+        }
+        catch (Exception ex) { _error = "No se pudo leer el archivo: " + ex.Message; }
+        _trabajando = false;
+    }
+
+    private void AgregarRectangulo()
+    {
+        if (_rectAncho <= 0 || _rectAlto <= 0) { Snackbar.Add("El largo y el ancho deben ser mayores que cero.", Severity.Warning); return; }
+        var w = _rectAncho.ToString("0.###", CultureInfo.InvariantCulture); var h = _rectAlto.ToString("0.###", CultureInfo.InvariantCulture);
+        _nuevos.Add(new Nuevo
+        {
+            Nombre = string.IsNullOrWhiteSpace(_rectNombre) ? $"Rectángulo {_nuevos.Count + 1}" : _rectNombre.Trim(),
+            Contorno = $"0,0 {w},0 {w},{h} 0,{h}", Largo = (decimal)_rectAncho, Alto = (decimal)_rectAlto
+        });
+        _rectNombre = "";
+    }
+
+    private async Task GuardarNuevosAsync()
+    {
+        var sel = _nuevos.Where(n => n.Sel).ToList();
+        if (sel.Count == 0 || _trabajando) return;
+        _trabajando = true; _error = "";
+        var dto = new DisenosMoldesGuardarDto
+        {
+            COD_DISENO = CodDiseno, NUM_VERSION = NumVersion,
+            Moldes = sel.Select(n => new DisenosMoldeEntrada { DES_MOLDE = n.Nombre, DES_TALLA = n.Talla, NUM_CANTIDAD = n.Cant, NUM_CANTIDAD_ESPEJADA = n.Esp, DES_ROTACIONES = n.Giros, DES_CONTORNO = n.Contorno }).ToList()
+        };
+        var r = await Http.PostAsync<DisenosMoldesGuardarResultado>(IngenieriaRoute.DisenosTizadoMoldesGuardar, dto);
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        foreach (var n in sel) _nuevos.Remove(n);
+        Snackbar.Add($"{sel.Count} molde(s) guardado(s).", Severity.Success);
+        await CargarAsync();
+    }
+
+    private async Task GuardarCambiosAsync()
+    {
+        var sucias = _filas.Where(f => f.Sucio).ToList();
+        if (sucias.Count == 0 || _trabajando) return;
+        _trabajando = true; _error = "";
+        var dto = new DisenosMoldesGuardarDto
+        {
+            COD_DISENO = CodDiseno, NUM_VERSION = NumVersion,
+            Moldes = sucias.Select(f => new DisenosMoldeEntrada { NUM_SECUENCIA = f.Sec, DES_MOLDE = f.Nombre, DES_TALLA = f.Talla, NUM_CANTIDAD = f.Cant, NUM_CANTIDAD_ESPEJADA = f.Esp, DES_ROTACIONES = f.Giros, DES_CONTORNO = f.Contorno,
+                FLG_COINCIDE_X = f.CX, FLG_COINCIDE_Y = f.CY, VAL_PUNTO_X = f.PX, VAL_PUNTO_Y = f.PY, VAL_FASE_X = f.FX, VAL_FASE_Y = f.FY }).ToList()
+        };
+        var r = await Http.PostAsync<DisenosMoldesGuardarResultado>(IngenieriaRoute.DisenosTizadoMoldesGuardar, dto);
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        Snackbar.Add("Moldes guardados.", Severity.Success);
+        await CargarAsync();
+    }
+
+    private async Task EliminarMoldeAsync(Fila f)
+    {
+        if (await DialogService.ShowMessageBox("Eliminar molde", $"¿Eliminar el molde \"{f.Nombre}\" ({f.Talla})?", yesText: "Eliminar", cancelText: "Cancelar") != true) return;
+        _trabajando = true; _error = "";
+        var r = await Http.PostAsync<DisenosMoldeEliminarResultado>(IngenieriaRoute.DisenosTizadoMoldesEliminar, new DisenosMoldeClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, NUM_SECUENCIA = f.Sec });
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        Snackbar.Add("Molde eliminado.", Severity.Success);
+        await CargarAsync();
+    }
+
+    private async Task GradarAsync(Fila f)
+    {
+        if (f.Sucio) { Snackbar.Add("Guarda primero los cambios de los moldes.", Severity.Info); return; }
+        var dlg = await DialogService.ShowAsync<DisenosGradacionDialog>($"Gradar · {f.Nombre}",
+            new DialogParameters { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["NumSecuencia"] = f.Sec, ["NombreMolde"] = f.Nombre, ["TallaBase"] = f.Talla, ["Contorno"] = f.Contorno },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsync();      // se crearon / actualizaron moldes de otras tallas
+    }
+
+    // ---------- formas que no son rectangulos ----------
+    private static readonly DialogOptions OpcionesForma = new() { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+
+    private async Task<string?> PedirFormaAsync(string titulo, string modo, string contorno, double areaAncho, double areaAlto)
+    {
+        var dlg = await DialogService.ShowAsync<DisenosFormaDialog>(titulo, new DialogParameters { ["Modo"] = modo, ["Contorno"] = contorno, ["AreaAncho"] = areaAncho, ["AreaAlto"] = areaAlto }, OpcionesForma);
+        var r = await dlg.Result;
+        return r is { Canceled: false, Data: DisenosFormaDialog.Resultado x } ? x.Contorno : null;
+    }
+
+    private async Task DibujarFormaAsync()
+    {
+        var t = await PedirFormaAsync("Dibujar la forma del molde", "molde", "", 600, 400);
+        var pts = t is null ? null : Formas.Leer(t);
+        if (pts is null || pts.Count < 3) return;
+        var n = Formas.AlOrigen(pts); var l = new Poligono(n).Limites;
+        _nuevos.Add(new Nuevo { Nombre = string.IsNullOrWhiteSpace(_rectNombre) ? $"Forma {_nuevos.Count + 1}" : _rectNombre.Trim(), Contorno = Formas.ATexto(n), Largo = (decimal)(l.MaxX - l.MinX), Alto = (decimal)(l.MaxY - l.MinY) });
+        _rectNombre = "";
+    }
+
+    private async Task EditarFormaAsync(Fila f)
+    {
+        var t = await PedirFormaAsync($"Forma de {f.Nombre}", "molde", f.Contorno, Math.Max(600, (double)f.Largo * 1.3), Math.Max(400, (double)f.Alto * 1.3));
+        var pts = t is null ? null : Formas.Leer(t);
+        if (pts is null || pts.Count < 3) return;
+        var n = Formas.AlOrigen(pts); var poli = new Poligono(n); var l = poli.Limites;
+        f.Contorno = Formas.ATexto(n); f.Largo = (decimal)(l.MaxX - l.MinX); f.Alto = (decimal)(l.MaxY - l.MinY); f.Area = (decimal)poli.Area; f.Sucio = true;
+        if ((f.CX || f.CY) && (f.PX is double px && px > (double)f.Largo || f.PY is double py && py > (double)f.Alto))
+            Snackbar.Add("El punto de coincidencia de rayas quedó fuera de la nueva forma: ajústalo antes de guardar.", Severity.Warning);
+        StateHasChanged();
+    }
+
+    private async Task DibujarDefectoAsync()
+    {
+        var t = await PedirFormaAsync("Dibujar el defecto", "defecto", "", 2000, Math.Max(_ancho, 100));
+        if (t is null || (Formas.Leer(t)?.Count ?? 0) < 3) return;
+        _defectos.Add(new DefectoFila { Nombre = string.IsNullOrWhiteSpace(_defNombre) ? $"Defecto {_defectos.Count + 1}" : _defNombre.Trim(), Contorno = t });
+        _defNombre = "";
+    }
+
+    private async Task EditarDefectoAsync(DefectoFila d)
+    {
+        var t = await PedirFormaAsync($"Forma de {d.Nombre}", "defecto", d.Contorno, 2000, Math.Max(_ancho, 100));
+        if (t is not null) d.Contorno = t;
+    }
+
+    private async Task RayasAsync(Fila f)
+    {
+        var dlg = await DialogService.ShowAsync<DisenosMoldeRayasDialog>($"Rayas · {f.Nombre}",
+            new DialogParameters { ["NombreMolde"] = f.Nombre, ["Contorno"] = f.Contorno, ["CoincideX"] = f.CX, ["CoincideY"] = f.CY, ["PuntoX"] = f.PX, ["PuntoY"] = f.PY, ["FaseX"] = f.FX, ["FaseY"] = f.FY },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var r = await dlg.Result;
+        if (r is { Canceled: false, Data: DisenosMoldeRayasDialog.Resultado x })
+        {
+            f.CX = x.CoincideX; f.CY = x.CoincideY; f.PX = x.PuntoX; f.PY = x.PuntoY; f.FX = x.FaseX; f.FY = x.FaseY;
+            f.Sucio = true;                    // se guarda con "Guardar cambios"
+            StateHasChanged();
+        }
+    }
+
+    private async Task AjustarAsync(DisenosTizadoResumen t)
+    {
+        var dlg = await DialogService.ShowAsync<DisenosTizadoEditorDialog>($"Ajuste manual · {t.DES_TIZADO}",
+            new DialogParameters { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["NumSecuencia"] = t.NUM_SECUENCIA, ["NombreTizado"] = t.DES_TIZADO },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarTizadosAsync();      // se creo un tizado nuevo
+    }
+
+    private async Task DesbloquearAsync()
+    {
+        if (await DialogService.ShowMessageBox("Desbloquear versión", "Se podrán modificar de nuevo la estructura, la ruta, las especificaciones y los moldes de esta versión.", yesText: "Desbloquear", cancelText: "Cancelar") != true) return;
+        _trabajando = true;
+        var r = await Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraDesbloquear, new DisenosVersionClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion });
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        Snackbar.Add("Versión desbloqueada.", Severity.Success);
+        await CargarAsync();
+    }
+
+    // ---------- tizado ----------
+    private DisenosTizadoCalcularDto Parametros() => new()
+    {
+        COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, DES_TIZADO = _nombreTizado,
+        VAL_ANCHO_TELA = _ancho, VAL_SEPARACION = _separacion, VAL_MARGEN = _margen, VAL_CELDA = _celda, NUM_INTENTOS = _intentos,
+        Tallas = _prendas.Select(p => new DisenosTizadoTalla { DES_TALLA = p.Key, NUM_PRENDAS = p.Value }).ToList(),
+        VAL_PERIODO_X = _periodoX, VAL_PERIODO_Y = _periodoY,
+        Defectos = _defectos.Select(d => new DisenosTizadoDefectoEntrada { DES_DEFECTO = d.Nombre, DES_CONTORNO = d.Contorno }).ToList()
+    };
+
+    private static string F(double d) => d.ToString("0.###", CultureInfo.InvariantCulture);
+
+    /// <summary>Un defecto rectangular desde su esquina (x, y) y sus medidas; para otras formas se edita el contorno de la fila.</summary>
+    private void AgregarDefecto()
+    {
+        if (_defLargo <= 0 || _defAncho <= 0) { Snackbar.Add("El largo y el ancho del defecto deben ser mayores que cero.", Severity.Warning); return; }
+        if (_defX < 0 || _defY < 0) { Snackbar.Add("El defecto no puede empezar antes del inicio de la tela (X e Y desde 0).", Severity.Warning); return; }
+        _defectos.Add(new DefectoFila
+        {
+            Nombre = string.IsNullOrWhiteSpace(_defNombre) ? $"Defecto {_defectos.Count + 1}" : _defNombre.Trim(),
+            Contorno = $"{F(_defX)},{F(_defY)} {F(_defX + _defLargo)},{F(_defY)} {F(_defX + _defLargo)},{F(_defY + _defAncho)} {F(_defX)},{F(_defY + _defAncho)}"
+        });
+        _defNombre = "";
+    }
+
+    private async Task CalcularAsync()
+    {
+        if (_trabajando) return;
+        _trabajando = true; _calculando = true; _error = ""; _calculo = null;
+        StateHasChanged();
+        var r = await Http.PostAsync<DisenosTizadoCalculo>(IngenieriaRoute.DisenosTizadoCalcular, Parametros());
+        _calculando = false; _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        _calculo = r.Data;
+    }
+
+    private async Task GuardarTizadoAsync()
+    {
+        if (_trabajando || string.IsNullOrWhiteSpace(_nombreTizado)) return;
+        _trabajando = true; _calculando = true; _error = ""; _calculo = null;
+        StateHasChanged();
+        var r = await Http.PostAsync<DisenosTizadoCalculo>(IngenieriaRoute.DisenosTizadoGuardar, Parametros());
+        _calculando = false; _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        _calculo = r.Data;
+        Snackbar.Add($"Tizado guardado (N° {_calculo?.NUM_SECUENCIA}).", Severity.Success);
+        await CargarTizadosAsync();
+    }
+
+    private async Task VerAsync(DisenosTizadoResumen t)
+    {
+        _trabajando = true; _error = "";
+        var r = await GetAsync<DisenosTizadoCalculo>(IngenieriaRoute.DisenosTizadoDetalle(CodDiseno, NumVersion, t.NUM_SECUENCIA));
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        _calculo = r.Data;
+    }
+
+    private async Task DescargarAsync(DisenosTizadoResumen t)
+    {
+        _trabajando = true; _error = "";
+        try
+        {
+            var resp = await Http.GetAsync(IngenieriaRoute.DisenosTizadoDxf(CodDiseno, NumVersion, t.NUM_SECUENCIA));
+            if (!resp.IsSuccessStatusCode) { _error = $"No se pudo descargar el DXF (error {(int)resp.StatusCode})."; Snackbar.Add(_error, Severity.Error); }
+            else
+            {
+                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                await JS.InvokeVoidAsync("blobViewer.descargar", bytes, $"tizado_{CodDiseno}_v{NumVersion}_{t.NUM_SECUENCIA}.dxf", "application/dxf");
+            }
+        }
+        catch (Exception ex) { _error = "No se pudo descargar el DXF: " + ex.Message; }
+        _trabajando = false;
+    }
+
+    private async Task EliminarTizadoAsync(DisenosTizadoResumen t)
+    {
+        if (await DialogService.ShowMessageBox("Eliminar tizado", $"¿Eliminar el tizado N° {t.NUM_SECUENCIA} \"{t.DES_TIZADO}\"?", yesText: "Eliminar", cancelText: "Cancelar") != true) return;
+        _trabajando = true; _error = "";
+        var r = await Http.PostAsync<DisenosTizadoEliminarResultado>(IngenieriaRoute.DisenosTizadoEliminar, new DisenosMoldeClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, NUM_SECUENCIA = t.NUM_SECUENCIA });
+        _trabajando = false;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        if (_calculo?.NUM_SECUENCIA == t.NUM_SECUENCIA) _calculo = null;
+        Snackbar.Add("Tizado eliminado.", Severity.Success);
+        await CargarTizadosAsync();
+    }
+
+    // ---------- dibujo ----------
+    private static string Medidas(decimal largo, decimal alto) => $"{largo.ToString("0.#", CultureInfo.CurrentCulture)} × {alto.ToString("0.#", CultureInfo.CurrentCulture)}";
+
+    /// <summary>Vista en miniatura del contorno ("x,y x,y ...") como SVG; vacia si el texto no se puede leer.</summary>
+    public static string Mini(string contorno)
+    {
+        var pts = new List<(double X, double Y)>();
+        foreach (var t in (contorno ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var xy = t.Split(',');
+            if (xy.Length != 2 || !double.TryParse(xy[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) || !double.TryParse(xy[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) return "";
+            pts.Add((x, y));
+        }
+        if (pts.Count < 3) return "";
+        double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X), minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
+        double w = Math.Max(maxX - minX, 1e-6), h = Math.Max(maxY - minY, 1e-6);
+        var pad = Math.Max(w, h) * 0.04;
+        string F(double d) => d.ToString("0.##", CultureInfo.InvariantCulture);
+        var puntos = string.Join(" ", pts.Select(p => F(p.X - minX) + "," + F(p.Y - minY)));
+        return $"<svg viewBox=\"{F(-pad)} {F(-pad)} {F(w + 2 * pad)} {F(h + 2 * pad)}\" width=\"64\" height=\"44\" preserveAspectRatio=\"xMidYMid meet\"><polygon points=\"{puntos}\" fill=\"#b4c7e8\" stroke=\"#333\" stroke-width=\"{F(Math.Max(w, h) / 60)}\"/></svg>";
+    }
+
+    private void Cerrar() => MudDialog.Close();
+}

@@ -1,0 +1,307 @@
+@page "/logistica/guias-remision"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Logistica.GuiaRemision
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Bandeja de Guías de Remisión · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* BANDEJA DE GUÍAS DE REMISIÓN — dónde está cada guía y qué dijo SUNAT.
+
+   La guía nace en la pestaña «Guía de remisión» del movimiento, que es donde se emite. Aquí se ve el listado de un rango de fechas,
+   se filtra por estado y por texto, y con CONSULTAR se abre la ficha: respuesta de SUNAT, historial de envíos y la descarga del XML
+   y de la constancia (CDR). Dos botones de la fila mueven la guía, y solo se dibujan cuando valen (y si el rol los tiene):
+   CONSULTAR SUNAT, en una guía ENVIADA (pregunta a SUNAT cómo va), y REINTENTAR, en una RECHAZADA (la vuelve a emitir con el mismo número).
+
+   El rango de fechas es sobre la fecha de emisión y lo resuelve la base; el estado y el texto se filtran aquí, sobre lo
+   que ya llegó, para que los contadores de cada estado se vean sin pedir nada más. *@
+
+<div class="d-flex align-center gap-3 mb-3 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Bandeja de Guías de Remisión" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema LOGISTICA · @Filtradas.Count de @_items.Count guías</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Guía, movimiento, destinatario, placa, ticket..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+    <MudGrid Spacing="2" Class="align-center">
+        <MudItem xs="12" sm="6" md="3">
+            <MudDatePicker Label="Emitidas desde" Date="_desde" DateChanged="OnDesde" Variant="Variant.Outlined"
+                           DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" Clearable="true" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudDatePicker Label="Emitidas hasta" Date="_hasta" DateChanged="OnHasta" Variant="Variant.Outlined"
+                           DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" Clearable="true" />
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <div class="d-flex gap-2 flex-wrap align-center">
+                <MudChip T="string" Size="Size.Small" Variant="@(_estado is null ? Variant.Filled : Variant.Outlined)"
+                         Color="@(_estado is null ? Color.Primary : Color.Default)" OnClick="@(() => ElegirEstado(null))">Todas (@_items.Count)</MudChip>
+                @foreach (var e in Estados)
+                {
+                    var alias = e.Alias;
+                    <MudChip T="string" Size="Size.Small" Variant="@(_estado == alias ? Variant.Filled : Variant.Outlined)"
+                             Color="@(_estado == alias ? Color.Primary : Color.Default)" OnClick="@(() => ElegirEstado(alias))">@e.Texto (@e.Cantidad)</MudChip>
+                }
+            </div>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="guiasremision" style="position:relative;">
+    <MudDataGrid T="Modelo" Items="Filtradas" Dense="true" Hover="true" Striped="true" Loading="_cargando"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="Guía" Width="160">
+                <CellTemplate>
+                    @* Una guía que ya no es la vigente del movimiento (anulada, con otra emitida después) se atenúa. *@
+                    <span class="mono" style="font-weight:700;white-space:nowrap;@(context.Item.FLG_VIGENTE ? "" : "opacity:.5;text-decoration:line-through;")"
+                          title="@(context.Item.FLG_VIGENTE ? "" : "Ya no es la guía vigente del movimiento")">@context.Item.NUM_GUIA</span>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Emisión" Width="150">
+                <CellTemplate><span class="mono" style="white-space:nowrap;">@context.Item.FEC_HORA_EMISION.ToString("dd/MM/yyyy HH:mm")</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Movimiento" Width="100" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.NUM_MOVIMIENTO_ALMACEN</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Destinatario" CellStyle="min-width:220px;">
+                <CellTemplate>
+                    <div>@context.Item.DES_NOMBRE_DESTINATARIO</div>
+                    <div class="mono" style="font-size:.74rem;opacity:.65;">@context.Item.NUM_DOCUMENTO_DESTINATARIO</div>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Placa y peso" Width="145">
+                <CellTemplate>
+                    <div class="mono" style="white-space:nowrap;">@context.Item.NUM_PLACA_PRINCIPAL</div>
+                    @if (context.Item.CAN_PESO_BRUTO_TOTAL is { } peso)
+                    {
+                        <div class="mono" style="font-size:.74rem;opacity:.65;white-space:nowrap;">@peso.ToString("#,##0.###") @context.Item.COD_UNIDAD_PESO_SUNAT</div>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Estado" Width="125">
+                <CellTemplate>
+                    <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Envíos" Width="65" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                <CellTemplate><span class="mono">@context.Item.NUM_INTENTOS</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Sortable="false" Title="Archivos" Width="80" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                <CellTemplate>
+                    <MudIcon Icon="@Icons.Material.Filled.Code" Size="Size.Small"
+                             Color="@(context.Item.FLG_TIENE_XML ? Color.Success : Color.Default)"
+                             Style="@(context.Item.FLG_TIENE_XML ? "" : "opacity:.3;")"
+                             Title="@(context.Item.FLG_TIENE_XML ? "Tiene XML firmado" : "Sin XML todavía")" />
+                    <MudIcon Icon="@Icons.Material.Filled.Verified" Size="Size.Small"
+                             Color="@(context.Item.FLG_TIENE_CDR ? Color.Success : Color.Default)"
+                             Style="@(context.Item.FLG_TIENE_CDR ? "" : "opacity:.3;")"
+                             Title="@(context.Item.FLG_TIENE_CDR ? "Tiene constancia de recepción (CDR)" : "Sin constancia todavía")" />
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    @* Fila: el botón IMPRIMIR (reporteador) toma de la fila el N° de guía y el de movimiento. *@
+                    @* El @key lleva el estado: cuando la guía cambia (se consultó, se reintentó) los botones que valen para el estado nuevo se vuelven a armar. *@
+                    <AccionesBotones @key="@($"{item.NUM_GUIA_REMISION}|{item.COD_ESTADO_ALIAS}")" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" Fila="@item"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" Filtro="@(b => BotonAplica(item, b))" OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent>
+            <MudText Class="pa-6 mono" Style="opacity:.5;">
+                @(_items.Count == 0 ? "No hay guías emitidas en ese rango de fechas." : "Ninguna guía coincide con el estado o el texto buscado.")
+            </MudText>
+        </NoRecordsContent>
+        <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _search = "";
+    private bool _cargando;
+    /// <summary>El estado elegido en las fichas de arriba (PEN, ENV, ACE, REC, ANU). Null: todos.</summary>
+    private string? _estado;
+    // Por defecto el último mes: una bandeja de todas las guías de la historia no es lo que se quiere ver al abrirla.
+    private DateTime? _desde = DateTime.Today.AddDays(-30);
+    private DateTime? _hasta = DateTime.Today;
+
+    private sealed record EstadoResumen(string Alias, string Texto, int Cantidad);
+
+    /// <summary>Los estados que hay en lo cargado, con su cantidad, en el orden del ciclo de la guía.</summary>
+    private IEnumerable<EstadoResumen> Estados => _items
+        .Where(x => !string.IsNullOrWhiteSpace(x.COD_ESTADO_ALIAS))
+        .GroupBy(x => x.COD_ESTADO_ALIAS!)
+        .Select(g => new EstadoResumen(g.Key, g.First().DES_ESTADO ?? g.Key, g.Count()))
+        .OrderBy(e => Array.IndexOf(_ordenEstados, e.Alias) is var i and >= 0 ? i : int.MaxValue)
+        .ThenBy(e => e.Alias);
+    private static readonly string[] _ordenEstados = { "PEN", "ENV", "ACE", "REC", "ANU" };
+
+    private List<Modelo> Filtradas => _items
+        .Where(x => _estado is null || x.COD_ESTADO_ALIAS == _estado)
+        .Where(Coincide)
+        .ToList();
+
+    private bool Coincide(Modelo x)
+    {
+        var t = _search?.Trim();
+        if (string.IsNullOrEmpty(t)) return true;
+        bool Tiene(string? s) => s?.Contains(t, StringComparison.OrdinalIgnoreCase) == true;
+        return Tiene(x.NUM_GUIA) || Tiene(x.NUM_MOVIMIENTO_ALMACEN.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            || Tiene(x.NUM_DOCUMENTO_DESTINATARIO) || Tiene(x.DES_NOMBRE_DESTINATARIO)
+            || Tiene(x.NUM_PLACA_PRINCIPAL) || Tiene(x.NUM_TICKET);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("LOGISTICA", "GuiasRemision");
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        if (_desde is { } d && _hasta is { } h && d > h)
+        {
+            Snackbar.Add("La fecha «desde» no puede ser mayor que la fecha «hasta».", Severity.Warning);
+            return;
+        }
+        _cargando = true;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(ApiRoutes.Logistica.GuiasRemisionListado(_desde, _hasta));
+            _items = r?.Data ?? new();
+            // El estado elegido puede no existir en el rango nuevo: se vuelve a "Todas" para no dejar la grilla vacía sin explicación.
+            if (_estado is not null && !_items.Any(x => x.COD_ESTADO_ALIAS == _estado)) _estado = null;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiasRemision), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(GuiasRemision));
+            _items = new();
+        }
+        finally { _cargando = false; }
+    }
+
+    private async Task OnDesde(DateTime? v) { _desde = v; await Load(); }
+    private async Task OnHasta(DateTime? v) { _hasta = v; await Load(); }
+    private void ElegirEstado(string? alias) => _estado = alias;
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    // La bandeja no tiene altas: no hay guía que se cree a mano. Si más adelante se configura un botón de cabecera, no hace nada.
+    private Task OnAccionHeader(BotonTreeviewItem b) => Task.CompletedTask;
+
+    private const string BotonConsultarSunat = "CONSULTAR SUNAT", BotonReintentar = "REINTENTAR";
+
+    /// <summary>Sin tildes y en mayúsculas: «Consultar SUNAT» y «CONSULTAR SUNAT» son el mismo botón.</summary>
+    private static string Normalizar(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in s.Trim().Normalize(System.Text.NormalizationForm.FormD))
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark) sb.Append(char.ToUpperInvariant(c));
+        return sb.ToString();
+    }
+
+    /// <summary>Los botones que mueven la guía solo valen en su estado: consultar a SUNAT, ENVIADA; reintentar, RECHAZADA. Los demás valen siempre.</summary>
+    private static bool BotonAplica(Modelo g, BotonTreeviewItem b) => Normalizar(b.DES_BOTON_OPCION) switch
+    {
+        BotonConsultarSunat => g.FLG_VIGENTE && g.COD_ESTADO_ALIAS == "ENV",
+        BotonReintentar => g.FLG_VIGENTE && g.COD_ESTADO_ALIAS == "REC",
+        _ => true
+    };
+
+    private async Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        switch (Normalizar(b.DES_BOTON_OPCION))
+        {
+            case BotonConsultarSunat: await ConsultarSunat(item); return;
+            case BotonReintentar: await Reintentar(item); return;
+        }
+        // Los demás botones de la fila solo consultan: cualquiera con GET abre la ficha. Los que traen POST, PUT o DELETE no aplican aquí.
+        if (b.FLG_ACCION_POST == true || b.FLG_ACCION_PUT == true || b.FLG_ACCION_DELETE == true) return;
+        if (b.FLG_ACCION_GET != true) return;
+        await DialogService.ShowAsync<GuiaRemisionDialog>($"Consultar · {item.NUM_GUIA}",
+            new DialogParameters { ["NumGuia"] = item.NUM_GUIA_REMISION, ["Resumen"] = item, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private bool _trabajando;
+
+    private async Task ConsultarSunat(Modelo item)
+    {
+        if (_trabajando) return;
+        await Ejecutar(item, "Preguntando a SUNAT…", () => Http.PostAsync(ApiRoutes.Logistica.GuiaRemisionConsultar(item.NUM_GUIA_REMISION), null));
+    }
+
+    private async Task Reintentar(Modelo item)
+    {
+        if (_trabajando) return;
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Reintentar",
+            new DialogParameters
+            {
+                ["Titulo"] = "Reintentar",
+                ["IconoTitulo"] = Icons.Material.Filled.Replay,
+                ["Mensaje"] = $"¿Reintentar la guía {item.NUM_GUIA}? Vuelve a armarse con el mismo número y los datos del movimiento como están ahora, y se envía a SUNAT. Corrige antes lo que dijo SUNAT en el movimiento.",
+                ["TextoConfirmar"] = "Reintentar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Replay
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+        // Sin cuerpo: se mandan las mismas opciones con las que se emitió (M1/L, transbordo, documento relacionado).
+        await Ejecutar(item, "Armando, firmando y enviando la guía a SUNAT… puede tardar unos segundos.",
+            () => Http.PostAsJsonAsync(ApiRoutes.Logistica.GuiaRemisionReintentar(item.NUM_GUIA_REMISION), new KONSolutions.Shared.Models.Logistica.GuiaRemisionReintentarEmisionDto()));
+    }
+
+    /// <summary>Una respuesta de SUNAT —aceptada, rechazada o en proceso— es un resultado; lo que no es un resultado es no haber podido llegar a ella.</summary>
+    private async Task Ejecutar(Modelo item, string textoTrabajo, Func<Task<HttpResponseMessage>> llamada)
+    {
+        _trabajando = true; _cargando = true;
+        Snackbar.Add(textoTrabajo, Severity.Info);
+        try
+        {
+            var resp = await llamada();
+            KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Logistica.GuiaRemisionEmisionResultado>? r = null;
+            try { r = await resp.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Logistica.GuiaRemisionEmisionResultado>>(); }
+            catch { /* el cuerpo no era JSON: se dice el código */ }
+            if (resp.IsSuccessStatusCode && r?.Data is { } d)
+            {
+                if (d.COD_RESULTADO == KONSolutions.Shared.Models.Logistica.GuiaEmisionResultados.Aceptada) Snackbar.Add(d.DES_MENSAJE, Severity.Success);
+                else await ErrorDialogHelper.MostrarMensajeAsync(d.DES_MENSAJE, DialogService, nameof(GuiasRemision), d.COD_RESULTADO == KONSolutions.Shared.Models.Logistica.GuiaEmisionResultados.Rechazada ? "SUNAT rechazó la guía" : "SUNAT sigue procesando");
+            }
+            else
+            {
+                var msg = !string.IsNullOrWhiteSpace(r?.Message) ? r!.Message
+                        : resp.StatusCode == System.Net.HttpStatusCode.Forbidden ? "No tienes permiso para esta acción." : $"El servidor respondió {(int)resp.StatusCode}.";
+                await ErrorDialogHelper.MostrarMensajeAsync(msg, DialogService, nameof(GuiasRemision), $"No se pudo completar · {item.NUM_GUIA}");
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiasRemision), nameof(Ejecutar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo completar la operación. La guía queda como estaba. Ver detalle en el log de errores.", DialogService, nameof(GuiasRemision));
+        }
+        finally { _trabajando = false; _cargando = false; }
+        // El estado de la guía pudo cambiar: se vuelve a leer el listado.
+        await Load();
+    }
+}

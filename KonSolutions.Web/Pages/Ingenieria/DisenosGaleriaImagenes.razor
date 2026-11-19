@@ -1,0 +1,227 @@
+@* Galeria de imagenes de un diseno o de una version. Las imagenes son archivos de la carpeta del servidor
+   (ENTORNO.PATHFILES, clave KEY_PATH_FILE_DISENOS_DOCUMENTOS); la base guarda solo la ruta de la carpeta.
+   Se muestran como CARRUSEL o como PANAL (hexagonos); la eleccion se recuerda en el navegador. *@
+@using KONSolutions.Shared.Models.Entorno
+@using System.Net.Http.Json
+@using EntornoRoute = KONSolutions.Web.Services.ApiRoutes.Entorno
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@implements IAsyncDisposable
+
+<div class="gal-barra d-flex align-center gap-3 flex-wrap mb-2">
+    <MudToggleGroup T="string" Value="_modo" ValueChanged="CambiarModoAsync" Color="Color.Primary" Size="Size.Small" data-grupo="modo">
+        <MudToggleItem Value="@("carrusel")" Text="Carrusel" UnselectedIcon="@Icons.Material.Filled.ViewCarousel" SelectedIcon="@Icons.Material.Filled.ViewCarousel" data-modo="carrusel" />
+        <MudToggleItem Value="@("panal")" Text="Panal" UnselectedIcon="@Icons.Material.Filled.Hexagon" SelectedIcon="@Icons.Material.Filled.Hexagon" data-modo="panal" />
+    </MudToggleGroup>
+    @if (!string.IsNullOrEmpty(IdentificadorVersion))
+    {
+        <MudToggleGroup T="string" Value="_alcance" ValueChanged="CambiarAlcanceAsync" Color="Color.Secondary" Size="Size.Small" data-grupo="alcance">
+            <MudToggleItem Value="@("diseno")" Text="Del diseño" data-alcance="diseno" />
+            <MudToggleItem Value="@("version")" Text="De la versión" data-alcance="version" />
+        </MudToggleGroup>
+    }
+    @if (_modo == "panal")
+    {
+        <div class="d-flex align-center gap-1" style="min-width:200px;">
+            <span style="font-size:.78rem;opacity:.7;">Por fila</span>
+            <MudSlider T="int" @bind-Value="_columnas" Min="3" Max="8" Step="1" Style="width:110px;" />
+            <span class="mono" style="font-size:.78rem;">@_columnas</span>
+        </div>
+    }
+    <span class="mono" style="font-size:.78rem;opacity:.65;" data-cuenta="1">@_imagenes.Count imagen(es)</span>
+    <div style="flex:1 1 auto;"></div>
+    @if (!ReadOnly)
+    {
+        <MudFileUpload T="IBrowserFile" Accept=".jpg,.jpeg,.png" FilesChanged="SubirAsync" Disabled="_subiendo">
+            <ActivatorContent>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AddPhotoAlternate" Disabled="_subiendo" data-accion="subir">Agregar imagen</MudButton>
+            </ActivatorContent>
+        </MudFileUpload>
+    }
+</div>
+
+@if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Class="mb-2" />
+}
+else if (!string.IsNullOrEmpty(_error))
+{
+    <MudAlert Severity="Severity.Warning" Dense="true" data-error="1">@_error</MudAlert>
+}
+else if (_imagenes.Count == 0)
+{
+    <MudText Class="mono pa-4" Style="opacity:.55;" data-vacio="1">No hay imágenes @(_alcance == "version" ? "en esta versión" : "en este diseño").@(ReadOnly ? "" : " Use «Agregar imagen».")</MudText>
+}
+else if (_modo == "carrusel")
+{
+    <MudCarousel TData="object" Class="gal-carrusel" Style="height:58vh;" ShowArrows="true" ShowBullets="true" EnableSwipeGesture="true" AutoCycle="false" data-vista="carrusel">
+        @foreach (var im in _imagenes)
+        {
+            <MudCarouselItem Transition="Transition.Slide">
+                <div class="gal-slide" @onclick="@(() => Abrir(im))">
+                    <img src="@im.Url" alt="@im.Doc.NombreArchivo" />
+                    <div class="gal-pie">@im.Doc.NombreArchivo</div>
+                </div>
+            </MudCarouselItem>
+        }
+    </MudCarousel>
+}
+else
+{
+    <div class="gal-panal" data-vista="panal" style="--gal-ancho:@(AnchoHex)px;">
+        @foreach (var fila in Filas())
+        {
+            <div class="gal-fila">
+                @foreach (var im in fila)
+                {
+                    <div class="gal-hex" title="@im.Doc.NombreArchivo" @onclick="@(() => Abrir(im))" data-hex="1">
+                        <img src="@im.Url" alt="@im.Doc.NombreArchivo" />
+                    </div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@if (_abierta is not null)
+{
+    <MudOverlay Visible="true" DarkBackground="true" ZIndex="2000" OnClick="Cerrar" data-ampliada="1">
+        <div class="gal-lightbox" @onclick:stopPropagation="true">
+            <img src="@_abierta.Url" alt="@_abierta.Doc.NombreArchivo" />
+            <div class="gal-lb-barra">
+                <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Color="Color.Inherit" OnClick="Anterior" />
+                <span>@_abierta.Doc.NombreArchivo (@(_imagenes.IndexOf(_abierta) + 1)/@_imagenes.Count)</span>
+                <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" Color="Color.Inherit" OnClick="Siguiente" />
+                @if (!ReadOnly) { <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" OnClick="EliminarAsync" data-accion="eliminar" /> }
+                <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Inherit" OnClick="Cerrar" data-accion="cerrar" />
+            </div>
+        </div>
+    </MudOverlay>
+}
+
+<style>
+    .gal-slide { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:zoom-in; background:var(--mud-palette-background-gray); }
+    .gal-slide img { max-width:100%; max-height:calc(58vh - 40px); object-fit:contain; }
+    .gal-pie { font-size:.78rem; opacity:.7; padding:4px; }
+    .gal-panal { display:flex; flex-direction:column; align-items:center; padding:8px 0 24px; max-height:62vh; overflow:auto; }
+    .gal-fila { display:flex; justify-content:center; margin-top:calc(var(--gal-ancho) * -0.2887 + 4px); }
+    .gal-fila:first-child { margin-top:0; }
+    .gal-hex { width:var(--gal-ancho); height:calc(var(--gal-ancho) * 1.1547); margin:0 2px; cursor:zoom-in; overflow:hidden; background:var(--mud-palette-lines-inputs);
+               clip-path:polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); transition:transform .15s; flex:0 0 auto; }
+    .gal-hex:hover { transform:scale(1.06); z-index:2; }
+    .gal-hex img { width:100%; height:100%; object-fit:cover; display:block; }
+    .gal-lightbox { display:flex; flex-direction:column; align-items:center; max-width:96vw; max-height:94vh; }
+    .gal-lightbox img { max-width:96vw; max-height:84vh; object-fit:contain; background:#000; }
+    .gal-lb-barra { display:flex; align-items:center; gap:8px; color:#fff; padding-top:6px; }
+</style>
+
+@code {
+    private const string Clave = "KEY_PATH_FILE_DISENOS_DOCUMENTOS";
+    private sealed class Img { public DocumentoCarpetaDto Doc = null!; public string Url = ""; }
+
+    /// <summary>Codigo del diseno (nombre de la carpeta de sus imagenes).</summary>
+    [Parameter, EditorRequired] public string Identificador { get; set; } = "";
+    /// <summary>Carpeta de la version (p. ej. 0000001-V01). Si viene, se ofrece alternar entre las imagenes del diseno y las de la version.</summary>
+    [Parameter] public string? IdentificadorVersion { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private string _modo = "carrusel", _alcance = "diseno", _error = "";
+    private int _columnas = 5;
+    private bool _cargando, _subiendo;
+    private List<Img> _imagenes = new();
+    private Img? _abierta;
+    private string Carpeta => _alcance == "version" && !string.IsNullOrEmpty(IdentificadorVersion) ? IdentificadorVersion! : Identificador;
+    private string Ruta => EntornoRoute.DocumentosCarpeta(Clave, Carpeta);
+    private int AnchoHex => 150;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { var g = await JS.InvokeAsync<string?>("localStorage.getItem", "diseno.galeria.modo"); if (g is "carrusel" or "panal") _modo = g; } catch { }
+        await CargarAsync();
+    }
+
+    private async Task CambiarModoAsync(string? v)
+    {
+        if (v is not ("carrusel" or "panal")) return;
+        _modo = v;
+        try { await JS.InvokeVoidAsync("localStorage.setItem", "diseno.galeria.modo", v); } catch { }
+    }
+
+    private async Task CambiarAlcanceAsync(string? v) { if (v is not ("diseno" or "version")) return; _alcance = v; await CargarAsync(); }
+
+    private async Task LiberarAsync()
+    {
+        foreach (var i in _imagenes) { try { await JS.InvokeVoidAsync("blobViewer.liberar", i.Url); } catch { } }
+        _imagenes = new();
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = ""; _abierta = null; await LiberarAsync(); StateHasChanged();
+        try
+        {
+            var docs = await Http.SafeGetAsync<List<DocumentoCarpetaDto>>(Ruta) ?? new();
+            foreach (var d in docs.Where(d => d.Extension.ToUpperInvariant() is "JPG" or "JPEG" or "PNG").OrderBy(d => d.NombreArchivo))
+            {
+                var resp = await Http.GetAsync($"api/v1/entorno/documentos/ver?ruta={Uri.EscapeDataString(d.RutaCompleta)}");
+                if (!resp.IsSuccessStatusCode) continue;
+                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                if (bytes.Length == 0 || bytes[0] == (byte)'<') continue;   // llego HTML, no una imagen
+                var url = await JS.InvokeAsync<string>("blobViewer.crear", bytes, d.Extension.ToUpperInvariant() == "PNG" ? "image/png" : "image/jpeg");
+                _imagenes.Add(new Img { Doc = d, Url = url });
+            }
+        }
+        catch (Exception ex) { _error = "No se pudieron cargar las imágenes: " + ex.Message; }
+        _cargando = false;
+    }
+
+    private IEnumerable<List<Img>> Filas()
+    {
+        int i = 0, n = Math.Max(3, _columnas); bool larga = true;
+        while (i < _imagenes.Count)
+        {
+            var cant = larga ? n : n - 1;
+            yield return _imagenes.Skip(i).Take(cant).ToList();
+            i += cant; larga = !larga;
+        }
+    }
+
+    private void Abrir(Img i) => _abierta = i;
+    private void Cerrar() => _abierta = null;
+    private void Mover(int d) { if (_abierta is null || _imagenes.Count == 0) return; var k = (_imagenes.IndexOf(_abierta) + d + _imagenes.Count) % _imagenes.Count; _abierta = _imagenes[k]; }
+    private void Anterior() => Mover(-1);
+    private void Siguiente() => Mover(1);
+
+    private async Task SubirAsync(IBrowserFile? archivo)
+    {
+        if (archivo is null) return;
+        _subiendo = true;
+        try
+        {
+            using var s = archivo.OpenReadStream(20 * 1024 * 1024);
+            using var ms = new MemoryStream(); await s.CopyToAsync(ms);
+            using var contenido = new MultipartFormDataContent();
+            using var sc = new ByteArrayContent(ms.ToArray());
+            contenido.Add(sc, "archivo", archivo.Name);
+            var resp = await Http.PostAsync(Ruta, contenido);
+            if (!resp.IsSuccessStatusCode) { Snackbar.Add("No se pudo subir la imagen: " + await resp.Content.ReadAsStringAsync(), Severity.Error); }
+            else { Snackbar.Add("Imagen cargada.", Severity.Success); await CargarAsync(); }
+        }
+        catch (Exception ex) { Snackbar.Add("No se pudo subir la imagen: " + ex.Message, Severity.Error); }
+        _subiendo = false;
+    }
+
+    private async Task EliminarAsync()
+    {
+        if (_abierta is null) return;
+        var ok = await DialogService.ShowMessageBox("Eliminar imagen", $"¿Eliminar \"{_abierta.Doc.NombreArchivo}\"?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var resp = await Http.DeleteAsync($"{Ruta}/{Uri.EscapeDataString(_abierta.Doc.NombreArchivo)}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Imagen eliminada.", Severity.Success); await CargarAsync(); }
+        else Snackbar.Add("No se pudo eliminar: " + await resp.Content.ReadAsStringAsync(), Severity.Error);
+    }
+
+    public async ValueTask DisposeAsync() => await LiberarAsync();
+}

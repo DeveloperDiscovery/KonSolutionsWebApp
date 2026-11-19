@@ -1,0 +1,190 @@
+@* Personal de produccion por categoria ocupacional (script SQL 124, API produccion/personal-operacion). Cada persona tiene UNA sola categoria (A-D) porque se dedica a una
+   operacion de un proceso en especifico. El resumen por categoria y proceso es la base para comparar el personal disponible con el que pide un armado de linea (etapa O7). *@
+@page "/ingenieria/personal-operacion"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject MenuService MenuSvc
+@inject AccessLogService AccessLog
+
+<PageTitle>Personal por categoría · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Personal por categoría</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">Una categoría por persona · @_visibles.Count de @_items.Count</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_buscar" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar por persona, categoría, proceso, operación..." DebounceInterval="300" MaxWidth="520px" Class="grid-header-search" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridClearFiltersButton OnClear="@(() => _g.Limpiar())" HasFilters="@_g.HayFiltros" />
+        <GridRefreshButton OnRefresh="Cargar" />
+        @if (_app == "")
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => Abrir(null, CrudModo.Create))" data-accion="nuevo">Asignar categoría</MudButton>
+        }
+        else
+        {
+            <AccionesBotones CodAplicacion="@_app" CodOpcionAplicacion="@_opcion" Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+        }
+    </div>
+</div>
+
+@if (_resumen.Count > 0)
+{
+    <div class="d-flex flex-wrap gap-2 align-center mb-2" data-zona="resumen">
+        @foreach (var g in _resumen.GroupBy(r => r.COD_CATEGORIA_OCUPACIONAL).OrderBy(g => g.Key))
+        {
+            <MudChip T="string" Size="Size.Small" Variant="@(_fCategoria == g.Key ? Variant.Filled : Variant.Outlined)" Color="Color.Primary" OnClick="@(() => _fCategoria = _fCategoria == g.Key ? null : g.Key)" data-resumen="@g.Key"
+                     title="@string.Join(" · ", g.OrderBy(x => x.DES_PROCESO).Select(x => $"{x.DES_PROCESO}: {x.CAN_PERSONAS}"))">
+                @g.Key · @(g.First().DES_CATEGORIA_OCUPACIONAL) · <b>@g.Sum(x => x.CAN_PERSONAS)</b>
+            </MudChip>
+        }
+        <MudText Typo="Typo.caption" Style="opacity:.6;">personal activo con categoría: @_resumen.Sum(r => r.CAN_PERSONAS)</MudText>
+    </div>
+}
+
+<div class="d-flex flex-wrap gap-2 align-center mb-2" data-zona="filtros">
+    <MudSelect T="string" @bind-Value="_fCategoria" Label="Categoría" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" Style="max-width:200px;" data-filtro="categoria">
+        @foreach (var p in _categorias) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
+    </MudSelect>
+    <MudSelect T="string" @bind-Value="_fProceso" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" Style="max-width:210px;" data-filtro="proceso">
+        @foreach (var p in _procesos) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
+    </MudSelect>
+    <MudSwitch T="bool" @bind-Value="_conOperacion" Label="Solo con operación fija" Color="Color.Primary" data-filtro="con-operacion" />
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="personal-operacion" style="position:relative;">
+    <MudDataGrid T="PersonalOperacionItem" Items="_visibles" Dense="true" Hover="true" Striped="true" FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre" data-grilla="personal">
+        <Columns>
+            <TemplateColumn Title="Código" Sortable="false" Width="110px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="0" Texto="Código" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.COD_PERSONAL</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Persona" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="1" Texto="Persona" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>
+                    <span>@context.Item.DES_PERSONAL</span>
+                    @if (context.Item.FLG_CESADO) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1" title="Tiene fecha de cese: no cuenta en el resumen">cesado</MudChip> }
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Cat." Sortable="false" Width="170px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Cat." OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate><MudChip T="string" Size="Size.Small" Color="Color.Primary">@context.Item.COD_CATEGORIA_OCUPACIONAL · @context.Item.DES_CATEGORIA_OCUPACIONAL</MudChip></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Proceso" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="Proceso" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES_PROCESO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Subproceso" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Subproceso" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES_SUB_PROCESO</CellTemplate></TemplateColumn>
+            <TemplateColumn Title="Operación fija" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="5" Texto="Operación fija" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>@if (!string.IsNullOrEmpty(context.Item.COD_OPERACION)) { <span><span class="mono" style="opacity:.55;">@context.Item.COD_OPERACION</span> @context.Item.DES_OPERACION</span> } else { <span style="opacity:.45;">—</span> }</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Estado" Sortable="false" Width="110px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="6" Texto="Estado" OnCambio="Refrescar" /></HeaderTemplate>
+                <CellTemplate>@if (!string.IsNullOrEmpty(context.Item.DES_ESTADO)) { <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /> }</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false" Width="150px">
+                <CellTemplate>
+                    @{ var it = context.Item; }
+                    @if (_app == "")
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Update))" data-accion="editar" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Abrir(it, CrudModo.Delete))" data-accion="eliminar" />
+                    }
+                    else
+                    {
+                        <AccionesBotones CodAplicacion="@_app" CodOpcionAplicacion="@_opcion" Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(it, b))" />
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin personal con categoría.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="PersonalOperacionItem" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private readonly GridOF<PersonalOperacionItem> _g = new();
+    private void Refrescar() { }   // el orden o un filtro de columna cambio: se vuelve a dibujar
+    public PersonalOperacion()
+    {
+        _g.Add(x => x.COD_PERSONAL);
+        _g.Add(x => x.DES_PERSONAL);
+        _g.Add(x => x.COD_CATEGORIA_OCUPACIONAL);
+        _g.Add(x => x.DES_PROCESO);
+        _g.Add(x => x.DES_SUB_PROCESO);
+        _g.Add(x => x.DES_OPERACION);
+        _g.Add(x => x.DES_ESTADO);
+    }
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private string _app = "", _opcion = "";
+    private List<PersonalOperacionItem> _items = new();
+    private List<PersonalResumenItem> _resumen = new();
+    private List<CatalogoOperacionItem> _categorias = new(), _procesos = new();
+    private string _buscar = "", _error = "";
+    private string? _fCategoria, _fProceso;
+    private bool _conOperacion;
+
+    private List<PersonalOperacionItem> _visibles => _g.Visibles(_fuente);
+    private List<PersonalOperacionItem> _fuente => _items.Where(o =>
+            (string.IsNullOrWhiteSpace(_buscar) || Coincide(o, _buscar))
+            && (string.IsNullOrEmpty(_fCategoria) || o.COD_CATEGORIA_OCUPACIONAL == _fCategoria)
+            && (string.IsNullOrEmpty(_fProceso) || o.COD_PROCESO == _fProceso)
+            && (!_conOperacion || !string.IsNullOrEmpty(o.COD_OPERACION))).ToList();
+
+    private static bool Coincide(PersonalOperacionItem o, string t) =>
+        new[] { o.COD_PERSONAL, o.DES_PERSONAL, o.COD_CATEGORIA_OCUPACIONAL, o.DES_CATEGORIA_OCUPACIONAL, o.DES_PROCESO, o.DES_SUB_PROCESO, o.COD_OPERACION, o.DES_OPERACION }
+            .Any(x => x?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var r = MenuSvc.BuscarCodigosPorFormulario("Ingenieria/PersonalOperacion.razor");
+        if (r is not null) (_app, _opcion) = (r.Value.CodAplicacion, r.Value.CodOpcionAplicacion);
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Personal por categoría");
+        await Cargar();
+    }
+
+    private async Task Cargar()
+    {
+        var combos = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.PersonalOperacionCombos);
+        if (combos.Data is { } c)
+        {
+            _categorias = c.GetValueOrDefault("categorias") ?? new();
+            _procesos = c.GetValueOrDefault("procesos") ?? new();
+        }
+        var r = await OperacionesApi.LeerAsync<List<PersonalOperacionItem>>(Http, IngRoute.PersonalOperacion);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudo leer el personal.";
+        _items = r.Data ?? new();
+        var s = await OperacionesApi.LeerAsync<List<PersonalResumenItem>>(Http, IngRoute.PersonalOperacionResumen);
+        _resumen = s.Data ?? new();
+        StateHasChanged();
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b) => b.FLG_ACCION_POST == true ? Abrir(null, CrudModo.Create) : Task.CompletedTask;
+
+    private Task OnAccionGrilla(PersonalOperacionItem it, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT == true) return Abrir(it, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return Abrir(it, CrudModo.Delete);
+        if (b.FLG_ACCION_GET == true) return Abrir(it, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task Abrir(PersonalOperacionItem? it, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Asignar categoría a una persona",
+            CrudModo.Delete => $"Quitar categoría · {it?.DES_PERSONAL}",
+            CrudModo.Read => $"Consultar · {it?.DES_PERSONAL}",
+            _ => $"Editar · {it?.DES_PERSONAL}"
+        };
+        var dlg = await DialogService.ShowAsync<PersonalOperacionDialog>(titulo, new DialogParameters { ["Item"] = it, ["Modo"] = modo },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Cargar();
+    }
+}

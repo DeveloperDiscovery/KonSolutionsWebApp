@@ -1,0 +1,549 @@
+@page "/proyectos/proyectos"
+@attribute [Authorize]
+@using Modelo = KONSolutions.Shared.Models.Proyectos.Proyectos
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+@inject Blazored.LocalStorage.ILocalStorageService Local
+
+<PageTitle>Proyectos · @ConfigSvc.Current.NombreApp</PageTitle>
+@* el css del dashboard lo carga DashKpi; con los indicadores ocultos hay que cargarlo desde aqui para que las tarjetas y el selector sigan con su estilo *@
+<HeadContent><link rel="stylesheet" href="css/dashboard.css?v=20261110a" /></HeadContent>
+
+@* Dos solapas que nunca están habilitadas a la vez: o se está mirando la lista, o se
+   está trabajando sobre un documento — mismo patrón que Requerimientos de Almacén. *@
+<MudTabs Elevation="0" ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)"
+         Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4">
+
+    <MudTabPanel Text="Proyectos" Icon="@Icons.Material.Filled.List" Disabled="@_enDocumento">
+        <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+            <div class="grid-header-titulo">
+                <TituloPagina Fallback="Proyectos" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+                <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema PROYECTOS · @_visibles.Count de @_items.Count documentos</MudText>
+            </div>
+            <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar por número o descripción..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+            <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f=>f.Value is not null) || HayPanel)" />
+            <MudTooltip Text="@(_verFiltros ? "Ocultar los filtros" : "Mostrar los filtros")">
+                <MudIconButton Icon="@Icons.Material.Filled.FilterAlt" Color="@(_verFiltros ? Color.Primary : Color.Default)" Size="Size.Small" OnClick="AlternarFiltros" />
+            </MudTooltip>
+            <MudTooltip Text="@(_verKpi ? "Ocultar los indicadores" : "Mostrar los indicadores")">
+                <MudIconButton Icon="@Icons.Material.Filled.Dashboard" Color="@(_verKpi ? Color.Primary : Color.Default)" Size="Size.Small" OnClick="AlternarKpi" />
+            </MudTooltip>
+            <div class="grid-header-divider"></div>
+            <div class="d-flex gap-2">
+                <GridRefreshButton OnRefresh="Load" />
+                <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                 Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+            </div>
+        </div>
+
+        @if (_verFiltros)
+        {
+            <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" sm="6" md="2">
+                        <MudDatePicker Date="_fDesde" DateChanged="@(d => { _fDesde = d; })" Label="Plazo desde" Variant="Variant.Outlined" Margin="Margin.Dense" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <MudDatePicker Date="_fHasta" DateChanged="@(d => { _fHasta = d; })" Label="Plazo hasta" Variant="Variant.Outlined" Margin="Margin.Dense" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <AriaCombo TItem="ComboboxItem" Items="@Opciones(x => x.DES_TIPO_PROYECTO)" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fTipo" ValueChanged="@(v => { _fTipo = v; })" Label="Tipo de proyecto" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <AriaCombo TItem="ComboboxItem" Items="@Opciones(x => x.DES_ESTADO)" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fEstado" ValueChanged="@(v => { _fEstado = v; })" Label="Estado" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <AriaCombo TItem="ComboboxItem" Items="@Opciones(NombreEntidad)" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fResp" ValueChanged="@(v => { _fResp = v; })" Label="Responsable" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <AriaCombo TItem="ComboboxItem" Items="@Opciones(x => x.DES_ESPONSOR)" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fSpons" ValueChanged="@(v => { _fSpons = v; })" Label="Sponsor" />
+                    </MudItem>
+                </MudGrid>
+                <MudText Typo="Typo.caption" Style="opacity:.65;">El rango de fechas deja los proyectos cuyo plazo programado (inicio a fin) cruza el rango.</MudText>
+            </MudPaper>
+        }
+
+        <div class="dash">
+            @if (_verKpi)
+            {
+            <div class="dash-kpis">
+                <DashKpi Titulo="Proyectos" Icono="@Icons.Material.Filled.Assignment" Valor="@_visibles.Count.ToString()" Sub="@($"de {_items.Count} documentos")" />
+                <DashKpi Titulo="En curso" Icono="@Icons.Material.Filled.PlayCircleOutline" Valor="@Cuenta("CUR").ToString()" />
+                <DashKpi Titulo="Atrasados" Icono="@Icons.Material.Filled.ErrorOutline" Valor="@Cuenta("ATR").ToString()" Tono="@(Cuenta("ATR") > 0 ? "bad" : "ok")" Sub="plazo vencido sin terminar" />
+                <DashKpi Titulo="Terminados" Icono="@Icons.Material.Filled.CheckCircleOutline" Valor="@Cuenta("TER").ToString()" Tono="ok" />
+                <DashKpi Titulo="Presupuesto" Icono="@Icons.Material.Filled.AccountBalanceWallet" Valor="@Pres.ToString("N0")" Sub="suma de los proyectos" />
+                <DashKpi Titulo="Costo real" Icono="@Icons.Material.Filled.Paid" Valor="@Costo.ToString("N0")" Tono="@TonoCosto" Progreso="@PctCosto" Sub="@(Pres > 0 ? $"{PctCosto:0}% del presupuesto" : "sin presupuesto")" />
+            </div>
+            }
+            <div class="dash-tools">
+                <MudToggleGroup T="string" @bind-Value="_vista" Color="Color.Primary" Size="Size.Small" SelectionMode="SelectionMode.SingleSelection" CheckMark="false">
+                    <MudToggleItem Value="@("T")" Text="Tarjetas" />
+                    <MudToggleItem Value="@("G")" Text="Tabla" />
+                </MudToggleGroup>
+            </div>
+            @if (_vista == "T")
+            {
+                @if (_visibles.Count == 0)
+                {
+                    <div class="dash-vacio">Sin documentos.</div>
+                }
+                else
+                {
+                    <div class="dash-cards">
+                        @foreach (var it in _visibles)
+                        {
+                            var item = it;
+                            var pf = Pf(item);
+                            var avance = pf?.TAS_AVANCE ?? 0m;
+                            var sit = pf?.COD_SITUACION ?? "";
+                            var excede = (item.VAL_PRESUPUESTO_PROYECTO ?? 0) > 0 && (pf?.VAL_COSTO_PROYECTO ?? 0) > item.VAL_PRESUPUESTO_PROYECTO;
+                            <div class="dash-card">
+                                <div class="c-top">
+                                    <div style="flex:1;min-width:0;">
+                                        <div class="c-num mono">N° @item.NUM_PROYECTO · @item.DES_TIPO_PROYECTO</div>
+                                        <div class="c-tit">@item.DES_PROYECTO</div>
+                                        <div class="c-sub">@(string.IsNullOrWhiteSpace(NombreEntidad(item)) ? "Sin responsable" : NombreEntidad(item))@CargoAreaCorto(item.DES_CARGO_RESPONSABLE, item.DES_AREA_RESPONSABLE)</div>
+                                        @if (!string.IsNullOrWhiteSpace(item.DES_ESPONSOR)) { <div class="c-sub">Sponsor: @item.DES_ESPONSOR@CargoAreaCorto(item.DES_CARGO_ESPONSOR, item.DES_AREA_ESPONSOR)</div> }
+                                    </div>
+                                    @if (sit != "") { <span class="sit sit-@sit">@ProyectoApi.Situacion(sit)</span> }
+                                </div>
+                                <div class="c-av">
+                                    <span class="big">@avance.ToString("0")%</span>
+                                    <div class="c-trk"><i class="@(sit == "ATR" ? "bad" : sit == "TER" ? "ok" : "")" style="width:@(Math.Min(100m, avance).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%"></i></div>
+                                </div>
+                                <div class="c-datos">
+                                    <div><span>Inicio → Fin programado</span><b>@ProyectoApi.Fecha(item.FEC_INICIO_PROGRAMADO) → @ProyectoApi.Fecha(item.FEC_FINAL_PROGRAMADO)</b></div>
+                                    <div><span>Presupuesto</span><b>@((item.VAL_PRESUPUESTO_PROYECTO ?? 0).ToString("N2"))</b></div>
+                                    <div><span>Costo real</span><b class="@(excede ? "bad" : "")">@((pf?.VAL_COSTO_PROYECTO ?? 0).ToString("N2"))</b></div>
+                                </div>
+                                <div class="c-pie">
+                                    <EstadoChip Estado="@item.DES_ESTADO" BackColor="@item.DES_BACKCOLOR" ForeColor="@item.DES_FORECOLOR" />
+                                    @if ((pf?.NUM_RIESGOS_ALTOS ?? 0) > 0) { <span class="sit sit-ATR">@pf!.NUM_RIESGOS_ALTOS riesgo(s) alto(s)</span> }
+                                    <div class="c-acc">
+                                        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                                         Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))"
+                                                         CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+
+        @if (_vista == "G")
+        {
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+            <div data-resizable-grid="proyectos" style="position:relative;">
+            <MudDataGrid T="Modelo" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                         Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+                <Columns>
+                    <TemplateColumn Sortable="false" Title="N°" Width="90px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <HeaderTemplate><div class="d-flex align-center gap-1" style="justify-content:flex-end;"><EncabezadoOrdenable Campo="N°" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                            <FiltroExcelColumna T="Modelo" ItemsBase="@Base(0)" ValorDe="@(x=>ValorCol(0, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v=>Filtro(0,v))" />
+                        </div></HeaderTemplate>
+                        <CellTemplate><span class="mono">@context.Item.NUM_PROYECTO</span></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Descripción" Width="280px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Campo="Descripción" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(1)" ValorDe="@(x=>x.DES_PROYECTO)"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v=>Filtro(1,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_PROYECTO</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Tipo" Width="150px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Tipo" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(2)" ValorDe="@(x=>x.DES_TIPO_PROYECTO)"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v=>Filtro(2,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_TIPO_PROYECTO</CellTemplate>
+                    </TemplateColumn>
+
+                    @* El SP trae la entidad responsable desglosada en siete campos. Se arma
+                       uno solo aquí, igual que en Requerimientos de Almacén. *@
+                    <TemplateColumn Sortable="false" Title="Responsable" Width="220px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Responsable" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(3)" ValorDe="@(x=>ValorCol(3, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v=>Filtro(3,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><div>@NombreEntidad(context.Item)</div>@CargoArea(context.Item.DES_CARGO_RESPONSABLE, context.Item.DES_AREA_RESPONSABLE)</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Sponsor" Width="220px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Sponsor" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(4)" ValorDe="@(x=>ValorCol(4, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v=>Filtro(4,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><div>@context.Item.DES_ESPONSOR</div>@CargoArea(context.Item.DES_CARGO_ESPONSOR, context.Item.DES_AREA_ESPONSOR)</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Inicio prog." Width="110px" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Inicio prog." />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(5)" ValorDe="@(x=>ValorCol(5, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v=>Filtro(5,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><span class="mono">@(context.Item.FEC_INICIO_PROGRAMADO?.ToString("dd/MM/yyyy") ?? "—")</span></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Fin prog." Width="110px" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Fin prog." />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(6)" ValorDe="@(x=>ValorCol(6, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v=>Filtro(6,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><span class="mono">@(context.Item.FEC_FINAL_PROGRAMADO?.ToString("dd/MM/yyyy") ?? "—")</span></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Presupuesto" Width="130px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Presupuesto" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(8)" ValorDe="@(x=>ValorCol(8, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(8)" ValoresActivosChanged="@(v=>Filtro(8,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate><span class="mono">@context.Item.VAL_PRESUPUESTO_PROYECTO?.ToString("N2")</span></CellTemplate>
+                    </TemplateColumn>
+
+                    @* Indicador de presupuesto: lo gastado (costo real) contra el presupuesto; verde hasta 85 %, naranja hasta 100 %, rojo si se pasa *@
+                    <TemplateColumn Sortable="false" Title="Consumo del presupuesto" Width="190px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Consumo del presupuesto" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(9)" ValorDe="@(x=>ValorCol(9, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(9)" ValoresActivosChanged="@(v=>Filtro(9,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>
+                            @{
+                                var pres = context.Item.VAL_PRESUPUESTO_PROYECTO ?? 0;
+                                var costo = Pf(context.Item)?.VAL_COSTO_PROYECTO ?? context.Item.VAL_COSTO_PROYECTO ?? 0;
+                                decimal? pct = pres > 0 ? costo * 100m / pres : null;
+                            }
+                            @if (pct is null)
+                            {
+                                <span class="mono" style="opacity:.5;" title="El proyecto no tiene presupuesto">—</span>
+                            }
+                            else
+                            {
+                                <div title="@($"Costo real {costo:N2} de {pres:N2}")">
+                                    <MudProgressLinear Value="@((double)Math.Min(100m, pct.Value))" Size="Size.Small" Rounded="true"
+                                                       Color="@(pct > 100 ? Color.Error : pct > 85 ? Color.Warning : Color.Success)" />
+                                    <span class="mono" style="font-size:.72rem;">@pct.Value.ToString("0")% · @costo.ToString("N0")</span>
+                                </div>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    @* Indicador de avance: el porcentaje que calcula el portafolio; rojo si esta atrasado, verde si termino *@
+                    <TemplateColumn Sortable="false" Title="Avance" Width="150px">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Avance" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(10)" ValorDe="@(x=>ValorCol(10, x))"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(10)" ValoresActivosChanged="@(v=>Filtro(10,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>
+                            @{
+                                var pfa = Pf(context.Item);
+                                var av = pfa?.TAS_AVANCE ?? 0m;
+                            }
+                            @if (pfa is null)
+                            {
+                                <span class="mono" style="opacity:.5;" title="Sin datos de avance (permiso del portafolio)">—</span>
+                            }
+                            else
+                            {
+                                <div title="@($"{pfa.NUM_TAREAS_TERMINADAS} de {pfa.NUM_TAREAS} tareas terminadas")">
+                                    <MudProgressLinear Value="@((double)Math.Min(100m, av))" Size="Size.Small" Rounded="true"
+                                                       Color="@(pfa.COD_SITUACION == "ATR" ? Color.Error : pfa.COD_SITUACION == "TER" ? Color.Success : Color.Primary)" />
+                                    <span class="mono" style="font-size:.72rem;">@av.ToString("0")% · @ProyectoApi.Situacion(pfa.COD_SITUACION)</span>
+                                </div>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Title="Estado" Width="130px" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                        <HeaderTemplate>
+                            <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Estado" />
+                                <FiltroExcelColumna T="Modelo" ItemsBase="@Base(7)" ValorDe="@(x=>x.DES_ESTADO)"
+                                                    ValoresActivos="_filtros.GetValueOrDefault(7)" ValoresActivosChanged="@(v=>Filtro(7,v))" />
+                            </div>
+                        </HeaderTemplate>
+                        <CellTemplate>
+                            <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                        BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="Acciones" Sortable="false">
+                        <CellTemplate>
+                            @{ var item = context.Item; }
+                            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                             Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b=>OnAccionGrilla(item,b))"
+                                             CodTipoEstado="@item.COD_TIPO_ESTADO" CodEstadoActual="@item.COD_ESTADO" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin documentos.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="Modelo" /></PagerContent>
+            </MudDataGrid>
+            <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+        }
+    </MudTabPanel>
+
+    <MudTabPanel Text="@_tituloDocumento" Icon="@Icons.Material.Filled.Description" Disabled="@(!_enDocumento)">
+        @if (_enDocumento)
+        {
+            <ProyectoDocumento Item="_docItem" Modo="_docModo" OnCerrar="CerrarDocumento"
+                               CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@code {
+    /// <summary>Cargo y área bajo el nombre (responsable o sponsor), en letra chica; nada si no están registrados.</summary>
+    private static RenderFragment CargoArea(string? cargo, string? area) => b =>
+    {
+        if (string.IsNullOrWhiteSpace(cargo) && string.IsNullOrWhiteSpace(area)) return;
+        b.OpenElement(0, "div"); b.AddAttribute(1, "style", "font-size:.74rem;opacity:.7;line-height:1.2;");
+        b.AddContent(2, string.Join(" · ", new[] { cargo, area }.Where(x => !string.IsNullOrWhiteSpace(x))));
+        b.CloseElement();
+    };
+    private static string CargoAreaCorto(string? cargo, string? area)
+    {
+        var t = string.Join(" · ", new[] { cargo, area }.Where(x => !string.IsNullOrWhiteSpace(x)));
+        return t == "" ? "" : $" ({t})";
+    }
+
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<Modelo> _items = new();
+    private string _vista = "T";
+    // datos del portafolio (avance, situación, costo real, riesgos) para las tarjetas; si el usuario no tiene permiso sobre el portafolio, las tarjetas salen sin esos datos
+    private Dictionary<int, PortafolioProyecto> _pf = new();
+    private PortafolioProyecto? Pf(Modelo m) => m.NUM_PROYECTO is { } n && _pf.TryGetValue(n, out var x) ? x : null;
+    private int Cuenta(string sit) => _visibles.Count(m => Pf(m)?.COD_SITUACION == sit);
+    private decimal Pres => _visibles.Sum(m => m.VAL_PRESUPUESTO_PROYECTO ?? 0);
+    private decimal Costo => _visibles.Sum(m => Pf(m)?.VAL_COSTO_PROYECTO ?? 0);
+    private decimal? PctCosto => Pres > 0 ? Costo * 100m / Pres : null;
+    private string TonoCosto => PctCosto is null ? "" : PctCosto > 100 ? "bad" : PctCosto > 85 ? "warn" : "ok";
+    private string _search = "";
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna = 0;
+    private bool _ordenAscendente = false;
+
+    private static string NombreEntidad(Modelo x)
+        => !string.IsNullOrWhiteSpace(x.DES_NOMBRE_COMPLETO) ? x.DES_NOMBRE_COMPLETO
+         : !string.IsNullOrWhiteSpace(x.DES_COMERCIAL)       ? x.DES_COMERCIAL
+         : string.Empty;
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private List<Modelo> Ordenar(List<Modelo> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.NUM_PROYECTO).ToList() : items.OrderByDescending(x => x.NUM_PROYECTO).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_PROYECTO).ToList() : items.OrderByDescending(x => x.DES_PROYECTO).ToList(),
+        _ => items
+    };
+
+    private List<Modelo> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<Modelo> Base(int col) => Aplicar(_items, col);
+
+    private List<Modelo> Aplicar(List<Modelo> src, int ex)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon && !HayPanel) return src;
+
+        IEnumerable<Modelo> q = src;
+        if (HayPanel)
+        {
+            if (_fDesde is { } d1) q = q.Where(x => (x.FEC_FINAL_PROGRAMADO ?? DateTime.MaxValue).Date >= d1.Date);
+            if (_fHasta is { } d2) q = q.Where(x => (x.FEC_INICIO_PROGRAMADO ?? DateTime.MinValue).Date <= d2.Date);
+            if (!string.IsNullOrWhiteSpace(_fTipo)) q = q.Where(x => x.DES_TIPO_PROYECTO == _fTipo);
+            if (!string.IsNullOrWhiteSpace(_fEstado)) q = q.Where(x => x.DES_ESTADO == _fEstado);
+            if (!string.IsNullOrWhiteSpace(_fResp)) q = q.Where(x => NombreEntidad(x) == _fResp);
+            if (!string.IsNullOrWhiteSpace(_fSpons)) q = q.Where(x => x.DES_ESPONSOR == _fSpons);
+        }
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorCol(c, x)));
+        }
+        return q.ToList();
+    }
+
+    // El valor que cada columna ofrece en su filtro de cabecera (y con el que se filtra). Consumo y avance se agrupan en tramos.
+    private string ValorCol(int c, Modelo x)
+    {
+        string Fecha(DateTime? d) => d?.ToString("dd/MM/yyyy") ?? "—";
+        var pf = Pf(x);
+        var pres = x.VAL_PRESUPUESTO_PROYECTO ?? 0;
+        var costo = pf?.VAL_COSTO_PROYECTO ?? x.VAL_COSTO_PROYECTO ?? 0;
+        return c switch
+        {
+            0 => x.NUM_PROYECTO?.ToString() ?? "",
+            1 => x.DES_PROYECTO,
+            2 => x.DES_TIPO_PROYECTO,
+            3 => NombreEntidad(x),
+            4 => x.DES_ESPONSOR,
+            5 => Fecha(x.FEC_INICIO_PROGRAMADO),
+            6 => Fecha(x.FEC_FINAL_PROGRAMADO),
+            7 => x.DES_ESTADO,
+            8 => (x.VAL_PRESUPUESTO_PROYECTO ?? 0).ToString("N2"),
+            9 => pres <= 0 ? "Sin presupuesto" : costo * 100m / pres > 100 ? "Más de 100 %" : costo * 100m / pres > 85 ? "85 a 100 %" : "Hasta 85 %",
+            10 => pf is null ? "Sin datos" : pf.TAS_AVANCE >= 100 ? "100 %" : pf.TAS_AVANCE >= 50 ? "50 a 99 %" : pf.TAS_AVANCE > 0 ? "1 a 49 %" : "Sin avance",
+            _ => ""
+        };
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _fDesde = _fHasta = null; _fTipo = _fEstado = _fResp = _fSpons = null;
+        StateHasChanged();
+    }
+
+    // filtros del panel (fecha en rango, tipo, estado, responsable y sponsor) y su visibilidad; indicadores y filtros se pueden ocultar y se recuerda la eleccion en este navegador
+    private DateTime? _fDesde, _fHasta;
+    private string? _fTipo, _fEstado, _fResp, _fSpons;
+    private bool _verFiltros = true, _verKpi = true;
+    private bool HayPanel => _fDesde is not null || _fHasta is not null || !string.IsNullOrWhiteSpace(_fTipo) || !string.IsNullOrWhiteSpace(_fEstado) || !string.IsNullOrWhiteSpace(_fResp) || !string.IsNullOrWhiteSpace(_fSpons);
+    private List<ComboboxItem> Opciones(Func<Modelo, string?> f)
+        => _items.Select(f).Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().OrderBy(v => v).Select(v => new ComboboxItem { Id = v!, Texto = v! }).ToList();
+    private async Task AlternarFiltros() { _verFiltros = !_verFiltros; try { await Local.SetItemAsync("proyectos.verFiltros", _verFiltros); } catch { } }
+    private async Task AlternarKpi() { _verKpi = !_verKpi; try { await Local.SetItemAsync("proyectos.verKpi", _verKpi); } catch { } }
+
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("PROYECTOS", "Proyectos");
+        try
+        {
+            if (await Local.ContainKeyAsync("proyectos.verFiltros")) _verFiltros = await Local.GetItemAsync<bool>("proyectos.verFiltros");
+            if (await Local.ContainKeyAsync("proyectos.verKpi")) _verKpi = await Local.GetItemAsync<bool>("proyectos.verKpi");
+        }
+        catch { /* sin almacenamiento del navegador: quedan visibles */ }
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("PROYECTOS.PROYECTOS", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Abrir(null, CrudModo.Create));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<Modelo>>>(
+                ApiRoutes.Proyectos.ProyectosDoc);
+            var todos = r?.Data ?? new();
+            try { _pf = (await Http.SafeGetAsync<List<PortafolioProyecto>>($"{ApiRoutes.Proyectos.Portafolio}?estado=&search=") ?? new()).ToDictionary(x => x.NUM_PROYECTO); }
+            catch { _pf = new(); }
+            _items = string.IsNullOrWhiteSpace(_search)
+                ? todos
+                : todos.Where(x =>
+                       (x.NUM_PROYECTO?.ToString() ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || x.DES_PROYECTO.Contains(_search, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Proyectos), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Proyectos));
+            _items = new();
+        }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Abrir(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(Modelo item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Abrir(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Abrir(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Abrir(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private int _tab;
+    private bool _enDocumento;
+    private Modelo? _docItem;
+    private CrudModo _docModo = CrudModo.Create;
+
+    private string _tituloDocumento => !_enDocumento ? "Documento" : _docModo switch
+    {
+        CrudModo.Create => "Nuevo",
+        CrudModo.Delete => $"Eliminar N° {_docItem?.NUM_PROYECTO}",
+        CrudModo.Read   => $"Consultar N° {_docItem?.NUM_PROYECTO}",
+        _               => $"Editar N° {_docItem?.NUM_PROYECTO}"
+    };
+
+    private Task Abrir(Modelo? item, CrudModo modo)
+    {
+        _docItem = item;
+        _docModo = modo;
+        _enDocumento = true;
+        _tab = 1;
+        return Task.CompletedTask;
+    }
+
+    private async Task CerrarDocumento(bool huboCambios)
+    {
+        _enDocumento = false;
+        _docItem = null;
+        _tab = 0;
+        if (huboCambios) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("PROYECTOS.PROYECTOS", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

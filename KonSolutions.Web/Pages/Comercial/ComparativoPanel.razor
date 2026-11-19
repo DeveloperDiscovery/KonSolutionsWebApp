@@ -1,0 +1,535 @@
+@* Comparativo de compras: elegir requerimientos y ver, lado a lado, cómo cotizó cada
+   pedido que los atiende.
+
+   Está en su propio componente y no escrito dentro de una pantalla porque se usa en dos
+   lugares: como pestaña del módulo de Proformas/Órdenes de Compra, y como pantalla
+   suelta si se le da su propia opción de menú. El contenido es el mismo. *@
+@using KONSolutions.Shared.Models.Comercial
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+    <div class="d-flex align-center justify-space-between gap-2 flex-wrap mb-2">
+        <MudText Typo="Typo.subtitle2">Requerimientos a comparar</MudText>
+        <div class="d-flex align-center gap-2">
+            <MudButton StartIcon="@Icons.Material.Filled.Refresh" Size="Size.Small" Variant="Variant.Text"
+                       Disabled="_cargandoReq" OnClick="CargarRequerimientosAsync">Actualizar</MudButton>
+            @* Moneda a la que el SP convierte los importes. Es el catálogo de monedas tal
+               cual (ESTANDAR.MONEDAS), no algo derivado de los pedidos: el usuario elige, y
+               esa elección es lo único que se manda como codMoneda. *@
+            <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                       TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)"
+                       Value="@_monedaSeleccionada" ValueChanged="OnCambioMonedaAsync"
+                       Label="Moneda" Class="mb-0"
+                       Style="min-width:200px;max-width:260px;margin-top:0;" />
+            <MudButton StartIcon="@Icons.Material.Filled.Balance" Variant="Variant.Filled" Size="Size.Large"
+                       Style="font-weight:700;font-size:1rem;padding:8px 22px;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                       Disabled="@(_marcados.Count == 0 || _cargandoComp || string.IsNullOrWhiteSpace(CodClaseOperacion) || string.IsNullOrWhiteSpace(_monedaSeleccionada))"
+                       OnClick="CompararAsync">Comparar</MudButton>
+        </div>
+    </div>
+
+    @if (_cargandoReq) { <MudProgressLinear Indeterminate="true" Class="mb-2" /> }
+
+    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--line);border-radius:4px;">
+        <table class="tabla-simple-editable" style="width:100%;">
+            <thead style="position:sticky;top:0;z-index:2;">
+                <tr>
+                    <th style="width:52px;">
+                        <MudCheckBox T="bool" Value="@TodosMarcados" Dense="true"
+                                     Disabled="@(_requerimientos.Count == 0)"
+                                     ValueChanged="MarcarTodos" />
+                    </th>
+                    <th style="width:90px;">N°</th>
+                    <th>Descripción</th>
+                    <th style="width:130px;">Fecha</th>
+                    <th style="width:110px;text-align:right;">Pedidos</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_requerimientos.Count == 0 && !_cargandoReq)
+                {
+                    <tr><td colspan="5" class="mono" style="opacity:.5;">
+                        No hay requerimientos con pedidos asociados.
+                    </td></tr>
+                }
+                @foreach (var r in _requerimientos)
+                {
+                    <tr>
+                        <td>
+                            <MudCheckBox T="bool" Dense="true"
+                                         Value="@_marcados.Contains(r.NUM_REQUERIMIENTO_STOCK)"
+                                         ValueChanged="@(v => Alternar(r.NUM_REQUERIMIENTO_STOCK, v))" />
+                        </td>
+                        <td class="mono">@r.NUM_REQUERIMIENTO_STOCK</td>
+                        <td>@r.DES_REQUERIMIENTO_STOCK</td>
+                        <td class="mono">@(r.FEC_REQUERIMIENTO_STOCK?.ToString("dd/MM/yyyy"))</td>
+                        <td style="text-align:right;" class="mono">
+                            @* Con un solo pedido no hay comparación: se muestra igual, pero
+                               atenuado, para que se vea que no aporta al comparativo. *@
+                            <span style="@(r.CAN_PEDIDOS < 2 ? "opacity:.45;" : "")">@r.CAN_PEDIDOS</span>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (_cargandoComp) { <MudProgressLinear Indeterminate="true" Class="mt-3" /> }
+
+    @if (_resultado is not null && _resultado.Pedidos.Count > 0)
+    {
+        @if (MonedasMezcladas)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                Los pedidos están en monedas distintas (@string.Join(", ", MonedasDistintas)).
+                Los importes se muestran tal como fueron grabados y no se resalta el mejor
+                precio: compararlos sin convertir daría un ganador falso.
+            </MudAlert>
+        }
+
+        <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Comparación</MudText>
+
+        <div style="overflow-x:auto;border:1px solid var(--line);border-radius:4px;">
+            <table class="tabla-simple-editable" style="width:100%;min-width:640px;">
+                <thead>
+                    @* Cabecera de dos pisos: arriba el pedido con todos sus datos repetidos,
+                       abajo las dos columnas de números. *@
+                    <tr>
+                        <th rowspan="2" style="vertical-align:bottom;min-width:240px;">Producto</th>
+                        <th rowspan="2" style="vertical-align:bottom;width:110px;text-align:right;">Cant.</th>
+                        @foreach (var p in _resultado.Pedidos)
+                        {
+                            <th colspan="2" style="text-align:center;border-left:2px solid var(--paper);position:relative;">
+                                @* El botón va absoluto en la esquina para no empujar el texto ni
+                                   descentrar el nombre del proveedor respecto de las dos columnas. *@
+                                <MudTooltip Text="@($"Seleccionar {NombreDocumento(p)} N° {p.NUM_PEDIDO_COMERCIAL}")">
+                                    <MudIconButton Icon="@Icons.Material.Filled.CheckBox" Size="Size.Small"
+                                                   Style="position:absolute;top:2px;right:2px;color:var(--verde,#4caf50);"
+                                                   Disabled="@_seleccionando"
+                                                   OnClick="@(() => SeleccionarPedidoAsync(p))"
+                                                   aria-label="@($"Seleccionar {NombreDocumento(p)} número {p.NUM_PEDIDO_COMERCIAL}")" />
+                                </MudTooltip>
+                                <div style="font-size:.86rem;">@NombreDocumento(p) @p.NUM_PEDIDO_COMERCIAL</div>
+                                <div style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.76rem;opacity:.95;">
+                                    @p.DES_PROVEEDOR
+                                </div>
+                                <div style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.72rem;opacity:.85;">
+                                    @p.COD_MONEDA ·
+                                    @(p.FEC_ENTREGA?.ToString("dd/MM/yyyy") ?? "sin fecha")
+                                    @if (p.CAN_DIAS_ENTREGA is int dias)
+                                    {
+                                        <span> · @dias día(s)</span>
+                                    }
+                                </div>
+                                <div style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.72rem;opacity:.85;">
+                                    @p.DES_ESTADO
+                                </div>
+                            </th>
+                        }
+                    </tr>
+                    <tr>
+                        @foreach (var p in _resultado.Pedidos)
+                        {
+                            <th style="width:120px;text-align:right;border-left:2px solid var(--paper);">Unit.</th>
+                            <th style="width:130px;text-align:right;">Total</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var prod in Productos)
+                    {
+                        var mejor = MejorUnitario(prod.Cod);
+                        <tr>
+                            <td>@($"{prod.Cod} - {prod.Des}")</td>
+                            <td style="text-align:right;" class="mono">@prod.Cantidad?.ToString("N2")</td>
+                            @foreach (var p in _resultado.Pedidos)
+                            {
+                                var celda = Celda(prod.Cod, p.NUM_PEDIDO_COMERCIAL);
+                                <td style="text-align:right;border-left:2px solid var(--line);" class="mono">
+                                    @if (celda is null)
+                                    {
+                                        @* Guion y no cero: un cero haría creer que es gratis. *@
+                                        <span style="opacity:.4;">—</span>
+                                    }
+                                    else if (mejor is decimal m && celda.PRE_UNITARIO == m && !MonedasMezcladas)
+                                    {
+                                        <span style="background:var(--verde-fondo,#eaf5ef);color:var(--verde,#1f6b4a);font-weight:700;padding:1px 5px;border-radius:3px;">
+                                            @celda.PRE_UNITARIO?.ToString("N2")
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        @celda.PRE_UNITARIO?.ToString("N2")
+                                    }
+                                </td>
+                                <td style="text-align:right;" class="mono">
+                                    @(celda?.VAL_TOTAL?.ToString("N2") ?? "")
+                                </td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    @* Pie fijo: al bajar por una lista larga los totales siguen a la vista,
+                       que es lo que se mira para decidir. *@
+                    <tr style="position:sticky;bottom:0;">
+                        <td style="background:var(--paper,#fff);font-weight:700;border-top:2px solid var(--azul-vivo,#1473be);">Total</td>
+                        <td style="background:var(--paper,#fff);border-top:2px solid var(--azul-vivo,#1473be);"></td>
+                        @foreach (var p in _resultado.Pedidos)
+                        {
+                            var total = TotalPedido(p.NUM_PEDIDO_COMERCIAL);
+                            var esMejorTotal = !MonedasMezcladas && MejorTotal is decimal mt && total == mt;
+                            @* La moneda ocupa la celda que estaba vacía bajo "Unit.": alineada a
+                               la derecha queda pegada al importe, que es como se lee un total. *@
+                            <td style="background:var(--paper,#fff);border-top:2px solid var(--azul-vivo,#1473be);border-left:2px solid var(--line);text-align:right;">
+                                @if (!string.IsNullOrWhiteSpace(p.COD_MONEDA))
+                                {
+                                    <span class="mono" style="font-size:.72rem;font-weight:700;letter-spacing:.04em;
+                                                              background:var(--grilla-cab-fondo,#2b2622);color:var(--grilla-cab-texto,#fff);
+                                                              padding:1px 6px;border-radius:3px;">@p.COD_MONEDA</span>
+                                }
+                            </td>
+                            <td style="background:var(--paper,#fff);border-top:2px solid var(--azul-vivo,#1473be);text-align:right;font-weight:700;" class="mono">
+                                @if (esMejorTotal)
+                                {
+                                    <span style="background:var(--verde-fondo,#eaf5ef);color:var(--verde,#1f6b4a);padding:1px 5px;border-radius:3px;">
+                                        @total.ToString("N2")
+                                    </span>
+                                }
+                                else
+                                {
+                                    @total.ToString("N2")
+                                }
+                            </td>
+                        }
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    }
+    else if (_resultado is not null && !_cargandoComp)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+            Los requerimientos elegidos no tienen pedidos con líneas para comparar.
+        </MudAlert>
+    }
+
+@code {
+    /// <summary>Clase de operación de la opción de menú (Proformas/Órdenes de Compra/etc.),
+    /// la misma que resuelve PedidosComerciales.razor vía DES_PARAMETRO. Sin esto se podrían
+    /// comparar pedidos de una clase de operación contra otra.</summary>
+    [Parameter] public string? CodClaseOperacion { get; set; }
+
+    private List<RequerimientoConPedidos> _requerimientos = new();
+    private readonly HashSet<int> _marcados = new();
+    private ComparativoResultado? _resultado;
+    private bool _cargandoReq, _cargandoComp, _seleccionando;
+
+    // ── Moneda de conversión ────────────────────────────────────────────────
+    // El SP exige una moneda para poder sumar pedidos que vienen en monedas distintas. El
+    // combo es el catálogo de monedas tal cual (ESTANDAR.MONEDAS) — no se deriva de los
+    // pedidos comparados ni hay sondeo previo: el usuario elige, y esa elección es lo único
+    // que se manda como codMoneda al pedir el comparativo.
+    private List<ComboboxItem> _monedas = new();
+    private string? _monedaSeleccionada;
+
+    // Nombre del tipo de operación por clave "clase|tipo". El SP del comparativo devuelve los
+    // códigos pero no la descripción, así que se resuelve acá contra ESTANDAR.TIPOS_OPERACION
+    // y se guarda: son una o dos claves distintas por comparativo, no una por pedido.
+    private readonly Dictionary<string, string> _nombreTipoOperacion = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CargarRequerimientosAsync();
+        _monedas = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.MonedasCombobox) ?? new();
+    }
+
+    private async Task CargarRequerimientosAsync()
+    {
+        _cargandoReq = true;
+        try
+        {
+            _requerimientos = await Http.SafeGetAsync<List<RequerimientoConPedidos>>(
+                $"{ApiRoutes.Comercial.PedidosComercialesComparativo}/requerimientos") ?? new();
+            // Se descartan marcas de requerimientos que ya no están en la lista.
+            var vivos = _requerimientos.Select(r => r.NUM_REQUERIMIENTO_STOCK).ToHashSet();
+            _marcados.RemoveWhere(n => !vivos.Contains(n));
+        }
+        finally { _cargandoReq = false; }
+    }
+
+    private bool TodosMarcados => _requerimientos.Count > 0 &&
+                                  _requerimientos.All(r => _marcados.Contains(r.NUM_REQUERIMIENTO_STOCK));
+
+    private void MarcarTodos(bool marcar)
+    {
+        if (marcar) foreach (var r in _requerimientos) _marcados.Add(r.NUM_REQUERIMIENTO_STOCK);
+        else _marcados.Clear();
+        DeshacerComparacion();
+    }
+
+    private void Alternar(int num, bool marcado)
+    {
+        if (marcado) _marcados.Add(num); else _marcados.Remove(num);
+        DeshacerComparacion();
+    }
+
+    /// <summary>Cambió qué está marcado: el comparativo mostrado ya no corresponde. Se limpia
+    /// y hay que volver a pulsar "Comparar" (la moneda elegida en el combo no se toca —
+    /// es independiente de los requerimientos marcados).</summary>
+    private void DeshacerComparacion() => _resultado = null;
+
+    private async Task CompararAsync()
+    {
+        if (_marcados.Count == 0 || string.IsNullOrWhiteSpace(CodClaseOperacion) ||
+            string.IsNullOrWhiteSpace(_monedaSeleccionada)) return;
+        _cargandoComp = true;
+        try
+        {
+            var cadena = string.Join("_", _marcados.OrderBy(n => n));
+            _resultado = await Http.SafeGetAsync<ComparativoResultado>(
+                $"{ApiRoutes.Comercial.PedidosComercialesComparativo}?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion)}" +
+                $"&codMoneda={Uri.EscapeDataString(_monedaSeleccionada)}&requerimientos={Uri.EscapeDataString(cadena)}")
+                ?? new ComparativoResultado();
+            await ResolverNombresDocumentoAsync();
+        }
+        finally { _cargandoComp = false; }
+    }
+
+    /// <summary>Elegir una moneda en el combo dispara el comparativo directo, sin tener que
+    /// tocar el botón "Comparar" — pero solo si ya hay requerimientos marcados, si no no hay
+    /// nada que comparar todavía.
+    ///
+    /// AriaCombo trae de fábrica un botón "borrar" que dispara ValueChanged(null) apenas hay
+    /// algo cargado. Acá la moneda es obligatoria (el SP la exige siempre), así que un null no
+    /// significa "sin moneda": se ignora y se mantiene la que ya estaba elegida.</summary>
+    private async Task OnCambioMonedaAsync(string? codMoneda)
+    {
+        if (string.IsNullOrWhiteSpace(codMoneda)) return;
+        _monedaSeleccionada = codMoneda;
+        if (_marcados.Count > 0) await CompararAsync();
+    }
+
+    // ── Nombre del documento ────────────────────────────────────────────────
+
+    private static string ClaveTipo(string? clase, string? tipo) => $"{clase}|{tipo}";
+
+    /// <summary>Pide la descripción de cada tipo de operación presente en el comparativo. Se
+    /// piden solo los pares distintos, no uno por pedido: cuatro proformas del mismo tipo son
+    /// una sola llamada.</summary>
+    private async Task ResolverNombresDocumentoAsync()
+    {
+        var pares = (_resultado?.Pedidos ?? new())
+            .Select(p => (p.COD_CLASE_OPERACION, p.COD_TIPO_OPERACION))
+            .Distinct()
+            .Where(x => !string.IsNullOrWhiteSpace(x.COD_CLASE_OPERACION) &&
+                        !string.IsNullOrWhiteSpace(x.COD_TIPO_OPERACION) &&
+                        !_nombreTipoOperacion.ContainsKey(ClaveTipo(x.COD_CLASE_OPERACION, x.COD_TIPO_OPERACION)))
+            .ToList();
+
+        foreach (var (clase, tipo) in pares)
+        {
+            // SafeGetAsync no lanza: si algo falla devuelve null y el rótulo cae al código,
+            // que igual identifica el documento. Por eso no hay try/catch acá.
+            var url = $"{ApiRoutes.Estandar.TiposOperacion}/{Uri.EscapeDataString(clase)}/{Uri.EscapeDataString(tipo)}";
+            var r = await Http.SafeGetAsync<TipoOperacion>(url);
+            if (!string.IsNullOrWhiteSpace(r?.DES_TIPO_OPERACION))
+                _nombreTipoOperacion[ClaveTipo(clase, tipo)] = r!.DES_TIPO_OPERACION;
+        }
+    }
+
+    /// <summary>Cómo se rotula la columna: la descripción del tipo de operación si se pudo
+    /// resolver, y si no el código, que siempre está.</summary>
+    private string NombreDocumento(ComparativoPedidoCabecera p) =>
+        _nombreTipoOperacion.TryGetValue(ClaveTipo(p.COD_CLASE_OPERACION, p.COD_TIPO_OPERACION), out var des)
+            ? des
+            : (string.IsNullOrWhiteSpace(p.COD_TIPO_OPERACION) ? "Pedido" : p.COD_TIPO_OPERACION);
+
+    // ── Pivoteo ─────────────────────────────────────────────────────────────
+    // El SP devuelve filas sueltas; acá se cruzan producto × pedido. Se hace en la
+    // pantalla y no en la base porque las columnas cambian en cada consulta.
+
+    private record ProductoFila(string Cod, string Des, decimal? Cantidad);
+
+    private List<ProductoFila> Productos =>
+        (_resultado?.Lineas ?? new())
+            .GroupBy(l => l.COD_PRODUCTO)
+            .Select(g => new ProductoFila(
+                g.Key,
+                g.First().DES_PRODUCTO ?? "",
+                // La cantidad de la izquierda es la mayor de los pedidos: si difieren, el
+                // detalle real está en cada celda y la comparación fuerte es el unitario.
+                g.Max(x => x.CAN_PRODUCTO)))
+            .OrderBy(p => p.Cod)
+            .ToList();
+
+    private ComparativoPedidoLinea? Celda(string codProducto, int numPedido) =>
+        _resultado?.Lineas.FirstOrDefault(l => l.COD_PRODUCTO == codProducto &&
+                                               l.NUM_PEDIDO_COMERCIAL == numPedido);
+
+    /// <summary>El unitario más bajo de un producto. Null si lo cotiza un solo pedido:
+    /// resaltar al único no dice nada.</summary>
+    private decimal? MejorUnitario(string codProducto)
+    {
+        var precios = (_resultado?.Lineas ?? new())
+            .Where(l => l.COD_PRODUCTO == codProducto && l.PRE_UNITARIO is > 0)
+            .Select(l => l.PRE_UNITARIO!.Value)
+            .ToList();
+        return precios.Count > 1 ? precios.Min() : null;
+    }
+
+    /// <summary>Total de la proforma: el VAL_TOTAL de COMERCIAL.PEDIDOS_COMERCIALES, que el SP
+    /// ya devuelve convertido a la moneda de la comparación. No se suman las líneas.</summary>
+    private decimal TotalPedido(int numPedido) =>
+        (_resultado?.Pedidos ?? new())
+            .FirstOrDefault(p => p.NUM_PEDIDO_COMERCIAL == numPedido)?.VAL_TOTAL ?? 0;
+
+    private decimal? MejorTotal
+    {
+        get
+        {
+            var totales = (_resultado?.Pedidos ?? new())
+                .Select(p => TotalPedido(p.NUM_PEDIDO_COMERCIAL))
+                .Where(t => t > 0).ToList();
+            return totales.Count > 1 ? totales.Min() : null;
+        }
+    }
+
+    // ── Monedas ─────────────────────────────────────────────────────────────
+    // Si los pedidos están en monedas distintas, comparar los números sin convertir
+    // daría un ganador falso. Se muestran igual, pero sin resaltar nada, y con aviso.
+
+    private List<string> MonedasDistintas =>
+        (_resultado?.Pedidos ?? new())
+            .Select(p => p.COD_MONEDA ?? "")
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct().OrderBy(m => m).ToList();
+
+    private bool MonedasMezcladas => MonedasDistintas.Count > 1;
+
+    // ── Selección del pedido ────────────────────────────────────────────────
+
+    /// <summary>La entrega más pronta del comparativo. Null si un solo pedido tiene fecha:
+    /// con uno no hay contra qué comparar.</summary>
+    private DateTime? MejorEntrega
+    {
+        get
+        {
+            var fechas = (_resultado?.Pedidos ?? new())
+                .Where(p => p.FEC_ENTREGA.HasValue)
+                .Select(p => p.FEC_ENTREGA!.Value).ToList();
+            return fechas.Count > 1 ? fechas.Min() : null;
+        }
+    }
+
+    /// <summary>Por qué este pedido NO es el más conveniente. Lista vacía = es el mejor, o no
+    /// hay con qué compararlo.
+    ///
+    /// Con monedas mezcladas no se evalúa el precio: los importes están sin convertir y el
+    /// "más barato" sería el de la moneda más débil, no el mejor negocio. La fecha sí se
+    /// evalúa igual, que no depende de la moneda.</summary>
+    private List<string> MotivosNoConveniente(ComparativoPedidoCabecera p)
+    {
+        var motivos = new List<string>();
+
+        if (!MonedasMezcladas && MejorTotal is decimal mejorT)
+        {
+            var total = TotalPedido(p.NUM_PEDIDO_COMERCIAL);
+            if (total > mejorT)
+            {
+                var dif = total - mejorT;
+                var pct = mejorT > 0 ? dif / mejorT * 100 : 0;
+                motivos.Add($"No es el más barato: cuesta {dif:N2} más que la mejor oferta " +
+                            $"({total:N2} contra {mejorT:N2}, un {pct:N1} % más).");
+            }
+        }
+
+        if (MejorEntrega is DateTime mejorF && p.FEC_ENTREGA is DateTime suya && suya > mejorF)
+        {
+            var dias = (suya - mejorF).Days;
+            motivos.Add($"No es el que entrega antes: llega el {suya:dd/MM/yyyy}, " +
+                        $"{dias} día(s) después del {mejorF:dd/MM/yyyy}.");
+        }
+
+        return motivos;
+    }
+
+    /// <summary>Flujo de selección: confirmar, avisar si no conviene, y recién ahí ejecutar.
+    ///
+    /// Son dos diálogos y no uno solo porque cumplen funciones distintas: el primero evita el
+    /// clic accidental, el segundo obliga a mirar un dato que el usuario podría no haber
+    /// visto. Juntarlos haría que quien ya decidió lea la advertencia por encima.</summary>
+    private async Task SeleccionarPedidoAsync(ComparativoPedidoCabecera p)
+    {
+        var nombre = $"{NombreDocumento(p)} N° {p.NUM_PEDIDO_COMERCIAL}";
+
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Seleccionar pedido",
+            new DialogParameters
+            {
+                ["Titulo"] = "Seleccionar pedido",
+                ["IconoTitulo"] = Icons.Material.Filled.Balance,
+                ["Mensaje"] = $"¿Seleccionar {nombre}" +
+                              (string.IsNullOrWhiteSpace(p.DES_PROVEEDOR) ? "" : $" de {p.DES_PROVEEDOR}") + "?",
+                ["TextoConfirmar"] = "Seleccionar",
+                ["IconoConfirmar"] = Icons.Material.Filled.CheckBox
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var motivos = MotivosNoConveniente(p);
+        if (motivos.Count > 0)
+        {
+            var aviso = await DialogService.ShowAsync<ConfirmarAccionDialog>("Advertencia",
+                new DialogParameters
+                {
+                    ["Titulo"] = "Este no es el pedido más conveniente",
+                    ["IconoTitulo"] = Icons.Material.Filled.WarningAmber,
+                    ["Mensaje"] = string.Join("\n\n", motivos) +
+                                  $"\n\n¿Convertir igual {nombre} en Orden de Compra?",
+                    ["TextoConfirmar"] = "Convertir igual",
+                    ["IconoConfirmar"] = Icons.Material.Filled.WarningAmber
+                },
+                new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+            if ((await aviso.Result) is not { Canceled: false }) return;
+        }
+
+        _seleccionando = true;
+        try
+        {
+            // PROC_COMERCIAL_PEDIDOS_COMERCIALES_CALCULA: recalcula los importes del pedido
+            // elegido y actualiza su VAL_TOTAL. Va por POST porque escribe.
+            var url = $"{ApiRoutes.Comercial.PedidosComercialesCalculoCalcular}" +
+                      $"/{Uri.EscapeDataString(p.COD_CLASE_OPERACION)}" +
+                      $"/{Uri.EscapeDataString(p.COD_TIPO_OPERACION)}" +
+                      $"/{p.NUM_PEDIDO_COMERCIAL.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            var resp = await Http.PostAsync(url, null);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ComparativoPanel),
+                    nameof(SeleccionarPedidoAsync), $"No se pudo calcular {nombre}");
+                return;
+            }
+
+            // PROC_COMERCIAL_PEDIDO_COMERCIAL_SINCRONIZA: crea el pedido nuevo en la clase/tipo
+            // "sincronizada" (Proforma → Orden de Compra), copiando cabecera, detalle y
+            // vínculos con requerimientos, y marca el original y sus rivales como corresponde.
+            var urlSincroniza = $"{ApiRoutes.Comercial.PedidosComercialesCalculoSincronizar}" +
+                      $"/{Uri.EscapeDataString(p.COD_CLASE_OPERACION)}" +
+                      $"/{Uri.EscapeDataString(p.COD_TIPO_OPERACION)}" +
+                      $"/{p.NUM_PEDIDO_COMERCIAL.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            var respSincroniza = await Http.PostAsync(urlSincroniza, null);
+            if (!respSincroniza.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(respSincroniza, ErrorLog, DialogService, nameof(ComparativoPanel),
+                    nameof(SeleccionarPedidoAsync), $"No se pudo convertir {nombre}");
+                return;
+            }
+
+            Snackbar.Add($"{nombre}: convertido correctamente.", Severity.Success);
+            await CompararAsync();
+        }
+        finally { _seleccionando = false; }
+    }
+}

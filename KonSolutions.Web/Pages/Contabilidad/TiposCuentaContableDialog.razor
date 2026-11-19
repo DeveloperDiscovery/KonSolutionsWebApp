@@ -1,0 +1,129 @@
+@using TipoCuentaContableModel = KONSolutions.Shared.Models.Contabilidad.TipoCuentaContable
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_CUENTA_CONTABLE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* El código lo escribe el usuario y es parte de la PK: solo se fija al crear. *@
+                    <CampoTexto Tabla="CONTABILIDAD.TIPOS_CUENTA_CONTABLE" Columna="COD_TIPO_CUENTA_CONTABLE"
+                                @bind-Value="_model.COD_TIPO_CUENTA_CONTABLE"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="CONTABILIDAD.TIPOS_CUENTA_CONTABLE" Columna="DES_TIPO_CUENTA_CONTABLE"
+                                @bind-Value="_model.DES_TIPO_CUENTA_CONTABLE" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12">
+                    <AriaCombo TItem="ComboboxItem" Items="_naturalezas"
+                               TextFunc="@(n => $"{n.Id} - {n.Texto}")" ValueFunc="@(n => n.Id)"
+                               Value="@_model.COD_CUENTA_NATURALEZA" ValueChanged="@(v => _model.COD_CUENTA_NATURALEZA = v)"
+                               Label="Naturaleza" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudRadioGroup T="string" Value="@_tipoSeleccionado" ValueChanged="OnTipoChanged" Disabled="_readonly">
+                        <div class="d-flex gap-4">
+                            <MudRadio T="string" Value="@("BALANCE")" Color="Color.Primary">Afecta balance</MudRadio>
+                            <MudRadio T="string" Value="@("RESULTADO")" Color="Color.Primary">Afecta resultado</MudRadio>
+                        </div>
+                    </MudRadioGroup>
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public TipoCuentaContableModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private TipoCuentaContableModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private List<ComboboxItem> _naturalezas = new();
+    private string? _tipoSeleccionado;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        _naturalezas = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Contabilidad.CuentasNaturalezaCombobox) ?? new();
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(TipoCuentaContableModel m)
+    {
+        _model = new TipoCuentaContableModel
+        {
+            COD_TIPO_CUENTA_CONTABLE = m.COD_TIPO_CUENTA_CONTABLE,
+            DES_TIPO_CUENTA_CONTABLE = m.DES_TIPO_CUENTA_CONTABLE,
+            COD_CUENTA_NATURALEZA = m.COD_CUENTA_NATURALEZA,
+            FLG_AFECTA_BALANCE = m.FLG_AFECTA_BALANCE,
+            FLG_AFECTA_RESULTADO = m.FLG_AFECTA_RESULTADO
+        };
+        _tipoSeleccionado =
+            m.FLG_AFECTA_BALANCE == true ? "BALANCE" :
+            m.FLG_AFECTA_RESULTADO == true ? "RESULTADO" : null;
+    }
+
+    private void OnTipoChanged(string? val)
+    {
+        _tipoSeleccionado = val;
+        _model.FLG_AFECTA_BALANCE = val == "BALANCE";
+        _model.FLG_AFECTA_RESULTADO = val == "RESULTADO";
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<TipoCuentaContableModel>(
+            $"{ApiRoutes.Contabilidad.TiposCuentaContable}/{Uri.EscapeDataString(_model.COD_TIPO_CUENTA_CONTABLE)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Contabilidad.TiposCuentaContable;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_CUENTA_CONTABLE)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposCuentaContableDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        // POST al crear, PUT al modificar: el SP INSERT no es upsert.
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposCuentaContableDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,120 @@
+@* Alta / modificación / consulta / baja de UNA serie de comprobante dentro de una sucursal
+   (ESTANDAR.SUCURSALES_SERIE_COMPROBANTE).
+
+   La clave es sucursal + tipo de comprobante + serie: las dos primeras vienen fijas del
+   padre y sólo la serie se elige, y sólo al crear. *@
+@using SerieModel = KONSolutions.Shared.Models.Estandar.SucursalesSerieComprobante
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@DescripcionSerie" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12">
+                    <MudTextField T="string" Value="@_desSucursal" Label="Sucursal" Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField T="string" Value="@_desTipo" Label="Tipo de comprobante" Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* La serie es parte de la clave: se fija al crear y después no se cambia.
+                       Cambiarla sería otra serie, no la misma con otro número. *@
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_SERIE_COMPROBANTE" Label="Serie"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Min="0"
+                                     Disabled="@(!_esNuevo || _readonly)" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* Lo avanza la emisión; acá sólo se ajusta cuando hay que cuadrarlo con el
+                       talonario físico. *@
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_ULTIMO_CORRELATIVO" Label="Último correlativo"
+                                     Variant="Variant.Outlined" Margin="Margin.Dense" Min="0"
+                                     Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" />
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public SerieModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string CodSucursal { get; set; } = "";
+    [Parameter] public string DesSucursal { get; set; } = "";
+    [Parameter] public string CodTipoComprobantePago { get; set; } = "";
+    [Parameter] public string DesTipoComprobantePago { get; set; } = "";
+
+    private SerieModel _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private string _desSucursal => string.IsNullOrWhiteSpace(DesSucursal) ? CodSucursal : $"{CodSucursal} · {DesSucursal}";
+    private string _desTipo     => string.IsNullOrWhiteSpace(DesTipoComprobantePago) ? CodTipoComprobantePago : $"{CodTipoComprobantePago} · {DesTipoComprobantePago}";
+    private string DescripcionSerie => _model.NUM_SERIE_COMPROBANTE is { } n ? $"Serie {n:D3}" : "Nueva serie";
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null)
+        {
+            _model.COD_SUCURSAL              = Item.COD_SUCURSAL;
+            _model.COD_TIPO_COMPROBANTE_PAGO = Item.COD_TIPO_COMPROBANTE_PAGO;
+            _model.NUM_SERIE_COMPROBANTE     = Item.NUM_SERIE_COMPROBANTE;
+            _model.NUM_ULTIMO_CORRELATIVO    = Item.NUM_ULTIMO_CORRELATIVO;
+        }
+        else
+        {
+            _model.COD_SUCURSAL              = CodSucursal;
+            _model.COD_TIPO_COMPROBANTE_PAGO = CodTipoComprobantePago;
+            _model.NUM_ULTIMO_CORRELATIVO    = 0;
+        }
+    }
+
+    private async Task Submit()
+    {
+        var ruta = ApiRoutes.Estandar.SucursalesSerieComprobante;
+
+        if (Modo == CrudModo.Delete)
+        {
+            _saving = true;
+            var rd = await Http.DeleteAsync(
+                $"{ruta}/{Uri.EscapeDataString(_model.COD_SUCURSAL)}/{Uri.EscapeDataString(_model.COD_TIPO_COMPROBANTE_PAGO)}/{_model.NUM_SERIE_COMPROBANTE}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(SucursalSerieComprobanteDialog), nameof(Submit), "No se pudo eliminar la serie");
+            return;
+        }
+
+        if (_model.NUM_SERIE_COMPROBANTE is null)
+        {
+            Snackbar.Add("Indica el número de serie.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        var dto = new
+        {
+            _model.COD_SUCURSAL,
+            _model.COD_TIPO_COMPROBANTE_PAGO,
+            _model.NUM_SERIE_COMPROBANTE,
+            _model.NUM_ULTIMO_CORRELATIVO,
+        };
+        // POST para crear, PUT para modificar: el SP de alta rechaza una clave existente.
+        var resp = await Http.GuardarAsync(ruta, dto, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creada." : "Modificada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(SucursalSerieComprobanteDialog), nameof(Submit));
+    }
+}

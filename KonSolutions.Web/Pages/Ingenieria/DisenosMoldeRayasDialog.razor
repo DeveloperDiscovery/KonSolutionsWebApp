@@ -1,0 +1,112 @@
+@* Coincidencia de rayas de un molde (script SQL 118). Telas a rayas o cuadros: se marca un PUNTO del molde (la linea del pecho, la esquina del bolsillo...)
+   que en el tizado debe caer sobre una raya. "En el largo" = rayas que cruzan el largo de la tela (periodo X del tizado); "en el ancho" = cuadros (periodo Y).
+   La FASE es a cuantos mm de la raya debe caer el punto (0 = justo sobre la raya); dos piezas con el mismo punto y fase quedan sobre la misma raya. *@
+@using KONSolutions.Shared.Tizado
+@using Poligono = KONSolutions.Shared.Tizado.Poligono
+@using Punto = KONSolutions.Shared.Tizado.Punto
+@using System.Globalization
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.ViewWeek" />
+            <MudText Typo="Typo.h6">Coincidencia de rayas · @NombreMolde</MudText>
+            <MudChip T="string" Size="Size.Small" data-chip="medidas">@Num(_largo) × @Num(_alto) mm</MudChip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudText Typo="Typo.caption" Style="opacity:.75;">El punto va en mm medidos desde la esquina inferior izquierda de la caja del molde (X = largo de la tela, Y = ancho). Se usa el periodo de la raya que indiques en la pestaña Tizado.</MudText>
+        <div class="d-flex gap-4 flex-wrap mt-2">
+            <MudSwitch T="bool" Value="_x" ValueChanged="@(v => { _x = v; Asegurar(); })" Color="Color.Primary" Label="Coincidir con la raya en el largo (X)" data-campo="coincide-x" />
+            <MudSwitch T="bool" Value="_y" ValueChanged="@(v => { _y = v; Asegurar(); })" Color="Color.Primary" Label="Coincidir con la raya en el ancho (Y, cuadros)" data-campo="coincide-y" />
+        </div>
+        <div class="d-flex align-center gap-2 flex-wrap mt-2" data-zona="punto">
+            <MudNumericField T="double?" @bind-Value="_px" Label="Punto X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="punto-x" />
+            <MudNumericField T="double?" @bind-Value="_py" Label="Punto Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="punto-y" />
+            <MudNumericField T="double" @bind-Value="_fx" Label="Fase X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="fase-x" />
+            <MudNumericField T="double" @bind-Value="_fy" Label="Fase Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="fase-y" />
+            <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="Centro" data-accion="centro">Centro de la caja</MudButton>
+        </div>
+        @if (_poli is not null)
+        {
+            <div data-zona="vista" style="background:#fff;border:1px solid var(--mud-palette-lines-default);padding:6px;margin-top:8px;">@((MarkupString)Dibujo())</div>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancelar" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Aceptar" data-accion="aceptar">Aceptar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string NombreMolde { get; set; } = "";
+    [Parameter] public string Contorno { get; set; } = "";
+    [Parameter] public bool CoincideX { get; set; }
+    [Parameter] public bool CoincideY { get; set; }
+    [Parameter] public double? PuntoX { get; set; }
+    [Parameter] public double? PuntoY { get; set; }
+    [Parameter] public double FaseX { get; set; }
+    [Parameter] public double FaseY { get; set; }
+
+    /// <summary>Lo que devuelve el dialogo al aceptar.</summary>
+    public record Resultado(bool CoincideX, bool CoincideY, double? PuntoX, double? PuntoY, double FaseX, double FaseY);
+
+    private Poligono? _poli;
+    private double _largo, _alto;
+    private bool _x, _y;
+    private double? _px, _py;
+    private double _fx, _fy;
+    private string _error = "";
+
+    protected override void OnInitialized()
+    {
+        _x = CoincideX; _y = CoincideY; _px = PuntoX; _py = PuntoY; _fx = FaseX; _fy = FaseY;
+        var pts = new List<Punto>();
+        foreach (var tok in (Contorno ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var xy = tok.Split(',');
+            if (xy.Length != 2 || !double.TryParse(xy[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var a) || !double.TryParse(xy[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var b)) { pts.Clear(); break; }
+            pts.Add(new Punto(a, b));
+        }
+        var p = new Poligono(pts);
+        if (!p.EsValido) { _error = "El contorno del molde no es válido."; return; }
+        _poli = p; _largo = p.Limites.MaxX - p.Limites.MinX; _alto = p.Limites.MaxY - p.Limites.MinY;
+    }
+
+    private static string Num(double d) => d.ToString("0.##", CultureInfo.CurrentCulture);
+    private static string F(double d) => d.ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <summary>Si pide coincidencia y todavia no hay punto, parte del centro de la caja.</summary>
+    private void Asegurar() { if ((_x || _y) && (_px is null || _py is null)) Centro(); }
+    private void Centro() { _px = Math.Round(_largo / 2, 2); _py = Math.Round(_alto / 2, 2); }
+
+    private string Dibujo()
+    {
+        var l = _poli!.Limites; double w = Math.Max(_largo, 1), h = Math.Max(_alto, 1), pad = Math.Max(w, h) * 0.05, sw = Math.Max(w, h) / 250;
+        var sb = new System.Text.StringBuilder($"<svg viewBox=\"{F(l.MinX - pad)} {F(l.MinY - pad)} {F(w + 2 * pad)} {F(h + 2 * pad)}\" width=\"100%\" height=\"220\" preserveAspectRatio=\"xMidYMid meet\">");
+        sb.Append($"<polygon points=\"{_poli.ATexto()}\" fill=\"#cfe0f5\" stroke=\"#335\" stroke-width=\"{F(sw)}\"/>");
+        if (_px is double px && _py is double py)
+        {
+            double qx = l.MinX + px, qy = l.MinY + py, r = Math.Max(w, h) / 40;
+            if (_x) sb.Append($"<line x1=\"{F(qx)}\" y1=\"{F(l.MinY - pad)}\" x2=\"{F(qx)}\" y2=\"{F(l.MaxY + pad)}\" stroke=\"#1f4fd8\" stroke-width=\"{F(sw)}\" stroke-dasharray=\"{F(sw * 4)} {F(sw * 4)}\" data-eje=\"x\"/>");
+            if (_y) sb.Append($"<line x1=\"{F(l.MinX - pad)}\" y1=\"{F(qy)}\" x2=\"{F(l.MaxX + pad)}\" y2=\"{F(qy)}\" stroke=\"#1f4fd8\" stroke-width=\"{F(sw)}\" stroke-dasharray=\"{F(sw * 4)} {F(sw * 4)}\" data-eje=\"y\"/>");
+            sb.Append($"<circle cx=\"{F(qx)}\" cy=\"{F(qy)}\" r=\"{F(r)}\" fill=\"#1f4fd8\" stroke=\"#fff\" stroke-width=\"{F(sw)}\" data-punto=\"1\"/>");
+        }
+        return sb.Append("</svg>").ToString();
+    }
+
+    private void Aceptar()
+    {
+        _error = "";
+        if (_poli is null) { _error = "El contorno del molde no es válido."; return; }
+        if ((_x || _y) && (_px is null || _py is null)) { _error = "Para coincidir con la raya indica el punto de coincidencia (X e Y)."; return; }
+        if (_px is double a && _py is double b && (double.IsNaN(a) || double.IsNaN(b) || a < 0 || b < 0 || a > _largo + 0.001 || b > _alto + 0.001))
+        { _error = $"El punto debe estar dentro de la caja del molde (0 a {Num(_largo)} por 0 a {Num(_alto)} mm)."; return; }
+        if (Math.Abs(_fx) > 100000 || Math.Abs(_fy) > 100000) { _error = "La fase debe estar entre -100000 y 100000 mm."; return; }
+        MudDialog.Close(DialogResult.Ok(new Resultado(_x, _y, _px, _py, _fx, _fy)));
+    }
+
+    private void Cancelar() => MudDialog.Cancel();
+}

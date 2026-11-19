@@ -1,0 +1,24 @@
+@* Alto de las listas de las ventanas de Estructura (arbol y diagrama) y de Ruta de produccion.
+
+   QUE HACE. En una ventana a PANTALLA COMPLETA la lista llena exactamente lo que queda entre lo de arriba (barra de botones,
+   pestanas) y el boton CERRAR: crece y se achica sola con el tamano de la ventana, y lo que no cabe se desplaza DENTRO de la lista.
+   En una ventana normal la lista tiene un alto maximo.
+
+   POR QUE ES CSS PURO. Antes el alto se calculaba con JavaScript (midiendo contra el boton Cerrar) y con vh. Eso fallaba por dos
+   razones que con flexbox no existen:
+     - el script vivia en un archivo / en index.html que habia que desplegar aparte: si en el servidor quedaba una copia vieja con el
+       mismo nombre, mandaba la vieja y la lista terminaba mucho antes del boton Cerrar;
+     - vh mide la pantalla real, pero la aplicacion tiene su propio zoom (transform:scale sobre #app, ver appZoom.js): con zoom 74 %
+       todo lo que se dimensiona en vh sale al 74 % de lo previsto.
+   Con flexbox el alto sale del propio contenedor (la ventana a pantalla completa mide el 100 % de #app, ya escalado), asi que no hay
+   que medir nada, ni tocar index.html, ni acordarse del zoom. --app-scale (publicada por appZoom.js) solo se usa para el alto maximo
+   de la ventana NORMAL, que si se dimensiona en vh: se divide entre la escala para que ocupe lo mismo a cualquier zoom.
+
+   COMO SE USA. La lista lleva la clase kon-llena (y opcionalmente --llena-vh con su alto maximo en la ventana normal) y su
+   contenedor directo debe ser una columna flexible: el contenido de la ventana (ContentStyle con display:flex) o, en las pestanas,
+   las pestanas con la clase kon-tabs-llena. *@
+<style>
+    .kon-llena { overflow:auto; max-height:calc(var(--llena-vh, 72vh) / var(--app-scale, 1)); }
+    .mud-dialog-fullscreen .kon-tabs-llena > .mud-tabs-panels { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
+    .mud-dialog-fullscreen .kon-llena { flex:1 1 0; min-height:0; max-height:none; }
+</style>

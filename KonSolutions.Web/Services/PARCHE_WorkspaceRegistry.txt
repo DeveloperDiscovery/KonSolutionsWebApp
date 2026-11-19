@@ -1,0 +1,7 @@
+En KonSolutions.Web/Services/WorkspaceRegistry.cs, dentro de la lista Pantallas, agrega estas lineas (por ejemplo justo antes de la de "/comercial/registro-compras"):
+
+        // Bandejas de consulta de lo que cargo el servicio de XML recibidos. DES_FORMULARIO de las opciones: "Comercial/CPE_Recibidos.razor" y "Logistica/GRE_Recibidas.razor".
+        new("/comercial/cpe-recibidos",   "Bandeja de XML recibidos",      Icons.Material.Filled.MarkEmailRead,   typeof(KONSolutions.Web.Pages.Comercial.CPE_Recibidos)),
+        new("/logistica/gre-recibidas",   "Bandeja de guías recibidas",   Icons.Material.Filled.LocalShipping,   typeof(KONSolutions.Web.Pages.Logistica.GRE_Recibidas)),
+
+(No incluyo el archivo completo para no pisar cambios tuyos.)

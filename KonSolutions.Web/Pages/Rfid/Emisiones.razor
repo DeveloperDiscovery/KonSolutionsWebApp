@@ -1,0 +1,428 @@
+@page "/rfid/emisiones"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+@inject ControlCambiosClientService Cambios
+@inject ShortcutService ShortcutSvc
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Emisión de TAG RFID · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* EMISIÓN DE TAG RFID — RFID.EMISIONES.
+
+   Una emisión es una tanda de etiquetas que se pide a partir de un INGRESO POR COMPRA o del STOCK. Nace con las etiquetas PENDIENTES;
+   cuando un chip entrega su TID («Enrolar») recibe el código  TID + correlativo de 15 dígitos  —que queda en ESTANDAR.OBJETOS_RFID— y
+   el EPC que hay que grabar en el chip. Una etiqueta que falla se anula y se repone. Estados: PENDIENTE (ninguna enrolada), EN PROCESO,
+   TERMINADA (todas enroladas) y ANULADA.
+
+   · «Nueva emisión» (cabecera): elige el ingreso o el stock, cuántas etiquetas por línea (los rollos, una por rollo con su peso) y el equipo.
+   · «Enrolar»: el panel donde se escanea o se digita el TID de cada chip.
+   · «Anular»: anula la emisión completa; si alguna etiqueta ya tiene lecturas, no se anula nada.
+   · «Imprimir»: deja un trabajo en la cola de impresión; el servicio del agente en la planta lo toma, imprime las etiquetas que faltan de la emisión en la impresora
+     RFID (graba el chip al imprimir) e informa el avance. Se ve el estado en el diálogo y en la columna Avance.
+   · «Eliminar»: solo si ninguna etiqueta está enrolada.
+   Qué botones ve cada rol lo decide Seguridad (opciones y botones del rol), como en las demás pantallas. *@
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Emisión de TAG RFID" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);" data-resumen="emisiones">
+            Schema RFID · @_visibles.Count de @_items.Count emisiones · @_items.Count(x => x.COD_ESTADO_EMISION == "E") en proceso · @_items.Sum(x => x.CAN_PENDIENTES) etiquetas por enrolar
+        </MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar emisión, ingreso, comprobante, proveedor, equipo..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+    <div class="d-flex align-center gap-3" style="flex-wrap:wrap;">
+        <div style="flex:0 1 220px;min-width:170px;">
+            <MudSelect T="string" Label="Origen" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_origen" ValueChanged="OnOrigenChanged" data-filtro="origen">
+                <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+                <MudSelectItem T="string" Value="@("C")">Ingreso por compra</MudSelectItem>
+                <MudSelectItem T="string" Value="@("S")">Stock</MudSelectItem>
+            </MudSelect>
+        </div>
+        <div style="flex:0 1 220px;min-width:170px;">
+            <MudSelect T="string" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_estado" ValueChanged="OnEstadoChanged" data-filtro="estado">
+                <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+                <MudSelectItem T="string" Value="@("P")">Pendientes</MudSelectItem>
+                <MudSelectItem T="string" Value="@("E")">En proceso</MudSelectItem>
+                <MudSelectItem T="string" Value="@("T")">Terminadas</MudSelectItem>
+                <MudSelectItem T="string" Value="@("A")">Anuladas</MudSelectItem>
+            </MudSelect>
+        </div>
+        <div style="flex:0 1 200px;min-width:160px;">
+            <MudDatePicker Label="Emitidas desde" Variant="Variant.Outlined" Margin="Margin.Dense" Date="_desde" DateChanged="OnDesdeChanged"
+                           Clearable="true" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+        </div>
+        <div style="flex:0 1 200px;min-width:160px;">
+            <MudDatePicker Label="Emitidas hasta" Variant="Variant.Outlined" Margin="Margin.Dense" Date="_hasta" DateChanged="OnHastaChanged"
+                           Clearable="true" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+        </div>
+    </div>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="rfid-emisiones" style="position:relative;">
+    <MudDataGrid T="RfidEmision" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica"
+                 RowStyleFunc="@RowStyle">
+        <Columns>
+            @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+            {
+                <TemplateColumn Sortable="false" Title="@c.Titulo" CellStyle="@c.Estilo">
+                    <HeaderTemplate>
+                        <div class="d-flex align-center gap-1">
+                            <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenColumna == idx)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(idx))" />
+                            <FiltroExcelColumna T="RfidEmision" ItemsBase="@Base(idx)" ValorDe="@c.Valor"
+                                                ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtro(idx, v))" />
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (idx == ColEstado)
+                        {
+                            <EstadoChip Estado="@context.Item.DES_ESTADO_EMISION" BackColor="@ColorFondo(context.Item)" ForeColor="@ColorTexto(context.Item)" />
+                        }
+                        else if (idx == ColDocumento)
+                        {
+                            <div style="display:flex;flex-direction:column;line-height:1.25;" data-documento="@context.Item.NUM_EMISION">
+                                @if (context.Item.COD_ORIGEN == "C")
+                                {
+                                    <span><span class="mono">Ingreso @context.Item.NUM_MOVIMIENTO_ALMACEN?.ToString("0")</span>@(string.IsNullOrWhiteSpace(context.Item.NUM_COMPROBANTE_PAGO) ? "" : " · " + context.Item.NUM_COMPROBANTE_PAGO)</span>
+                                    <span style="font-size:.72rem;opacity:.6;">@context.Item.DES_ENTIDAD</span>
+                                }
+                                else
+                                {
+                                    <span>Stock del almacén</span>
+                                    <span style="font-size:.72rem;opacity:.6;">@context.Item.DES_OBSERVACION</span>
+                                }
+                            </div>
+                        }
+                        else if (idx == ColAvance)
+                        {
+                            <div style="min-width:150px;" data-avance="@context.Item.NUM_EMISION">
+                                <MudProgressLinear Value="@Porcentaje(context.Item)" Color="@(context.Item.FLG_ANULADA ? Color.Default : Color.Success)" Size="Size.Small" Rounded="true" />
+                                @if (_trabajos.TryGetValue(context.Item.NUM_EMISION, out var tr))
+                                {
+                                    <div style="font-size:.74rem;" data-trabajo-impresion="@context.Item.NUM_EMISION">
+                                        <MudIcon Icon="@Icons.Material.Filled.Print" Size="Size.Small" Style="vertical-align:middle;" />
+                                        @(tr.COD_ESTADO_TRABAJO == "E" ? "Imprimiendo" : "En cola de impresión")@(tr.CAN_IMPRESAS > 0 || tr.CAN_SOLICITADAS is not null ? $" · {tr.CAN_IMPRESAS}{(tr.CAN_SOLICITADAS is { } n ? $" de {n}" : "")} impresas" : "")
+                                    </div>
+                                }
+                                <span style="font-size:.74rem;" class="mono">@context.Item.CAN_ENROLADAS / @context.Item.CAN_ETIQUETAS enroladas · @context.Item.CAN_GRABADAS grabadas@(context.Item.CAN_ANULADAS > 0 ? $" · {context.Item.CAN_ANULADAS} anuladas" : "")</span>
+                            </div>
+                        }
+                        else
+                        {
+                            @c.Valor(context.Item)
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    @* @key: los botones de la fila dependen del estado de la emisión (enrolar solo si quedan pendientes, anular y modificar solo si no está anulada, eliminar solo sin enroladas) y el componente guarda sus botones: al cambiar el estado se vuelve a crear. *@
+                    <AccionesBotones @key="@($"{item.NUM_EMISION}|{item.COD_ESTADO_EMISION}|{item.CAN_PENDIENTES}|{item.CAN_ENROLADAS}|{item.CAN_GRABADAS}")" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" Filtro="@(b => BotonAplica(item, b))"
+                                     OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin emisiones.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="RfidEmision" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const int ColDocumento = 3, ColAvance = 6, ColEstado = 7;
+
+    /// <summary>Una columna filtrable y ordenable. Valor es lo que se muestra, se filtra y se ordena como texto; Clave, si hace
+    /// falta, es por lo que se ordena (los números y las fechas, por su valor y no por su texto).</summary>
+    private sealed record Col(string Titulo, Func<RfidEmision, string?> Valor, Func<RfidEmision, IComparable?>? Clave = null, string? Estilo = null);
+
+    private static string? Fecha(DateTime? f) => f?.ToString("dd/MM/yyyy");
+
+    private static string? Documento(RfidEmision x)
+        => x.COD_ORIGEN == "C"
+            ? $"Ingreso {x.NUM_MOVIMIENTO_ALMACEN?.ToString("0")}{(string.IsNullOrWhiteSpace(x.NUM_COMPROBANTE_PAGO) ? "" : " · " + x.NUM_COMPROBANTE_PAGO)}"
+            : "Stock del almacén";
+
+    private readonly Col[] _cols =
+    {
+        new("N°",         x => x.NUM_EMISION.ToString(), x => x.NUM_EMISION, "text-align:right;"),
+        new("Fecha",      x => Fecha(x.FEC_EMISION), x => x.FEC_EMISION, "white-space:nowrap;"),
+        new("Origen",     x => x.DES_ORIGEN),
+        new("Documento",  x => Documento(x)),
+        new("Almacén",    x => string.IsNullOrWhiteSpace(x.DES_ALMACEN) ? x.COD_ALMACEN : $"{x.COD_ALMACEN} - {x.DES_ALMACEN}", x => x.COD_ALMACEN),
+        new("Equipo",     x => x.DES_EQUIPO),
+        new("Avance",     x => $"{x.CAN_ENROLADAS}/{x.CAN_ETIQUETAS}", x => x.CAN_ENROLADAS),
+        new("Estado",     x => x.DES_ESTADO_EMISION),
+        new("Registrada por", x => x.COD_USUARIO_REGISTRO),
+    };
+
+    private List<RfidEmision> _items = new();
+    /// <summary>El trabajo de impresión activo (pendiente o en proceso) de cada emisión, si lo hay.</summary>
+    private Dictionary<int, RfidTrabajoImpresion> _trabajos = new();
+    private string _search = "";
+    private string _origen = "";
+    private string _estado = "";
+    private DateTime? _desde, _hasta;
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+
+    private bool HayFiltros => _filtros.Any(f => f.Value is not null) || !string.IsNullOrWhiteSpace(_search)
+                            || _origen != "" || _estado != "" || _desde is not null || _hasta is not null;
+
+    // ── Filtros: todo en memoria ──────────────────────────────────────────────────────────
+    private bool CoincideRapido(RfidEmision x)
+    {
+        if (_origen != "" && x.COD_ORIGEN != _origen) return false;
+        if (_estado != "" && x.COD_ESTADO_EMISION != _estado) return false;
+        if (_desde is { } d && x.FEC_EMISION is { } fe && fe.Date < d.Date) return false;
+        if (_hasta is { } h && x.FEC_EMISION is { } fh && fh.Date > h.Date) return false;
+        var t = _search?.Trim();
+        if (string.IsNullOrEmpty(t)) return true;
+        return Contiene(x.NUM_EMISION.ToString(), t) || Contiene(x.NUM_MOVIMIENTO_ALMACEN?.ToString("0"), t) || Contiene(x.NUM_COMPROBANTE_PAGO, t)
+            || Contiene(x.DES_ENTIDAD, t) || Contiene(x.COD_ALMACEN, t) || Contiene(x.DES_ALMACEN, t) || Contiene(x.DES_EQUIPO, t)
+            || Contiene(x.DES_OBSERVACION, t) || Contiene(x.COD_USUARIO_REGISTRO, t) || Contiene(x.DES_ESTADO_EMISION, t)
+            || Contiene(x.DES_ORIGEN, t) || Contiene(x.DES_TIPO_MOVIMIENTO, t) || Contiene(Fecha(x.FEC_EMISION), t);
+    }
+
+    private static bool Contiene(string? texto, string buscado)
+        => texto is not null && texto.Contains(buscado, StringComparison.OrdinalIgnoreCase);
+
+    private List<RfidEmision> Aplicar(int ex)
+    {
+        IEnumerable<RfidEmision> q = _items.Where(CoincideRapido);
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(_cols[c].Valor(x) ?? ""));
+        }
+        return q.ToList();
+    }
+
+    private List<RfidEmision> Base(int col) => Aplicar(col);
+    private List<RfidEmision> _visibles => Ordenar(Aplicar(-1));
+
+    private List<RfidEmision> Ordenar(List<RfidEmision> items)
+    {
+        // Sin orden elegido: las más recientes primero (lo que se busca casi siempre)
+        if (_ordenColumna is not { } col) return items.OrderByDescending(x => x.NUM_EMISION).ToList();
+        var c = _cols[col];
+        Func<RfidEmision, object?> clave = x => c.Clave is not null ? c.Clave(x) : c.Valor(x);
+        return _ordenAscendente ? items.OrderBy(clave).ToList() : items.OrderByDescending(clave).ToList();
+    }
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+
+    private void LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _search = ""; _origen = ""; _estado = ""; _desde = null; _hasta = null;
+        StateHasChanged();
+    }
+
+    private Task Buscar() { StateHasChanged(); return Task.CompletedTask; }
+    private void OnOrigenChanged(string? v) { _origen = v ?? ""; StateHasChanged(); }
+    private void OnEstadoChanged(string? v) { _estado = v ?? ""; StateHasChanged(); }
+    private void OnDesdeChanged(DateTime? v) { _desde = v; StateHasChanged(); }
+    private void OnHastaChanged(DateTime? v) { _hasta = v; StateHasChanged(); }
+
+    private static double Porcentaje(RfidEmision x) => x.CAN_ETIQUETAS <= 0 ? 0 : 100.0 * x.CAN_ENROLADAS / x.CAN_ETIQUETAS;
+
+    private static string ColorFondo(RfidEmision x) => x.COD_ESTADO_EMISION switch
+    {
+        "P" => "#fff3cd", "E" => "#cfe2ff", "T" => "#c8e6c9", _ => "#e0e0e0"
+    };
+    private static string ColorTexto(RfidEmision x) => x.COD_ESTADO_EMISION switch
+    {
+        "P" => "#7a5a00", "E" => "#0a3d91", "T" => "#1b5e20", _ => "#616161"
+    };
+
+    /// <summary>Una emisión anulada se ve atenuada.</summary>
+    private string RowStyle(RfidEmision x, int i) => x.FLG_ANULADA ? "opacity:.6;" : string.Empty;
+
+    // ── Carga ────────────────────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("RFID", "Emisiones");
+        await Load();
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("RFID.EMISIONES", _onCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Nueva());
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RfidEmision>>>(ApiRoutes.Rfid.Emisiones);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Emisiones), nameof(Load));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Emisiones));
+            _items = new();
+        }
+        await CargarTrabajos();
+    }
+
+    /// <summary>Los trabajos de impresión activos. Si falla (por ejemplo el script 35 de la base todavía no se corrió) la pantalla sigue funcionando sin la columna de impresión.</summary>
+    private async Task CargarTrabajos()
+    {
+        var lista = await Http.SafeGetAsync<List<RfidTrabajoImpresion>>(ApiRoutes.Rfid.ImpresionActivos) ?? new();
+        _trabajos = lista.GroupBy(t => t.NUM_EMISION).ToDictionary(g => g.Key, g => g.OrderByDescending(t => t.NUM_TRABAJO).First());
+    }
+
+    // ── Botones (los pone Seguridad: opción + rol) ───────────────────────────────────────
+    // Enrolar es el único botón de la FILA con verbo POST (el POST de «Nueva emisión» es del encabezado): se reconoce por su método, por su nombre o,
+    // si el botón se registró sin método, por su verbo. Antes, un botón POST sin método «Enrolar» no hacía nada al pulsarlo.
+    // Imprimir también lleva el verbo POST (pide imprimir), así que se reconoce ANTES que Enrolar: por su método o por su nombre.
+    private static bool EsImprimir(BotonTreeviewItem b)
+        => string.Equals(b.DES_METODO?.Trim(), "Imprimir", StringComparison.OrdinalIgnoreCase)
+        || (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").Contains("IMPRIM", StringComparison.OrdinalIgnoreCase);
+
+    private static bool EsEnrolar(BotonTreeviewItem b)
+        => !EsImprimir(b)
+        && (string.Equals(b.DES_METODO?.Trim(), "Enrolar", StringComparison.OrdinalIgnoreCase)
+        || (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").Contains("ENROL", StringComparison.OrdinalIgnoreCase)
+        || b.FLG_ACCION_POST == true);
+
+    /// <summary>Lo que falta por imprimir: las pendientes y las enroladas que todavía no se grabaron.</summary>
+    private static int PorImprimir(RfidEmision x) => x.CAN_PENDIENTES + Math.Max(0, x.CAN_ENROLADAS - x.CAN_GRABADAS);
+
+    private static bool EsAnular(BotonTreeviewItem b)
+        => string.Equals(b.DES_METODO?.Trim(), "Anular", StringComparison.OrdinalIgnoreCase)
+        || (b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "").Contains("ANULAR", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Qué botones de la fila tienen sentido: enrolar, solo si quedan etiquetas pendientes; anular y modificar, solo si la emisión
+    /// no está anulada; eliminar, solo si ninguna etiqueta está enrolada. Consultar, siempre.</summary>
+    private static bool BotonAplica(RfidEmision x, BotonTreeviewItem b)
+    {
+        if (EsImprimir(b)) return !x.FLG_ANULADA && PorImprimir(x) > 0;
+        if (EsEnrolar(b)) return !x.FLG_ANULADA && x.CAN_PENDIENTES > 0;
+        if (EsAnular(b)) return !x.FLG_ANULADA;
+        if (b.FLG_ACCION_DELETE == true) return x.CAN_ENROLADAS == 0;
+        if (b.FLG_ACCION_PUT == true) return !x.FLG_ANULADA;
+        return true;
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Nueva();
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(RfidEmision item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico: Enrolar lleva POST y Anular lleva PUT marcados, así que van antes que Modificar y Nuevo.
+        if (EsImprimir(b))               return Imprimir(item);
+        if (EsEnrolar(b))                return Enrolar(item);
+        if (EsAnular(b))                 return Anular(item);
+        if (b.FLG_ACCION_DELETE == true) return Ficha(item, CrudModo.Delete);
+        if (b.FLG_ACCION_PUT    == true) return Ficha(item, CrudModo.Update);
+        if (b.FLG_ACCION_GET    == true) return Ficha(item, CrudModo.Read);
+        // un botón sin verbo ni método conocido: antes no pasaba nada y no había forma de saber por qué
+        Snackbar.Add($"El botón «{b.DES_BOTON_OPCION}» (método «{b.DES_METODO}») no tiene una acción en esta pantalla. Revisa su registro en Seguridad.", Severity.Warning);
+        return Task.CompletedTask;
+    }
+
+    private async Task Nueva()
+    {
+        var dlg = await DialogService.ShowAsync<EmisionDialog>("Nueva emisión de etiquetas RFID",
+            new DialogParameters { ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false } r)
+        {
+            await Load();
+            // Recién creada: lo normal es seguir con el enrolamiento
+            if (r.Data is int numEmision && _items.FirstOrDefault(x => x.NUM_EMISION == numEmision) is { } nueva) await Enrolar(nueva);
+        }
+    }
+
+    private async Task Enrolar(RfidEmision item)
+    {
+        var dlg = await DialogService.ShowAsync<EmisionEnrolarDialog>($"Enrolar etiquetas · emisión {item.NUM_EMISION}",
+            new DialogParameters { ["Emision"] = item },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        await dlg.Result;
+        await Load();   // aunque se cierre con «Cerrar», lo enrolado ya cambió el avance
+    }
+
+    private async Task Imprimir(RfidEmision item)
+    {
+        var dlg = await DialogService.ShowAsync<ImprimirDialog>($"Imprimir etiquetas · emisión {item.NUM_EMISION}",
+            new DialogParameters { ["Emision"] = item },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        await dlg.Result;
+        await Load();   // lo impreso cambia el avance y el trabajo activo
+    }
+
+    private async Task Anular(RfidEmision item)
+    {
+        var titulo = $"Anular emisión {item.NUM_EMISION}";
+        var dlg = await DialogService.ShowAsync<RfidAnularDialog>(titulo,
+            new DialogParameters
+            {
+                ["Titulo"] = titulo,
+                ["Url"] = ApiRoutes.Rfid.EmisionAnular(item.NUM_EMISION),
+                ["Aviso"] = "Se anulan todas las etiquetas de la emisión y las enroladas dejan de existir en ESTANDAR.OBJETOS_RFID (sus chips quedan libres para enrolarse de nuevo). Si alguna ya tiene lecturas, no se anula nada.",
+                ["ExitoMensaje"] = "Emisión anulada."
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    private async Task Ficha(RfidEmision item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Delete => $"Eliminar emisión · {item.NUM_EMISION}",
+            CrudModo.Read   => $"Consultar emisión · {item.NUM_EMISION}",
+            _               => $"Modificar emisión · {item.NUM_EMISION}"
+        };
+        var dlg = await DialogService.ShowAsync<EmisionFichaDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("RFID.EMISIONES", _onCambio ?? (() => Task.CompletedTask));
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

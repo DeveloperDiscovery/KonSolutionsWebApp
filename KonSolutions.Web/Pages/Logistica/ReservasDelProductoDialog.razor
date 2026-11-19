@@ -1,0 +1,105 @@
+@* Las reservas que tocan un producto. Se abre desde la celda "Reservada" del detalle del
+   requerimiento: ahí se ve CUÁNTO se reservó, y acá QUIÉN se lo llevó.
+
+   Es de sólo lectura y a propósito: desde el requerimiento se consulta, no se edita una
+   reserva ajena. Para modificarla está su propia pantalla. *@
+
+@using Reserva = KONSolutions.Shared.Models.Logistica.ReservasStock
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+<MudDialog Style="width:min(860px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Reservas del producto</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+            <span class="mono">@CodProducto</span>@(string.IsNullOrWhiteSpace(DesProducto) ? "" : $" · {DesProducto}")
+        </MudText>
+
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (_reservas.Count == 0)
+        {
+            @* Puede pasar de verdad: la cantidad reservada la escribe MAKERESERVA, y si después
+               alguien anuló la reserva el número del requerimiento queda pero la reserva no. *@
+            <MudAlert Severity="Severity.Info" Dense="true">
+                No hay reservas que incluyan este producto.
+            </MudAlert>
+        }
+        else
+        {
+            <div style="overflow-x:auto;">
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:80px;">N°</th>
+                            <th>Descripción</th>
+                            <th style="width:110px;">Fecha</th>
+                            <th style="width:170px;">Tipo</th>
+                            <th style="width:110px;">Requerim.</th>
+                            <th style="width:150px;">Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in _reservas)
+                        {
+                            <tr>
+                                <td class="mono">@r.NUM_RESERVA_STOCK</td>
+                                <td>@r.DES_RESERVA_STOCK</td>
+                                <td class="mono">@r.FEC_RESERVA_STOCK?.ToString("dd/MM/yyyy")</td>
+                                <td>@r.DES_TIPO_RESERVA</td>
+                                @* El requerimiento que originó la reserva: sirve para ver de un
+                                   vistazo si es LA de este documento o la de otro. *@
+                                <td class="mono">@(r.NUM_REQUERIMIENTO_STOCK is { } n ? n.ToString() : "—")</td>
+                                <td>
+                                    <EstadoChip Estado="@r.DES_ESTADO"
+                                                BackColor="@r.DES_BACKCOLOR" ForeColor="@r.DES_FORECOLOR" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.6;">
+                @_reservas.Count reserva(s) incluyen este producto, de cualquier requerimiento.
+            </MudText>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string CodProducto { get; set; } = "";
+    [Parameter] public string? DesProducto { get; set; }
+
+    private List<Reserva> _reservas = new();
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodProducto)) { _cargando = false; return; }
+        try
+        {
+            _reservas = (await Http.SafeGetAsync<List<Reserva>>(
+                ApiRoutes.Logistica.ReservasStockPorProducto(CodProducto))) ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(ReservasDelProductoDialog), nameof(OnInitializedAsync));
+            _reservas = new();
+        }
+        _cargando = false;
+    }
+}

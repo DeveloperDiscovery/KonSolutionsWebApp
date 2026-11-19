@@ -1,0 +1,114 @@
+@* Componentes de una operacion (script SQL 120): arma o cambia la lista de operaciones de las que se compone. El orden de la lista es el orden de ejecucion;
+   la frecuencia es cuantas veces ocurre por cada unidad de esta operacion (2 mangas = 2); "en paralelo" la agrupa con la anterior para las precedencias.
+   Se guarda todo junto (todo o nada) y la base rechaza los ciclos. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+        <div class="d-flex align-center gap-2 mb-2">
+            <MudAutocomplete T="Operacion" @bind-Value="_agregar" SearchFunc="Buscar" ToStringFunc="@(o => o is null ? "" : o.COD_OPERACION + " · " + o.DES_OPERACION + (o.FLG_COMPUESTA ? " (compuesta)" : ""))" Label="Agregar una operación del catálogo" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" ResetValueOnEmptyText="true" MaxItems="300" data-campo="agregar" />
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="Agregar" Disabled="@(_agregar is null)" data-accion="agregar">Agregar</MudButton>
+        </div>
+        <div style="overflow-x:auto;">
+            <table class="oc-tabla" data-tabla="componentes">
+                <thead><tr><th></th><th>Operación</th><th>Cat.</th><th>Máquina</th><th class="n">Veces</th><th>En paralelo</th><th></th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < _filas.Count; i++)
+                    {
+                        var f = _filas[i]; var idx = i;
+                        <tr data-hija="@f.COD_OPERACION_HIJA">
+                            <td class="mono">@(i + 1)</td>
+                            <td>@f.DES_OPERACION_HIJA <span class="mono" style="opacity:.5;">@f.COD_OPERACION_HIJA</span> @if (f.FLG_COMPUESTA) { <MudChip T="string" Size="Size.Small" Color="Color.Info">compuesta</MudChip> }</td>
+                            <td>@f.COD_CATEGORIA_OCUPACIONAL</td>
+                            <td>@f.COD_TIPO_MAQUINA</td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="f.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Margin="Margin.Dense" Style="width:90px;" data-campo="frecuencia" /></td>
+                            <td><MudSwitch T="bool" @bind-Value="f.FLG_PARALELO" Color="Color.Primary" Disabled="@(i == 0)" data-campo="paralelo" /></td>
+                            <td>
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" Disabled="@(i == 0)" OnClick="@(() => Mover(idx, -1))" data-accion="subir" />
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" Disabled="@(i == _filas.Count - 1)" OnClick="@(() => Mover(idx, 1))" data-accion="bajar" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Quitar(idx))" data-accion="quitar" />
+                            </td>
+                        </tr>
+                    }
+                    @if (_filas.Count == 0) { <tr><td colspan="7" style="opacity:.6;">Sin componentes: la operación es una hoja (lleva su propio tiempo).</td></tr> }
+                </tbody>
+            </table>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .oc-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .oc-tabla th, .oc-tabla td { padding: 2px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .oc-tabla th { font-weight: 600; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Operacion Operacion { get; set; } = new();
+
+    private List<OperacionComponente> _filas = new();
+    private List<Operacion> _catalogo = new();
+    private Operacion? _agregar;
+    private bool _cargando, _guardando;
+    private string _error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cargando = true;
+        var c = await OperacionesApi.LeerAsync<List<OperacionComponente>>(Http, IngRoute.Operacion(Operacion.COD_OPERACION, "componentes"));
+        _filas = c.Data ?? new(); if (!c.Ok) _error = c.Mensaje ?? "";
+        var o = await OperacionesApi.LeerAsync<List<Operacion>>(Http, IngRoute.Operaciones);
+        _catalogo = o.Data ?? new(); if (!o.Ok) _error = o.Mensaje ?? "";
+        _cargando = false;
+    }
+
+    private Task<IEnumerable<Operacion>> Buscar(string? t, CancellationToken ct) =>
+        Task.FromResult(_catalogo.Where(o => o.COD_OPERACION != Operacion.COD_OPERACION && _filas.All(f => f.COD_OPERACION_HIJA != o.COD_OPERACION)
+            && (string.IsNullOrWhiteSpace(t) || o.DES_OPERACION.Contains(t, StringComparison.OrdinalIgnoreCase) || o.COD_OPERACION.Contains(t, StringComparison.OrdinalIgnoreCase))).OrderBy(o => o.COD_OPERACION).Take(300));
+
+    private void Agregar()
+    {
+        if (_agregar is null) return;
+        _filas.Add(new OperacionComponente
+        {
+            COD_OPERACION_PADRE = Operacion.COD_OPERACION, COD_OPERACION_HIJA = _agregar.COD_OPERACION, DES_OPERACION_HIJA = _agregar.DES_OPERACION,
+            COD_CATEGORIA_OCUPACIONAL = _agregar.COD_CATEGORIA_OCUPACIONAL, COD_TIPO_MAQUINA = _agregar.COD_TIPO_MAQUINA, FLG_COMPUESTA = _agregar.FLG_COMPUESTA, VAL_FRECUENCIA = 1
+        });
+        _agregar = null;
+    }
+
+    private void Quitar(int i) { _filas.RemoveAt(i); if (_filas.Count > 0) _filas[0].FLG_PARALELO = false; }
+    private void Mover(int i, int d)
+    {
+        var j = i + d;
+        if (j < 0 || j >= _filas.Count) return;
+        (_filas[i], _filas[j]) = (_filas[j], _filas[i]);
+        _filas[0].FLG_PARALELO = false;
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        _guardando = true;
+        var cuerpo = new OperacionComponentesGuardarDto
+        {
+            COD_OPERACION_PADRE = Operacion.COD_OPERACION,
+            Componentes = _filas.Select(f => new OperacionComponenteDto { COD_OPERACION_HIJA = f.COD_OPERACION_HIJA, VAL_FRECUENCIA = f.VAL_FRECUENCIA, FLG_PARALELO = f.FLG_PARALELO }).ToList()
+        };
+        var r = await ProyectoApi.PutAsync(Http, IngRoute.Operacion(Operacion.COD_OPERACION, "componentes"), cuerpo);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add("Componentes guardados.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

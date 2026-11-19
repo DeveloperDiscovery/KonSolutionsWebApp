@@ -1,0 +1,111 @@
+@using KONSolutions.Shared.Models.Proyectos
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Aprobación · @Item?.DES_TIPO_DOCUMENTO_COMPROMISO</MudText></TitleContent>
+    <DialogContent>
+        <div class="mb-2"><MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="@(Item?.COD_ESTADO_COMPROMISO == "APR" ? Color.Success : Item?.COD_ESTADO_COMPROMISO == "REC" ? Color.Error : Item?.COD_ESTADO_COMPROMISO == "OBS" ? Color.Warning : Color.Default)">@Item?.DES_ESTADO_COMPROMISO</MudChip></div>
+        <MudText Typo="Typo.subtitle2" Class="mb-1">Aprobadores</MudText>
+        <MudSimpleTable Dense Hover Class="mb-3">
+            <thead><tr><th>Aprobador</th><th>Decisión vigente</th><th>Comentario</th><th>Fecha</th></tr></thead>
+            <tbody>
+            @foreach (var p in _personas.Where(x => x.COD_FUNCION_COMPROMISO == "APR"))
+            {
+                <tr><td>@p.DES_NOMBRE_COMPLETO</td><td>@Texto(p.COD_DECISION_COMPROMISO)</td><td>@p.DES_OBSERVACION</td><td>@p.FEC_DECISION?.ToString("dd/MM/yyyy HH:mm")</td></tr>
+            }
+            </tbody>
+        </MudSimpleTable>
+        @if (_personas.Any(x => x.COD_FUNCION_COMPROMISO == "RES")) { <div class="mono mb-3" style="font-size:.8rem;opacity:.8;">Responsables: @string.Join(" · ", _personas.Where(x => x.COD_FUNCION_COMPROMISO == "RES").Select(x => x.DES_NOMBRE_COMPLETO))</div> }
+
+        @if (!ReadOnly && Item?.COD_ESTADO_COMPROMISO != "APR")
+        {
+            <MudDivider Class="mb-3" />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="6">
+                    @* No hay relación usuario-entidad en el sistema: se elige a cuál de los aprobadores se representa; también queda el usuario que lo registra. *@
+                    <AriaCombo TItem="ComboboxItem" Items="_aprobadores" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" @bind-Value="_entidad" Label="Decide como (aprobador)" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudRadioGroup T="string" @bind-Value="_decision">
+                        <MudRadio T="string" Value="@("APR")" Color="Color.Success">Aprobar</MudRadio>
+                        <MudRadio T="string" Value="@("OBS")" Color="Color.Warning">Observar</MudRadio>
+                        <MudRadio T="string" Value="@("REC")" Color="Color.Error">Rechazar</MudRadio>
+                    </MudRadioGroup>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField T="string" @bind-Value="_obs" Label="@(_decision == "APR" ? "Comentario (opcional)" : "Comentario (obligatorio)")" Variant="Variant.Outlined" Lines="3" MaxLength="200" />
+                </MudItem>
+            </MudGrid>
+        }
+
+        @if (_historial.Count > 0)
+        {
+            <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Historial</MudText>
+            <MudSimpleTable Dense Style="max-height:180px;overflow:auto;">
+                <thead><tr><th>Fecha</th><th>Aprobador</th><th>Decisión</th><th>Comentario</th><th>Usuario</th></tr></thead>
+                <tbody>
+                @foreach (var h in _historial)
+                {
+                    <tr style="@(h.FLG_VIGENTE ? "" : "opacity:.55;")"><td>@h.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</td><td>@h.DES_NOMBRE_COMPLETO</td><td>@h.DES_DECISION</td><td>@h.DES_OBSERVACION</td><td>@h.COD_USUARIO_REGISTRO</td></tr>
+                }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(_cambio)))" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+        @if (!ReadOnly && Item?.COD_ESTADO_COMPROMISO != "APR")
+        {
+            <MudButton OnClick="Registrar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.HowToReg">Registrar decisión</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteCompromiso? Item { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private List<ExpedienteCompromisoPersona> _personas = new();
+    private List<ExpedienteCompromisoDecision> _historial = new();
+    private List<ComboboxItem> _aprobadores = new();
+    private string? _entidad, _decision = "APR", _obs;
+    private bool _guardando, _cambio;
+
+    private static string Texto(string? d) => d switch { "APR" => "Aprobado", "OBS" => "Observado", "REC" => "Rechazado", _ => "Pendiente" };
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        if (Item is null) return;
+        _personas = await Http.SafeGetAsync<List<ExpedienteCompromisoPersona>>(ApiRoutes.Proyectos.Exp(NumProyecto, $"compromisos/{Item.NUM_SECUENCIA}/personas")) ?? new();
+        _historial = await Http.SafeGetAsync<List<ExpedienteCompromisoDecision>>(ApiRoutes.Proyectos.Exp(NumProyecto, $"compromisos/{Item.NUM_SECUENCIA}/decisiones")) ?? new();
+        _aprobadores = _personas.Where(p => p.COD_FUNCION_COMPROMISO == "APR").Select(p => new ComboboxItem { Id = p.COD_ENTIDAD.ToString("0"), Texto = p.DES_NOMBRE_COMPLETO ?? "" }).ToList();
+        if (_aprobadores.Count == 1) _entidad = _aprobadores[0].Id;
+    }
+
+    private async Task Registrar()
+    {
+        if (Item is null) return;
+        if (string.IsNullOrWhiteSpace(_entidad)) { Snackbar.Add("Elige como cuál aprobador decides.", Severity.Warning); return; }
+        if (_decision != "APR" && string.IsNullOrWhiteSpace(_obs)) { Snackbar.Add("Escribe el comentario para observar o rechazar.", Severity.Warning); return; }
+        _guardando = true;
+        try
+        {
+            var cuerpo = new { CodEntidad = decimal.Parse(_entidad), CodDecision = _decision, Observacion = _obs };
+            var (ok, msg) = await ProyectoApi.PutAsync(Http, ApiRoutes.Proyectos.Exp(NumProyecto, $"compromisos/{Item.NUM_SECUENCIA}/decision"), cuerpo);
+            if (!ok) { Snackbar.Add(msg ?? "No se pudo registrar la decisión.", Severity.Warning); return; }
+            _cambio = true; _obs = null;
+            Snackbar.Add("Decisión registrada.", Severity.Success);
+            // el estado del documento cambia con la decisión: se recarga la lista y el diálogo se cierra para que la grilla muestre el nuevo estado
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProyectoCompromisoDecisionDialog), nameof(Registrar)); Snackbar.Add("No se pudo registrar. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _guardando = false; }
+    }
+}

@@ -1,0 +1,167 @@
+@* GeneradorSentenciaSqlDialog.razor
+   -----------------------------------------------------------------------
+   Arma el texto de DES_COMMANDSQL (columna de ENTORNO.ENTIDADES_CONFIGURAR) sin tener que
+   escribirlo a mano: eliges un SP de la lista fija (PROC_ENTORNO_ENTIDADES_PROCEDURES_SHOWALL),
+   completas el valor de cada parámetro (PROC_ENTORNO_ENTIDADES_PROCEDURES_PARAMETERS_SHOWALL)
+   y "Generar" arma el EXEC con el formato:
+
+     EXEC	 [dbo].[NOMBRE_SP]	@PARAM1		= valor1,
+     @PARAM2			= valor2,
+     @PARAM3			= 'texto'
+
+   Los parámetros de tipo texto/fecha/uniqueidentifier van entre comillas simples; los
+   numéricos (int/decimal/bit/etc.) van sin comillas — se decide por TypeName, no por
+   SystemTypeId (el nombre ya viene resuelto por el SP vía JOIN a sys.types). *@
+@using EntornoRoute = KONSolutions.Web.Services.ApiRoutes.Entorno
+@using ParametroModelo = KONSolutions.Shared.Models.Entorno.EntidadProcedureParametro
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Style="width:min(760px,95vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Generador de sentencia SQL</MudText>
+    </TitleContent>
+    <DialogContent>
+        <AriaCombo TItem="string" Items="_procedimientos"
+                   TextFunc="@(t => t)" ValueFunc="@(t => t)"
+                   Value="@_procedimientoSel" ValueChanged="OnProcedimientoChanged"
+                   Label="Procedimiento almacenado" Obligatorio="true" Class="mb-3" />
+
+        @if (_cargandoParametros)
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;">Cargando parámetros...</MudText>
+        }
+        else if (!string.IsNullOrWhiteSpace(_procedimientoSel) && _parametros.Count == 0)
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;">Este procedimiento no tiene parámetros.</MudText>
+        }
+        else if (_parametros.Count > 0)
+        {
+            <MudDataGrid T="FilaParametro" Items="_parametros" Dense="true" Hover="true" Striped="true" ReadOnly="false"
+                         EditMode="DataGridEditMode.Cell" Height="280px" FixedHeader="true">
+                <Columns>
+                    <TemplateColumn Sortable="false" Editable="false" Title="Parámetro" Width="220">
+                        <CellTemplate><span class="mono">@context.Item.Parametro.ParameterName</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Editable="false" Title="Tipo" Width="120">
+                        <CellTemplate><span class="mono" style="opacity:.65;">@context.Item.Parametro.TypeName</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Sortable="false" Title="Valor">
+                        <CellTemplate>@context.Item.Valor</CellTemplate>
+                        <EditTemplate>
+                            <MudTextField T="string" @bind-Value="context.Item.Valor" Immediate="true" Placeholder="Valor" />
+                        </EditTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin parámetros.</MudText></NoRecordsContent>
+            </MudDataGrid>
+
+            <MudTextField T="string" Value="@_preview" Label="Vista previa" Lines="4" ReadOnly="true"
+                          Variant="Variant.Outlined" Class="mt-3" />
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(string.IsNullOrWhiteSpace(_procedimientoSel))"
+                   OnClick="Confirmar">Usar esta sentencia</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>Tipos que van sin comillas en el EXEC — el resto (varchar/nvarchar/date/
+    /// uniqueidentifier/etc.) se envuelve entre comillas simples.</summary>
+    private static readonly HashSet<string> _tiposSinComillas = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "int", "bigint", "smallint", "tinyint", "bit",
+        "decimal", "numeric", "float", "real", "money", "smallmoney"
+    };
+
+    private class FilaParametro
+    {
+        public ParametroModelo Parametro { get; set; } = new();
+        public string Valor { get; set; } = "";
+    }
+
+    private List<string> _procedimientos = new();
+    private string? _procedimientoSel;
+    private List<FilaParametro> _parametros = new();
+    private bool _cargandoParametros;
+
+    private string _preview => ArmarSentencia();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<string>>>(EntornoRoute.EntidadesProcedures);
+            _procedimientos = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GeneradorSentenciaSqlDialog), nameof(OnInitializedAsync));
+            _procedimientos = new();
+        }
+    }
+
+    private async Task OnProcedimientoChanged(string? nombre)
+    {
+        _procedimientoSel = nombre;
+        _parametros = new();
+        if (string.IsNullOrWhiteSpace(nombre)) return;
+
+        _cargandoParametros = true;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ParametroModelo>>>(
+                EntornoRoute.EntidadesProceduresParameters(nombre));
+            _parametros = (r?.Data ?? new()).Select(p => new FilaParametro { Parametro = p }).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GeneradorSentenciaSqlDialog), nameof(OnProcedimientoChanged));
+            _parametros = new();
+        }
+        _cargandoParametros = false;
+    }
+
+    /// <summary>Formato pedido:
+    ///   EXEC	 [dbo].[NOMBRE]	@P1		= v1,
+    ///   @P2			= v2,
+    ///   @P3			= 'texto'
+    /// Primer parámetro en la misma línea que el EXEC, el resto uno por línea, sin coma en
+    /// el último.</summary>
+    private string ArmarSentencia()
+    {
+        if (string.IsNullOrWhiteSpace(_procedimientoSel)) return "";
+        var cabecera = $"EXEC\t [dbo].[{_procedimientoSel}]";
+        if (_parametros.Count == 0) return cabecera;
+
+        var lineas = _parametros.Select((fp, i) =>
+        {
+            var valor = ValorFormateado(fp);
+            var separador = i < _parametros.Count - 1 ? "," : "";
+            return $"@{LimpiarNombre(fp.Parametro.ParameterName)}\t\t= {valor}{separador}";
+        });
+
+        return cabecera + "\t" + string.Join("\n", lineas);
+    }
+
+    private static string LimpiarNombre(string nombre) => nombre.TrimStart('@');
+
+    private string ValorFormateado(FilaParametro fp)
+    {
+        var valor = fp.Valor ?? "";
+        if (string.IsNullOrWhiteSpace(valor)) return "NULL";
+        if (_tiposSinComillas.Contains(fp.Parametro.TypeName)) return valor;
+        // Razor no parsea bien comillas anidadas dentro de un $"..." en un bloque @code
+        // (confunde el tokenizer, aunque para Roslyn sea C# válido) — se arma el escapado
+        // en una variable aparte antes de interpolar.
+        var escapado = valor.Replace("'", "''");
+        return $"'{escapado}'";
+    }
+
+    private void Confirmar() => MudDialog.Close(DialogResult.Ok(ArmarSentencia()));
+}

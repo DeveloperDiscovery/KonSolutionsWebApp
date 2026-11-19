@@ -1,0 +1,58 @@
+@* Alta o modificacion de un sector de la version (INGENIERIA.DISENOS_SECTORES). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(560px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">@(Existente ? "Modificar sector" : "Nuevo sector")</MudText></TitleContent>
+    <DialogContent>
+        <MudPaper Outlined="true" Class="pa-3 mb-3">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">Datos del sector</MudText>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    <MudTextField T="string" @bind-Value="_cod" Label="Código" MaxLength="5" Disabled="Existente" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                  HelperText="Hasta 5 caracteres" data-campo="cod" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <MudTextField T="string" @bind-Value="_des" Label="Descripción" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="des" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudSwitch T="bool" @bind-Value="_total" Color="Color.Primary" Label="Aplica al producto completo (avíos, empaque, acabados generales)" />
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex justify-end gap-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_guardando || string.IsNullOrWhiteSpace(_cod) || string.IsNullOrWhiteSpace(_des))" OnClick="GuardarAsync" data-accion="guardar">
+                @(_guardando ? "Guardando..." : "Guardar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+    [Parameter] public string? CodSector { get; set; }
+    [Parameter] public string? DesSector { get; set; }
+    [Parameter] public bool Total { get; set; }
+    private bool Existente => !string.IsNullOrEmpty(CodSector);
+    private string _cod = "", _des = "", _error = "";
+    private bool _total, _guardando;
+
+    protected override void OnInitialized() { _cod = CodSector ?? ""; _des = DesSector ?? ""; _total = Total; }
+
+    private async Task GuardarAsync()
+    {
+        _guardando = true; _error = "";
+        var r = await Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraSector, new DisenosEstructuraSectorDto
+        { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = _cod.Trim().ToUpperInvariant(), DES_SECTOR_PRODUCTO = _des.Trim(), FLG_TOTAL_PRODUCTO = _total });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje; return; }
+        Snackbar.Add("Sector guardado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

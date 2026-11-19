@@ -1,0 +1,85 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nuevo riesgo" : $"Riesgo {Item.NUM_SECUENCIA}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12"><MudTextField T="string" @bind-Value="_des" Label="Descripción del riesgo" Variant="Variant.Outlined" MaxLength="100" Required="true" /></MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_prob" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_p" ValueChanged="@(v => _p = v)" Label="Probabilidad" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_imp" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_i" ValueChanged="@(v => _i = v)" Label="Impacto" />
+            </MudItem>
+            <MudItem xs="12">
+                <AriaCombo TItem="ComboboxItem" Items="_planes" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_plan" ValueChanged="@(v => _plan = v)" Label="Plan de mitigación (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="_fases" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fase" ValueChanged="@(v => { _fase = v; _tarea = null; })" Label="Fase (opcional)" />
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <AriaCombo TItem="ComboboxItem" Items="TareasDeFase" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_tarea" ValueChanged="@(v => _tarea = v)" Label="Tarea (opcional)" />
+            </MudItem>
+            <MudItem xs="12">
+                <EstadoCombo DesTabla="PROYECTOS.PROYECTOS_RIESGOS" Value="@_estado" ValueChanged="@(v => _estado = v)" CodTipoEstadoChanged="@(v => _tipoEstado = v)" Class="mb-1" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedienteRiesgo? Item { get; set; }
+    [Parameter] public List<ExpedienteRiesgo> Riesgos { get; set; } = new();
+    [Parameter] public List<ExpedientePlan> Planes { get; set; } = new();
+    [Parameter] public List<ExpedienteFase> Fases { get; set; } = new();
+    [Parameter] public List<ExpedienteTarea> Tareas { get; set; } = new();
+
+    private List<ComboboxItem> _prob = new(), _imp = new(), _planes = new(), _fases = new();
+    private string _des = "";
+    private string? _p, _i, _plan, _fase, _tarea;
+    private int? _estado, _tipoEstado;
+    private bool _guardando;
+
+    private List<ComboboxItem> TareasDeFase => Tareas.Where(t => !int.TryParse(_fase, out var f) || t.COD_FASE == f)
+        .Select(t => new ComboboxItem { Id = t.COD_TAREA.ToString(), Texto = $"{t.COD_TAREA} — {t.DES_TAREA}" }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _prob = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.ProbabilidadRiesgo + "/combobox") ?? new();
+        _imp = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.ImpactoRiesgo + "/combobox") ?? new();
+        _planes = Planes.Select(p => new ComboboxItem { Id = p.COD_PLAN_MITIGACION, Texto = $"{p.COD_PLAN_MITIGACION} — {p.DES_PLAN_MITIGACION}" }).ToList();
+        _fases = Fases.Select(f => new ComboboxItem { Id = f.COD_FASE.ToString(), Texto = $"{f.COD_FASE} — {f.DES_FASE}" }).ToList();
+        if (Item is null) return;
+        _des = Item.DES_RIESGO ?? ""; _p = Item.COD_PROBABILIDAD_RIESGO?.ToString(); _i = Item.COD_IMPACTO_RIESGO?.ToString(); _plan = Item.COD_PLAN_MITIGACION;
+        _fase = Item.COD_FASE?.ToString(); _tarea = Item.COD_TAREA?.ToString(); _estado = Item.COD_ESTADO; _tipoEstado = Item.COD_TIPO_ESTADO;
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Falta la descripción del riesgo.", Severity.Warning); return; }
+        if (!int.TryParse(_p, out var p) || !int.TryParse(_i, out var i)) { Snackbar.Add("Elige la probabilidad y el impacto.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        var sec = esNuevo ? (Riesgos.Count == 0 ? 1 : Riesgos.Max(r => r.NUM_SECUENCIA) + 1) : Item!.NUM_SECUENCIA;
+        var cuerpo = new
+        {
+            NUM_PROYECTO = NumProyecto, NUM_SECUENCIA = sec, DES_RIESGO = _des.Trim(), COD_PROBABILIDAD_RIESGO = p, COD_IMPACTO_RIESGO = i,
+            COD_PLAN_MITIGACION = string.IsNullOrWhiteSpace(_plan) ? null : _plan,
+            COD_FASE = int.TryParse(_fase, out var f) ? (int?)f : null, COD_TAREA = int.TryParse(_tarea, out var t) ? (int?)t : null,
+            COD_TIPO_ESTADO = _tipoEstado, COD_ESTADO = _estado
+        };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Riesgos, cuerpo, esNuevo);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el riesgo.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

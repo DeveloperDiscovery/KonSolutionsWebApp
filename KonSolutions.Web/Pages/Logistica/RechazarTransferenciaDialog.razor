@@ -1,0 +1,176 @@
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* RECHAZO DE UNA TRANSFERENCIA (Confirmación de Recepción de Transferencias).
+
+   El motivo sale del tipo de motivo del estado RECHAZADO del tipo de estado de la salida
+   (ESTANDAR.ESTADOS.COD_TIPO_MOTIVO). Si el motivo tiene FLG_EXPLICAR, la observación es
+   obligatoria. El texto va a la observación del movimiento, sin borrar la de quien envió.
+
+   Graba desde acá y no desde la pantalla: si el SP rechaza (por ejemplo, alguien ya confirmó la
+   salida), el aviso sale con el diálogo abierto y no se pierde lo escrito. Al grabar bien, cierra
+   con el número del ingreso por anulación.
+
+   El stock vuelve al origen con un INGRESO POR ANULACIÓN DE SALIDA: el tipo de la clase con
+   Positivo = Sí y Anulación = Sí (FNC_LOGISTICA_TIPO_MOVIMIENTO_ANULACION). El diálogo dice cuál
+   se va a usar; sin ninguno, no deja rechazar. *@
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Block" Color="Color.Error" Size="Size.Medium" />
+            <MudText Typo="Typo.h6">Rechazar transferencia · salida N° @Salida.NUM_MOVIMIENTO_ALMACEN</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.8;">
+            @($"Desde {Salida.COD_ALMACEN_ORIGEN} {Salida.DES_ALMACEN_ORIGEN} hacia {Salida.COD_ALMACEN_DESTINO} {Salida.DES_ALMACEN_DESTINO}.")
+            El stock vuelve al almacén de origen, a la misma ubicación de la que salió cada línea.
+        </MudText>
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="mb-2" />
+        }
+        else if (string.IsNullOrWhiteSpace(_datos.Estado.COD_TIPO_MOVIMIENTO_ANULACION))
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                No hay un tipo de movimiento de ingreso por anulación de salida (Positivo = Sí y Anulación = Sí) en la clase
+                de la salida. Créalo en Tipos de Movimiento: sin él, el stock no puede volver al almacén de origen.
+            </MudAlert>
+        }
+        else if (_datos.Estado.COD_ESTADO_RECHAZADO is null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                @($"El tipo de estado {_datos.Estado.COD_TIPO_ESTADO} de la salida no tiene un estado con alias REC (rechazado). Revisa Tipos de Estados y Estados.")
+            </MudAlert>
+        }
+        else if (_datos.Estado.COD_TIPO_MOTIVO is null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                @($"El estado {_datos.Estado.DES_ESTADO_RECHAZADO} (tipo de estado {_datos.Estado.COD_TIPO_ESTADO}) no tiene tipo de motivo. Configúralo en Estados: sin él no hay motivos para elegir.")
+            </MudAlert>
+        }
+        else if (_datos.Motivos.Count == 0)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                @($"El tipo de motivo {_datos.Estado.COD_TIPO_MOTIVO} - {_datos.Estado.DES_TIPO_MOTIVO} no tiene motivos. Créalos en Motivos.")
+            </MudAlert>
+        }
+        else
+        {
+            <AriaCombo TItem="RecepcionMotivo" Items="_datos.Motivos"
+                       TextFunc="@(m => $"{m.COD_MOTIVO} - {m.DES_MOTIVO}")" ValueFunc="@(m => (m.COD_MOTIVO ?? 0).ToString())"
+                       Value="@_codMotivo" ValueChanged="@(v => _codMotivo = v)" AutoSeleccionarUnico="true"
+                       Label="@($"Motivo ({_datos.Estado.DES_TIPO_MOTIVO ?? $"tipo de motivo {_datos.Estado.COD_TIPO_MOTIVO}"})")"
+                       Obligatorio="true" Disabled="_grabando" />
+            <MudTextField T="string" @bind-Value="_observacion" Label="@(PideExplicacion ? "Observación (obligatoria para este motivo)" : "Observación")"
+                          Variant="Variant.Outlined" Lines="3" MaxLength="300" Counter="300" Immediate="true"
+                          Disabled="_grabando" />
+            <MudText Typo="Typo.caption" Style="opacity:.65;">
+                Se agrega a la observación del movimiento con tu usuario, la fecha y el motivo, sin borrar lo que escribió quien envió.
+            </MudText>
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                @($"Se crea el ingreso por anulación de salida {_datos.Estado.COD_TIPO_MOVIMIENTO_ANULACION} - {_datos.Estado.DES_TIPO_MOVIMIENTO_ANULACION} en el almacén {Salida.COD_ALMACEN_ORIGEN}.")
+                @if (_datos.Estado.CAN_TIPOS_ANULACION > 1)
+                {
+                    <span>@($" La clase tiene {_datos.Estado.CAN_TIPOS_ANULACION} tipos de ingreso por anulación: se usa el que está habilitado en el almacén {Salida.COD_ALMACEN_ORIGEN} y, entre ellos, el de código menor.")</span>
+                }
+            </MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <div class="d-flex align-center gap-2 pa-2">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Disabled="_grabando"
+                       StartIcon="@Icons.Material.Filled.Cancel" Style="@EstilosBoton.Cancelar">
+                Cancelar
+            </MudButton>
+            <MudTooltip Text="@(MotivoNoRechazar ?? "Rechazar la transferencia")">
+                <MudButton OnClick="Rechazar" Variant="Variant.Filled" Color="Color.Error"
+                           Disabled="@(MotivoNoRechazar is not null)"
+                           StartIcon="@Icons.Material.Filled.Block" Style="@EstilosBoton.Eliminar">
+                    @(_grabando ? "Rechazando..." : "Rechazar")
+                </MudButton>
+            </MudTooltip>
+        </div>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter, EditorRequired] public RecepcionPendiente Salida { get; set; } = new();
+    [Parameter, EditorRequired] public string CodRol { get; set; } = "";
+
+    private RecepcionMotivosRechazo _datos = new();
+    private string? _codMotivo;
+    private string? _observacion;
+    private bool _cargando = true, _grabando;
+
+    private RecepcionMotivo? MotivoElegido
+        => _datos.Motivos.FirstOrDefault(m => (m.COD_MOTIVO ?? 0).ToString() == _codMotivo);
+
+    private bool PideExplicacion => MotivoElegido?.FLG_EXPLICAR == true;
+
+    private string? MotivoNoRechazar
+        => _grabando ? "Grabando..."
+         : _cargando ? "Cargando los motivos..."
+         : string.IsNullOrWhiteSpace(_datos.Estado.COD_TIPO_MOVIMIENTO_ANULACION) ? "No hay un tipo de ingreso por anulación de salida en la clase."
+         : MotivoElegido is null ? "Elige el motivo."
+         : PideExplicacion && string.IsNullOrWhiteSpace(_observacion) ? "Ese motivo pide explicación: escribe la observación."
+         : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var r = await Http.GetAsync(ApiRoutes.Logistica.ConfirmacionRecepcionMotivosRechazo(Salida.NUM_MOVIMIENTO_ALMACEN ?? 0));
+            if (!r.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(r, ErrorLog, DialogService, nameof(RechazarTransferenciaDialog), nameof(OnInitializedAsync), "No se pudieron leer los motivos");
+                return;
+            }
+            _datos = (await r.Content.ReadFromJsonAsync<ApiResponse<RecepcionMotivosRechazo>>())?.Data ?? new();
+            // El motivo marcado por defecto, si hay uno.
+            if (_datos.Motivos.FirstOrDefault(m => m.FLG_DEFAULT) is { } porDefecto)
+                _codMotivo = (porDefecto.COD_MOTIVO ?? 0).ToString();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RechazarTransferenciaDialog), nameof(OnInitializedAsync));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudieron leer los motivos. Ver detalle en el log de errores.", DialogService, nameof(RechazarTransferenciaDialog));
+        }
+        finally { _cargando = false; }
+    }
+
+    private async Task Rechazar()
+    {
+        if (MotivoNoRechazar is not null || MotivoElegido is not { } motivo) return;
+        _grabando = true;
+        try
+        {
+            var dto = new RecepcionRechazarDto
+            {
+                NUM_MOVIMIENTO_ALMACEN = Salida.NUM_MOVIMIENTO_ALMACEN,
+                COD_ROL_USUARIO        = CodRol,
+                COD_TIPO_MOTIVO        = motivo.COD_TIPO_MOTIVO,
+                COD_MOTIVO             = motivo.COD_MOTIVO,
+                DES_OBSERVACION        = string.IsNullOrWhiteSpace(_observacion) ? null : _observacion.Trim()
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.ConfirmacionRecepcionRechazar, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RechazarTransferenciaDialog), nameof(Rechazar), "No se pudo rechazar la transferencia");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RecepcionResultado>>();
+            MudDialog.Close(DialogResult.Ok(r?.Data?.NUM_MOVIMIENTO_ALMACEN));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RechazarTransferenciaDialog), nameof(Rechazar));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo rechazar la transferencia. Ver detalle en el log de errores.", DialogService, nameof(RechazarTransferenciaDialog));
+        }
+        finally { _grabando = false; }
+    }
+}

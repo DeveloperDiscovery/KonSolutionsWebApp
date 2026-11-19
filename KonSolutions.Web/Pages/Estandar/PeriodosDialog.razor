@@ -1,0 +1,162 @@
+@using PeriodoModel = KONSolutions.Shared.Models.Estandar.Periodos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_PERIODO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.PERIODOS" Columna="COD_PERIODO"
+                                @bind-Value="_model.COD_PERIODO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <CampoTexto Tabla="ESTANDAR.PERIODOS" Columna="DES_PERIODO"
+                                @bind-Value="_model.DES_PERIODO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudDatePicker Label="Fecha de inicio" @bind-Date="_fecInicio" Disabled="_readonly"
+                                   Margin="Margin.Normal" Variant="Variant.Text" Class="aria-combo" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudDatePicker Label="Fecha final" @bind-Date="_fecFinal" Disabled="_readonly"
+                                   Margin="Margin.Normal" Variant="Variant.Text" Class="aria-combo" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_ANO" Label="Año" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_SEMESTRE" Label="Semestre" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_QUARTER" Label="Trimestre" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_MES" Label="Mes" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_SEMANA" Label="Semana" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="6" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_DIA" Label="Día" Disabled="_readonly" Margin="Margin.Normal" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* COD_TIPO_ESTADO no es fijo por tabla: lo hereda del Tipo de Periodo
+                       seleccionado (CodTipoEstadoPadre), igual que RequerimientoDocumento
+                       hereda el suyo del Tipo de Requerimiento elegido. *@
+                    <EstadoCombo CodTipoEstado="@CodTipoEstadoPadre" @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" />
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public PeriodoModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    [Parameter] public string CodTipoPeriodo { get; set; } = "";
+    // Tipo de Periodo padre ya seleccionado en la grilla maestro — el Estado del Periodo
+    // se resuelve dentro de ESE COD_TIPO_ESTADO, no de uno propio de ESTANDAR.PERIODOS.
+    [Parameter] public int? CodTipoEstadoPadre { get; set; }
+
+    private PeriodoModel _model = new();
+    private DateTime? _fecInicio, _fecFinal;
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else _model.COD_TIPO_PERIODO = CodTipoPeriodo;
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+    }
+
+    private void MapearDesdeModelo(PeriodoModel m)
+    {
+        _model = new PeriodoModel
+        {
+            NUM_PERIODO = m.NUM_PERIODO,
+            COD_PERIODO = m.COD_PERIODO,
+            DES_PERIODO = m.DES_PERIODO,
+            COD_TIPO_PERIODO = m.COD_TIPO_PERIODO,
+            FEC_INICIO = m.FEC_INICIO,
+            FEC_FINAL = m.FEC_FINAL,
+            NUM_ANO = m.NUM_ANO,
+            NUM_SEMESTRE = m.NUM_SEMESTRE,
+            NUM_QUARTER = m.NUM_QUARTER,
+            NUM_MES = m.NUM_MES,
+            NUM_SEMANA = m.NUM_SEMANA,
+            NUM_DIA = m.NUM_DIA,
+            COD_TIPO_ESTADO = m.COD_TIPO_ESTADO,
+            COD_ESTADO = m.COD_ESTADO,
+        };
+        _fecInicio = m.FEC_INICIO;
+        _fecFinal = m.FEC_FINAL;
+    }
+
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<PeriodoModel>(
+            $"{ApiRoutes.Estandar.Periodos}/{_model.NUM_PERIODO}?codTipoPeriodo={Uri.EscapeDataString(_model.COD_TIPO_PERIODO)}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Estandar.Periodos;
+        _model.FEC_INICIO = _fecInicio;
+        _model.FEC_FINAL = _fecFinal;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync(
+                $"{ruta}/{_model.NUM_PERIODO}?codTipoPeriodo={Uri.EscapeDataString(_model.COD_TIPO_PERIODO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(PeriodosDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(PeriodosDialog), nameof(Submit));
+    }
+}

@@ -1,0 +1,155 @@
+@* Botones estandarizados para diálogos CRUD según el modo:
+   Create → [Cancelar] [Crear]   Read → [Regresar]
+   Update → [Cancelar] [Modificar]   Delete → [Cancelar] [Eliminar]
+   Uso:
+   <CrudDialogActions Modo="CrudModo.Create" Saving="_saving" OnConfirm="Submit" OnCancel="Cancelar" /> *@
+@inject IJSRuntime JS
+@inject ConfigService ConfigSvc
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="d-flex align-center gap-2 mt-4 dialog-acciones-fijas">
+    @if (LeftContent is not null) { @LeftContent }
+    <MudSpacer />
+    @* Botones configurados con FLG_DIALOG para esta opción. Van a la IZQUIERDA de Cancelar
+       y del botón de confirmar, separados por una línea: esos dos son las acciones del
+       formulario y el usuario ya los tiene aprendidos en el extremo derecho.
+       Sólo aparecen si el llamador pasó los códigos de aplicación y opción. Sin ellos el pie
+       se ve exactamente como siempre, así que ninguno de los diálogos que todavía no los
+       pasan cambia en nada. Tampoco en un alta: actúan sobre un registro que ya existe. *@
+    @if (MostrarBotonesDialogo)
+    {
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="AccionDialogo"
+                         CodTipoEstado="@TipoEstado" CodEstadoActual="@EstadoActual" />
+        <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+    }
+    @if (Modo == CrudModo.Read)
+    {
+        <MudButton OnClick="Cancelar" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.ArrowBack" Style="@EstiloBotonConfirmar">Regresar</MudButton>
+    }
+    else if (ConfigSvc.Current.EsZurdo)
+    {
+        @* Usuario zurdo: botón principal (confirmar) primero, Cancelar al final —
+           así queda más cerca de la mano izquierda al usar el mouse. *@
+        <MudButton OnClick="Confirmar" ButtonType="@(SubmitButton ? ButtonType.Submit : ButtonType.Button)"
+                   Variant="Variant.Filled" Color="@ConfirmColor" Disabled="Saving"
+                   StartIcon="@ConfirmIcon" Style="@EstiloBotonConfirmar">
+            @ConfirmText
+        </MudButton>
+        <MudButton OnClick="Cancelar" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Cancel"
+                   Style="@EstiloBotonCancelar">Cancelar</MudButton>
+    }
+    else
+    {
+        <MudButton OnClick="Cancelar" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Cancel"
+                   Style="@EstiloBotonCancelar">Cancelar</MudButton>
+        <MudButton OnClick="Confirmar" ButtonType="@(SubmitButton ? ButtonType.Submit : ButtonType.Button)"
+                   Variant="Variant.Filled" Color="@ConfirmColor" Disabled="Saving"
+                   StartIcon="@ConfirmIcon" Style="@EstiloBotonConfirmar">
+            @ConfirmText
+        </MudButton>
+    }
+</div>
+
+@code {
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public bool Saving { get; set; }
+    [Parameter] public bool SubmitButton { get; set; } = true;
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public RenderFragment? LeftContent { get; set; }
+
+    /// <summary>Códigos de la opción de menú, para resolver los botones marcados con
+    /// FLG_DIALOG. Son opcionales a propósito: sin ellos el pie no muestra ninguno y se
+    /// comporta como siempre.</summary>
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    /// <summary>Estado del registro abierto. Con estos dos, cada botón del diálogo se
+    /// habilita o no según lo que responda el SP de validación de flujo.</summary>
+    [Parameter] public int? CodTipoEstado { get; set; }
+    [Parameter] public int? CodEstadoActual { get; set; }
+    /// <summary>Qué hacer cuando el usuario toca uno de esos botones. Cada pantalla lo
+    /// resuelve: el flag decide dónde se muestra el botón, no qué hace.</summary>
+    [Parameter] public EventCallback<BotonTreeviewItem> OnAccionDialog { get; set; }
+
+    // El EditForm del diálogo: de su modelo sale el estado del registro cuando el diálogo
+    // no lo pasa (CodTipoEstado/CodEstadoActual).
+    [CascadingParameter] private EditContext? EditCtx { get; set; }
+
+    private bool MostrarBotonesDialogo =>
+        Modo != CrudModo.Create
+        && !string.IsNullOrWhiteSpace(CodAplicacion) && !string.IsNullOrWhiteSpace(CodOpcionAplicacion);
+
+    // La validación de flujo necesita el estado del registro. Casi todos los modelos lo
+    // traen como COD_TIPO_ESTADO / COD_ESTADO (short, int o byte según la columna); si el
+    // modelo no los tiene, quedan en null y los botones no se validan, igual que antes.
+    private int? TipoEstado => CodTipoEstado ?? EnteroDelModelo("COD_TIPO_ESTADO");
+    private int? EstadoActual => CodEstadoActual ?? EnteroDelModelo("COD_ESTADO");
+
+    private int? EnteroDelModelo(string propiedad)
+    {
+        var modelo = EditCtx?.Model;
+        var valor = modelo?.GetType().GetProperty(propiedad)?.GetValue(modelo);
+        return int.TryParse(Convert.ToString(valor, System.Globalization.CultureInfo.InvariantCulture), out var n) ? n : null;
+    }
+
+    // Un botón marcado como Diálogo aparece aunque la pantalla todavía no le haya conectado
+    // una acción: en vez de no hacer nada al tocarlo, se avisa (mismo aviso que
+    // RequerimientoDocumento).
+    private async Task AccionDialogo(BotonTreeviewItem b)
+    {
+        if (OnAccionDialog.HasDelegate) { await OnAccionDialog.InvokeAsync(b); return; }
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) en la opción {CodAplicacion}/{CodOpcionAplicacion}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(CrudDialogActions), "Acción pendiente");
+    }
+
+    // Cancelar siempre cierra: se anima la salida y luego se invoca el cierre real.
+    private async Task Cancelar()
+    {
+        try { await JS.InvokeVoidAsync("dialogAnim.cerrar"); } catch { }
+        await OnCancel.InvokeAsync();
+    }
+
+    // Confirmar puede NO cerrar (ej. falla de validación) — se anima igual al hacer clic,
+    // pero si el diálogo sigue en pantalla tras invocar la acción, se deshace la animación.
+    private async Task Confirmar()
+    {
+        try { await JS.InvokeVoidAsync("dialogAnim.cerrar"); } catch { }
+        await OnConfirm.InvokeAsync();
+        try { await JS.InvokeVoidAsync("dialogAnim.deshacer"); } catch { }
+    }
+
+    private string ConfirmText => Modo switch
+    {
+        CrudModo.Create => "Crear",
+        CrudModo.Update => "Modificar",
+        CrudModo.Delete => "Eliminar",
+        _ => "Aceptar"
+    };
+
+    private string ConfirmIcon => Modo switch
+    {
+        CrudModo.Create => Icons.Material.Filled.NoteAdd,
+        CrudModo.Update => Icons.Material.Filled.Save,
+        CrudModo.Delete => Icons.Material.Filled.DeleteForever,
+        _ => Icons.Material.Filled.Check
+    };
+
+    private Color ConfirmColor => Modo == CrudModo.Delete ? Color.Error : Color.Primary;
+
+    // Las cadenas viven en Services/EstilosBoton.cs, una sola vez para toda la aplicación.
+    // Acá solo queda la parte que ESTE pie decide: que en modo Eliminar el botón de
+    // confirmar no tome el color configurado y se quede en el rojo de peligro.
+    private string EstiloBotonConfirmar =>
+        Modo == CrudModo.Delete ? EstilosBoton.Eliminar : EstilosBoton.Confirmar;
+
+    // Cancelar: los mismos colores invertidos, para contrastar siempre con el de
+    // confirmación sin importar qué par se configure.
+    private const string EstiloBotonCancelar = EstilosBoton.Cancelar;
+}

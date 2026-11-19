@@ -1,0 +1,129 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.GuiaRemisionSerie
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@Item?.COD_SERIE" Descripcion="@Item?.DES_SERIE" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    @* La serie es la clave y es parte del número que va a SUNAT: se fija al crear. Es T y tres letras o dígitos.
+                       Los rótulos van escritos aquí y no salen del diccionario de etiquetas: el diccionario es por nombre de columna
+                       para toda la aplicación, y DES_SERIE ya lo usan otras pantallas. *@
+                    <CampoTexto Tabla="LOGISTICA.GUIAS_REMISION_SERIES" Columna="COD_SERIE" Label="Serie"
+                                @bind-Value="_model.COD_SERIE"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="LOGISTICA.GUIAS_REMISION_SERIES" Columna="DES_SERIE" Label="Descripción"
+                                @bind-Value="_model.DES_SERIE" Disabled="_readonly" />
+                </MudItem>
+                <MudItem xs="12">
+                    <AriaCombo TItem="ComboboxItem" Items="_sucursales"
+                               TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                               @bind-Value="_model.COD_SUCURSAL"
+                               Label="Sucursal (vacío: serie general)" Disabled="_readonly" Class="mb-1" />
+                    <MudText Typo="Typo.caption" Style="opacity:.6;">
+                        Una guía usa la serie de la sucursal del almacén que despacha. Si esa sucursal no tiene serie propia, usa una serie general (sin sucursal).
+                    </MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    @* El correlativo lo mueve la base al emitir. Solo se escribe aquí para empezar de un número que ya se usó fuera del sistema. *@
+                    <MudNumericField T="int" @bind-Value="_model.NUM_ULTIMO_CORRELATIVO" Min="0" Max="99999999"
+                                     Label="Último correlativo usado" Variant="Variant.Outlined"
+                                     Disabled="@(_readonly || _conGuias)" HelperText="@(_conGuias ? "Ya emitió guías: no se cambia." : "0 si la serie es nueva. La próxima guía será el siguiente.")" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <div class="d-flex align-center gap-2" style="height:56px;">
+                        <MudIcon Icon="@Icons.Material.Filled.PowerSettingsNew" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool" Value="_model.FLG_ACTIVA" ValueChanged="@((bool v) => _model.FLG_ACTIVA = v)"
+                                   Color="Color.Primary" Disabled="_readonly" Label="Activa" />
+                    </div>
+                </MudItem>
+            </MudGrid>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private List<ComboboxItem> _sucursales = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private bool _conGuias => !_esNuevo && _model.NUM_GUIAS > 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) _model = Copia(Item);
+        if (!_esNuevo && Item is not null)
+        {
+            // La ficha fresca desde SHOWBYID: la grilla puede tener datos viejos (el correlativo se mueve con cada guía).
+            var fresco = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Logistica.GuiasRemisionSeries}/{Uri.EscapeDataString(Item.COD_SERIE)}");
+            if (fresco is not null) _model = Copia(fresco);
+        }
+        _sucursales = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.SucursalesCombobox)) ?? new();
+    }
+
+    private static Modelo Copia(Modelo m) => new()
+    {
+        COD_SERIE = m.COD_SERIE, DES_SERIE = m.DES_SERIE, COD_SUCURSAL = m.COD_SUCURSAL,
+        NUM_ULTIMO_CORRELATIVO = m.NUM_ULTIMO_CORRELATIVO, FLG_ACTIVA = m.FLG_ACTIVA,
+        DES_SUCURSAL = m.DES_SUCURSAL, NUM_SIGUIENTE_GUIA = m.NUM_SIGUIENTE_GUIA, NUM_GUIAS = m.NUM_GUIAS
+    };
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Logistica.GuiasRemisionSeries;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_SERIE)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(GuiasRemisionSeriesDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        _model.COD_SERIE = (_model.COD_SERIE ?? "").Trim().ToUpperInvariant();
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(GuiasRemisionSeriesDialog), nameof(Submit));
+    }
+}

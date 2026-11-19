@@ -1,0 +1,164 @@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+
+@* FICHA DE UNA GUÍA, para la bandeja. Solo lectura.
+
+   Vuelve a pedir la guía por su número en lugar de usar la fila del listado: entre que se listó y se abrió la ficha la
+   emisión pudo moverle el estado, y lo que se muestra aquí (respuesta de SUNAT, descargas) tiene que ser lo último.
+   Mientras llega, o si no llega, se muestra la fila del listado. *@
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="CrudModo.Read" Codigo="@_guia?.NUM_GUIA" Descripcion="@_guia?.DES_NOMBRE_DESTINATARIO" />
+    </TitleContent>
+    <DialogContent>
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" />
+        }
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-2">@_error</MudAlert>
+        }
+        @if (_guia is { } g)
+        {
+            <GuiaRemisionFicha Guia="g"
+                               RutaEnvios="@ApiRoutes.Logistica.GuiaRemisionEnvios(g.NUM_GUIA_REMISION)"
+                               RutaXml="@ApiRoutes.Logistica.GuiaRemisionXml(g.NUM_GUIA_REMISION)"
+                               RutaCdr="@ApiRoutes.Logistica.GuiaRemisionCdr(g.NUM_GUIA_REMISION)" />
+
+            @* Lo que se copió del movimiento al emitir. No cambia aunque el movimiento se toque después: la guía es un documento legal. *@
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4"><div class="gre-etiqueta">Movimiento</div><div class="mono">@g.NUM_MOVIMIENTO_ALMACEN</div></MudItem>
+                <MudItem xs="12" sm="4"><div class="gre-etiqueta">Serie y correlativo</div><div class="mono">@g.COD_SERIE · @g.NUM_CORRELATIVO</div></MudItem>
+                <MudItem xs="12" sm="4">
+                    <div class="gre-etiqueta">Vigente</div>
+                    <div>@(g.FLG_VIGENTE ? "Sí" : "No: ya hay otra guía vigente para el movimiento, o esta fue anulada")</div>
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <div class="gre-etiqueta">Destinatario</div>
+                    <div>@g.DES_NOMBRE_DESTINATARIO</div>
+                    <div class="mono" style="font-size:.8rem;opacity:.7;">@TipoDocumento(g.COD_TIPO_DOCUMENTO_DESTINATARIO_SUNAT) @g.NUM_DOCUMENTO_DESTINATARIO</div>
+                </MudItem>
+                <MudItem xs="12" sm="4"><div class="gre-etiqueta">Inicio del traslado</div><div class="mono">@(g.FEC_INICIO_TRASLADO?.ToString("dd/MM/yyyy") ?? "—")</div></MudItem>
+                <MudItem xs="12" sm="4"><div class="gre-etiqueta">Motivo del traslado</div><div>@Motivo(g.COD_MOTIVO_SUNAT)</div></MudItem>
+                <MudItem xs="12" sm="4"><div class="gre-etiqueta">Modalidad</div><div>@Modalidad(g.COD_MODALIDAD_TRASLADO)</div></MudItem>
+                <MudItem xs="12" sm="2"><div class="gre-etiqueta">Placa</div><div class="mono">@(string.IsNullOrWhiteSpace(g.NUM_PLACA_PRINCIPAL) ? "—" : g.NUM_PLACA_PRINCIPAL)</div></MudItem>
+                <MudItem xs="12" sm="2">
+                    <div class="gre-etiqueta">Peso bruto</div>
+                    <div class="mono">@(g.CAN_PESO_BRUTO_TOTAL is { } p ? $"{p:#,##0.###} {g.COD_UNIDAD_PESO_SUNAT}" : "—")</div>
+                </MudItem>
+                @if (ResumenOpciones() is { Length: > 0 } opciones)
+                {
+                    <MudItem xs="12"><div class="gre-etiqueta">Opciones de la emisión</div><div id="gre-dialogo-opciones">@opciones</div></MudItem>
+                }
+                <MudItem xs="12">
+                    <div class="gre-etiqueta">Registrada por</div>
+                    <div class="mono" style="font-size:.82rem;">@g.COD_USUARIO_REGISTRO · @(g.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm"))</div>
+                </MudItem>
+            </MudGrid>
+        }
+        @* El botón IMPRIMIR de la bandeja (el mismo de la fila) para la guía que se está viendo. *@
+        @if (_guia is { } gi)
+        {
+            <div class="d-flex justify-end mt-3">
+                <GuiaRemisionImprimir CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" CodBoton="IM"
+                                      NumMovimiento="@gi.NUM_MOVIMIENTO_ALMACEN" NumGuia="@gi.NUM_GUIA_REMISION" Texto="Imprimir" />
+            </div>
+        }
+        <CrudDialogActions Modo="CrudModo.Read" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+    </DialogContent>
+</MudDialog>
+
+<style>
+    .gre-etiqueta { font-family: monospace; font-size: .72rem; opacity: .6; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>El número de la guía a consultar.</summary>
+    [Parameter] public int NumGuia { get; set; }
+    /// <summary>La fila del listado: se muestra mientras llega la guía fresca.</summary>
+    [Parameter] public GuiaRemision? Resumen { get; set; }
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private GuiaRemision? _guia;
+    private GuiaRemisionOpciones? _opciones;
+    private bool _cargando;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _guia = Resumen;
+        _cargando = true;
+        try
+        {
+            var resp = await Http.GetAsync($"{ApiRoutes.Logistica.GuiasRemision}/{NumGuia}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<GuiaRemision>>();
+                if (r?.Data is not null) _guia = r.Data;
+            }
+            else
+            {
+                _error = resp.StatusCode == System.Net.HttpStatusCode.Forbidden
+                    ? "No tienes permiso para consultar esta guía."
+                    : $"No se pudo actualizar la guía (el servidor respondió {(int)resp.StatusCode}). Se muestra lo que traía el listado.";
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionDialog), nameof(OnInitializedAsync));
+            _error = "No se pudo actualizar la guía. Se muestra lo que traía el listado. Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+        // Lo que se eligió al emitir (M1/L, transbordo, documento relacionado). Si no se puede leer, la ficha sigue sin esa línea.
+        _opciones = await Http.SafeGetAsync<GuiaRemisionOpciones>(ApiRoutes.Logistica.GuiaRemisionOpciones(NumGuia));
+    }
+
+    private string ResumenOpciones()
+    {
+        if (_opciones is not { } o) return "";
+        var partes = new List<string>();
+        if (o.FLG_TRASLADO_M1L) partes.Add("traslado en vehículos M1 o L");
+        if (o.FLG_TRANSBORDO_PROGRAMADO) partes.Add("transbordo programado");
+        if (o.TieneDocumentoRelacionado) partes.Add($"documento relacionado {o.COD_TIPO_DOCUMENTO_RELACIONADO} {o.NUM_DOCUMENTO_RELACIONADO}".Trim());
+        return string.Join(", ", partes);
+    }
+
+    // Catálogos de SUNAT que se leen aquí solo para mostrar. Un código que no está en la lista se muestra tal cual.
+    private static string Motivo(string? c) => c switch
+    {
+        null or "" => "—",
+        "01" => "01 · Venta",
+        "02" => "02 · Compra",
+        "04" => "04 · Traslado entre establecimientos de la misma empresa",
+        "06" => "06 · Devolución",
+        "08" => "08 · Importación",
+        "09" => "09 · Exportación",
+        "13" => "13 · Otros",
+        "14" => "14 · Venta sujeta a confirmación del comprador",
+        "18" => "18 · Traslado emisor itinerante CP",
+        "19" => "19 · Traslado a zona primaria",
+        _ => c
+    };
+    private static string Modalidad(string? c) => c switch
+    {
+        null or "" => "—",
+        "01" => "01 · Transporte público",
+        "02" => "02 · Transporte privado",
+        _ => c
+    };
+    private static string TipoDocumento(string? c) => c switch
+    {
+        "1" => "DNI",
+        "4" => "CE",
+        "6" => "RUC",
+        "7" => "PAS",
+        null or "" => "",
+        _ => c
+    };
+}

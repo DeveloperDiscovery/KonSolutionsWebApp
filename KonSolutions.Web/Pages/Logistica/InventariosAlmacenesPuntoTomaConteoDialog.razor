@@ -1,0 +1,188 @@
+@* InventariosAlmacenesPuntoTomaConteoDialog.razor
+   -----------------------------------------------------------------------
+   Alta/edición de UNA línea de conteo dentro de un punto de conteo
+   (LOGISTICA.INVENTARIOS_ALMACENES_PUNTO_TOMA_CONTEO, clave compuesta NUM_INVENTARIO +
+   COD_ALMACEN + NUM_PUNTO_TOMA_INVENTARIO + NUM_SECUENCIA). NUM_SECUENCIA lo asigna el SP
+   _INSERT automáticamente (MAX+1 dentro del punto de toma) — no se edita, mismo criterio que
+   "N° de punto de toma" en InventariosAlmacenesPuntoTomaDialog.razor. COD_UNIDAD_MEDIDA se
+   completa solo al elegir el producto (no se edita), mismo criterio que RequerimientoDocumento.razor. *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesPuntoTomaConteo
+@using ProductoModelo = KONSolutions.Shared.Models.Estandar.Productos
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog Class="dialog-ancho-ampliado">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Codigo="@_model.NUM_SECUENCIA?.ToString()" Descripcion="@_model.DES_PRODUCTO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <div style="height:calc(90vh - 210px);overflow-y:auto;padding-right:4px;padding-top:calc(var(--input-label-size,13px) * 0.6);">
+
+            @* Lo asigna el SP _INSERT automáticamente (MAX+1 dentro del punto de toma) al
+               grabar: nunca es editable, mismo criterio que "N° de punto de toma" en
+               InventariosAlmacenesPuntoTomaDialog.razor. *@
+            <MudTextField T="string" Value="@(_esNuevo ? "(automático)" : _model.NUM_SECUENCIA?.ToString())"
+                          Label="N° de secuencia" Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+
+            <AriaCombo TItem="ProductoModelo" Items="_productos"
+                       TextFunc="@(p => $"{p.COD_PRODUCTO} — {p.DES_PRODUCTO}")" ValueFunc="@(p => p.COD_PRODUCTO)"
+                       Value="@_model.COD_PRODUCTO" ValueChanged="OnProductoChanged"
+                       Label="Producto" Disabled="_readonly" Class="mb-3" />
+
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="6">
+                    @* La unidad la define el producto: se completa sola al elegirlo y no se
+                       edita, mismo criterio que RequerimientoDocumento.razor. *@
+                    <MudTextField T="string" Value="@(string.IsNullOrWhiteSpace(_model.COD_UNIDAD_MEDIDA) ? "—" : _model.COD_UNIDAD_MEDIDA)"
+                                  Label="Unidad de medida" Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="decimal?" @bind-Value="_model.CAN_PRODUCTO" Label="Cantidad"
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="6">
+                    <MudTextField T="string" @bind-Value="_model.COD_UBICACION_ALMACEN" Label="Ubicación en almacén"
+                                  Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField T="string" @bind-Value="_model.NUM_LOTE_CONTROL" Label="Lote de control"
+                                  Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="4">
+                    <MudTextField T="string" @bind-Value="_model.COD_PROCESO" Label="Proceso"
+                                  Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_ORDEN_PRODUCCION" Label="Orden de producción"
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="2">
+                    <MudNumericField T="int?" @bind-Value="_model.NUM_ORDEN_PRODUCCION_ITEM" Label="Ítem"
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" sm="2">
+                    <MudNumericField T="byte?" @bind-Value="_model.NUM_ORDEN_PRODUCCION_UNIDAD" Label="Unidad"
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+
+            </div>
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    /// <summary>Punto de conteo dueño de esta línea — fija NUM_INVENTARIO + COD_ALMACEN +
+    /// NUM_PUNTO_TOMA_INVENTARIO al grabar.</summary>
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter, EditorRequired] public byte NumPuntoTomaInventario { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ProductoModelo> _productos = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+        else { _model.NUM_INVENTARIO = NumInventario; _model.COD_ALMACEN = CodAlmacen; _model.NUM_PUNTO_TOMA_INVENTARIO = NumPuntoTomaInventario; }
+
+        var r = await Http.SafeGetAsync<List<ProductoModelo>>(EstandarRoute.Productos);
+        _productos = r ?? new();
+    }
+
+    private void MapearDesdeModelo(Modelo m)
+    {
+        _model = new Modelo
+        {
+            NUM_INVENTARIO             = m.NUM_INVENTARIO,
+            COD_ALMACEN                = m.COD_ALMACEN,
+            NUM_PUNTO_TOMA_INVENTARIO  = m.NUM_PUNTO_TOMA_INVENTARIO,
+            NUM_SECUENCIA              = m.NUM_SECUENCIA,
+            COD_UBICACION_ALMACEN      = m.COD_UBICACION_ALMACEN,
+            COD_PRODUCTO               = m.COD_PRODUCTO,
+            NUM_LOTE_CONTROL           = m.NUM_LOTE_CONTROL,
+            COD_PROCESO                = m.COD_PROCESO,
+            NUM_ORDEN_PRODUCCION       = m.NUM_ORDEN_PRODUCCION,
+            NUM_ORDEN_PRODUCCION_ITEM  = m.NUM_ORDEN_PRODUCCION_ITEM,
+            NUM_ORDEN_PRODUCCION_UNIDAD = m.NUM_ORDEN_PRODUCCION_UNIDAD,
+            CAN_PRODUCTO               = m.CAN_PRODUCTO,
+            COD_UNIDAD_MEDIDA          = m.COD_UNIDAD_MEDIDA,
+            DES_PRODUCTO               = m.DES_PRODUCTO,
+        };
+    }
+
+    /// <summary>Al elegir el producto se completa sola la unidad de medida desde el maestro —
+    /// no puede quedar en desacuerdo, mismo criterio que RequerimientoDocumento.razor.</summary>
+    private void OnProductoChanged(string? codProducto)
+    {
+        _model.COD_PRODUCTO = codProducto;
+        var p = _productos.FirstOrDefault(x => x.COD_PRODUCTO == codProducto);
+        _model.COD_UNIDAD_MEDIDA = p?.COD_UNIDAD_MEDIDA;
+        _model.DES_PRODUCTO = p?.DES_PRODUCTO;
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = LogisticaRoute.InventariosAlmacenesPuntoTomaConteo;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{_model.NUM_INVENTARIO}/{_model.COD_ALMACEN}/{_model.NUM_PUNTO_TOMA_INVENTARIO}/{_model.NUM_SECUENCIA}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Línea de conteo agregada." : "Línea de conteo actualizada.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(InventariosAlmacenesPuntoTomaConteoDialog), nameof(Submit));
+    }
+}

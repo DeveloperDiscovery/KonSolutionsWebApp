@@ -1,0 +1,52 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Confirmar tarea · @Item.DES_TAREA</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">La tarea llegó al 100 % y espera confirmación. Al aprobar queda terminada con fecha de hoy; al rechazar vuelve a «en ejecución» con 99 % y pasa a control manual para que el responsable la corrija.</MudText>
+        <AriaCombo TItem="ComboboxItem" Items="Entidades" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                   Value="@_quien" ValueChanged="@(v => _quien = v)" Label="Quién confirma" Disabled="@(Item.COD_ENTIDAD_CONFIRMADORA is not null && SoloLaConfirmadora)" />
+        <MudDatePicker @bind-Date="_fecReal" Label="Fecha real de la confirmación" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" MaxDate="@DateTime.Today" Class="mt-3" HelperText="Será el fin real de la tarea al aprobar." />
+        @if (Item.COD_ENTIDAD_CONFIRMADORA is not null)
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.7;">Confirmadora asignada: @Item.DES_CONFIRMADORA</MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="@(() => Enviar(false))" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Error" StartIcon="@Icons.Material.Filled.Close">Rechazar</MudButton>
+        <MudButton OnClick="@(() => Enviar(true))" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Check">Aprobar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter, EditorRequired] public ExpedienteTarea Item { get; set; } = default!;
+    [Parameter] public List<ComboboxItem> Entidades { get; set; } = new();
+    [Parameter] public bool DesdeMisTareas { get; set; }
+    /// <summary>En «Mis tareas» quien confirma es la persona elegida arriba y no se cambia.</summary>
+    [Parameter] public decimal? EntidadActual { get; set; }
+    private bool SoloLaConfirmadora => DesdeMisTareas;
+
+    private string? _quien;
+    private bool _guardando;
+
+    private DateTime? _fecReal = DateTime.Today;
+
+    protected override void OnInitialized() => _quien = (EntidadActual ?? Item.COD_ENTIDAD_CONFIRMADORA)?.ToString("0");
+
+    private async Task Enviar(bool aprobar)
+    {
+        if (!decimal.TryParse(_quien, out var quien)) { Snackbar.Add("Elige quién confirma.", Severity.Warning); return; }
+        _guardando = true;
+        var url = DesdeMisTareas ? $"{ApiRoutes.Proyectos.MisTareas}/{NumProyecto}/{Item.COD_TAREA}/confirmar" : ApiRoutes.Proyectos.Exp(NumProyecto, $"tareas/{Item.COD_TAREA}/confirmar");
+        var (ok, msg) = await ProyectoApi.PutAsync(Http, url, new { Aprobar = aprobar, CodEntidad = quien, FecReal = _fecReal });
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo confirmar.", Severity.Warning); return; }
+        Snackbar.Add(aprobar ? "Tarea confirmada." : "Tarea devuelta a ejecución.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

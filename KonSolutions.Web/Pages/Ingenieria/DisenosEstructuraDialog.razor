@@ -1,0 +1,353 @@
+@* Estructura de una version de diseno: sectores -> componentes -> insumos, con subensambles de hasta 10 niveles.
+   Pestanas: Estructura (arbol editable), Diagrama (solo lectura) e Imagenes (carrusel o panal).
+   Una version BLOQUEADA no admite cambios (la base lo impide); se puede desbloquear y volver a bloquear.
+   Los nodos que vienen de un subensamble son de solo lectura aqui: se editan en el diseno de ese subensamble. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using System.Net.Http.Json
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog ContentStyle="display:flex;flex-direction:column;min-height:0;">
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" />
+            <MudText Typo="Typo.h6">Estructura · @CodDiseno v@(NumVersion)</MudText>
+            <MudText Class="mono" Style="opacity:.65;font-size:.82rem;">@DesDiseno</MudText>
+            @if (Bloqueada) { <MudChip T="string" Color="Color.Error" Size="Size.Small" Icon="@Icons.Material.Filled.Lock" data-estado="bloqueada">Bloqueada</MudChip> }
+            else { <MudChip T="string" Color="Color.Success" Size="Size.Small" Icon="@Icons.Material.Filled.LockOpen" data-estado="editable">Editable</MudChip> }
+            <MudChip T="string" Size="Size.Small" data-costo="1">Costo: @((Raiz?.COSTO_TOTAL ?? 0).ToString("N2"))</MudChip>
+            <MudChip T="string" Size="Size.Small" data-niveles="1">Niveles de ensamble: @NivelesUsados / 10</MudChip>
+            <MudSpacer />
+            <MudTooltip Text="@(_ampliado ? "Restaurar tamaño" : "Ampliar a pantalla completa")">
+                <MudIconButton Icon="@(_ampliado ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="Size.Small" Color="Color.Inherit" OnClick="AlternarAmpliado" data-accion="ampliar" />
+            </MudTooltip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="d-flex align-center gap-2 flex-wrap mb-2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" Disabled="Bloqueada" OnClick="NuevoSectorAsync" data-accion="nuevo-sector">Agregar sector</MudButton>
+            @if (Bloqueada)
+            {
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small" StartIcon="@Icons.Material.Filled.LockOpen" OnClick="DesbloquearAsync" data-accion="desbloquear">Desbloquear</MudButton>
+            }
+            else
+            {
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" StartIcon="@Icons.Material.Filled.Lock" OnClick="BloquearAsync" data-accion="bloquear">Bloquear</MudButton>
+            }
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="CopiarVersionAsync" data-accion="copiar-version">Copiar versión</MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Success" Size="Size.Small" StartIcon="@Icons.Material.Filled.AltRoute" OnClick="EditarRutaAsync" data-accion="editar-ruta">Ruta de producción</MudButton>
+            <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.UnfoldMore" OnClick="ExpandirTodo">Expandir</MudButton>
+            <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.UnfoldLess" OnClick="ContraerTodo">Contraer</MudButton>
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="CargarAsync" title="Actualizar" />
+        </div>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" /> }
+
+        <MudTabs Elevation="0" Rounded="true" Class="flex-grow-1 kon-tabs-llena" PanelClass="pa-2" KeepPanelsAlive="true" @bind-ActivePanelIndex="_tab" Style="min-height:0;">
+            <MudTabPanel Text="Estructura" Icon="@Icons.Material.Filled.AccountTree" data-panel="estructura">
+                <div class="est-wrap kon-llena" data-resizable-grid="disenos-estructura" data-default-height="1">
+                    <MudSimpleTable Dense="true" Hover="true" FixedHeader="true" Style="min-width:900px;" data-tabla="estructura">
+                        <thead><tr>
+                            <th>Estructura</th><th>Unidad</th><th style="text-align:right;">Consumo</th><th style="text-align:right;">Merma %</th>
+                            <th style="text-align:right;">Precio</th><th style="text-align:right;">Cant. acum.</th><th style="text-align:right;">Costo</th><th style="width:170px;">Acciones</th>
+                        </tr></thead>
+                        <tbody>
+                        @foreach (var n in Visibles())
+                        {
+                            var propio = EsPropio(n);
+                            <tr class="@ClaseFila(n)" data-nodo="@n.ID" data-tipo="@n.TIPO_NODO" data-nivel="@n.NIVEL_ENSAMBLE">
+                                <td class="tr-celda">
+                                    <div class="tr-row">
+                                        @foreach (var g in Guias(n))
+                                        {
+                                            <span class="@($"tr-g {g}")"></span>
+                                        }
+                                        @if (TieneHijos(n))
+                                        {
+                                            <MudIconButton Icon="@(_cerrados.Contains(n.ID) ? Icons.Material.Filled.ChevronRight : Icons.Material.Filled.ExpandMore)" Size="Size.Small" OnClick="@(() => Alternar(n.ID))" data-toggle="1" Class="tr-toggle" />
+                                        }
+                                        else { <span class="tr-toggle"></span> }
+                                        <MudIcon Icon="@Icono(n)" Size="Size.Small" Class="tr-icono" />
+                                        <span class="@(propio ? "" : "est-ajeno")">@n.DESCRIPCION</span>
+                                        @if (n.TIPO_NODO == "SEC" || n.TIPO_NODO == "COM") { <span class="mono tr-cod"> @(n.TIPO_NODO == "SEC" ? n.COD_SECTOR_PRODUCTO : n.COD_COMPONENTE_PRODUCTO)</span> }
+                                        @if (n.TIPO_NODO == "INS") { <span class="mono tr-cod"> @n.COD_PRODUCTO_COMPONENTE</span> }
+                                        @if (EsRuta(n)) { <span class="mono tr-cod"> @(n.TIPO_NODO == "RUT" ? n.COD_RUTA_PRODUCCION : n.TIPO_NODO == "PRC" ? n.COD_PROCESO : n.TIPO_NODO == "SPR" ? n.COD_SUB_PROCESO : n.COD_TIPO_OPERACION_PRODUCCION)</span> }
+                                        @if (n.TIPO_NODO == "OPE" && n.CAN_LEAD_TIME is not null) { <MudChip T="string" Size="Size.Small" Color="Color.Success" Class="ml-1" data-chip="tiempo">@n.CAN_LEAD_TIME?.ToString("0.##") @n.COD_UNIDAD_MEDIDA_TIEMPO</MudChip> }
+                                        @if (n.TIPO_NODO == "OPE" && n.FLG_MANUAL == true) { <MudChip T="string" Size="Size.Small" Class="ml-1">Manual</MudChip> }
+                                        @if (n.TIPO_NODO == "OPE" && n.FLG_CONTROL_CALIDAD == true) { <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-1">Calidad</MudChip> }
+                                        @if (n.FLG_ENSAMBLE && n.TIPO_NODO == "INS") { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Subensamble @n.COD_DISENO_ENSAMBLE v@(n.NUM_VERSION_ENSAMBLE)</MudChip> }
+                                        @if (n.FLG_CICLO) { <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-1">Ciclo: no se expande</MudChip> }
+                                        @if (n.FLG_TRUNCADO) { <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-1">Más de 10 niveles: no se expande</MudChip> }
+                                        @if (n.NIVEL_ENSAMBLE > 1 && n.TIPO_NODO == "SEC") { <span class="tr-nivel">Nivel @n.NIVEL_ENSAMBLE</span> }
+                                        @if (!propio && n.TIPO_NODO != "VER") { <span class="mono tr-cod"> · de @n.COD_DISENO v@(n.NUM_VERSION)</span> }
+                                    </div>
+                                </td>
+                                <td>@n.COD_UNIDAD_MEDIDA</td>
+                                <td style="text-align:right;">@(n.TIPO_NODO == "INS" ? n.CAN_CONSUMO?.ToString("0.######") : "")</td>
+                                <td style="text-align:right;">@(n.TIPO_NODO == "INS" ? n.TAS_MERMA?.ToString("0.###") : "")</td>
+                                <td style="text-align:right;">@(n.TIPO_NODO == "INS" ? n.PRE_UNITARIO?.ToString("N4") : "")</td>
+                                <td style="text-align:right;">@(n.TIPO_NODO == "INS" ? n.CANTIDAD_ACUMULADA?.ToString("0.######") : "")</td>
+                                <td style="text-align:right;font-weight:@(n.TIPO_NODO == "INS" ? 400 : 600);">@n.COSTO_TOTAL?.ToString("N2")</td>
+                                <td style="white-space:nowrap;">@Acciones(n, propio)</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+            </MudTabPanel>
+            <MudTabPanel Text="Diagrama" Icon="@Icons.Material.Filled.Hub" data-panel="diagrama">
+                <DisenosDiagramaEstructura Nodos="_nodos" />
+            </MudTabPanel>
+            <MudTabPanel Text="Imágenes" Icon="@Icons.Material.Filled.PhotoLibrary" data-panel="imagenes">
+                <DisenosGaleriaImagenes Identificador="@CodDiseno" IdentificadorVersion="@CarpetaVersion" ReadOnly="Bloqueada" />
+            </MudTabPanel>
+        </MudTabs>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" OnClick="Cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<AltoLlenaEstilos />
+<style>
+    .est-wrap table { border-collapse:collapse; }
+    .est-wrap td, .est-wrap th { border-bottom:1px solid var(--mud-palette-lines-default); }
+    .est-wrap td.tr-celda { padding:0 8px 0 0; height:36px; }
+    .tr-row { display:flex; align-items:center; height:36px; white-space:nowrap; }
+    .tr-g { position:relative; flex:0 0 26px; height:36px; }
+    .tr-g.v::before { content:""; position:absolute; left:12px; top:0; bottom:0; border-left:2px solid var(--mud-palette-lines-inputs); }
+    .tr-g.t::before { content:""; position:absolute; left:12px; top:0; bottom:0; border-left:2px solid var(--mud-palette-lines-inputs); }
+    .tr-g.t::after, .tr-g.l::after { content:""; position:absolute; left:12px; top:50%; width:14px; border-top:2px solid var(--mud-palette-lines-inputs); }
+    .tr-g.l::before { content:""; position:absolute; left:12px; top:0; height:50%; border-left:2px solid var(--mud-palette-lines-inputs); }
+    .tr-toggle { flex:0 0 30px; width:30px; height:30px; }
+    .tr-icono { margin-right:6px; opacity:.85; }
+    .tr-cod { opacity:.55; font-size:.72rem; margin-left:6px; }
+    .tr-nivel { margin-left:8px; font-size:.68rem; font-weight:700; padding:1px 7px; border-radius:9px; background:var(--mud-palette-warning); color:var(--mud-palette-warning-text); }
+    .est-ver td { font-weight:700; font-size:.95rem; background:var(--mud-palette-background-gray); border-bottom:2px solid var(--mud-palette-primary) !important; }
+    .est-sec td { font-weight:600; background:color-mix(in srgb, var(--mud-palette-info) 9%, transparent); border-top:2px solid var(--mud-palette-lines-inputs); }
+    .est-ruta td { background:color-mix(in srgb, var(--mud-palette-success) 7%, transparent); font-style:italic; }
+    .est-rut td { font-weight:600; border-top:1px dashed var(--mud-palette-success); }
+    .est-com td { font-weight:500; background:color-mix(in srgb, var(--mud-palette-secondary) 6%, transparent); }
+    .est-n2 td:first-child { box-shadow:inset 5px 0 0 var(--mud-palette-warning); }
+    .est-n3 td:first-child { box-shadow:inset 5px 0 0 var(--mud-palette-error); }
+    .est-n4 td:first-child { box-shadow:inset 5px 0 0 var(--mud-palette-success); }
+    .est-n5 td:first-child { box-shadow:inset 5px 0 0 var(--mud-palette-tertiary); }
+    .est-n6 td:first-child, .est-n7 td:first-child, .est-n8 td:first-child, .est-n9 td:first-child, .est-n10 td:first-child { box-shadow:inset 5px 0 0 var(--mud-palette-dark); }
+    .est-ajeno { opacity:.75; font-style:italic; }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public string? DesDiseno { get; set; }
+    [Parameter] public int NumVersion { get; set; }
+
+    private List<DisenosEstructuraNodo> _nodos = new();
+    private readonly HashSet<int> _cerrados = new();
+    private string _error = "";
+    private bool _cargando, _hubo, _ampliado;
+    private int _tab;
+    private Dictionary<int, bool> _ultimo = new();
+    private Dictionary<int, int?> _padre = new();
+
+    // Pantalla completa: el MudDialog no admite estilo dinamico; se cambia con SetOptions (FullScreen).
+    private void AlternarAmpliado()
+    {
+        _ampliado = !_ampliado;
+        MudDialog.SetOptions(new DialogOptions { FullScreen = _ampliado, MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+    // El alto del arbol y del diagrama lo resuelve CSS (ver AltoLlenaEstilos.razor): sin JavaScript.
+
+    // Conectores del arbol: una celda por nivel de sangria. "v" = linea vertical que sigue, "" = vacio, "t" = ramal con mas hermanos, "l" = ultimo ramal.
+    private List<string> Guias(DisenosEstructuraNodo n)
+    {
+        var lista = new List<string>();
+        if (n.PROFUNDIDAD <= 1) return lista;
+        var ancestros = new List<int>();            // desde el padre hacia arriba, sin la raiz
+        var p = n.PARENT_ID;
+        while (p is int id && _padre.TryGetValue(id, out var pp) && pp is not null) { ancestros.Add(id); p = pp; }
+        ancestros.Reverse();
+        foreach (var a in ancestros) lista.Add(_ultimo.GetValueOrDefault(a) ? "" : "v");
+        lista.Add(_ultimo.GetValueOrDefault(n.ID) ? "l" : "t");
+        return lista;
+    }
+
+    private string ClaseFila(DisenosEstructuraNodo n)
+    {
+        var c = n.TIPO_NODO switch { "VER" => "est-ver", "SEC" => "est-sec", "COM" => "est-com", "RUT" => "est-ruta est-rut", "PRC" => "est-ruta est-prc", "SPR" => "est-ruta est-spr", "OPE" => "est-ruta est-ope", _ => "" };
+        return n.NIVEL_ENSAMBLE > 1 ? $"{c} est-n{Math.Min(n.NIVEL_ENSAMBLE, 10)}" : c;
+    }
+
+    private DisenosEstructuraNodo? Raiz => _nodos.FirstOrDefault(n => n.TIPO_NODO == "VER" && n.PARENT_ID is null);
+    private bool Bloqueada => Raiz?.FLG_BLOQUEADO ?? false;
+    private int NivelesUsados => _nodos.Count == 0 ? 0 : _nodos.Max(n => n.NIVEL_ENSAMBLE);
+    private string CarpetaVersion => $"{CodDiseno}-V{NumVersion:00}";
+    private bool EsPropio(DisenosEstructuraNodo n) => n.COD_DISENO == CodDiseno && n.NUM_VERSION == NumVersion;
+    private static bool EsRuta(DisenosEstructuraNodo n) => n.TIPO_NODO is "RUT" or "PRC" or "SPR" or "OPE";
+    private bool TieneHijos(DisenosEstructuraNodo n) => _nodos.Any(x => x.PARENT_ID == n.ID);
+
+    protected override async Task OnInitializedAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = ""; StateHasChanged();
+        try
+        {
+            var resp = await Http.GetAsync(IngenieriaRoute.DisenosEstructuraDe(CodDiseno, NumVersion));
+            var body = await resp.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DisenosEstructuraNodo>>>();
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success) { _error = body?.Message ?? $"Error {(int)resp.StatusCode}"; _nodos = new(); }
+            else _nodos = body.Data ?? new();
+            // hermanos en orden: el ultimo de cada grupo dibuja el ramal "l"
+            _padre = _nodos.ToDictionary(x => x.ID, x => x.PARENT_ID);
+            _ultimo = new();
+            foreach (var g in _nodos.GroupBy(x => x.PARENT_ID)) { var ord = g.OrderBy(x => x.ORDEN, StringComparer.Ordinal).ToList(); foreach (var x in ord) _ultimo[x.ID] = x == ord.Last(); }
+        }
+        catch (Exception ex) { _error = ex.Message; _nodos = new(); }
+        _cargando = false;
+    }
+
+    private IEnumerable<DisenosEstructuraNodo> Visibles()
+    {
+        var porId = _nodos.ToDictionary(n => n.ID);
+        bool Oculto(DisenosEstructuraNodo n)
+        {
+            var p = n.PARENT_ID;
+            while (p is int id) { if (_cerrados.Contains(id)) return true; p = porId.TryGetValue(id, out var pn) ? pn.PARENT_ID : null; }
+            return false;
+        }
+        return _nodos.Where(n => !Oculto(n));
+    }
+
+    private void Alternar(int id) { if (!_cerrados.Remove(id)) _cerrados.Add(id); }
+    private void ContraerTodo() { foreach (var n in _nodos.Where(TieneHijos)) _cerrados.Add(n.ID); }
+    private void ExpandirTodo() => _cerrados.Clear();
+
+    private static string Icono(DisenosEstructuraNodo n) => n.TIPO_NODO switch
+    {
+        "VER" => Icons.Material.Filled.Inventory2,
+        "SEC" => Icons.Material.Filled.ViewModule,
+        "COM" => Icons.Material.Filled.Category,
+        "RUT" => Icons.Material.Filled.AltRoute,
+        "PRC" => Icons.Material.Filled.Factory,
+        "SPR" => Icons.Material.Filled.Settings,
+        "OPE" => Icons.Material.Filled.PrecisionManufacturing,
+        _ => n.FLG_ENSAMBLE ? Icons.Material.Filled.AccountTree : Icons.Material.Filled.Circle
+    };
+
+    private RenderFragment Acciones(DisenosEstructuraNodo n, bool propio) => __b =>
+    {
+        if (!propio) { if (n.TIPO_NODO == "INS" && n.FLG_ENSAMBLE) { int s0 = 0; __b.OpenComponent<MudIconButton>(s0++); __b.AddAttribute(s0++, "Icon", Icons.Material.Filled.OpenInNew); __b.AddAttribute(s0++, "Size", Size.Small); __b.AddAttribute(s0++, "Color", Color.Warning); __b.AddAttribute(s0++, "title", "Abrir la estructura del subensamble"); __b.AddAttribute(s0++, "OnClick", EventCallback.Factory.Create<MouseEventArgs>(this, () => AbrirEnsambleAsync(n))); __b.AddAttribute(s0++, "data-accion", "abrir-ens"); __b.CloseComponent(); } return; }
+        if (Bloqueada) { if (n.TIPO_NODO == "INS" && n.FLG_ENSAMBLE) { int s1 = 0; __b.OpenComponent<MudIconButton>(s1++); __b.AddAttribute(s1++, "Icon", Icons.Material.Filled.OpenInNew); __b.AddAttribute(s1++, "Size", Size.Small); __b.AddAttribute(s1++, "Color", Color.Warning); __b.AddAttribute(s1++, "title", "Abrir la estructura del subensamble"); __b.AddAttribute(s1++, "OnClick", EventCallback.Factory.Create<MouseEventArgs>(this, () => AbrirEnsambleAsync(n))); __b.AddAttribute(s1++, "data-accion", "abrir-ens"); __b.CloseComponent(); } return; }
+        int s = 0;
+        void Btn(string icono, string tip, Func<Task> accion, Color color = Color.Default, string? dato = null)
+        {
+            __b.OpenComponent<MudIconButton>(s++);
+            __b.AddAttribute(s++, "Icon", icono); __b.AddAttribute(s++, "Size", Size.Small); __b.AddAttribute(s++, "Color", color); __b.AddAttribute(s++, "title", tip);
+            __b.AddAttribute(s++, "OnClick", EventCallback.Factory.Create<MouseEventArgs>(this, accion));
+            if (dato is not null) __b.AddAttribute(s++, "data-accion", dato);
+            __b.CloseComponent();
+        }
+        switch (n.TIPO_NODO)
+        {
+            case "SEC":
+                Btn(Icons.Material.Filled.Add, "Agregar componente", () => AgregarComponenteAsync(n), Color.Primary, "add-comp");
+                Btn(Icons.Material.Filled.Edit, "Modificar sector", () => EditarSectorAsync(n), Color.Default, "edit-sector");
+                Btn(Icons.Material.Filled.ContentCopy, "Copiar sector", () => CopiarSegmentoAsync(n, null), Color.Default, "copy-sector");
+                Btn(Icons.Material.Filled.Delete, "Eliminar sector", () => EliminarSectorAsync(n), Color.Error, "del-sector");
+                break;
+            case "COM":
+                Btn(Icons.Material.Filled.Add, "Agregar insumo", () => AgregarInsumoAsync(n), Color.Primary, "add-insumo");
+                Btn(Icons.Material.Filled.Edit, "Cambiar componente", () => CambiarComponenteAsync(n), Color.Default, "edit-comp");
+                Btn(Icons.Material.Filled.ContentCopy, "Copiar componente", () => CopiarSegmentoAsync(n, n.COD_COMPONENTE_PRODUCTO), Color.Default, "copy-comp");
+                Btn(Icons.Material.Filled.Delete, "Quitar componente", () => QuitarComponenteAsync(n), Color.Error, "del-comp");
+                break;
+            case "INS":
+                if (n.FLG_ENSAMBLE) Btn(Icons.Material.Filled.OpenInNew, "Abrir la estructura del subensamble", () => AbrirEnsambleAsync(n), Color.Warning, "abrir-ens");
+                Btn(Icons.Material.Filled.Edit, "Modificar insumo", () => EditarInsumoAsync(n), Color.Default, "edit-insumo");
+                Btn(Icons.Material.Filled.Delete, "Eliminar insumo", () => EliminarInsumoAsync(n), Color.Error, "del-insumo");
+                break;
+        }
+    };
+
+    private DialogOptions Opciones(MaxWidth w = MaxWidth.Small) => new() { MaxWidth = w, FullWidth = false, BackdropClick = false, CloseOnEscapeKey = false };
+
+    private async Task<bool> MostrarAsync<T>(string titulo, DialogParameters p, bool anchoCompleto = false) where T : ComponentBase
+    {
+        var opc = Opciones(MaxWidth.False); if (anchoCompleto) opc.FullWidth = true;
+        var dlg = await DialogService.ShowAsync<T>(titulo, p, opc);
+        var r = await dlg.Result;
+        if (r is { Canceled: false }) { _hubo = true; await CargarAsync(); return true; }
+        return false;
+    }
+
+    private Task CambiarComponenteAsync(DisenosEstructuraNodo com) =>
+        MostrarAsync<DisenosEstructuraComponenteDialog>("Cambiar componente", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = com.COD_SECTOR_PRODUCTO!, ["CodActual"] = com.COD_COMPONENTE_PRODUCTO! });
+
+    // Abre la estructura del diseno/version enlazado (se puede editar ahi; al volver se recalculan los costos de este).
+    private Task AbrirEnsambleAsync(DisenosEstructuraNodo ins) =>
+        MostrarAsync<DisenosEstructuraDialog>($"Estructura · {ins.COD_DISENO_ENSAMBLE} v{ins.NUM_VERSION_ENSAMBLE}", new() { ["CodDiseno"] = ins.COD_DISENO_ENSAMBLE!, ["DesDiseno"] = ins.DESCRIPCION, ["NumVersion"] = ins.NUM_VERSION_ENSAMBLE ?? 0 }, anchoCompleto: true);
+
+    private Task NuevoSectorAsync() => MostrarAsync<DisenosEstructuraSectorDialog>("Nuevo sector", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion });
+    private Task EditarSectorAsync(DisenosEstructuraNodo n) => MostrarAsync<DisenosEstructuraSectorDialog>("Modificar sector", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = n.COD_SECTOR_PRODUCTO, ["DesSector"] = n.DESCRIPCION, ["Total"] = n.FLG_TOTAL_PRODUCTO ?? false });
+    private Task AgregarComponenteAsync(DisenosEstructuraNodo sec) =>
+        MostrarAsync<DisenosEstructuraComponenteDialog>("Agregar componente", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = sec.COD_SECTOR_PRODUCTO!, ["Excluir"] = _nodos.Where(x => x.PARENT_ID == sec.ID).Select(x => x.COD_COMPONENTE_PRODUCTO ?? "").ToHashSet() });
+    private Task AgregarInsumoAsync(DisenosEstructuraNodo com) =>
+        MostrarAsync<DisenosEstructuraInsumoDialog>("Nuevo insumo", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = com.COD_SECTOR_PRODUCTO!, ["CodComponente"] = com.COD_COMPONENTE_PRODUCTO! });
+    private Task EditarInsumoAsync(DisenosEstructuraNodo ins) =>
+        MostrarAsync<DisenosEstructuraInsumoDialog>("Modificar insumo", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = ins.COD_SECTOR_PRODUCTO!, ["CodComponente"] = ins.COD_COMPONENTE_PRODUCTO!, ["Nodo"] = ins });
+    private Task CopiarSegmentoAsync(DisenosEstructuraNodo n, string? codComponente) =>
+        MostrarAsync<DisenosCopiarSegmentoDialog>("Copiar segmento", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion, ["CodSector"] = n.COD_SECTOR_PRODUCTO!, ["CodComponente"] = codComponente });
+    // Ruta de operaciones de esta version (matriz asignada como copia, editable; en el arbol la ruta se ve pero no se edita).
+    private Task EditarRutaAsync() =>
+        MostrarAsync<DisenosRutaOperacionesDialog>("Ruta de operaciones", new() { ["CodDiseno"] = CodDiseno, ["NumVersion"] = NumVersion }, anchoCompleto: true);
+
+    private Task CopiarVersionAsync() =>
+        MostrarAsync<DisenosCopiarVersionDialog>("Copiar versión", new() { ["CodDiseno"] = CodDiseno, ["DesDiseno"] = DesDiseno, ["NumVersion"] = NumVersion });
+
+    private async Task<bool> ConfirmarAsync(string titulo, string texto, string si) =>
+        await DialogService.ShowMessageBox(titulo, texto, yesText: si, cancelText: "Cancelar") == true;
+
+    private async Task EjecutarAsync(Task<(bool Ok, string Mensaje, bool Data)> tarea, string exito)
+    {
+        var r = await tarea;
+        if (!r.Ok) { _error = r.Mensaje; Snackbar.Add(r.Mensaje, Severity.Error); return; }
+        _hubo = true; Snackbar.Add(exito, Severity.Success);
+        await CargarAsync();
+    }
+
+    private async Task EliminarSectorAsync(DisenosEstructuraNodo n)
+    {
+        if (!await ConfirmarAsync("Eliminar sector", $"¿Eliminar el sector \"{n.DESCRIPCION}\" con todos sus componentes e insumos?", "Eliminar")) return;
+        await EjecutarAsync(Http.DeleteAsync<bool>(IngenieriaRoute.DisenosEstructuraSectorEliminar(CodDiseno, NumVersion, n.COD_SECTOR_PRODUCTO!)), "Sector eliminado.");
+    }
+
+    private async Task QuitarComponenteAsync(DisenosEstructuraNodo n)
+    {
+        if (!await ConfirmarAsync("Quitar componente", $"¿Quitar \"{n.DESCRIPCION}\" del sector con todos sus insumos?", "Quitar")) return;
+        await EjecutarAsync(Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraComponenteQuitar,
+            new DisenosEstructuraComponenteDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = n.COD_SECTOR_PRODUCTO!, COD_COMPONENTE_PRODUCTO = n.COD_COMPONENTE_PRODUCTO! }), "Componente quitado.");
+    }
+
+    private async Task EliminarInsumoAsync(DisenosEstructuraNodo n)
+    {
+        if (!await ConfirmarAsync("Eliminar insumo", $"¿Eliminar el insumo \"{n.DESCRIPCION}\"?", "Eliminar")) return;
+        await EjecutarAsync(Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraInsumoEliminar,
+            new DisenosEstructuraInsumoClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = n.COD_SECTOR_PRODUCTO!, COD_COMPONENTE_PRODUCTO = n.COD_COMPONENTE_PRODUCTO!, NUM_SECUENCIA = n.NUM_SECUENCIA ?? 0 }), "Insumo eliminado.");
+    }
+
+    private async Task BloquearAsync()
+    {
+        if (!await ConfirmarAsync("Bloquear versión", "La estructura quedará de solo lectura hasta que se desbloquee.", "Bloquear")) return;
+        await EjecutarAsync(Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraBloquear, new DisenosVersionClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion }), "Versión bloqueada.");
+    }
+
+    private async Task DesbloquearAsync()
+    {
+        if (!await ConfirmarAsync("Desbloquear versión", "Se podrá modificar de nuevo la estructura de esta versión.", "Desbloquear")) return;
+        await EjecutarAsync(Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraDesbloquear, new DisenosVersionClaveDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion }), "Versión desbloqueada.");
+    }
+
+    private void Cerrar() => MudDialog.Close(DialogResult.Ok(_hubo));
+}

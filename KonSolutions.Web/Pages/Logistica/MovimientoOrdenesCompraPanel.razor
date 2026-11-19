@@ -1,0 +1,1434 @@
+﻿@* Pestaña "Órdenes de Compra" de un movimiento de almacén.
+   ────────────────────────────────────────────────────────────────────────────────────
+   Cuatro grillas en dos columnas:
+
+        IZQUIERDA — DISPONIBLES            DERECHA — ASIGNADAS
+        cabecera: órdenes que este         cabecera: órdenes ya enlazadas al
+        movimiento PODRÍA atender          movimiento
+        detalle:  líneas pendientes de     detalle:  líneas asignadas
+                  las que estén marcadas
+
+   Va en su propio archivo y no dentro de MovimientoAlmacenDocumento.razor porque ese ya
+   pasa las mil quinientas líneas; acá entra completo en una pantalla y se entiende solo.
+
+   Asignar y quitar GRABAN contra la base (ASIGNA / DESASIGNA). Antes tenían endpoints propios
+   (movimientos-almacen-pedidos-comerciales, POST y DELETE); cablearlos es el paso
+   siguiente y se hace con los botones que vayan en el medio de las dos columnas. *@
+
+@using Cabecera = KONSolutions.Shared.Models.Logistica.MovimientoAlmacenOrdenCompra
+@using Linea = KONSolutions.Shared.Models.Logistica.MovimientoAlmacenOrdenCompraDetalle
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject EstadoPanelesMovimiento EstadoPaneles
+@inject ISnackbar Snackbar
+
+@if (NumMovimiento is null or 0)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="ma-3">
+        Graba la cabecera del movimiento para ver las órdenes de compra: las consultas se
+        hacen por número de movimiento.
+    </MudAlert>
+}
+else
+{
+    @if (MotivoSoloLectura is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">@MotivoSoloLectura</MudAlert>
+    }
+    @if (_hayCambiosSinGrabar)
+    {
+        @* Asignar y quitar YA graban. Lo que sigue estando sólo en pantalla es lo que se
+           escribe ANTES de asignar: cantidades, lote y ubicación. El aviso dice eso, que es lo
+           único que se pierde al cerrar sin asignar. *@
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+            Hay cantidades, lotes o ubicaciones escritos que todavía no se grabaron. Se
+            guardan al ASIGNAR; si cierras el documento antes, se pierden.
+        </MudAlert>
+    }
+
+    @* Las dos cabeceras comparten el nombre "movimiento-oc-cabeceras" y los dos detalles
+       "movimiento-oc-detalles". Ese nombre es el GRUPO del tirador: arrastrar una mueve a
+       todas las que lo comparten, así que cambiar el alto de Disponibles cambia el de
+       Asignadas y al revés. Las dos filas quedan siempre parejas, que es lo que se espera
+       de dos listas que se leen enfrentadas.
+
+       data-alto-compartido: las dos grillas de cada columna se REPARTEN el espacio que
+       queda hasta la barra de estado, en vez de que cada una pida todo. Lo resuelve
+       gridAutoAlto, así que sigue al tamaño de la ventana y al zoom de la aplicación sin
+       ningún número escrito acá. El tirador del borde sigue andando para ajustar una a
+       mano; al mover los filtros o la ventana vuelve al automático. *@
+    <div class="oc-columnas">
+
+        @* ── IZQUIERDA: disponibles ─────────────────────────────────────────────── *@
+        <div class="oc-columna">
+            <div class="oc-titulo">
+                <MudIcon Icon="@Icons.Material.Filled.Inbox" Size="Size.Small" />
+                <span>Órdenes de compra disponibles</span>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Variant="Variant.Filled"
+                           Style="@KONSolutions.Web.Services.EstilosBoton.Confirmar"
+                           Title="Volver a consultar las cuatro grillas"
+                           OnClick="RefrescarAsync" />
+            <MudSpacer />
+                <MudTooltip Text="Limpiar filtros">
+                    <MudIconButton Icon="@Icons.Material.Filled.FilterAltOff" Size="Size.Small" Variant="Variant.Filled"
+                                   Color="@((_filtrosCabDisp.Values.Any(v => v is { Count: > 0 })) ? Color.Warning : Color.Default)"
+                                   Style="@((_filtrosCabDisp.Values.Any(v => v is { Count: > 0 })) ? KONSolutions.Web.Services.EstilosBoton.Eliminar : KONSolutions.Web.Services.EstilosBoton.Confirmar)"
+                                   OnClick="LimpiarFiltrosCabDisp" />
+                </MudTooltip>
+                <span class="oc-conteo">@(_selDisponibles.Any()
+                    ? $"{_selDisponibles.Count} / {_disponibles.Count}"
+                    : _disponibles.Count.ToString())</span>
+            </div>
+
+            <div data-resizable-grid="movimiento-oc-cabeceras" data-alto-compartido="oc-izquierda" data-cols-key="movimiento-oc-cab-disponibles"
+                 style="position:relative;">
+                <MudDataGrid T="Cabecera" Items="@Ordenar(BaseCabDisp(-1), _ordenColCabDisp, _ordenAscCabDisp, ValorCabDisp)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="true" Height="100%" FixedHeader="true"
+                             MultiSelection="true" SelectedItems="_selDisponibles"
+                             SelectedItemsChanged="OnSeleccionDisponiblesChanged">
+                    <Columns>
+                        <SelectColumn T="Cabecera" />
+                        @* "N°" no decía nada: en una pantalla donde conviven el movimiento, el
+                               pedido y la secuencia, el número a secas obliga a adivinar cuál es. *@
+                        <PropertyColumn Property="x => x.NUM_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Orden de Compra" Activo="@(_ordenColCabDisp == 0)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(0))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(0)" ValorDe="@(c => ValorCabDisp(c, 0))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroCabDisp(0, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* Sólo de este lado: el SP de ASIGNADOS no hace el JOIN con
+                           TIPOS_OPERACION, así que allá la columna saldría vacía. *@
+                        <PropertyColumn Property="x => x.DES_TIPO_OPERACION" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Tipo de operación" Activo="@(_ordenColCabDisp == 1)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(1))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(1)" ValorDe="@(c => ValorCabDisp(c, 1))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroCabDisp(1, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.DES_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Descripción" Activo="@(_ordenColCabDisp == 2)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(2))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(2)" ValorDe="@(c => ValorCabDisp(c, 2))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroCabDisp(2, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Pedido" Activo="@(_ordenColCabDisp == 3)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(3))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(3)" ValorDe="@(c => ValorCabDisp(c, 3))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroCabDisp(3, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc">@oc.Item.FEC_PEDIDO?.ToString("dd/MM/yyyy")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Entrega" Activo="@(_ordenColCabDisp == 4)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(4))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(4)" ValorDe="@(c => ValorCabDisp(c, 4))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroCabDisp(4, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc">@oc.Item.FEC_ENTREGA?.ToString("dd/MM/yyyy")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Estado" Activo="@(_ordenColCabDisp == 5)" Ascendente="_ordenAscCabDisp" OnClick="@(() => ToggleOrdenCabDisp(5))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabDisp(5)" ValorDe="@(c => ValorCabDisp(c, 5))" ValoresActivos="@_filtrosCabDisp.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroCabDisp(5, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc"><EstadoChip Estado="@oc.Item.DES_ESTADO" BackColor="@oc.Item.DES_BACKCOLOR" ForeColor="@oc.Item.DES_FORECOLOR" /></CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    @* Dos mensajes, no uno. "No hay" es un dato del negocio; "no se pudo
+                       traer" es una falla que hay que ir a mirar a otro lado. Con un solo
+                       texto para los dos, una consulta caída se lee como un almacén sin
+                       órdenes pendientes. *@
+                    <NoRecordsContent>
+                        @if (_fallaDisponibles)
+                        {
+                            <div class="pa-3" style="color:var(--rust,#b8472d);">
+                                No se pudieron traer las órdenes disponibles. Usa el botón de
+                                refresco; si sigue igual, revisa los permisos de la opción.
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="pa-3" style="opacity:.6;">Sin órdenes disponibles para la entidad del movimiento.</div>
+                        }
+                    </NoRecordsContent>
+                </MudDataGrid>
+            </div>
+
+            <div class="oc-titulo mt-2">
+                <MudIcon Icon="@Icons.Material.Filled.List" Size="Size.Small" />
+                <span>Líneas pendientes</span>
+                @* El almacén va ACÁ y no como columna: es el mismo para todas las filas —sale
+                   de la cabecera del movimiento—, así que una columna sería el mismo valor
+                   repetido, gastando ancho que la grilla necesita para lo que sí cambia. *@
+                @if (!string.IsNullOrWhiteSpace(_codAlmacen))
+                {
+                    <span class="mono" style="opacity:.6;font-size:.78rem;margin-left:8px;">
+                        · Ingresa al almacén @_codAlmacen
+                    </span>
+                }
+                <MudSpacer />
+                <MudTooltip Text="Limpiar filtros">
+                    <MudIconButton Icon="@Icons.Material.Filled.FilterAltOff" Size="Size.Small" Variant="Variant.Filled"
+                                   Color="@((_filtrosDetDisp.Values.Any(v => v is { Count: > 0 })) ? Color.Warning : Color.Default)"
+                                   Style="@((_filtrosDetDisp.Values.Any(v => v is { Count: > 0 })) ? KONSolutions.Web.Services.EstilosBoton.Eliminar : KONSolutions.Web.Services.EstilosBoton.Confirmar)"
+                                   OnClick="LimpiarFiltrosDetDisp" />
+                </MudTooltip>
+                @* Completa de una vez la cantidad recibida de TODAS las líneas de la lista,
+                   no sólo de las marcadas: el caso que resuelve es la recepción completa de
+                   una orden, donde marcar y teclear línea por línea es trabajo puro.
+
+                   Deja lo ya escrito en paz: si alguien puso una cantidad parcial a mano, no
+                   se la pisa. Para eso está el botón de al lado, que sí borra todo.
+
+                   Se apaga cuando no hay nada que completar, así se distingue de un momento
+                   en que no hace falta. *@
+                <MudButton Size="Size.Small" Variant="Variant.Filled"
+                           Style="@KONSolutions.Web.Services.EstilosBoton.Confirmar"
+                           StartIcon="@Icons.Material.Filled.DoneAll"
+                           Disabled="@(!_hayQueCompletar)"
+                           Title="Poner en cada línea todo lo que queda pendiente, sin tocar las que ya tienen cantidad"
+                           OnClick="RecibirTodoPendiente">Recibir todo</MudButton>
+                <MudButton Size="Size.Small" Variant="Variant.Filled"
+                           Style="@KONSolutions.Web.Services.EstilosBoton.Cancelar"
+                           Disabled="@(!_hayCantidadEscrita)"
+                           Title="Poner en cero la cantidad recibida de todas las líneas"
+                           OnClick="LimpiarRecibidas">Limpiar</MudButton>
+
+                @* Asignar exige DOS cosas: la línea marcada Y una cantidad recibida mayor
+                   que cero. Asignar una línea con recibida en cero no significa nada —se
+                   estaría recibiendo nada— y dejaría en el movimiento una línea que después
+                   nadie sabe por qué está.
+
+                   El botón se apaga cuando NINGUNA marcada cumple, y el título dice cuál de
+                   las dos condiciones falta. Un botón gris sin explicación obliga a probarlo
+                   para enterarse. *@
+                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                           EndIcon="@Icons.Material.Filled.ArrowForward"
+                           Disabled="@(MotivoSoloLectura is not null || _trabajando || !_asignables.Any())"
+                           Title="@(MotivoSoloLectura ?? TituloAsignar)"
+                           OnClick="AsignarSeleccionadas">Asignar</MudButton>
+                @* Cuántas de las marcadas quedan fuera por no tener cantidad. Se dice ANTES
+                   de apretar, no después: si alguien marcó diez y sólo siete tienen cantidad,
+                   tiene que poder verlo mientras completa, no descubrir al asignar que le
+                   faltaban tres. *@
+                @if (_marcadasSinCantidad > 0)
+                {
+                    <span class="mono" style="font-size:.74rem;color:var(--rust,#b8472d);margin-left:6px;">
+                        @_marcadasSinCantidad sin cantidad
+                    </span>
+                }
+                @* La ubicación se cuenta APARTE de la cantidad: son dos columnas distintas y
+                   se completan en dos lugares distintos. Un solo cartel de "faltan datos"
+                   obligaría a revisar las dos para saber cuál es. *@
+                @if (_marcadasSinUbicacion > 0)
+                {
+                    <span class="mono" style="font-size:.74rem;color:var(--rust,#b8472d);margin-left:6px;">
+                        @_marcadasSinUbicacion sin ubicación
+                    </span>
+                }
+                @* Cuando hay líneas marcadas se muestran las dos cifras: lo elegido sobre
+                   el total. Con una lista larga, saber cuántas llevas marcadas sin tener
+                   que contarlas es justo lo que hace falta. *@
+                <span class="oc-conteo">@(_selDetalleDisponibles.Any()
+                    ? $"{_selDetalleDisponibles.Count} / {_detalleDisponibles.Count}"
+                    : _detalleDisponibles.Count.ToString())</span>
+            </div>
+
+            @* El detalle depende de lo MARCADO arriba: sin selección no se consulta nada,
+               y se dice por qué en vez de mostrar una grilla vacía. *@
+            <div data-resizable-grid="movimiento-oc-detalles" data-alto-compartido="oc-izquierda" data-cols-key="movimiento-oc-det-disponibles"
+                 style="position:relative;">
+                <MudDataGrid T="Linea" Items="@Ordenar(BaseDetDisp(-1), _ordenColDetDisp, _ordenAscDetDisp, ValorDetDisp)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="true" Height="100%" FixedHeader="true"
+                             MultiSelection="true" SelectedItems="_selDetalleDisponibles"
+                             SelectedItemsChanged="OnSeleccionDetalleDisponiblesChanged"
+                             Class="grid-oc-detalle-disponibles-sticky">
+                    <Columns>
+                        @* Congeladas: Selección, Orden de Compra (izquierda) y Ubicación,
+                           Recibida (derecha) — son las que se necesitan siempre a la vista al
+                           recibir. El resto (Sec./Producto/UM/Cantidad/Atendido/Pendiente/
+                           Lote-Orden) se desplaza. El sticky va por CSS externo
+                           (.grid-oc-detalle-disponibles-sticky en app.css), no por
+                           HeaderStyle/CellStyle del propio componente: ese approach ya rompió
+                           el botón de expandir en Clases de Operación (ver comentario de
+                           .grid-hierarchy-sticky), así que se aplica siempre por fuera. *@
+                        <SelectColumn T="Linea" />
+                        <PropertyColumn Property="x => x.NUM_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Orden de Compra" Activo="@(_ordenColDetDisp == 0)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(0))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(0)" ValorDe="@(l => ValorDetDisp(l, 0))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetDisp(0, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* La secuencia va DESPUÉS de la orden y no antes: sola no identifica
+                           nada —hay una secuencia 1 por cada orden— y sólo significa algo
+                           leída a continuación del documento al que pertenece. *@
+                        <PropertyColumn Property="x => x.NUM_SECUENCIA" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetDisp == 1)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(1))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(1)" ValorDe="@(l => ValorDetDisp(l, 1))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetDisp(1, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* Código y descripción en UNA columna. Eran dos, y entre las dos se llevaban
+                           el ancho que necesitan las cantidades y los combos: el código es largo
+                           y fijo, la descripción se parte en tres renglones, y la fila terminaba
+                           midiendo el triple de alto.
+
+                           El código va arriba, chico y en monoespaciada; la descripción abajo, en
+                           el cuerpo normal. Así se lee primero lo que identifica al producto para
+                           una persona —el nombre— y el código queda a mano sin competir por la
+                           atención. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetDisp == 2)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(2))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(2)" ValorDe="@(l => ValorDetDisp(l, 2))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetDisp(2, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="pr">
+                                <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                    <span class="mono" style="font-size:.72rem;opacity:.6;">@pr.Item.COD_PRODUCTO</span>
+                                    <span>@pr.Item.DES_PRODUCTO</span>
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.DES_UNIDAD_MEDIDA" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetDisp == 3)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(3))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(3)" ValorDe="@(l => ValorDetDisp(l, 3))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetDisp(3, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cantidad" Activo="@(_ordenColDetDisp == 4)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(4))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(4)" ValorDe="@(l => ValorDetDisp(l, 4))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetDisp(4, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO_ATENDIDO" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Atendido" Activo="@(_ordenColDetDisp == 5)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(5))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(5)" ValorDe="@(l => ValorDetDisp(l, 5))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetDisp(5, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO_ATENDIDO_PENDIENTE" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Pendiente" Activo="@(_ordenColDetDisp == 6)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(6))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(6)" ValorDe="@(l => ValorDetDisp(l, 6))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetDisp(6, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* Lote y orden de producción de la línea del pedido. Van de SÓLO
+                           LECTURA: acá no se deciden, se heredan de la orden de compra. El
+                           resumen en una celda es el mismo criterio que en el pedido —cuatro
+                           columnas no entran en una grilla que ya tiene ocho—. *@
+                        @* Lote y orden de producción en UNA celda, que se abre con un clic.
+
+                           Eran dos columnas —un combo y otra celda con su propio diálogo— y
+                           entre las dos se llevaban el ancho que necesitan las cantidades y la
+                           ubicación. Y el combo de lote, metido en una celda angosta, mostraba
+                           el texto cortado justo donde empieza lo que sirve.
+
+                           Adentro del diálogo el lote se elige y los cuatro de producción se
+                           ven bloqueados, porque no son lo mismo: el lote lo pone quien recibe,
+                           la orden viene de la compra. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Lote / Orden" Activo="@(_ordenColDetDisp == 7)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(7))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(7)" ValorDe="@(l => ValorDetDisp(l, 7))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetDisp(7, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="ln">
+                                <div @onclick="@(() => AbrirLoteOrdenAsync(ln.Item))"
+                                     title="Clic para elegir el lote y ver la orden de producción"
+                                     style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;">
+                                    <span class="mono" style="font-size:.78rem;">@ResumenLoteOrden(ln.Item)</span>
+                                    <MudIcon Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Style="opacity:.35;" />
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* La ubicación SÍ se elige: el SP la propone —primero el contenedor
+                           marcado como nodo de distribución, y si no, la ubicación donde ese
+                           producto ya tiene stock— pero la última palabra es de quien recibe.
+
+                           El combo se arma con las ubicaciones DEL ALMACÉN DE LA CABECERA del
+                           movimiento, que es el único almacén posible: la mercadería entra
+                           donde entra el movimiento. Por eso el almacén no es una columna
+                           —sería el mismo valor repetido en todas las filas— y se muestra
+                           una sola vez arriba de la grilla. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Ubicación" Activo="@(_ordenColDetDisp == 8)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(8))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(8)" ValorDe="@(l => ValorDetDisp(l, 8))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(8)" ValoresActivosChanged="@(v => FiltroDetDisp(8, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="ln">
+                                <AriaCombo TItem="ComboboxItem" Items="_ubicaciones"
+                                           TextFunc="@(t => EtiquetaUbicacion(t))" ValueFunc="@(t => t.Id)"
+                                           Value="@ln.Item.COD_UBICACION_ALMACEN"
+                                           ValueChanged="@(v => UbicacionCambiada(ln.Item, v))" />
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* La única columna editable de las cuatro grillas: cuánto se recibe
+                           en ESTE movimiento. El SP la trae en cero porque es un campo para
+                           llenar, no un dato guardado.
+                           Se acota al pendiente de la línea: recibir más de lo que falta no
+                           es un caso de negocio, es un error de tecleo, y atajarlo acá es
+                           más barato que descubrirlo al grabar. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Recibida" Activo="@(_ordenColDetDisp == 9)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(9))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(9)" ValorDe="@(l => ValorDetDisp(l, 9))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(9)" ValoresActivosChanged="@(v => FiltroDetDisp(9, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="ln">
+                                <MudNumericField T="decimal?" Value="@ln.Item.CAN_PRODUCTO_RECIBIDA"
+                                                 ValueChanged="@(v => RecibidaCambiada(ln.Item, v))"
+                                                 Min="0" Max="@(ln.Item.CAN_PRODUCTO_ATENDIDO_PENDIENTE ?? 0)"
+                                                 Format="@Decimales.FormatoCantidad" HideSpinButtons="true" Margin="Margin.Dense"
+                                                 Variant="Variant.Outlined" Class="campo-numerico-derecha" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    @* El motivo exacto, no un texto único para todo. "Vacío" puede ser
+                       cuatro cosas distintas —no marcaste nada, las filas no traen clase y
+                       tipo, el SP devolvió cero, o la consulta falló— y cada una se arregla
+                       en un lugar diferente. Un solo mensaje para las cuatro obliga a
+                       averiguarlo cada vez. *@
+                    <NoRecordsContent>
+                        <div class="pa-3" style="opacity:.6;">@_motivoDetalleVacio</div>
+                    </NoRecordsContent>
+                </MudDataGrid>
+            </div>
+        </div>
+
+        @* ── DERECHA: asignadas ─────────────────────────────────────────────────── *@
+        <div class="oc-columna">
+            <div class="oc-titulo">
+                <MudIcon Icon="@Icons.Material.Filled.AssignmentTurnedIn" Size="Size.Small" />
+                <span>Órdenes de compra asignadas</span>
+                <MudSpacer />
+                <MudTooltip Text="Limpiar filtros">
+                    <MudIconButton Icon="@Icons.Material.Filled.FilterAltOff" Size="Size.Small" Variant="Variant.Filled"
+                                   Color="@((_filtrosCabAsig.Values.Any(v => v is { Count: > 0 })) ? Color.Warning : Color.Default)"
+                                   Style="@((_filtrosCabAsig.Values.Any(v => v is { Count: > 0 })) ? KONSolutions.Web.Services.EstilosBoton.Eliminar : KONSolutions.Web.Services.EstilosBoton.Confirmar)"
+                                   OnClick="LimpiarFiltrosCabAsig" />
+                </MudTooltip>
+                <span class="oc-conteo">@_asignados.Count</span>
+            </div>
+
+            <div data-resizable-grid="movimiento-oc-cabeceras" data-alto-compartido="oc-derecha" data-cols-key="movimiento-oc-cab-asignados"
+                 style="position:relative;">
+                <MudDataGrid T="Cabecera" Items="@Ordenar(BaseCabAsig(-1), _ordenColCabAsig, _ordenAscCabAsig, ValorCabAsig)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="true" Height="100%" FixedHeader="true">
+                    <Columns>
+                        @* "N°" no decía nada: en una pantalla donde conviven el movimiento, el
+                               pedido y la secuencia, el número a secas obliga a adivinar cuál es. *@
+                        <PropertyColumn Property="x => x.NUM_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Orden de Compra" Activo="@(_ordenColCabAsig == 0)" Ascendente="_ordenAscCabAsig" OnClick="@(() => ToggleOrdenCabAsig(0))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabAsig(0)" ValorDe="@(c => ValorCabAsig(c, 0))" ValoresActivos="@_filtrosCabAsig.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroCabAsig(0, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.DES_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Descripción" Activo="@(_ordenColCabAsig == 1)" Ascendente="_ordenAscCabAsig" OnClick="@(() => ToggleOrdenCabAsig(1))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabAsig(1)" ValorDe="@(c => ValorCabAsig(c, 1))" ValoresActivos="@_filtrosCabAsig.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroCabAsig(1, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Pedido" Activo="@(_ordenColCabAsig == 2)" Ascendente="_ordenAscCabAsig" OnClick="@(() => ToggleOrdenCabAsig(2))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabAsig(2)" ValorDe="@(c => ValorCabAsig(c, 2))" ValoresActivos="@_filtrosCabAsig.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroCabAsig(2, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc">@oc.Item.FEC_PEDIDO?.ToString("dd/MM/yyyy")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Entrega" Activo="@(_ordenColCabAsig == 3)" Ascendente="_ordenAscCabAsig" OnClick="@(() => ToggleOrdenCabAsig(3))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabAsig(3)" ValorDe="@(c => ValorCabAsig(c, 3))" ValoresActivos="@_filtrosCabAsig.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroCabAsig(3, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc">@oc.Item.FEC_ENTREGA?.ToString("dd/MM/yyyy")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Estado" Activo="@(_ordenColCabAsig == 4)" Ascendente="_ordenAscCabAsig" OnClick="@(() => ToggleOrdenCabAsig(4))" /><FiltroExcelColumna T="Cabecera" ItemsBase="@BaseCabAsig(4)" ValorDe="@(c => ValorCabAsig(c, 4))" ValoresActivos="@_filtrosCabAsig.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroCabAsig(4, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="oc"><EstadoChip Estado="@oc.Item.DES_ESTADO" BackColor="@oc.Item.DES_BACKCOLOR" ForeColor="@oc.Item.DES_FORECOLOR" /></CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><div class="pa-3" style="opacity:.6;">Este movimiento todavía no tiene órdenes asignadas.</div></NoRecordsContent>
+                </MudDataGrid>
+            </div>
+
+            <div class="oc-titulo mt-2">
+                <MudIcon Icon="@Icons.Material.Filled.List" Size="Size.Small" />
+                <span>Líneas asignadas</span>
+                <MudSpacer />
+                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ArrowBack"
+                           Disabled="@(MotivoSoloLectura is not null || _trabajando || !_selDetalleAsignados.Any())"
+                           Title="@MotivoSoloLectura"
+                           OnClick="QuitarSeleccionadas">Quitar</MudButton>
+                <MudTooltip Text="Limpiar filtros">
+                    <MudIconButton Icon="@Icons.Material.Filled.FilterAltOff" Size="Size.Small" Variant="Variant.Filled"
+                                   Color="@((_filtrosDetAsig.Values.Any(v => v is { Count: > 0 })) ? Color.Warning : Color.Default)"
+                                   Style="@((_filtrosDetAsig.Values.Any(v => v is { Count: > 0 })) ? KONSolutions.Web.Services.EstilosBoton.Eliminar : KONSolutions.Web.Services.EstilosBoton.Confirmar)"
+                                   OnClick="LimpiarFiltrosDetAsig" />
+                </MudTooltip>
+                <span class="oc-conteo">@(_selDetalleAsignados.Any()
+                    ? $"{_selDetalleAsignados.Count} / {_detalleAsignados.Count}"
+                    : _detalleAsignados.Count.ToString())</span>
+            </div>
+
+            @* Este detalle NO depende de una selección: el SP devuelve todo lo asignado al
+               movimiento. Es lo que hace falta para ver de un vistazo qué se está por
+               atender, sin tener que ir orden por orden. *@
+            <div data-resizable-grid="movimiento-oc-detalles" data-alto-compartido="oc-derecha" data-cols-key="movimiento-oc-det-asignados"
+                 style="position:relative;">
+                <MudDataGrid T="Linea" Items="@Ordenar(BaseDetAsig(-1), _ordenColDetAsig, _ordenAscDetAsig, ValorDetAsig)" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="true" Height="100%" FixedHeader="true"
+                             MultiSelection="true" SelectedItems="_selDetalleAsignados"
+                             SelectedItemsChanged="OnSeleccionDetalleAsignadosChanged">
+                    <Columns>
+                        <SelectColumn T="Linea" />
+                        <PropertyColumn Property="x => x.NUM_PEDIDO_COMERCIAL" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Orden de Compra" Activo="@(_ordenColDetAsig == 0)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(0))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(0)" ValorDe="@(l => ValorDetAsig(l, 0))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetAsig(0, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* La secuencia va DESPUÉS de la orden y no antes: sola no identifica
+                           nada —hay una secuencia 1 por cada orden— y sólo significa algo
+                           leída a continuación del documento al que pertenece. *@
+                        <PropertyColumn Property="x => x.NUM_SECUENCIA" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetAsig == 1)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(1))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(1)" ValorDe="@(l => ValorDetAsig(l, 1))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetAsig(1, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        @* Código y descripción en UNA columna. Eran dos, y entre las dos se llevaban
+                           el ancho que necesitan las cantidades y los combos: el código es largo
+                           y fijo, la descripción se parte en tres renglones, y la fila terminaba
+                           midiendo el triple de alto.
+
+                           El código va arriba, chico y en monoespaciada; la descripción abajo, en
+                           el cuerpo normal. Así se lee primero lo que identifica al producto para
+                           una persona —el nombre— y el código queda a mano sin competir por la
+                           atención. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetAsig == 2)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(2))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(2)" ValorDe="@(l => ValorDetAsig(l, 2))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetAsig(2, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="pr">
+                                <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                    <span class="mono" style="font-size:.72rem;opacity:.6;">@pr.Item.COD_PRODUCTO</span>
+                                    <span>@pr.Item.DES_PRODUCTO</span>
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        @* Lote y orden de producción en UNA celda, con el mismo formato que
+                           el lado disponible —lote, proceso/orden/ítem/unidad— para que las
+                           dos grillas se lean igual y se puedan comparar de un vistazo.
+
+                           Acá va de SÓLO LECTURA, sin el diálogo de la izquierda. En este
+                           lado se CONTROLA lo ya asignado, y cambiar el lote de una línea
+                           asignada no es la misma operación que elegirlo al recibir: pasa
+                           por UPDATEOTROS y necesita su propio grabado. Si lo quieres
+                           editable acá, se agrega, pero es una decisión aparte. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Lote / Orden" Activo="@(_ordenColDetAsig == 3)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(3))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(3)" ValorDe="@(l => ValorDetAsig(l, 3))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetAsig(3, v))" /></div></HeaderTemplate>
+                            <CellTemplate Context="ln">
+                                <span class="mono" style="font-size:.78rem;">@ResumenLoteOrden(ln.Item)</span>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* Sólo la descripción, sin el código: es el mismo criterio que en el
+                           combo de la izquierda. El código de ubicación no lo lee nadie. *@
+                        <PropertyColumn Property="x => x.DES_UBICACION_ALMACEN" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Ubicación" Activo="@(_ordenColDetAsig == 4)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(4))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(4)" ValorDe="@(l => ValorDetAsig(l, 4))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetAsig(4, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+
+                        <PropertyColumn Property="x => x.DES_UNIDAD_MEDIDA" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetAsig == 5)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(5))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(5)" ValorDe="@(l => ValorDetAsig(l, 5))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetAsig(5, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cantidad" Activo="@(_ordenColDetAsig == 6)" Ascendente="_ordenAscDetAsig" OnClick="@(() => ToggleOrdenDetAsig(6))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetAsig(6)" ValorDe="@(l => ValorDetAsig(l, 6))" ValoresActivos="@_filtrosDetAsig.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetAsig(6, v))" /></div></HeaderTemplate>
+                        </PropertyColumn>
+                    </Columns>
+                    <NoRecordsContent><div class="pa-3" style="opacity:.6;">Sin líneas asignadas.</div></NoRecordsContent>
+                </MudDataGrid>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>Número del movimiento. Mientras la cabecera no esté grabada es null y las
+    /// cuatro consultas no se hacen: todas lo reciben como parámetro obligatorio.</summary>
+    [Parameter] public decimal? NumMovimiento { get; set; }
+
+    /// <summary>Aviso al documento de que el detalle del movimiento cambió.
+    ///
+    /// Asignar y Quitar escriben en MOVIMIENTOS_ALMACEN_DETALLE, que es la tabla que muestra
+    /// la grilla del documento —otra pestaña, otro componente—. Sin este aviso esa grilla se
+    /// quedaba con lo que había traído al abrir: había que cambiar de pestaña y volver para
+    /// ver el resultado, y hasta entonces la pantalla mostraba un detalle que ya no era el de
+    /// la base.
+    ///
+    /// Va como EventCallback y no como una llamada directa al padre a propósito: el panel no
+    /// tiene por qué saber quién lo hospeda ni qué hace con el aviso.</summary>
+    [Parameter] public EventCallback OnDetalleCambiado { get; set; }
+
+    /// <summary>Si viene, el detalle del movimiento no se puede tocar en el estado actual de su
+    /// cabecera (lo decide MovimientoAlmacenDocumento con el flujo de estados): Asignar y Quitar
+    /// se apagan y se muestra este motivo. Se puede seguir consultando.</summary>
+    [Parameter] public string? MotivoSoloLectura { get; set; }
+
+    /// <summary>Entidad del movimiento (el proveedor de la compra). La necesita el "+" de
+    /// crear lote: un lote nace a nombre de una entidad, y acá no hay otra fuente para ese
+    /// dato —Cabecera/Linea no la traen— así que la pasa el documento que aloja este panel.</summary>
+    [Parameter] public decimal? CodEntidad { get; set; }
+
+    /// <summary>Sólo para mostrar de quién es el lote que se va a crear. Si no llega, el
+    /// diálogo muestra el código.</summary>
+    [Parameter] public string? DesEntidad { get; set; }
+
+    private List<Cabecera> _disponibles = new();
+    private List<Cabecera> _asignados = new();
+    private List<Linea> _detalleDisponibles = new();
+    private List<Linea> _detalleAsignados = new();
+    private HashSet<Cabecera> _selDisponibles = new();
+
+    /// <summary>Líneas marcadas en cada detalle. Todavía no hacen nada: son el punto de
+    /// enganche de asignar (izquierda) y quitar (derecha), que ya tienen endpoint. Se
+    /// dejan acá porque la selección en sí ya sirve —marcar mientras se revisa una lista
+    /// larga es la mitad del trabajo— y porque cablear los botones después no toca el
+    /// marcado, sólo agrega los dos manejadores.</summary>
+    private HashSet<Linea> _selDetalleDisponibles = new();
+    private HashSet<Linea> _selDetalleAsignados = new();
+
+    /// <summary>Por qué el detalle de disponibles está vacío. Se muestra tal cual en la
+    /// grilla: es la diferencia entre "no hay nada que traer" y "algo salió mal".</summary>
+    private string _motivoDetalleVacio = "Marca una o más órdenes de arriba para ver sus líneas.";
+
+    private decimal? _cargadoPara;
+
+    // ── Filtros de columna (estilo Excel), uno por grilla ──────────────────
+    private Dictionary<int, HashSet<string>?> _filtrosCabDisp = new();
+    private string ValorCabDisp(Cabecera c, int col) => col switch
+    {
+        0 => c.NUM_PEDIDO_COMERCIAL.ToString(),
+        1 => c.DES_TIPO_OPERACION ?? "",
+        2 => c.DES_PEDIDO_COMERCIAL ?? "",
+        3 => c.FEC_PEDIDO?.ToString("dd/MM/yyyy") ?? "",
+        4 => c.FEC_ENTREGA?.ToString("dd/MM/yyyy") ?? "",
+        5 => c.DES_ESTADO ?? "",
+        _ => ""
+    };
+
+    private Dictionary<int, HashSet<string>?> _filtrosDetDisp = new();
+    private string ValorDetDisp(Linea l, int col) => col switch
+    {
+        0 => l.NUM_PEDIDO_COMERCIAL.ToString(),
+        1 => l.NUM_SECUENCIA.ToString(),
+        2 => l.COD_PRODUCTO ?? "",
+        3 => l.DES_UNIDAD_MEDIDA ?? "",
+        4 => l.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+        5 => l.CAN_PRODUCTO_ATENDIDO?.ToString(Decimales.FormatoCantidad) ?? "",
+        6 => l.CAN_PRODUCTO_ATENDIDO_PENDIENTE?.ToString(Decimales.FormatoCantidad) ?? "",
+        7 => ResumenLoteOrden(l),
+        8 => l.COD_UBICACION_ALMACEN ?? "",
+        9 => l.CAN_PRODUCTO_RECIBIDA?.ToString(Decimales.FormatoCantidad) ?? "",
+        _ => ""
+    };
+
+    private Dictionary<int, HashSet<string>?> _filtrosCabAsig = new();
+    private string ValorCabAsig(Cabecera c, int col) => col switch
+    {
+        0 => c.NUM_PEDIDO_COMERCIAL.ToString(),
+        1 => c.DES_PEDIDO_COMERCIAL ?? "",
+        2 => c.FEC_PEDIDO?.ToString("dd/MM/yyyy") ?? "",
+        3 => c.FEC_ENTREGA?.ToString("dd/MM/yyyy") ?? "",
+        4 => c.DES_ESTADO ?? "",
+        _ => ""
+    };
+
+    private Dictionary<int, HashSet<string>?> _filtrosDetAsig = new();
+    private string ValorDetAsig(Linea l, int col) => col switch
+    {
+        0 => l.NUM_PEDIDO_COMERCIAL.ToString(),
+        1 => l.NUM_SECUENCIA.ToString(),
+        2 => l.COD_PRODUCTO ?? "",
+        3 => ResumenLoteOrden(l),
+        4 => l.DES_UBICACION_ALMACEN ?? "",
+        5 => l.DES_UNIDAD_MEDIDA ?? "",
+        6 => l.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+        _ => ""
+    };
+
+    /// <summary>Cascada genérica: aplica todos los filtros activos salvo el de la columna
+    /// <paramref name="colExcluida"/> (esa se calcula sobre lo filtrado por las demás, para
+    /// que su propio menú siga ofreciendo sus valores completos). Sale rápido si nadie más
+    /// tiene un filtro activo: se llama en cada render, de cada columna.</summary>
+    private static List<T> AplicarFiltros<T>(List<T> items, Dictionary<int, HashSet<string>?> filtros, int colExcluida, Func<T, int, string> valorDe)
+    {
+        var activos = filtros.Where(kv => kv.Key != colExcluida && kv.Value is { Count: > 0 }).ToList();
+        if (activos.Count == 0) return items;
+        return items.Where(it => activos.All(kv => kv.Value!.Contains(valorDe(it, kv.Key)))).ToList();
+    }
+
+    private List<Cabecera> BaseCabDisp(int col) => AplicarFiltros(_disponibles, _filtrosCabDisp, col, ValorCabDisp);
+    private List<Linea> BaseDetDisp(int col) => AplicarFiltros(_detalleDisponibles, _filtrosDetDisp, col, ValorDetDisp);
+    private List<Cabecera> BaseCabAsig(int col) => AplicarFiltros(_asignados, _filtrosCabAsig, col, ValorCabAsig);
+    private List<Linea> BaseDetAsig(int col) => AplicarFiltros(_detalleAsignados, _filtrosDetAsig, col, ValorDetAsig);
+
+    private void FiltroCabDisp(int col, HashSet<string>? v) { _filtrosCabDisp[col] = v; StateHasChanged(); }
+    private void FiltroDetDisp(int col, HashSet<string>? v) { _filtrosDetDisp[col] = v; StateHasChanged(); }
+    private void FiltroCabAsig(int col, HashSet<string>? v) { _filtrosCabAsig[col] = v; StateHasChanged(); }
+    private void FiltroDetAsig(int col, HashSet<string>? v) { _filtrosDetAsig[col] = v; StateHasChanged(); }
+
+    // ── Orden de columna, estilo Excel, para las cuatro grillas ────────────────────────────
+    //
+    // Las PropertyColumn tenían Sortable="false" y ningún reemplazo: quedaron sin poder
+    // ordenarse por nada. Se agrega acá el mismo mecanismo de EncabezadoOrdenable que usan las
+    // pantallas de catálogo, reutilizando los ValorXxx que ya existían para el filtro —el
+    // mismo texto que se filtra es el que se ordena, sin inventar una segunda representación.
+    private static List<T> Ordenar<T>(List<T> items, int? col, bool asc, Func<T, int, string> valorDe)
+        => col is not { } c ? items
+         : asc ? items.OrderBy(x => valorDe(x, c)).ToList()
+               : items.OrderByDescending(x => valorDe(x, c)).ToList();
+
+    private static void ToggleOrden(ref int? col, ref bool asc, int clic)
+    {
+        if (col == clic) asc = !asc;
+        else { col = clic; asc = true; }
+    }
+
+    private int? _ordenColCabDisp; private bool _ordenAscCabDisp = true;
+    private void ToggleOrdenCabDisp(int c) { ToggleOrden(ref _ordenColCabDisp, ref _ordenAscCabDisp, c); }
+
+    private int? _ordenColDetDisp; private bool _ordenAscDetDisp = true;
+    private void ToggleOrdenDetDisp(int c) { ToggleOrden(ref _ordenColDetDisp, ref _ordenAscDetDisp, c); }
+
+    private int? _ordenColCabAsig; private bool _ordenAscCabAsig = true;
+    private void ToggleOrdenCabAsig(int c) { ToggleOrden(ref _ordenColCabAsig, ref _ordenAscCabAsig, c); }
+
+    private int? _ordenColDetAsig; private bool _ordenAscDetAsig = true;
+    private void ToggleOrdenDetAsig(int c) { ToggleOrden(ref _ordenColDetAsig, ref _ordenAscDetAsig, c); }
+
+    private void LimpiarFiltrosCabDisp() { _filtrosCabDisp.Clear(); StateHasChanged(); }
+    private void LimpiarFiltrosDetDisp() { _filtrosDetDisp.Clear(); StateHasChanged(); }
+    private void LimpiarFiltrosCabAsig() { _filtrosCabAsig.Clear(); StateHasChanged(); }
+    private void LimpiarFiltrosDetAsig() { _filtrosDetAsig.Clear(); StateHasChanged(); }
+
+    /// <summary>Cantidad a recibir, acotada al pendiente de la línea.
+    /// El tope también está en el control (Max), pero se vuelve a aplicar acá: el Max del
+    /// control frena las flechas, no lo pegado con el teclado.</summary>
+    private void RecibidaCambiada(Linea linea, decimal? valor)
+    {
+        var tope = linea.CAN_PRODUCTO_ATENDIDO_PENDIENTE ?? 0;
+        linea.CAN_PRODUCTO_RECIBIDA = valor is null ? null : Math.Clamp(valor.Value, 0, tope);
+    }
+
+    /// <summary>Pasa a la derecha las líneas marcadas. TODAVÍA NO GRABA: mueve las listas en
+    /// memoria, que es lo que pediste hasta que estén los SP de alta.
+    ///
+    /// Se hace así y no recargando desde el servidor justamente porque no hay nada grabado
+    /// que recargar; el día que se cablee el INSERT, este método pasa a llamarlo y después
+    /// a refrescar, y el resto de la pantalla no cambia.</summary>
+    /// <summary>Hay algo que completar: alguna línea con pendiente y sin cantidad puesta.</summary>
+    private bool _hayQueCompletar
+        => _detalleDisponibles.Any(x => (x.CAN_PRODUCTO_ATENDIDO_PENDIENTE ?? 0) > 0
+                                     && (x.CAN_PRODUCTO_RECIBIDA ?? 0) <= 0);
+
+    private bool _hayCantidadEscrita
+        => _detalleDisponibles.Any(x => (x.CAN_PRODUCTO_RECIBIDA ?? 0) > 0);
+
+    /// <summary>Pone en cada línea TODO lo que queda pendiente.
+    ///
+    /// Se iguala contra el PENDIENTE y no contra la cantidad comprada, y la diferencia
+    /// importa cuando la orden ya tuvo una recepción parcial: si una orden de 100 ya recibió
+    /// 40, lo que falta son 60, no 100. Igualando a la comprada se estaría recibiendo de más
+    /// —y el propio campo lo recortaría al pendiente sin decir nada, que es peor—. Cuando no
+    /// hubo recepciones previas, pendiente y comprada son el mismo número, que es el caso
+    /// normal.
+    ///
+    /// NO pisa lo que ya tiene cantidad: si alguien puso 30 a mano sobre un pendiente de 60,
+    /// es porque quiso recibir 30. Para empezar de cero está "Limpiar".</summary>
+    private void RecibirTodoPendiente()
+    {
+        foreach (var l in _detalleDisponibles)
+        {
+            if ((l.CAN_PRODUCTO_RECIBIDA ?? 0) > 0) continue;
+            var pendiente = l.CAN_PRODUCTO_ATENDIDO_PENDIENTE ?? 0;
+            if (pendiente <= 0) continue;
+            l.CAN_PRODUCTO_RECIBIDA = pendiente;
+        }
+        _hayCambiosSinGrabar = true;
+        Recordar();
+    }
+
+    private void LimpiarRecibidas()
+    {
+        foreach (var l in _detalleDisponibles) l.CAN_PRODUCTO_RECIBIDA = null;
+        _hayCambiosSinGrabar = true;
+        Recordar();
+    }
+
+    /// <summary>Las marcadas que ADEMÁS tienen cantidad recibida. Son las únicas que se
+    /// pueden asignar.</summary>
+    /// <summary>Las marcadas que se pueden asignar: con cantidad Y con ubicación.
+    ///
+    /// La UBICACIÓN se sumó como requisito después de ver el error real: sin ella, el SP de
+    /// stock revienta con "Cannot insert the value NULL into column COD_UBICACION_ALMACEN".
+    /// Es una columna NOT NULL en STOCKS_ALMACEN_UBICACION, así que la mercadería no puede
+    /// entrar "a ningún lado" — y lo correcto es no dejar apretar el botón, no mandar algo
+    /// que la base va a rechazar.</summary>
+    private List<Linea> _asignables
+        => _selDetalleDisponibles
+               .Where(x => (x.CAN_PRODUCTO_RECIBIDA ?? 0) > 0
+                        && !string.IsNullOrWhiteSpace(x.COD_UBICACION_ALMACEN))
+               .ToList();
+
+    private int _marcadasSinCantidad
+        => _selDetalleDisponibles.Count(x => (x.CAN_PRODUCTO_RECIBIDA ?? 0) <= 0);
+
+    /// <summary>Marcadas con cantidad pero SIN ubicación. Se cuenta aparte de las que no
+    /// tienen cantidad porque se arreglan en columnas distintas, y decir "faltan datos" a
+    /// secas obliga a revisar las dos.</summary>
+    private int _marcadasSinUbicacion
+        => _selDetalleDisponibles.Count(x => (x.CAN_PRODUCTO_RECIBIDA ?? 0) > 0
+                                          && string.IsNullOrWhiteSpace(x.COD_UBICACION_ALMACEN));
+
+    /// <summary>El motivo exacto por el que el botón está apagado, no un "no se puede".
+    /// Las tres condiciones fallan distinto y se arreglan en lugares distintos.</summary>
+    private string TituloAsignar
+        => !_selDetalleDisponibles.Any()
+               ? "Marca las líneas que vas a recibir"
+         : _marcadasSinUbicacion > 0 && !_asignables.Any()
+               ? "Falta la ubicación: la mercadería tiene que entrar a una ubicación del almacén"
+         : !_asignables.Any()
+               ? "Las líneas marcadas tienen la cantidad recibida en cero: escribe cuánto recibes"
+         : $"Asignar {_asignables.Count} línea(s) al movimiento";
+
+    /// <summary>Asigna al movimiento las líneas marcadas. AHORA GRABA.
+    ///
+    /// Son DOS pasos y el orden no es negociable:
+    ///
+    ///   1. Grabar lote y ubicación en la línea del PEDIDO (UPDATEOTROS). El SP de
+    ///      asignación los LEE de ahí, no los recibe: sin este paso el movimiento entra sin
+    ///      lote y sin ubicación, y nada lo delata.
+    ///   2. Llamar a ASIGNA con la lista de líneas y sus cantidades.
+    ///
+    /// Si el paso 1 falla en alguna línea se corta y NO se asigna nada: asignar igual dejaría
+    /// la mitad apuntando a una ubicación que no es la elegida, y eso se descubre recién en
+    /// el inventario.
+    ///
+    /// Al terminar RECARGA desde la base en vez de mover las listas. El SP hace bastante más
+    /// que mover una fila —crea la cabecera si falta, inserta el detalle, mueve el stock,
+    /// actualiza lo atendido del pedido— y simularlo acá sería inventar un estado.</summary>
+    private async Task AsignarSeleccionadas()
+    {
+        if (MotivoSoloLectura is { } motivo) { Snackbar.Add(motivo, Severity.Warning); return; }
+        var mover = _asignables;
+        if (mover.Count == 0 || NumMovimiento is null or 0 || _trabajando) return;
+
+        // El SP recibe UNA clase y UN tipo por llamada, así que si lo marcado abarca órdenes
+        // de tipos distintos hay que agrupar. Se avisa en vez de mandar todo con la clase de
+        // la primera, que grabaría las demás contra el documento equivocado.
+        var tipos = mover
+            .Select(l => (
+                Clase: Primero(l.COD_CLASE_OPERACION,
+                               _disponibles.FirstOrDefault(d => d.NUM_PEDIDO_COMERCIAL == l.NUM_PEDIDO_COMERCIAL)?.COD_CLASE_OPERACION),
+                Tipo:  Primero(l.COD_TIPO_OPERACION,
+                               _disponibles.FirstOrDefault(d => d.NUM_PEDIDO_COMERCIAL == l.NUM_PEDIDO_COMERCIAL)?.COD_TIPO_OPERACION)))
+            .Where(t => !string.IsNullOrWhiteSpace(t.Clase))
+            .Distinct().ToList();
+
+        if (tipos.Count > 1)
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync(
+                "Marcaste líneas de órdenes con distinta clase o tipo de operación. Asígnalas " +
+                "por separado: el movimiento las graba de a un tipo por vez.",
+                DialogService, nameof(MovimientoOrdenesCompraPanel));
+            return;
+        }
+
+        _trabajando = true;
+        try
+        {
+            if (!await GuardarLoteUbicacionAsync(mover)) return;
+
+            var lineas = ListaPedidoSecuencia.Armar(
+                mover.Select(l => (l.NUM_PEDIDO_COMERCIAL, l.NUM_SECUENCIA, l.CAN_PRODUCTO_RECIBIDA ?? 0)));
+
+            // La clase y el tipo viajan con la lista. Salen de la CABECERA de la orden, que
+            // es quien los sabe; sin ellos el SP no puede distinguir el pedido 2 de Órdenes
+            // de Compra del pedido 2 de Proformas, porque la numeración se reinicia por clase.
+            // La LÍNEA primero, la cabecera como respaldo. Del lado disponibles es la
+            // cabecera la que los trae; del lado asignados, la línea. Probando la línea
+            // primero, el mismo código sirve para los dos y no depende de cuál SP cambie.
+            var cabAsignar = _disponibles.FirstOrDefault(d =>
+                d.NUM_PEDIDO_COMERCIAL == mover[0].NUM_PEDIDO_COMERCIAL);
+
+            var clase = Primero(mover[0].COD_CLASE_OPERACION, cabAsignar?.COD_CLASE_OPERACION);
+            var tipo  = Primero(mover[0].COD_TIPO_OPERACION,  cabAsignar?.COD_TIPO_OPERACION);
+
+            if (string.IsNullOrWhiteSpace(clase) || string.IsNullOrWhiteSpace(tipo))
+            {
+                // Se dice ACÁ, con el motivo, en vez de dejar que el servidor devuelva el
+                // mismo mensaje después de un viaje de ida y vuelta.
+                await ErrorDialogHelper.MostrarAvisoAsync(
+                    "Las líneas marcadas no traen clase ni tipo de operación, y su orden tampoco. " +
+                    "Refresca la lista antes de asignar.",
+                    DialogService, nameof(MovimientoOrdenesCompraPanel));
+                return;
+            }
+
+            var resp = await Http.PostAsJsonAsync(
+                ApiRoutes.Logistica.MovimientosAlmacenOrdenesAsignar(NumMovimiento.Value),
+                new
+                {
+                    COD_CLASE_OPERACION = clase,
+                    COD_TIPO_OPERACION  = tipo,
+                    lineas
+                });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(MovimientoOrdenesCompraPanel), nameof(AsignarSeleccionadas),
+                    "No se pudieron asignar las líneas al movimiento.");
+                return;
+            }
+
+            Snackbar.Add($"{mover.Count} línea(s) asignadas al movimiento.", Severity.Success);
+            await RefrescarAsync();
+            // El detalle del movimiento cambió: que el documento lo vuelva a traer.
+            await OnDetalleCambiado.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoOrdenesCompraPanel), nameof(AsignarSeleccionadas));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudieron asignar las líneas.",
+                DialogService, nameof(MovimientoOrdenesCompraPanel));
+        }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>Deja el lote y la ubicación de cada línea en la línea del pedido, que es de
+    /// donde el SP de asignación los lee.
+    ///
+    /// Devuelve false al primer fallo y dice CUÁL línea falló: con quince líneas, un "no se
+    /// pudo grabar" a secas obliga a revisarlas todas.</summary>
+    private async Task<bool> GuardarLoteUbicacionAsync(IEnumerable<Linea> lineas)
+    {
+        foreach (var l in lineas)
+        {
+            var cab = _disponibles.FirstOrDefault(d => d.NUM_PEDIDO_COMERCIAL == l.NUM_PEDIDO_COMERCIAL);
+
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Logistica.MovimientosAlmacenOrdenesLoteUbicacion, new
+            {
+                COD_CLASE_OPERACION   = cab?.COD_CLASE_OPERACION ?? "",
+                COD_TIPO_OPERACION    = cab?.COD_TIPO_OPERACION ?? "",
+                NUM_PEDIDO_COMERCIAL  = l.NUM_PEDIDO_COMERCIAL,
+                NUM_SECUENCIA         = l.NUM_SECUENCIA,
+                NUM_LOTE_CONTROL      = l.NUM_LOTE_CONTROL,
+                COD_UBICACION_ALMACEN = l.COD_UBICACION_ALMACEN
+            });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(MovimientoOrdenesCompraPanel), nameof(GuardarLoteUbicacionAsync),
+                    $"No se pudo grabar el lote y la ubicación de la orden {l.NUM_PEDIDO_COMERCIAL}, " +
+                    $"línea {l.NUM_SECUENCIA}. No se asignó nada.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Quita del movimiento las líneas marcadas a la derecha. También graba.
+    ///
+    /// No necesita el paso previo de lote y ubicación: quitar no los usa. Y la cadena va con
+    /// cantidad cero, porque DESASIGNA la ignora —borra la línea entera—.</summary>
+    private async Task QuitarSeleccionadas()
+    {
+        if (MotivoSoloLectura is { } motivo) { Snackbar.Add(motivo, Severity.Warning); return; }
+        var mover = _selDetalleAsignados.ToList();
+        if (mover.Count == 0 || NumMovimiento is null or 0 || _trabajando) return;
+
+        _trabajando = true;
+        try
+        {
+            var lineas = ListaPedidoSecuencia.Armar(
+                mover.Select(l => (l.NUM_PEDIDO_COMERCIAL, l.NUM_SECUENCIA, 0m)));
+
+            // La clase y el tipo salen de LA LÍNEA, no de la cabecera.
+            //
+            // Del lado ASIGNADOS la cabecera los trae en NULL: su SP no hace el JOIN con
+            // TIPOS_OPERACION. La línea SÍ los tiene, porque el detalle de asignados los lee
+            // de su propia tabla. Tomarlos de la cabecera era lo que hacía fallar a Quitar
+            // con "falta la clase o el tipo".
+            var resp = await Http.PostAsJsonAsync(
+                ApiRoutes.Logistica.MovimientosAlmacenOrdenesQuitar(NumMovimiento.Value),
+                new
+                {
+                    COD_CLASE_OPERACION = mover[0].COD_CLASE_OPERACION ?? "",
+                    COD_TIPO_OPERACION  = mover[0].COD_TIPO_OPERACION ?? "",
+                    lineas
+                });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(MovimientoOrdenesCompraPanel), nameof(QuitarSeleccionadas),
+                    "No se pudieron quitar las líneas del movimiento.");
+                return;
+            }
+
+            Snackbar.Add($"{mover.Count} línea(s) quitadas del movimiento.", Severity.Success);
+            await RefrescarAsync();
+            // El detalle del movimiento cambió: que el documento lo vuelva a traer.
+            await OnDetalleCambiado.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoOrdenesCompraPanel), nameof(QuitarSeleccionadas));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudieron quitar las líneas.",
+                DialogService, nameof(MovimientoOrdenesCompraPanel));
+        }
+        finally { _trabajando = false; }
+    }
+
+    /// <summary>El primero de los dos que tenga algo. Existe porque el mismo dato llega por
+    /// caminos distintos según el lado de la pantalla: en disponibles lo trae la cabecera, en
+    /// asignados la línea. Preguntar en orden evita escribir dos veces la misma lógica.</summary>
+    private static string Primero(string? a, string? b)
+        => !string.IsNullOrWhiteSpace(a) ? a! : (b ?? "");
+
+    /// <summary>La consulta de disponibles no llegó a responder. Distinto de que no haya
+    /// órdenes: eso es un dato, esto es una falla.</summary>
+    private bool _fallaDisponibles;
+
+    /// <summary>Mientras una de las dos operaciones está en curso. Apaga los botones: dos
+    /// clics seguidos mandarían la misma asignación dos veces, y el SP no tiene forma de
+    /// saber que es la misma.</summary>
+    private bool _trabajando;
+
+    /// <summary>Hubo movimientos que no están en la base. Se avisa en pantalla: mover filas
+    /// y que se vean movidas hace creer que quedó guardado.</summary>
+    private bool _hayCambiosSinGrabar;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Se recarga cuando cambia el movimiento, no en cada render: OnParametersSet corre
+        // muchas veces y cada pasada serían cuatro consultas.
+        if (NumMovimiento == _cargadoPara) return;
+        _cargadoPara = NumMovimiento;
+
+        // Primero se busca lo que este panel tenía en pantalla la última vez. Si está, se
+        // restaura y NO se consulta: volver de otra pestaña no es motivo para pedir de nuevo
+        // cuatro consultas, y además volver a consultar borraría lo que el usuario escribió.
+        if (Restaurar()) { StateHasChanged(); return; }
+
+        await CargarAsync();
+    }
+
+    /// <summary>Refresco EXPLÍCITO. Desde que las pestañas se mantienen vivas al cambiar de
+    /// solapa, esto ya no se recarga solo: lo que el usuario marcó se queda como estaba, y
+    /// volver a consultar es una decisión suya. Vuelve a traer las cuatro grillas y limpia
+    /// las selecciones, porque una selección sobre datos viejos es peor que ninguna.</summary>
+    public async Task RefrescarAsync()
+    {
+        // Olvida lo guardado ANTES de consultar. Si no, CargarAsync volvería a dejar el
+        // estado viejo encima al terminar y el refresco no refrescaría nada.
+        EstadoPaneles.Olvidar(ClavePanel, NumMovimiento);
+        await CargarAsync();
+    }
+
+    // ── Estado que sobrevive a que el componente se destruya ─────────────────────────
+    //
+    // Blazor recrea este componente al cambiar de pestaña, porque no todas las MudTabs de la
+    // cadena conservan sus paneles. Cuando eso pasa, el componente nuevo arranca vacío: se
+    // perdían las órdenes marcadas, las líneas marcadas, las cantidades escritas a mano, el
+    // lote y la ubicación elegidos. Todo eso vive ahora en EstadoPanelesMovimiento.
+
+    private const string ClavePanel = "ordenes-compra";
+
+    /// <summary>Trae de vuelta lo que había. Devuelve false si no había nada guardado, que es
+    /// la señal de que hay que consultar.</summary>
+    private bool Restaurar()
+    {
+        _dibujosDeGracia = 3;
+        var e = EstadoPaneles.Leer<Cabecera, Linea>(ClavePanel, NumMovimiento);
+        if (e is null) { _dibujosDeGracia = 0; return false; }
+
+        // Un estado VACÍO no se restaura: se vuelve a consultar.
+        //
+        // El estado existe para no perder el trabajo del usuario. Si no hay órdenes cargadas
+        // ni nada marcado ni cambios pendientes, no hay trabajo que preservar — y restaurarlo
+        // igual TAPA los datos que pudieron aparecer después.
+        //
+        // Es exactamente lo que pasaba: al abrir la pestaña con el movimiento recién creado
+        // se guardaba un estado vacío, y a partir de ahí la pantalla mostraba cero órdenes
+        // para siempre aunque el SP devolviera dos. El botón de refresco lo arreglaba, pero
+        // nadie tiene por qué saber que hay que apretarlo.
+        var vacio = e.Disponibles.Count == 0
+                 && e.Asignados.Count == 0
+                 && e.DetalleDisponibles.Count == 0
+                 && e.DetalleAsignados.Count == 0
+                 && !e.HayCambiosSinGrabar;
+        if (vacio) { _dibujosDeGracia = 0; return false; }
+
+        // Se recuperan LAS MISMAS instancias, no copias: por eso lo que el usuario escribió
+        // en una celda vuelve tal cual, sin guardarlo campo por campo.
+        _disponibles           = e.Disponibles;
+        _asignados             = e.Asignados;
+        _detalleDisponibles    = e.DetalleDisponibles;
+        _detalleAsignados      = e.DetalleAsignados;
+        _selDisponibles        = e.SelDisponibles;
+        _selDetalleDisponibles = e.SelDetalleDisponibles;
+        _selDetalleAsignados   = e.SelDetalleAsignados;
+        _hayCambiosSinGrabar   = e.HayCambiosSinGrabar;
+        _motivoDetalleVacio    = e.MotivoDetalleVacio;
+        return true;
+    }
+
+    /// <summary>Deja el estado afuera. Se llama después de CADA cosa que lo cambia: si se
+    /// llamara sólo al destruirse el componente, un cierre abrupto se llevaría lo último.</summary>
+    private void Recordar()
+        => EstadoPaneles.Guardar(ClavePanel, NumMovimiento,
+            new EstadoPanelesMovimiento.Estado<Cabecera, Linea>
+            {
+                Disponibles           = _disponibles,
+                Asignados             = _asignados,
+                DetalleDisponibles    = _detalleDisponibles,
+                DetalleAsignados      = _detalleAsignados,
+                SelDisponibles        = _selDisponibles,
+                SelDetalleDisponibles = _selDetalleDisponibles,
+                SelDetalleAsignados   = _selDetalleAsignados,
+                HayCambiosSinGrabar   = _hayCambiosSinGrabar,
+                MotivoDetalleVacio    = _motivoDetalleVacio
+            });
+
+    private async Task CargarAsync()
+    {
+        _hayCambiosSinGrabar = false;
+        _selDisponibles = new();
+        _selDetalleDisponibles = new();
+        _selDetalleAsignados = new();
+        _detalleDisponibles = new();
+        if (NumMovimiento is null or 0) { _disponibles = new(); _asignados = new(); return; }
+
+        // Las tres que no dependen de la selección, en paralelo: son independientes entre sí
+        // y así la pestaña abre en el tiempo de la más lenta y no en la suma de las tres.
+        var tDisp = Http.SafeGetAsync<List<Cabecera>>(ApiRoutes.Logistica.MovimientosAlmacenOrdenesDisponibles(NumMovimiento.Value));
+        var tAsig = Http.SafeGetAsync<List<Cabecera>>(ApiRoutes.Logistica.MovimientosAlmacenOrdenesAsignados(NumMovimiento.Value));
+        var tAsigDet = Http.SafeGetAsync<List<Linea>>(ApiRoutes.Logistica.MovimientosAlmacenOrdenesAsignadosDetalle(NumMovimiento.Value));
+        await Task.WhenAll(tDisp, tAsig, tAsigDet);
+
+        // SafeGetAsync devuelve null ante CUALQUIER falla —403, 500, JSON que no calza— así
+        // que una lista vacía y una consulta caída se ven IGUAL. Se distinguen acá, porque
+        // "no hay órdenes" y "no se pudieron traer" se arreglan en lugares distintos.
+        var disp = await tDisp;
+        _fallaDisponibles = disp is null;
+        _disponibles = disp ?? new();
+
+        _asignados = (await tAsig) ?? new();
+        _detalleAsignados = (await tAsigDet) ?? new();
+        Recordar();
+        StateHasChanged();
+    }
+
+    /// <summary>Verdadero desde que se restaura el estado hasta que la pantalla terminó de
+    /// dibujarse.
+    ///
+    /// MudDataGrid arranca con su selección vacía y AVISA de esa selección vacía apenas se
+    /// dibuja. Como el aviso llega DESPUÉS de restaurar, pisaba lo restaurado con un conjunto
+    /// vacío: el usuario veía volver las filas pero sin sus marcas.
+    ///
+    /// Mientras esta bandera está levantada, los tres manejadores ignoran lo que la grilla
+    /// diga. El usuario todavía no tocó nada; cualquier aviso en ese momento es de la grilla
+    /// acomodándose, no una decisión suya.</summary>
+    private bool _restaurando => _dibujosDeGracia > 0;
+
+    /// <summary>Cuántos dibujados más se ignora a la grilla. Tres y no uno: el aviso de la
+    /// grilla no llega necesariamente en el primer dibujado —es asincrónico— y con uno solo
+    /// la protección se caía justo a veces, que es la peor forma de fallar.
+    ///
+    /// Tres dibujados son milisegundos: nadie alcanza a hacer clic en ese lapso, así que no
+    /// se está descartando ninguna decisión real del usuario.</summary>
+    private int _dibujosDeGracia;
+
+    /// <summary>Descuenta un dibujado de gracia y vuelve a pedir uno. Cuando se agotan, lo
+    /// que la grilla avise ya es del usuario.</summary>
+    protected override void OnAfterRender(bool primeraVez)
+    {
+        if (_dibujosDeGracia <= 0) return;
+        _dibujosDeGracia--;
+        // Se vuelve a dibujar para que las marcas restauradas se vean: la grilla acaba de
+        // acomodar su estado interno y hay que devolverle el bueno.
+        StateHasChanged();
+    }
+
+    private void OnSeleccionDetalleDisponiblesChanged(HashSet<Linea> sel)
+    {
+        if (_restaurando) return;
+        _selDetalleDisponibles = sel ?? new();
+        Recordar();
+    }
+
+    private void OnSeleccionDetalleAsignadosChanged(HashSet<Linea> sel)
+    {
+        if (_restaurando) return;
+        _selDetalleAsignados = sel ?? new();
+        Recordar();
+    }
+
+    private async Task OnSeleccionDisponiblesChanged(HashSet<Cabecera> sel)
+    {
+        if (_restaurando) return;
+        _selDisponibles = sel ?? new();
+        await CargarDetalleDisponiblesAsync();
+        Recordar();
+    }
+
+    /// <summary>Detalle de lo marcado a la izquierda.
+    ///
+    /// La clase y el tipo de operación salen de LA PROPIA FILA, desde que el SP de
+    /// disponibles los devuelve. No hay configuración de por medio ni valores escritos a
+    /// mano: cada orden dice a qué clase y tipo pertenece.
+    ///
+    /// SE AGRUPA POR (clase, tipo) y se hace UNA CONSULTA POR GRUPO, porque el SP recibe
+    /// un solo par por llamada. Marcando órdenes de un mismo tipo —lo habitual— es una
+    /// sola consulta; si se marcan de tipos distintos, en vez de devolver de más o de
+    /// menos, se pide cada grupo y se junta el resultado.</summary>
+    private async Task CargarDetalleDisponiblesAsync()
+    {
+        if (NumMovimiento is null or 0 || !_selDisponibles.Any())
+        {
+            _detalleDisponibles = new();
+            _motivoDetalleVacio = "Marca una o más órdenes de arriba para ver sus líneas.";
+            return;
+        }
+
+        var grupos = _selDisponibles
+            .Where(x => !string.IsNullOrWhiteSpace(x.COD_CLASE_OPERACION)
+                     && !string.IsNullOrWhiteSpace(x.COD_TIPO_OPERACION))
+            .GroupBy(x => (Clase: x.COD_CLASE_OPERACION!, Tipo: x.COD_TIPO_OPERACION!))
+            .ToList();
+
+        // Una orden sin clase o sin tipo no se puede consultar. No debería pasar —el SP las
+        // trae siempre—, pero si pasa se dice, en vez de que falten líneas en silencio.
+        var sinDatos = _selDisponibles.Count - grupos.Sum(g => g.Count());
+        if (sinDatos > 0)
+            await ErrorLog.TraceAsync($"MovimientoOrdenesCompraPanel: {sinDatos} orden(es) marcadas sin " +
+                                      "clase o tipo de operación; sus líneas no se consultaron.");
+
+        if (grupos.Count == 0)
+        {
+            // Ninguna fila marcada trae clase y tipo. Pasa si el SP de DISPONIBLES todavía
+            // no devuelve esas dos columnas: la consulta no se puede armar.
+            _detalleDisponibles = new();
+            _motivoDetalleVacio = "Las órdenes marcadas no traen clase y tipo de operación, " +
+                                  "así que no se puede consultar el detalle. Revisa que el SP " +
+                                  "..._PEDIDOS_COMERCIALES_DISPONIBLES devuelva COD_CLASE_OPERACION " +
+                                  "y COD_TIPO_OPERACION.";
+            StateHasChanged();
+            return;
+        }
+
+        var tareas = grupos.Select(g => Http.SafeGetAsync<List<Linea>>(
+            ApiRoutes.Logistica.MovimientosAlmacenOrdenesDisponiblesDetalle(
+                NumMovimiento!.Value, g.Key.Clase, g.Key.Tipo, g.Select(x => x.NUM_PEDIDO_COMERCIAL))));
+
+        var resultados = await Task.WhenAll(tareas);
+
+        // SafeGetAsync devuelve null ante CUALQUIER fallo —403, 500, JSON que no encaja— y
+        // eso se ve igual que una lista vacía. Se separan los dos casos.
+        if (resultados.All(r => r is null))
+        {
+            _detalleDisponibles = new();
+            _motivoDetalleVacio = "No se pudo leer el detalle de las órdenes marcadas. " +
+                                  "Mira la consola del navegador: la llamada falló.";
+            StateHasChanged();
+            return;
+        }
+
+        var filas = resultados.Where(r => r is not null).SelectMany(r => r!).ToList();
+
+        // ORDEN IMPORTANTE: los catálogos PRIMERO, las filas DESPUÉS.
+        //
+        // Si las filas se publican antes, la grilla se dibuja con los combos todavía sin
+        // opciones. Y un combo cuyo valor no está entre sus opciones se queda sin texto; a
+        // la primera interacción avisa que quedó VACÍO, y ese aviso BORRA la ubicación que
+        // el SP había propuesto. Después se asignaba con la ubicación en NULL y la base lo
+        // rechazaba con un 515 que parecía venir de la nada.
+        //
+        // Cargando los catálogos antes, el combo encuentra su valor desde el primer
+        // dibujado y no tiene motivo para limpiarlo.
+        await CargarUbicacionesAsync(filas);
+        await CargarLotesAsync();
+
+        _detalleDisponibles = filas;
+        AsegurarUbicacionesPropuestas();
+        AsegurarLotesEnUso();
+        _motivoDetalleVacio = "Las órdenes marcadas no tienen líneas pendientes: " +
+                              "todo lo pedido ya está atendido.";
+        Recordar();
+        StateHasChanged();
+    }
+
+    // ── Lote de control ──────────────────────────────────────────────────────────────
+
+    private List<ComboboxItem> _lotes = new();
+
+    /// <summary>Lotes para el combo.
+    ///
+    /// ⚠ Van TODOS, sin filtrar por entidad. En el pedido comercial sí se filtran —el lote es
+    /// de quien lo emitió— pero acá no tengo la entidad: ni la cabecera de la orden ni el
+    /// detalle la devuelven. Prefiero ofrecer de más y decirlo, a filtrar por un dato que
+    /// tendría que adivinar. Si quieres acotarlo, el SP de disponibles tendría que devolver
+    /// COD_ENTIDAD de la orden y con eso lo filtro igual que en el pedido.</summary>
+    private async Task CargarLotesAsync()
+    {
+        if (_lotes.Count > 0) return;
+        _lotes = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.LotesControlCombobox)) ?? new();
+        AsegurarLotesEnUso();
+    }
+
+    /// <summary>Descarta lotes que NO existen de verdad, y avisa en vez de dejarlos pasar.
+    ///
+    /// A diferencia de Pedido Comercial —donde el combo SÍ se filtra por entidad y un lote
+    /// "de otra entidad" es un caso legítimo—, acá _lotes trae TODOS los lotes sin filtrar
+    /// (ver comentario de CargarLotesAsync). Eso significa que si el NUM_LOTE_CONTROL de una
+    /// línea no aparece en _lotes, no es "de otra entidad": ES INVÁLIDO, no existe en
+    /// LOGISTICA.LOTES_CONTROL. Ofrecerlo igual —como hacía antes, con la etiqueta "(no
+    /// figura en la lista)"— dejaba pasar ese valor corrupto hasta Asignar, donde revienta
+    /// con un error de llave foránea que no dice de dónde salió.
+    ///
+    /// Se limpia ACÁ, apenas se detecta, y se avisa una sola vez por lote descartado.</summary>
+    private void AsegurarLotesEnUso()
+    {
+        HashSet<string>? avisados = null;
+        foreach (var ln in _detalleDisponibles)
+        {
+            var lote = ln.NUM_LOTE_CONTROL;
+            if (string.IsNullOrWhiteSpace(lote)) continue;
+            if (_lotes.Any(x => string.Equals(x.Id, lote, StringComparison.OrdinalIgnoreCase))) continue;
+
+            ln.NUM_LOTE_CONTROL = null;
+            avisados ??= new(StringComparer.OrdinalIgnoreCase);
+            if (avisados.Add(lote!))
+                Snackbar.Add($"El lote {lote} de la línea {ln.NUM_SECUENCIA} no existe en Logística: se quitó. Elige uno de la lista o crea uno nuevo.", Severity.Warning);
+        }
+        if (avisados is { Count: > 0 })
+        {
+            _hayCambiosSinGrabar = true;
+            Recordar();
+        }
+    }
+
+    // ── Proceso y orden de producción, sólo para mirar ───────────────────────────────
+
+    /// <summary>Abre el diálogo de lote + orden y baja a la fila SÓLO el lote.
+    ///
+    /// El diálogo devuelve únicamente el lote —ni siquiera conoce una forma de devolver los
+    /// otros cuatro—, así que no hay manera de que un descuido acá termine cambiando la orden
+    /// de producción de una línea.</summary>
+    private async Task AbrirLoteOrdenAsync(Linea it)
+    {
+        var parametros = new DialogParameters
+        {
+            ["Lotes"]          = _lotes,
+            ["NumLoteControl"] = it.NUM_LOTE_CONTROL,
+            ["CodProceso"]     = it.COD_PROCESO,
+            ["DesProceso"]     = it.DES_PROCESO,
+            ["NumOrden"]       = it.NUM_ORDEN_PRODUCCION,
+            ["DesOrden"]       = it.DES_ORDEN_PRODUCCION,
+            ["NumItem"]        = it.NUM_ORDEN_PRODUCCION_ITEM,
+            ["NumUnidad"]      = it.NUM_ORDEN_PRODUCCION_UNIDAD,
+            ["NumSecuencia"]   = it.NUM_SECUENCIA,
+            ["DesProducto"]    = it.DES_PRODUCTO,
+            // El "+ nuevo lote" vive DENTRO del diálogo, al lado del combo: necesita saber a
+            // nombre de qué entidad crear. Este panel no la tiene por su cuenta —Cabecera y
+            // Linea no la traen— así que la pasa el documento que aloja el panel.
+            ["CodEntidad"]     = CodEntidad,
+            ["DesEntidad"]     = DesEntidad
+        };
+
+        var dlg = await DialogService.ShowAsync<LoteOrdenProduccionDialog>("Lote y orden de producción",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+
+        if ((await dlg.Result) is not { Canceled: false, Data: string lote }) return;
+
+        it.NUM_LOTE_CONTROL = string.IsNullOrWhiteSpace(lote) ? null : lote;
+        _hayCambiosSinGrabar = true;
+        Recordar();
+        StateHasChanged();
+    }
+
+    /// <summary>Lo que se lee en la celda: el lote y, si la línea viene de producción, el
+    /// proceso y la orden. Cuando no hay ninguno de los dos, un guion.
+    ///
+    /// Se muestra el lote primero porque es el dato que se completa acá; la orden va detrás
+    /// como contexto.</summary>
+    private string ResumenLoteOrden(Linea it)
+    {
+        var partes = new List<string>();
+
+        // La DESCRIPCIÓN del lote (lo que se ve en el combo del diálogo), no el número
+        // interno: se busca en _lotes, que ya está cargado para ese mismo combo. El número
+        // queda de respaldo si el lote no aparece ahí.
+        if (!string.IsNullOrWhiteSpace(it.NUM_LOTE_CONTROL))
+        {
+            var texto = _lotes.FirstOrDefault(l => string.Equals(l.Id, it.NUM_LOTE_CONTROL, StringComparison.OrdinalIgnoreCase)) is { } l && !string.IsNullOrWhiteSpace(l.Texto)
+                ? l.Texto
+                : it.NUM_LOTE_CONTROL!;
+            partes.Add(texto);
+        }
+
+        if (!string.IsNullOrWhiteSpace(it.COD_PROCESO))
+        {
+            var orden = it.COD_PROCESO!;
+            // El cero SÍ se muestra: es un número de orden real en esta base.
+            if (it.NUM_ORDEN_PRODUCCION is { } n)
+            {
+                orden += $"/{n}";
+                if (it.NUM_ORDEN_PRODUCCION_ITEM   is { } i) orden += $"/{i}";
+                if (it.NUM_ORDEN_PRODUCCION_UNIDAD is { } u) orden += $"/{u}";
+            }
+            partes.Add(orden);
+        }
+
+        return partes.Count == 0 ? "—" : string.Join(" · ", partes);
+    }
+
+    // ── Ubicación de entrada ─────────────────────────────────────────────────────────
+
+    private List<ComboboxItem> _ubicaciones = new();
+
+    /// <summary>El almacén del movimiento, que es el mismo para todas las líneas. El SP lo
+    /// resuelve de la cabecera y lo repite en cada fila, así que se toma de la primera.</summary>
+    private string? _codAlmacen;
+
+    /// <summary>Ubicaciones del almacén del movimiento, para el combo de cada línea.
+    ///
+    /// Se pide UNA vez por carga y no una por fila: todas las líneas comparten almacén, así
+    /// que una lista alcanza. Si el almacén no cambió respecto de la carga anterior, ni
+    /// siquiera se vuelve a pedir.</summary>
+    /// <summary>Recibe las filas POR PARÁMETRO y no las lee de _detalleDisponibles: se llama
+    /// ANTES de publicarlas a la grilla, justamente para que los combos ya tengan opciones
+    /// cuando se dibujen por primera vez.</summary>
+    private async Task CargarUbicacionesAsync(List<Linea> filas)
+    {
+        var almacen = filas.Select(x => x.COD_ALMACEN)
+                           .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+
+        if (string.IsNullOrWhiteSpace(almacen))
+        {
+            // Sin almacén no hay ubicaciones que ofrecer. Se vacía en vez de dejar las del
+            // movimiento anterior, que llevarían a grabar una ubicación de otro almacén.
+            _ubicaciones = new();
+            _codAlmacen = null;
+            return;
+        }
+
+        if (string.Equals(almacen, _codAlmacen, StringComparison.OrdinalIgnoreCase) && _ubicaciones.Count > 0)
+            return;
+
+        _codAlmacen = almacen;
+        _ubicaciones = (await Http.SafeGetAsync<List<ComboboxItem>>(
+                            ApiRoutes.Logistica.AlmacenesUbicacionesCombobox(almacen))) ?? new();
+
+    }
+
+    /// <summary>Mete en la lista las ubicaciones que el SP YA propuso y que el combo no
+    /// trajo.
+    ///
+    /// Es la misma precaución que en los lotes del pedido: si la propuesta no está entre las
+    /// opciones, el combo se dibuja VACÍO mientras el dato sigue ahí, y el usuario creería
+    /// que la línea no tiene ubicación cuando sí la tiene. Se agregan marcadas.</summary>
+    private void AsegurarUbicacionesPropuestas()
+    {
+        foreach (var ln in _detalleDisponibles)
+        {
+            var cod = ln.COD_UBICACION_ALMACEN;
+            if (string.IsNullOrWhiteSpace(cod)) continue;
+            if (_ubicaciones.Any(x => string.Equals(x.Id, cod, StringComparison.OrdinalIgnoreCase))) continue;
+
+            _ubicaciones.Insert(0, new ComboboxItem
+            {
+                Id = cod,
+                Texto = string.IsNullOrWhiteSpace(ln.DES_UBICACION_ALMACEN)
+                            ? "(propuesta, fuera de la lista)"
+                            : ln.DES_UBICACION_ALMACEN
+            });
+        }
+    }
+
+    /// <summary>Sólo la DESCRIPCIÓN de la ubicación. El código no aporta nada acá: la celda
+    /// es angosta y "01078 — ZONA DE RECEPCIÓN" se cortaba justo donde empieza lo que se lee.
+    ///
+    /// El código sigue siendo el valor que se graba; lo que cambia es lo que se muestra.
+    ///
+    /// Cae al código sólo si la ubicación no tiene descripción: una opción sin ningún texto
+    /// es una franja de color que no se puede identificar ni buscar.</summary>
+    private static string EtiquetaUbicacion(ComboboxItem t)
+        => string.IsNullOrWhiteSpace(t.Texto) ? (t.Id ?? "") : t.Texto;
+
+    /// <summary>Al cambiar la ubicación se actualiza también su descripción, que es lo que se
+    /// lee en la celda y lo que viajaría al alta.
+    ///
+    /// LA GUARDA DE ABAJO ES LO QUE ARREGLA EL 515.
+    ///
+    /// Un combo cuyo valor no figura entre sus opciones se queda sin texto, y a la primera
+    /// interacción avisa que quedó vacío. Ese aviso llega acá igual que un clic del usuario, y
+    /// BORRABA la ubicación que el SP había propuesto: se asignaba con NULL y la base lo
+    /// rechazaba con un 515 que parecía venir de la nada.
+    ///
+    /// Vaciar un combo que no tiene NADA que ofrecer no es decisión de nadie. Mientras la
+    /// lista esté vacía, un "quedó en blanco" se ignora. Con la lista cargada sí se respeta:
+    /// ahí, elegir vacío significa que el usuario quiere quitar la ubicación.
+    ///
+    /// Va ADEMÁS del orden de carga —los catálogos antes que las filas—, no en su lugar. El
+    /// orden evita que pase; esto lo hace imposible aunque el orden cambie mañana.</summary>
+    private void UbicacionCambiada(Linea linea, string? cod)
+    {
+        if (string.IsNullOrWhiteSpace(cod) && _ubicaciones.Count == 0) return;
+
+        linea.COD_UBICACION_ALMACEN = string.IsNullOrWhiteSpace(cod) ? null : cod;
+        linea.DES_UBICACION_ALMACEN = _ubicaciones
+            .FirstOrDefault(x => string.Equals(x.Id, cod, StringComparison.OrdinalIgnoreCase))?.Texto;
+        _hayCambiosSinGrabar = true;
+        Recordar();
+    }
+
+}

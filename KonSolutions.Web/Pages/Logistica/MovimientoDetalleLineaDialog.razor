@@ -1,0 +1,534 @@
+@* Alta y modificación A MANO de las líneas del detalle de un movimiento.
+
+   Tres formas, según lo que se haga:
+     salida     — las líneas salen del stock con disponible del almacén: en cada fila (ubicación
+                  + producto + lote + orden) se escribe la cantidad a sacar. En una salida por
+                  transferencia, además, la ubicación del almacén destino: una para todas y, si
+                  hace falta, otra distinta por fila.
+     ingreso    — no hay stock de dónde partir: se elige producto, ubicación, lote y cantidad.
+     modificar  — una línea ya grabada: cambia la cantidad (y en la transferencia, la ubicación
+                  destino). Producto, lote y ubicación quedan fijos: para cambiarlos se quita la
+                  línea y se agrega otra.
+
+   Graba con el POST / PUT de movimientos-almacen-detalle. El SP mueve el stock y, en una salida
+   por transferencia, también la línea y el stock del ingreso destino.
+
+   Quién puede abrirlo lo decide MovimientoAlmacenDocumento (comerciales, de requerimiento e
+   ingreso de transferencia, no). *@
+@using Modelo = KONSolutions.Shared.Models.Logistica.MovimientosAlmacen
+@using DetalleModel = KONSolutions.Shared.Models.Logistica.MovimientosAlmacenDetalle
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+<MudDialog Style="@(Forma == FormaSalida ? "width:min(1180px,96vw);" : "width:min(760px,96vw);")">
+    <TitleContent>
+        <MudText Typo="Typo.h6">@Titulo</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        @if (_cargando)
+        {
+            <MudProgressLinear Indeterminate="true" Class="my-4" />
+        }
+        else if (Forma == FormaSalida)
+        {
+            <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+                Stock con disponible en el almacén <span class="mono">@Cabecera.COD_ALMACEN</span>.
+                Escribe la cantidad en las filas que quieras sacar; cada fila con cantidad es una línea.
+            </MudText>
+            <div class="d-flex gap-3 align-end mb-3" style="flex-wrap:wrap;">
+                <MudTextField T="string" @bind-Value="_filtro" Immediate="true" DebounceInterval="250"
+                              Label="Buscar (producto, ubicación o lote)" Variant="Variant.Outlined" Margin="Margin.Dense"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Style="max-width:380px;" />
+                @if (ConDestino)
+                {
+                    @* La ubicación del almacén destino donde entra lo que sale. Una para todas las
+                       filas; la columna de la derecha permite otra en una fila puntual. *@
+                    <div style="min-width:300px;">
+                        <AriaCombo TItem="ComboboxItem" Items="_combos.UbicacionesDestino"
+                                   TextFunc="@(u => u.Texto)" ValueFunc="@(u => u.Id)"
+                                   @bind-Value="_ubicacionDestino" Label="Ubicación destino" Class="" />
+                    </div>
+                }
+            </div>
+
+            @if (_filas.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">No hay stock con disponible en este almacén.</MudAlert>
+            }
+            else
+            {
+                var visibles = Filtradas.Take(MaxFilas).ToList();
+                <div style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:6px;">
+                    <table class="tabla-simple-editable" style="width:100%;font-size:.8rem;">
+                        <thead style="position:sticky;top:0;z-index:1;">
+                            <tr>
+                                <th>Producto</th>
+                                <th style="width:150px;">Ubicación</th>
+                                <th style="width:170px;">Lote / Orden</th>
+                                <th style="width:60px;">UM</th>
+                                <th style="width:120px;text-align:right;">Disponible</th>
+                                <th style="width:130px;">Cantidad</th>
+                                @if (ConDestino)
+                                {
+                                    <th style="width:190px;">Ubicación destino</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var fila in visibles)
+                            {
+                                var s = fila.Stock;
+                                <tr style="@(fila.Cantidad > 0 ? "background:rgba(255,213,79,.18);" : "")">
+                                    <td>
+                                        <div class="mono" style="font-size:.7rem;opacity:.6;">@s.COD_PRODUCTO</div>
+                                        <div>@s.DES_PRODUCTO</div>
+                                    </td>
+                                    <td>
+                                        <div class="mono">@s.COD_UBICACION_ALMACEN</div>
+                                        <div style="font-size:.7rem;opacity:.6;">@s.DES_UBICACION_ALMACEN</div>
+                                    </td>
+                                    <td class="mono" style="font-size:.72rem;">@LoteOrden(s.NUM_LOTE_CONTROL, s.COD_PROCESO, s.NUM_ORDEN_PRODUCCION, s.NUM_ORDEN_PRODUCCION_ITEM, s.NUM_ORDEN_PRODUCCION_UNIDAD)</td>
+                                    <td class="mono">@s.COD_UNIDAD_MEDIDA</td>
+                                    <td class="mono" style="text-align:right;">@Num(s.CAN_DISPONIBLE)</td>
+                                    <td>
+                                        @* input nativo y no MudNumericField: con cientos de filas, un
+                                           componente por celda vuelve lenta la grilla. type=number
+                                           enlaza siempre con punto decimal, sin importar la cultura.
+                                           Se enlaza al salir del campo (onchange) y no al teclear: con
+                                           decimales, enlazar en cada tecla borraba el punto de "1." *@
+                                        <input type="number" min="0" step="any" class="mud-input-slot"
+                                               style="width:100%;padding:4px 6px;border:1px solid @(fila.Excede ? "#c62828" : "var(--line)");border-radius:4px;text-align:right;background:transparent;color:inherit;"
+                                               @bind="fila.Cantidad" />
+                                        @if (fila.Excede)
+                                        {
+                                            <div style="color:#c62828;font-size:.68rem;">Más que el disponible</div>
+                                        }
+                                    </td>
+                                    @if (ConDestino)
+                                    {
+                                        <td>
+                                            @if (fila.Cantidad > 0)
+                                            {
+                                                <select @bind="fila.UbicacionDestino"
+                                                        style="width:100%;padding:4px;border:1px solid var(--line);border-radius:4px;background:transparent;color:inherit;">
+                                                    <option value="">(la de arriba)</option>
+                                                    @foreach (var u in _combos.UbicacionesDestino)
+                                                    {
+                                                        <option value="@u.Id">@u.Texto</option>
+                                                    }
+                                                </select>
+                                            }
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex mt-2" style="font-size:.78rem;opacity:.75;">
+                    <span>@_filas.Count(f => f.Cantidad > 0) fila(s) con cantidad</span>
+                    <MudSpacer />
+                    @if (Filtradas.Count() > MaxFilas)
+                    {
+                        <span>Se muestran @MaxFilas de @Filtradas.Count(): usa el buscador para encontrar las demás.</span>
+                    }
+                </div>
+            }
+        }
+        else if (Forma == FormaIngreso)
+        {
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="8">
+                    @* Búsqueda sobre la lista ya cargada: el catálogo de productos puede ser largo
+                       y pintarlo entero en el desplegable sería lento. *@
+                    <AriaCombo TItem="MovimientosAlmacenDetalleProducto" Items="_combos.Productos"
+                               SearchFunc="BuscarProducto" MinCharacters="2" DebounceMs="150"
+                               TextFunc="@(p => $"{p.COD_PRODUCTO} - {p.DES_PRODUCTO}")" ValueFunc="@(p => p.COD_PRODUCTO ?? "")"
+                               Value="@_producto?.COD_PRODUCTO" ItemSelected="ElegirProducto"
+                               Label="Producto" Class="" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudTextField T="string" Value="@(_producto?.COD_UNIDAD_MEDIDA ?? "")" Label="Unidad de medida"
+                                  ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_combos.Ubicaciones"
+                               TextFunc="@(u => u.Texto)" ValueFunc="@(u => u.Id)"
+                               @bind-Value="_ubicacion" Label="Ubicación" Class="" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="Lotes"
+                               TextFunc="@(l => string.IsNullOrWhiteSpace(l.Texto) ? l.Id : $"{l.Id} - {l.Texto}")" ValueFunc="@(l => l.Id)"
+                               @bind-Value="_lote" Label="Lote de control (vacío: el de por defecto)" Class="" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="decimal?" @bind-Value="_cantidad" Label="Cantidad" Min="0"
+                                     HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                @if (!string.IsNullOrWhiteSpace(_producto?.COD_UNIDAD_MEDIDA_SECUNDARIO))
+                {
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="decimal?" @bind-Value="_cantidadSecundaria" Min="0"
+                                         Label="@($"Cantidad secundaria ({_producto!.COD_UNIDAD_MEDIDA_SECUNDARIO})")"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                }
+            </MudGrid>
+            <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.65;">
+                El proceso y la orden de producción se graban con los de Configuración General.
+            </MudText>
+        }
+        else if (Linea is not null)
+        {
+            <div class="mb-3" style="font-size:.85rem;">
+                <div class="mono" style="font-size:.72rem;opacity:.6;">@Linea.COD_PRODUCTO</div>
+                <div style="font-weight:700;">@Linea.DES_PRODUCTO</div>
+                <div class="mono mt-1" style="font-size:.75rem;opacity:.75;">
+                    Ubicación @Linea.COD_UBICACION_ALMACEN · @LoteOrden(Linea.NUM_LOTE_CONTROL, Linea.COD_PROCESO, Linea.NUM_ORDEN_PRODUCCION, Linea.NUM_ORDEN_PRODUCCION_ITEM, Linea.NUM_ORDEN_PRODUCCION_UNIDAD)
+                </div>
+            </div>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6">
+                    <MudNumericField T="decimal?" @bind-Value="_cantidad" Min="0"
+                                     Label="@($"Cantidad ({Linea.COD_UNIDAD_MEDIDA})")"
+                                     HelperText="@(EsSalida ? $"Máximo {Num(_maximo)}: lo de la línea más el disponible" : null)"
+                                     Error="@(EsSalida && _cantidad > _maximo)" ErrorText="Más que lo disponible"
+                                     HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                </MudItem>
+                @if (!string.IsNullOrWhiteSpace(Linea.COD_UNIDAD_MEDIDA_SECUNDARIO))
+                {
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="decimal?" @bind-Value="_cantidadSecundaria" Min="0"
+                                         Label="@($"Cantidad secundaria ({Linea.COD_UNIDAD_MEDIDA_SECUNDARIO})")"
+                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    </MudItem>
+                }
+                @if (ConDestino)
+                {
+                    <MudItem xs="12">
+                        <AriaCombo TItem="ComboboxItem" Items="_combos.UbicacionesDestino"
+                                   TextFunc="@(u => u.Texto)" ValueFunc="@(u => u.Id)"
+                                   @bind-Value="_ubicacionDestino" Label="Ubicación destino" Class="" />
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" Disabled="_grabando"
+                   OnClick="@(() => MudDialog.Close(DialogResult.Ok(_grabadas > 0)))">Cerrar</MudButton>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save"
+                   Disabled="@(_grabando || _cargando)" OnClick="Grabar">
+            @(_grabando ? "Grabando..." : TextoBoton)
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public const string FormaSalida = "salida", FormaIngreso = "ingreso", FormaModificar = "modificar";
+
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Forma { get; set; } = FormaSalida;
+    /// <summary>La cabecera del movimiento: almacén, clase, tipo, estado y el ingreso destino.</summary>
+    [Parameter] public Modelo Cabecera { get; set; } = new();
+    /// <summary>Salida por transferencia que el SP replica en el ingreso destino: hay que elegir
+    /// la ubicación del almacén destino.</summary>
+    [Parameter] public bool ConDestino { get; set; }
+    /// <summary>El tipo resta stock: al modificar, la cantidad no puede pasar de lo disponible.</summary>
+    [Parameter] public bool EsSalida { get; set; }
+    [Parameter] public List<ComboboxItem> Lotes { get; set; } = new();
+    /// <summary>La línea a modificar (sólo en la forma "modificar").</summary>
+    [Parameter] public DetalleModel? Linea { get; set; }
+
+    private const int MaxFilas = 200;
+
+    private sealed class FilaStock
+    {
+        public MovimientosAlmacenDetalleStockDisponible Stock = new();
+        public decimal? Cantidad;
+        public string? UbicacionDestino;
+        public bool Excede => Cantidad > (Stock.CAN_DISPONIBLE ?? 0);
+    }
+
+    private bool _cargando = true, _grabando;
+    private int _grabadas;
+    private MovimientosAlmacenDetalleCombosLinea _combos = new();
+    private List<FilaStock> _filas = new();
+    private string? _filtro, _ubicacionDestino, _ubicacion, _lote;
+    private MovimientosAlmacenDetalleProducto? _producto;
+    private decimal? _cantidad, _cantidadSecundaria;
+    private decimal _maximo;
+
+    private decimal NumMovimiento => Cabecera.NUM_MOVIMIENTO_ALMACEN ?? 0;
+
+    private string Titulo => Forma switch
+    {
+        FormaSalida  => $"Agregar líneas desde el stock · Movimiento N° {NumMovimiento}",
+        FormaIngreso => $"Agregar línea · Movimiento N° {NumMovimiento}",
+        _            => $"Modificar línea {Linea?.NUM_SECUENCIA} · Movimiento N° {NumMovimiento}"
+    };
+
+    private string TextoBoton => Forma switch
+    {
+        FormaSalida  => $"Agregar {_filas.Count(f => f.Cantidad > 0)} línea(s)",
+        FormaIngreso => "Agregar línea",
+        _            => "Guardar cambios"
+    };
+
+    private IEnumerable<FilaStock> Filtradas
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_filtro)) return _filas;
+            var t = _filtro.Trim();
+            return _filas.Where(f =>
+                (f.Stock.COD_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+             || (f.Stock.DES_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+             || (f.Stock.COD_UBICACION_ALMACEN ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+             || (f.Stock.DES_UBICACION_ALMACEN ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+             || (f.Stock.NUM_LOTE_CONTROL ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+             || f.Cantidad > 0);   // lo que ya tiene cantidad no se esconde al buscar otra cosa
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var combos = Http.SafeGetAsync<MovimientosAlmacenDetalleCombosLinea>(
+                ApiRoutes.Logistica.MovimientosAlmacenDetalleCombosLinea(NumMovimiento));
+            // El stock se lee en la salida (de ahí salen las filas) y al modificar una salida
+            // (para saber cuánto más se puede sacar de esa misma clave).
+            var stock = Forma == FormaSalida || (Forma == FormaModificar && EsSalida)
+                ? Http.SafeGetAsync<List<MovimientosAlmacenDetalleStockDisponible>>(
+                      ApiRoutes.Logistica.MovimientosAlmacenDetalleStockDisponible(NumMovimiento))
+                : Task.FromResult<List<MovimientosAlmacenDetalleStockDisponible>?>(null);
+            _combos = await combos ?? new();
+            var disponibles = await stock ?? new();
+
+            if (Forma == FormaSalida)
+            {
+                _filas = disponibles.Select(d => new FilaStock { Stock = d }).ToList();
+                // Si el almacén destino tiene una sola ubicación, no hay nada que elegir.
+                if (_combos.UbicacionesDestino.Count == 1) _ubicacionDestino = _combos.UbicacionesDestino[0].Id;
+            }
+
+            if (Forma == FormaModificar && Linea is not null)
+            {
+                _cantidad = Linea.CAN_PRODUCTO;
+                _cantidadSecundaria = Linea.CAN_PRODUCTO_SECUNDARIO;
+                _ubicacionDestino = Linea.COD_UBICACION_ALMACEN_SINCRONIZADO;
+                // Lo que ya sacó la línea está descontado del disponible: el máximo es esa
+                // cantidad más lo que queda disponible en la misma clave de stock.
+                var clave = disponibles.FirstOrDefault(d =>
+                    d.COD_UBICACION_ALMACEN == Linea.COD_UBICACION_ALMACEN && d.COD_PRODUCTO == Linea.COD_PRODUCTO
+                    && d.NUM_LOTE_CONTROL == Linea.NUM_LOTE_CONTROL && d.COD_PROCESO == Linea.COD_PROCESO
+                    && d.NUM_ORDEN_PRODUCCION == Linea.NUM_ORDEN_PRODUCCION && d.NUM_ORDEN_PRODUCCION_ITEM == Linea.NUM_ORDEN_PRODUCCION_ITEM
+                    && d.NUM_ORDEN_PRODUCCION_UNIDAD == Linea.NUM_ORDEN_PRODUCCION_UNIDAD);
+                _maximo = (Linea.CAN_PRODUCTO ?? 0) + (clave?.CAN_DISPONIBLE ?? 0);
+            }
+        }
+        finally { _cargando = false; }
+    }
+
+    private Task<IEnumerable<MovimientosAlmacenDetalleProducto>> BuscarProducto(string texto, CancellationToken ct)
+    {
+        var t = (texto ?? "").Trim();
+        IEnumerable<MovimientosAlmacenDetalleProducto> r = _combos.Productos
+            .Where(p => (p.COD_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase)
+                     || (p.DES_PRODUCTO ?? "").Contains(t, StringComparison.OrdinalIgnoreCase))
+            .Take(50)
+            .ToList();
+        return Task.FromResult(r);
+    }
+
+    private void ElegirProducto(MovimientosAlmacenDetalleProducto? p)
+    {
+        _producto = p;
+        if (string.IsNullOrWhiteSpace(p?.COD_UNIDAD_MEDIDA_SECUNDARIO)) _cantidadSecundaria = null;
+    }
+
+    // ── Grabar ──────────────────────────────────────────────────────────────────
+    private async Task Grabar()
+    {
+        var error = Forma switch
+        {
+            FormaSalida  => ValidarSalida(),
+            FormaIngreso => ValidarIngreso(),
+            _            => ValidarModificacion()
+        };
+        if (error is not null) { Snackbar.Add(error, Severity.Warning); return; }
+
+        _grabando = true;
+        try
+        {
+            if (Forma == FormaSalida)
+            {
+                // Una llamada por línea y en orden: si una falla (por ejemplo, alguien sacó el
+                // stock mientras tanto) se detiene ahí, avisa, y las anteriores ya quedaron.
+                foreach (var f in _filas.Where(f => f.Cantidad > 0).ToList())
+                {
+                    if (!await PostAsync(DesdeStock(f))) break;
+                    _grabadas++;
+                    _filas.Remove(f);
+                }
+                if (_grabadas > 0) MudDialog.Close(DialogResult.Ok(true));
+            }
+            else if (Forma == FormaIngreso)
+            {
+                if (await PostAsync(DesdeFormulario())) MudDialog.Close(DialogResult.Ok(true));
+            }
+            else if (await PutAsync(DesdeLinea()))
+            {
+                MudDialog.Close(DialogResult.Ok(true));
+            }
+        }
+        finally { _grabando = false; }
+    }
+
+    private string? ValidarSalida()
+    {
+        var con = _filas.Where(f => f.Cantidad > 0).ToList();
+        if (con.Count == 0) return "Escribe la cantidad en al menos una fila.";
+        if (con.Any(f => f.Excede)) return "Hay filas con más cantidad que la disponible.";
+        if (ConDestino && con.Any(f => string.IsNullOrWhiteSpace(f.UbicacionDestino) && string.IsNullOrWhiteSpace(_ubicacionDestino)))
+            return "Elige la ubicación destino.";
+        return null;
+    }
+
+    private string? ValidarIngreso()
+    {
+        if (_producto is null) return "Elige el producto.";
+        if (string.IsNullOrWhiteSpace(_producto.COD_UNIDAD_MEDIDA)) return "El producto no tiene unidad de medida.";
+        if (string.IsNullOrWhiteSpace(_ubicacion)) return "Elige la ubicación.";
+        if (!(_cantidad > 0)) return "Escribe la cantidad.";
+        return null;
+    }
+
+    private string? ValidarModificacion()
+    {
+        if (Linea is null) return "No hay línea que modificar.";
+        if (!(_cantidad > 0)) return "La cantidad tiene que ser mayor que cero. Para dejarla en cero, quita la línea.";
+        if (EsSalida && _cantidad > _maximo) return $"La cantidad no puede pasar de {Num(_maximo)}.";
+        if (ConDestino && string.IsNullOrWhiteSpace(_ubicacionDestino)) return "Elige la ubicación destino.";
+        return null;
+    }
+
+    /// <summary>Lo común a toda línea nueva: la cabecera manda el almacén, la clase, el tipo y el
+    /// estado. El ingreso destino lo completa el SP desde la cabecera.</summary>
+    private MovimientosAlmacenDetalleInsertDto Base() => new()
+    {
+        NUM_MOVIMIENTO_ALMACEN = Cabecera.NUM_MOVIMIENTO_ALMACEN,
+        COD_CLASE_MOVIMIENTO   = Cabecera.COD_CLASE_MOVIMIENTO,
+        COD_TIPO_MOVIMIENTO    = Cabecera.COD_TIPO_MOVIMIENTO,
+        COD_ALMACEN            = Cabecera.COD_ALMACEN,
+        COD_TIPO_ESTADO        = Cabecera.COD_TIPO_ESTADO,
+        COD_ESTADO             = Cabecera.COD_ESTADO
+    };
+
+    private MovimientosAlmacenDetalleInsertDto DesdeStock(FilaStock f)
+    {
+        var d = Base();
+        var s = f.Stock;
+        d.COD_PRODUCTO                 = s.COD_PRODUCTO;
+        d.COD_UBICACION_ALMACEN        = s.COD_UBICACION_ALMACEN;
+        d.NUM_LOTE_CONTROL             = s.NUM_LOTE_CONTROL;
+        d.COD_PROCESO                  = s.COD_PROCESO;
+        d.NUM_ORDEN_PRODUCCION         = s.NUM_ORDEN_PRODUCCION;
+        d.NUM_ORDEN_PRODUCCION_ITEM    = s.NUM_ORDEN_PRODUCCION_ITEM;
+        d.NUM_ORDEN_PRODUCCION_UNIDAD  = s.NUM_ORDEN_PRODUCCION_UNIDAD;
+        d.COD_UNIDAD_MEDIDA            = s.COD_UNIDAD_MEDIDA;
+        d.COD_UNIDAD_MEDIDA_SECUNDARIO = s.COD_UNIDAD_MEDIDA_SECUNDARIO;
+        d.CAN_PRODUCTO                 = f.Cantidad;
+        // La secundaria, en proporción a lo que se saca del disponible de esa clave.
+        d.CAN_PRODUCTO_SECUNDARIO      = (s.CAN_DISPONIBLE ?? 0) > 0 && (s.CAN_DISPONIBLE_SECUNDARIO ?? 0) != 0
+            ? Math.Round((s.CAN_DISPONIBLE_SECUNDARIO ?? 0) * (f.Cantidad ?? 0) / s.CAN_DISPONIBLE!.Value, 8)
+            : 0;
+        if (ConDestino)
+            d.COD_UBICACION_ALMACEN_SINCRONIZADO = string.IsNullOrWhiteSpace(f.UbicacionDestino) ? _ubicacionDestino : f.UbicacionDestino;
+        return d;
+    }
+
+    private MovimientosAlmacenDetalleInsertDto DesdeFormulario()
+    {
+        var d = Base();
+        d.COD_PRODUCTO                 = _producto!.COD_PRODUCTO;
+        d.COD_UNIDAD_MEDIDA            = _producto.COD_UNIDAD_MEDIDA;
+        d.COD_UNIDAD_MEDIDA_SECUNDARIO = _producto.COD_UNIDAD_MEDIDA_SECUNDARIO;
+        d.COD_UBICACION_ALMACEN        = _ubicacion;
+        d.NUM_LOTE_CONTROL             = string.IsNullOrWhiteSpace(_lote) ? null : _lote;
+        d.CAN_PRODUCTO                 = _cantidad;
+        d.CAN_PRODUCTO_SECUNDARIO      = _cantidadSecundaria ?? 0;
+        return d;
+    }
+
+    /// <summary>La línea tal como está, con la cantidad (y la ubicación destino) nuevas. Viaja
+    /// completa: lo que el SP recibe en null lo deja como estaba.</summary>
+    private MovimientosAlmacenDetalleUpdateDto DesdeLinea()
+    {
+        var l = Linea!;
+        return new MovimientosAlmacenDetalleUpdateDto
+        {
+            NUM_MOVIMIENTO_ALMACEN             = l.NUM_MOVIMIENTO_ALMACEN,
+            NUM_SECUENCIA                      = l.NUM_SECUENCIA,
+            COD_PRODUCTO                       = l.COD_PRODUCTO,
+            COD_CLASE_MOVIMIENTO               = l.COD_CLASE_MOVIMIENTO,
+            COD_TIPO_MOVIMIENTO                = l.COD_TIPO_MOVIMIENTO,
+            CAN_PRODUCTO                       = _cantidad,
+            COD_UNIDAD_MEDIDA                  = l.COD_UNIDAD_MEDIDA,
+            CAN_PRODUCTO_SECUNDARIO            = _cantidadSecundaria ?? 0,
+            COD_UNIDAD_MEDIDA_SECUNDARIO       = l.COD_UNIDAD_MEDIDA_SECUNDARIO,
+            COD_ALMACEN                        = l.COD_ALMACEN,
+            COD_UBICACION_ALMACEN              = l.COD_UBICACION_ALMACEN,
+            NUM_LOTE_CONTROL                   = l.NUM_LOTE_CONTROL,
+            COD_PROCESO                        = l.COD_PROCESO,
+            NUM_ORDEN_PRODUCCION               = l.NUM_ORDEN_PRODUCCION,
+            NUM_ORDEN_PRODUCCION_ITEM          = l.NUM_ORDEN_PRODUCCION_ITEM,
+            NUM_ORDEN_PRODUCCION_UNIDAD        = l.NUM_ORDEN_PRODUCCION_UNIDAD,
+            COD_UBICACION_ALMACEN_SINCRONIZADO = ConDestino ? _ubicacionDestino : null,
+            COD_TIPO_ESTADO                    = l.COD_TIPO_ESTADO,
+            COD_ESTADO                         = l.COD_ESTADO
+        };
+    }
+
+    private async Task<bool> PostAsync(MovimientosAlmacenDetalleInsertDto dto)
+        => await EnviarAsync(() => Http.PostAsJsonAsync(ApiRoutes.Logistica.MovimientosAlmacenDetalle, dto), nameof(PostAsync));
+
+    private async Task<bool> PutAsync(MovimientosAlmacenDetalleUpdateDto dto)
+        => await EnviarAsync(() => Http.PutAsJsonAsync(ApiRoutes.Logistica.MovimientosAlmacenDetalle, dto), nameof(PutAsync));
+
+    private async Task<bool> EnviarAsync(Func<Task<HttpResponseMessage>> llamada, string metodo)
+    {
+        try
+        {
+            var resp = await llamada();
+            if (resp.IsSuccessStatusCode) return true;
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoDetalleLineaDialog), metodo);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoDetalleLineaDialog), metodo);
+            Snackbar.Add("No se pudo grabar la línea. Ver detalle en el log de errores.", Severity.Error);
+        }
+        return false;
+    }
+
+    // ── Presentación ────────────────────────────────────────────────────────────
+    private static string Num(decimal? v) => (v ?? 0).ToString(Decimales.FormatoCantidad);
+
+    /// <summary>"Lote L-001 · OP 12-1-1 (TEJ)"; sin orden de producción, sólo el lote.</summary>
+    private static string LoteOrden(string? lote, string? proceso, int? orden, short? item, byte? unidad)
+    {
+        var partes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(lote)) partes.Add($"Lote {lote}");
+        if (orden is > 0) partes.Add($"OP {orden}-{item}-{unidad}{(string.IsNullOrWhiteSpace(proceso) ? "" : $" ({proceso})")}");
+        return partes.Count == 0 ? "—" : string.Join(" · ", partes);
+    }
+}

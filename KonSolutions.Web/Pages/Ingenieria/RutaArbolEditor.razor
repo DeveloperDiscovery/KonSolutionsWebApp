@@ -1,0 +1,201 @@
+@* Editor del arbol de una ruta o de una matriz (scripts SQL 122 y 130, API ingenieria/rutas-tiempos): proceso > subproceso > operacion del catalogo, con minutos estandar (SAM),
+   veces, tiempo propio y precedencias. Una matriz es una ruta, asi que se edita igual. Lo usan Rutas con tiempos y Matrices de operaciones. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<AltoLlenaEstilos />
+
+<div class="@(LlenaAlto ? "rt-detalle rt-llena" : "rt-detalle")" data-zona="detalle">
+        @if (Ruta is null)
+        {
+            <MudText Class="pa-6" Style="opacity:.55;">@TextoVacio</MudText>
+        }
+        else
+        {
+            @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+            <div class="d-flex flex-wrap gap-2 align-center mb-2" data-zona="barra">
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarProceso" Disabled="SoloLectura" data-accion="agregar-proceso">Proceso</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarSubproceso" Disabled="@(SoloLectura || _sel?.DES_TIPO_ELEMENTO != "PRC")" data-accion="agregar-subproceso">Subproceso</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AddCircle" OnClick="AgregarOperacion" Disabled="@(SoloLectura || !PuedeColgarOperacion)" data-accion="agregar-operacion">Operación del catálogo</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="Quitar" Disabled="@(SoloLectura || _sel is null)" data-accion="quitar">Quitar</MudButton>
+                <MudSpacer />
+                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:190px;" data-campo="fecha" />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Sync" OnClick="Recalcular" Disabled="SoloLectura" data-accion="recalcular">Actualizar a esa fecha@(Desactualizadas > 0 ? $" ({Desactualizadas})" : "")</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Share" OnClick="Precedencias" Disabled="SoloLectura" data-accion="precedencias">Precedencias (@_nPrecedencias)</MudButton>
+            </div>
+
+            <div class="d-flex flex-wrap gap-4 mb-3 align-center" data-zona="resumen">
+                <div class="rt-total">
+                    <div class="mono" style="opacity:.6;font-size:.72rem;">@EtiquetaTotal</div>
+                    <div style="font-size:1.8rem;font-weight:700;" class="mono" data-total="1">@OperacionesApi.Min(Total)</div>
+                </div>
+                <div data-zona="por-proceso">
+                    <div class="mono" style="opacity:.6;font-size:.72rem;">MINUTOS POR PROCESO Y SUBPROCESO</div>
+                    @foreach (var n in _nodos.Where(x => x.DES_TIPO_ELEMENTO is "PRC" or "SPR"))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@(n.DES_TIPO_ELEMENTO == "PRC" ? Color.Primary : Color.Default)" data-proc="@n.NUM_ESTRUCTURA_RUTA_PROCESO" data-min="@OperacionesApi.Min(n.VAL_SAM_PRENDA)">@(n.DES_TIPO_ELEMENTO == "SPR" ? "↳ " : "")@Nombre(n) · @OperacionesApi.Min(n.VAL_SAM_PRENDA) min</MudChip>
+                    }
+                </div>
+                <div>
+                    <div class="mono" style="opacity:.6;font-size:.72rem;">POR CATEGORÍA</div>
+                    @foreach (var c in _porCategoria) { <MudChip T="string" Size="Size.Small" data-cat="@c.COD_CATEGORIA_OCUPACIONAL">@c.COD_CATEGORIA_OCUPACIONAL · @OperacionesApi.Min(c.VAL_SAM)</MudChip> }
+                </div>
+                <div>
+                    <div class="mono" style="opacity:.6;font-size:.72rem;">POR CLASE</div>
+                    @foreach (var c in _porClase) { <MudChip T="string" Size="Size.Small" data-clase="@c.COD_CLASE_OPERACION_PRODUCCION">@c.DES_CLASE_OPERACION_PRODUCCION · @OperacionesApi.Min(c.VAL_SAM)</MudChip> }
+                </div>
+            </div>
+
+            <div data-resizable-grid="@(LlenaAlto ? null : "rutas-tiempos-arbol")" class="@(LlenaAlto ? "kon-llena" : "")" style="@(LlenaAlto ? "--llena-vh:62vh;position:relative;" : "position:relative;")" data-panel="arbol-ruta">
+            <div class="mud-table-container rt-arbol" style="@(LlenaAlto ? "overflow:visible;" : "height:100%;overflow:auto;")">
+                <table class="rt-tabla" data-tabla="arbol">
+                    <thead><tr><th>Elemento</th><th>Cat.</th><th>Máquina</th><th class="n">Veces</th><th class="n">SAM propio</th><th class="n">SAM del nodo</th><th class="n">SAM por unidad</th><th>Aviso</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                        @foreach (var n in _nodos)
+                        {
+                            <tr class="@Clase(n)" @onclick="@(() => _sel = n)" data-fila="@n.NUM_ESTRUCTURA_RUTA_PROCESO" data-tipo="@n.DES_TIPO_ELEMENTO" style="cursor:pointer;">
+                                <td style="padding-left:@(8 + n.NIVEL * 20)px;">
+                                    <MudIcon Icon="@Icono(n)" Size="Size.Small" Style="opacity:.7;" />
+                                    @Nombre(n)
+                                    @if (n.FLG_PARALELO) { <MudChip T="string" Size="Size.Small" Class="ml-1">en paralelo</MudChip> }
+                                </td>
+                                <td>@n.COD_CATEGORIA_OCUPACIONAL</td>
+                                <td>@n.COD_TIPO_MAQUINA</td>
+                                <td class="n mono">@(n.DES_TIPO_ELEMENTO == "OPE" ? "× " + Fmt(n.VAL_FRECUENCIA) : "")</td>
+                                <td class="n mono">@(n.FLG_HOJA && n.COD_OPERACION is not null ? OperacionesApi.Min(n.VAL_SAM_PROPIO) : "")</td>
+                                <td class="n mono">@(HaySam(n) ? OperacionesApi.Min(n.VAL_SAM_NODO) : "")</td>
+                                <td class="n mono">@(HaySam(n) ? OperacionesApi.Min(n.VAL_SAM_PRENDA) : "")</td>
+                                <td>
+                                    @if (n.FLG_DESACTUALIZADO) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" title="Usa una versión de tiempo distinta de la que rige a esa fecha">desactualizado</MudChip> }
+                                    @if (n.FLG_TIEMPO_PROPIO) { <MudChip T="string" Size="Size.Small" Color="Color.Info" title="Excepción: SAM propio de esta ruta">SAM propio</MudChip> }
+                                    @if (n.FLG_HOJA && n.COD_OPERACION is not null && n.VAL_SAM_PROPIO is null) { <MudChip T="string" Size="Size.Small" Color="Color.Warning">sin tiempo</MudChip> }
+                                    @if (!n.FLG_HOJA && n.CAN_HOJAS_SIN_TIEMPO > 0 && n.DES_TIPO_ELEMENTO == "OPE" && n.COD_OPERACION is not null) { <MudChip T="string" Size="Size.Small" Color="Color.Warning">@n.CAN_HOJAS_SIN_TIEMPO sin tiempo</MudChip> }
+                                </td>
+                                <td style="white-space:nowrap;">
+                                    @if (n.COD_OPERACION is not null) { <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Disabled="SoloLectura" OnClick="@(() => EditarOperacion(n))" title="Editar veces, paralelo y categoría" data-accion="editar-operacion" /> }
+                                    @if (!SoloLectura && n.FLG_HOJA && n.COD_OPERACION is not null) { <MudIconButton Icon="@Icons.Material.Filled.Timer" Size="Size.Small" OnClick="@(() => TiempoPropio(n))" title="SAM propio (excepción)" data-accion="tiempo-propio" /> }
+                                    <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" Disabled="@(SoloLectura || EsPrimero(n))" OnClick="@(() => Mover(n, -1))" title="Subir" data-accion="subir" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" Disabled="@(SoloLectura || EsUltimo(n))" OnClick="@(() => Mover(n, 1))" title="Bajar" data-accion="bajar" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (!LlenaAlto) { <div class="grid-resize-handle"></div> }
+            </div>
+        }
+    </div>
+
+
+@code {
+    /// <summary>La ruta (o matriz) cuyo arbol se edita. Al cambiar de ruta se vuelve a leer el arbol.</summary>
+    [Parameter] public RutaTiempoResumen? Ruta { get; set; }
+    /// <summary>Se avisa cada vez que algo cambia en el arbol (para que la pantalla refresque sus totales).</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+    /// <summary>El arbol se ve pero no se cambia (version bloqueada).</summary>
+    [Parameter] public bool SoloLectura { get; set; }
+    /// <summary>El arbol ocupa todo el alto disponible (la ventana ampliada a pantalla completa lo estira; ver AltoLlenaEstilos).</summary>
+    [Parameter] public bool LlenaAlto { get; set; }
+    /// <summary>Texto cuando todavia no hay ruta elegida.</summary>
+    [Parameter] public string TextoVacio { get; set; } = "Elige una ruta de la lista. Las que tienen filas armadas con el catálogo muestran sus minutos estándar.";
+    /// <summary>Etiqueta del total (minutos estándar por unidad de producto: una prenda, un dron, un equipo...).</summary>
+    [Parameter] public string EtiquetaTotal { get; set; } = "MINUTOS ESTÁNDAR POR UNIDAD";
+
+    private List<RutaNodo> _nodos = new();
+    private List<SamPorCategoria> _porCategoria = new();
+    private List<SamPorClase> _porClase = new();
+    private RutaNodo? _sel;
+    private int _nPrecedencias;
+    private DateTime? _fecha = DateTime.Today;
+    private string _error = "";
+    private string? _codCargado;
+
+    private decimal Total => _nodos.Where(n => n.DES_TIPO_ELEMENTO == "PRC").Sum(n => n.VAL_SAM_PRENDA ?? 0);
+    private int Desactualizadas => _nodos.Count(n => n.FLG_DESACTUALIZADO);
+    private bool PuedeColgarOperacion => _sel is { } s && (s.DES_TIPO_ELEMENTO is "PRC" or "SPR" || (s.DES_TIPO_ELEMENTO == "OPE" && s.COD_OPERACION is not null));
+    private static bool HaySam(RutaNodo n) => n.DES_TIPO_ELEMENTO != "OPE" || n.COD_OPERACION is not null;
+    private static string Fmt(decimal v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    private string Clase(RutaNodo n) => (_sel?.NUM_ESTRUCTURA_RUTA_PROCESO == n.NUM_ESTRUCTURA_RUTA_PROCESO ? "rt-fila-sel " : "") + n.DES_TIPO_ELEMENTO switch { "PRC" => "rt-proceso", "SPR" => "rt-sub", _ => n.FLG_HOJA ? "" : "rt-comp" };
+    private static string Icono(RutaNodo n) => n.DES_TIPO_ELEMENTO switch { "PRC" => Icons.Material.Filled.Factory, "SPR" => Icons.Material.Filled.FolderOpen, _ => n.FLG_HOJA ? Icons.Material.Filled.Circle : Icons.Material.Filled.AccountTree };
+    private static string Nombre(RutaNodo n) => n.DES_TIPO_ELEMENTO switch
+    {
+        "PRC" => n.DES_PROCESO ?? n.COD_PROCESO ?? "",
+        "SPR" => n.DES_SUB_PROCESO ?? n.COD_SUB_PROCESO ?? "",
+        _ => n.DES_OPERACION ?? n.DES_TIPO_OPERACION_PRODUCCION ?? n.COD_TIPO_OPERACION_PRODUCCION ?? ""
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var cod = Ruta?.COD_RUTA_PRODUCCION;
+        if (cod == _codCargado) return;
+        _codCargado = cod; _sel = null; _error = "";
+        await CargarDetalle();
+    }
+
+    private async Task CargarDetalle()
+    {
+        if (Ruta is null) { _nodos = new(); _porCategoria = new(); _porClase = new(); _nPrecedencias = 0; return; }
+        var cod = Ruta.COD_RUTA_PRODUCCION;
+        var f = _fecha is { } d ? "?fecha=" + d.ToString("yyyy-MM-dd") : "";
+        var a = await OperacionesApi.LeerAsync<List<RutaNodo>>(Http, IngRoute.RutaTiempos(cod, "arbol") + f);
+        if (!a.Ok) _error = a.Mensaje ?? "No se pudo leer la ruta.";
+        _nodos = a.Data ?? new();
+        _sel = _sel is null ? null : _nodos.FirstOrDefault(n => n.NUM_ESTRUCTURA_RUTA_PROCESO == _sel.NUM_ESTRUCTURA_RUTA_PROCESO);
+        _porCategoria = (await OperacionesApi.LeerAsync<List<SamPorCategoria>>(Http, IngRoute.RutaTiempos(cod, "sam-por-categoria"))).Data ?? new();
+        _porClase = (await OperacionesApi.LeerAsync<List<SamPorClase>>(Http, IngRoute.RutaTiempos(cod, "sam-por-clase"))).Data ?? new();
+        _nPrecedencias = ((await OperacionesApi.LeerAsync<List<RutaPrecedencia>>(Http, IngRoute.RutaTiempos(cod, "precedencias"))).Data ?? new()).Count;
+        StateHasChanged();
+    }
+
+    private async Task<bool> Dialogo<T>(string titulo, DialogParameters p, MaxWidth ancho = MaxWidth.Medium) where T : Microsoft.AspNetCore.Components.IComponent
+    {
+        var dlg = await DialogService.ShowAsync<T>(titulo, p, new DialogOptions { MaxWidth = ancho, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var r = await dlg.Result;
+        return r is { Canceled: false };
+    }
+
+    private bool EsPrimero(RutaNodo n) => !_nodos.TakeWhile(x => x.NUM_ESTRUCTURA_RUTA_PROCESO != n.NUM_ESTRUCTURA_RUTA_PROCESO).Any(x => x.NUM_ESTRUCTURA_RUTA_PROCESO_PADRE == n.NUM_ESTRUCTURA_RUTA_PROCESO_PADRE);
+    private bool EsUltimo(RutaNodo n) => !_nodos.SkipWhile(x => x.NUM_ESTRUCTURA_RUTA_PROCESO != n.NUM_ESTRUCTURA_RUTA_PROCESO).Skip(1).Any(x => x.NUM_ESTRUCTURA_RUTA_PROCESO_PADRE == n.NUM_ESTRUCTURA_RUTA_PROCESO_PADRE);
+
+    private async Task EditarOperacion(RutaNodo n) { if (await Dialogo<RutaOperacionEditarDialog>($"Editar operación · {Nombre(n)}", new() { ["Ruta"] = Ruta, ["Nodo"] = n }, MaxWidth.Small)) await Refrescar(); }
+
+    private async Task Mover(RutaNodo n, int dir)
+    {
+        if (Ruta is null) return;
+        var r = await OperacionesApi.EnviarAsync<bool>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/mover", new RutaMoverDto { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_ESTRUCTURA_RUTA_PROCESO = n.NUM_ESTRUCTURA_RUTA_PROCESO, DIRECCION = dir });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo mover."; return; }
+        _sel = n;
+        await Refrescar();
+    }
+
+    private async Task Refrescar() { await CargarDetalle(); await OnCambio.InvokeAsync(); }
+
+    private async Task AgregarProceso() { if (await Dialogo<RutaAgregarDialog>("Agregar proceso", new() { ["Ruta"] = Ruta, ["Modo"] = "proceso" })) await Refrescar(); }
+    private async Task AgregarSubproceso() { if (await Dialogo<RutaAgregarDialog>("Agregar subproceso", new() { ["Ruta"] = Ruta, ["Modo"] = "subproceso", ["Padre"] = _sel })) await Refrescar(); }
+    private async Task AgregarOperacion() { if (await Dialogo<RutaAgregarDialog>("Agregar operación del catálogo", new() { ["Ruta"] = Ruta, ["Modo"] = "operacion", ["Padre"] = _sel, ["Fecha"] = _fecha }, MaxWidth.Medium)) await Refrescar(); }
+    private async Task TiempoPropio(RutaNodo n) { if (await Dialogo<RutaTiempoPropioDialog>($"SAM propio · {Nombre(n)}", new() { ["Ruta"] = Ruta, ["Nodo"] = n }, MaxWidth.Small)) await Refrescar(); }
+    private async Task Precedencias() { await Dialogo<RutaPrecedenciasDialog>($"Precedencias · {Ruta?.DES_RUTA_PRODUCCION}", new() { ["Ruta"] = Ruta, ["Nodos"] = _nodos }, MaxWidth.Large); await Refrescar(); }
+
+    private async Task Quitar()
+    {
+        if (Ruta is null || _sel is null) return;
+        var r = await OperacionesApi.EnviarAsync<int>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/quitar", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, NUM_ESTRUCTURA_RUTA_PROCESO = _sel.NUM_ESTRUCTURA_RUTA_PROCESO });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo quitar."; return; }
+        Snackbar.Add($"Se quitaron {r.Data} fila(s).", Severity.Success);
+        _sel = null;
+        await Refrescar();
+    }
+
+    private async Task Recalcular()
+    {
+        if (Ruta is null) return;
+        var r = await OperacionesApi.EnviarAsync<int>(Http, HttpMethod.Post, IngRoute.RutasTiempos + "/recalcular", new { COD_RUTA_PRODUCCION = Ruta.COD_RUTA_PRODUCCION, FECHA = _fecha });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo actualizar."; return; }
+        Snackbar.Add(r.Data == 0 ? "Los tiempos ya estaban al día." : $"{r.Data} fila(s) actualizadas a los tiempos de esa fecha.", Severity.Success);
+        await Refrescar();
+    }
+}

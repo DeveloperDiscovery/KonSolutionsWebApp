@@ -1,0 +1,125 @@
+@* CopiarTipoEstadosDialog.razor
+   -----------------------------------------------------------------------
+   Copia TODOS los estados de un Tipo de Estado a otro (con los mismos codigos, nombres, colores, flags e imagen) y
+   pregunta que hacer con los estados que el destino ya tenia: conservarlos o eliminarlos. Los estados del destino
+   que estan en uso (otra tabla los referencia) nunca se eliminan: se conservan y se avisa. Muestra la vista previa
+   (simulacion en la API, no graba) cada vez que cambia una eleccion. Para copiar solo algunos estados, con codigo nuevo,
+   esta "Copiar a otro tipo" de la grilla. *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models
+@using KONSolutions.Shared.Models.Estandar
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(860px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">Copiar estados a otro tipo de estado</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.8;">Origen: <b>@DesTipoOrigen</b> (@CodTipoOrigen)</MudText>
+        <AriaCombo TItem="TipoEstado" Items="TiposDestino"
+                   TextFunc="@(t => t.DES_TIPO_ESTADO ?? "")" ValueFunc="@(t => t.COD_TIPO_ESTADO?.ToString() ?? "")"
+                   Value="@_destino" ValueChanged="OnDestinoChanged" Label="Tipo de estado destino" />
+        <MudText Typo="Typo.subtitle2" Class="mt-3">¿Qué se hace con los estados que el destino ya tiene?</MudText>
+        <MudRadioGroup T="bool" Value="_eliminar" ValueChanged="OnEliminarChanged">
+            <MudRadio T="bool" Value="false" Color="Color.Primary">Conservarlos y agregar solo los que falten</MudRadio>
+            <MudRadio T="bool" Value="true" Color="Color.Error">Eliminarlos antes de copiar (los que estén en uso se conservan)</MudRadio>
+        </MudRadioGroup>
+        @if (_eliminar)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-1">Se eliminan los estados del destino que no estén en uso. No se puede deshacer.</MudAlert>
+        }
+        @if (_cargando) { <MudProgressLinear Indeterminate="true" Class="mt-2" /> }
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_error</MudAlert> }
+        @if (_filas is not null)
+        {
+            <div class="d-flex gap-2 mt-3 mb-1 flex-wrap">
+                <MudChip T="string" Size="Size.Small" Color="Color.Success">Se copian: @Cuenta("ORIGEN", "COPIAR")</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Info">Ya estaban: @Cuenta("ORIGEN", "EXISTE")</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Error">Se eliminan: @Cuenta("DESTINO", "ELIMINAR")</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning">En uso (se conservan): @EnUso</MudChip>
+            </div>
+            @foreach (var a in _filas.Where(f => f.LADO == "AVISO"))
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-1">@a.MOTIVO</MudAlert>
+            }
+            <div style="max-height:40vh;overflow:auto;">
+                <MudSimpleTable Dense="true" Hover="true" FixedHeader="true" Style="min-width:0;">
+                    <thead><tr><th>Lado</th><th>Código</th><th>Estado</th><th>Resultado</th><th>Motivo</th></tr></thead>
+                    <tbody>
+                    @foreach (var f in _filas.Where(f => f.LADO != "AVISO"))
+                    {
+                        <tr>
+                            <td>@(f.LADO == "ORIGEN" ? "Del origen" : "Del destino")</td>
+                            <td class="mono">@f.COD_ESTADO</td>
+                            <td>@f.DES_ESTADO</td>
+                            <td><MudChip T="string" Size="Size.Small" Color="@ColorAccion(f.ACCION)">@TextoAccion(f.ACCION)</MudChip></td>
+                            <td style="font-size:.78rem;opacity:.8;">@f.MOTIVO</td>
+                        </tr>
+                    }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+        }
+        <div class="d-flex justify-end gap-2 mt-4">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="@(_eliminar ? Color.Error : Color.Primary)" StartIcon="@Icons.Material.Filled.ContentCopy"
+                       Disabled="@(_copiando || _filas is null)" OnClick="CopiarAsync">
+                @(_copiando ? "Copiando..." : _eliminar ? "Eliminar anteriores y copiar" : "Copiar")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public short CodTipoOrigen { get; set; }
+    [Parameter] public string DesTipoOrigen { get; set; } = "";
+    [Parameter] public List<TipoEstado> TiposDestino { get; set; } = new();
+
+    private string? _destino;
+    private bool _eliminar, _cargando, _copiando;
+    private string? _error;
+    private List<CopiaEstadosTipoFila>? _filas;
+
+    private int Cuenta(string lado, string accion) => _filas?.Count(f => f.LADO == lado && f.ACCION == accion) ?? 0;
+    private int EnUso => _filas?.Count(f => f.LADO == "DESTINO" && f.ACCION == "CONSERVAR" && (f.MOTIVO ?? "").StartsWith("Esta en uso")) ?? 0;
+    private static string TextoAccion(string a) => a switch { "COPIAR" => "Se copia", "EXISTE" => "Ya estaba", "ELIMINAR" => "Se elimina", "CONSERVAR" => "Se conserva", _ => a };
+    private static Color ColorAccion(string a) => a switch { "COPIAR" => Color.Success, "EXISTE" => Color.Info, "ELIMINAR" => Color.Error, "CONSERVAR" => Color.Warning, _ => Color.Default };
+
+    private async Task OnDestinoChanged(string? v) { _destino = v; await PrevisualizarAsync(); }
+    private async Task OnEliminarChanged(bool v) { _eliminar = v; await PrevisualizarAsync(); }
+
+    private async Task<List<CopiaEstadosTipoFila>?> LlamarAsync(bool simular)
+    {
+        _error = null;
+        try
+        {
+            var dto = new CopiaEstadosTipoDto { COD_TIPO_ESTADO_ORIGEN = CodTipoOrigen, COD_TIPO_ESTADO_DESTINO = short.Parse(_destino!), ELIMINAR_ANTERIORES = _eliminar, SIMULAR = simular };
+            var resp = await Http.PostAsJsonAsync(EstandarRoute.CopiaEstadosTipo, dto);
+            var body = await resp.Content.ReadFromJsonAsync<ApiResponse<List<CopiaEstadosTipoFila>>>();
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success) { _error = body?.Message ?? $"Error {(int)resp.StatusCode}"; return null; }
+            return body.Data ?? new();
+        }
+        catch (Exception ex) { _error = ex.Message; return null; }
+    }
+
+    private async Task PrevisualizarAsync()
+    {
+        _filas = null;
+        if (!short.TryParse(_destino, out _)) return;
+        _cargando = true;
+        _filas = await LlamarAsync(true);
+        _cargando = false;
+    }
+
+    private async Task CopiarAsync()
+    {
+        _copiando = true;
+        var r = await LlamarAsync(false);
+        _copiando = false;
+        if (r is null) return;
+        Snackbar.Add($"{r.Count(f => f.LADO == "ORIGEN" && f.ACCION == "COPIAR")} estado(s) copiado(s), {r.Count(f => f.LADO == "DESTINO" && f.ACCION == "ELIMINAR")} eliminado(s).", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

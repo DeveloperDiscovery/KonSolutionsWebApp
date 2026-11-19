@@ -1,0 +1,697 @@
+--- /dev/fd/63	2026-09-29 19:00:47.175926835 +0000
++++ /dev/fd/62	2026-09-29 19:00:47.175926835 +0000
+@@ -4,8 +4,9 @@
+    asignados a la derecha, cabecera arriba y detalle abajo.
+ 
+    TRES DIFERENCIAS CON AQUELLA, QUE VIENEN DE LOS SP:
+-     · DISPONIBLES no recibe el movimiento: devuelve todos los requerimientos de consumo
+-       de producción en estado reservado, sean de quien sean.
++     · La lista de DISPONIBLES no recibe el movimiento: devuelve todos los requerimientos de
++       consumo de producción en estado reservado, sean de quien sean. Su DETALLE sí lo
++       necesita (cobertura contra el stock del movimiento), y por eso espera a que exista.
+      · El detalle de disponibles se pide de a UN requerimiento, no con una lista. Con
+        varios marcados se hace una consulta por cada uno y se junta.
+      · Ese detalle admite un CRITERIO —mayor, menor o por lote— que decide qué ubicación
+@@ -14,6 +15,8 @@
+ 
+ @using Cabecera = KONSolutions.Shared.Models.Logistica.MovimientoAlmacenRequerimiento
+ @using Linea = KONSolutions.Shared.Models.Logistica.MovimientoAlmacenRequerimientoDetalle
++@using Cobertura = KONSolutions.Shared.Models.Logistica.CoberturaRequerimientoResultado
++@using Stock = KONSolutions.Shared.Models.Logistica.CoberturaStockSeleccionado
+ @using KONSolutions.Shared.Common
+ @inject HttpClient Http
+ @inject ErrorLogService ErrorLog
+@@ -21,6 +24,104 @@
+ @inject EstadoPanelesMovimiento EstadoPaneles
+ @inject ISnackbar Snackbar
+ 
++@* Estilos de la grilla "Líneas pendientes", EN EL PROPIO COMPONENTE y no en app.css: así no hay
++   que subir el ?v= de index.html ni pisar app.css, y el navegador nunca los sirve cacheados
++   viejos. Clase propia (grid-req-cobertura-sticky) a propósito: las reglas de
++   grid-req-detalle-disponibles-sticky en app.css están escritas por POSICIÓN de columna
++   (nth-child 1..9 y nth-last-child 1..4) para el diseño anterior y, aplicadas a este, cada
++   una caía en la columna equivocada y todo se montaba encima.
++
++   Orden actual (12 celdas): 1 casilla · 2 flecha · 3 Requerimiento · 4 Sec. · 5 Producto
++   (código + descripción) · 6 Cant. requerida · 7 UM · 8 Cant. req. sec. · 9 UM sec. ·
++   10 A atender · 11 Pendiente · 12 Cobertura.
++   CONGELADAS a la izquierda: 1-4 (casilla, flecha, Requerimiento, Sec.). A la derecha: 10-12
++   (A atender, Pendiente, Cobertura). Las congeladas llevan ancho fijo exacto porque el sticky
++   se apila con left/right en píxeles; gridColumnas.js las deja fuera del arrastre. El resto se
++   desplaza y sus anchos se pueden arrastrar. Las reglas de celda llevan :not([colspan]) para no
++   tocar la fila del detalle incrustado (una sola celda a todo el ancho). *@
++<style>
++/* width:1px con table-layout:fixed: el ancho real de la tabla es la SUMA de las columnas (la
++   regla de CSS 2.1 toma el mayor entre width y esa suma). Así, al achicar una columna la tabla
++   se achica de verdad, y al agrandarla aparece el scroll horizontal. */
++.grid-req-cobertura-sticky .mud-table-root { table-layout: fixed; width: 1px; }
++/* La fila de la cabecera queda POR ENCIMA de las celdas congeladas del cuerpo. */
++.grid-req-cobertura-sticky .mud-table-head > tr { position: sticky; top: 0; z-index: 6; }
++/* relative y no static: gridColumnas.js cuelga de cada th una franja de agarre con
++   position:absolute y necesita que el th sea su ancla. */
++.grid-req-cobertura-sticky .mud-table-head > tr > th { position: relative !important; z-index: auto !important; }
++/* La franja de arrastre (gridColumnas.js le pone z-index:20 en línea) baja a 2: por encima de las celdas
++   vecinas que se desplazan, pero POR DEBAJO de las congeladas (z-index 5), y sin quedar tapada por el
++   encabezado de la columna siguiente (por eso los th no crean contexto de apilamiento propio). */
++.grid-req-cobertura-sticky .mud-table-head > tr > th > .kon-col-resize { z-index: 2 !important; }
++/* z-index:1 en los th que se desplazan: crea su propio contexto de apilamiento, y así la franja de
++   arrastre (z-index 20) y el filtro de cada cabecera quedan DENTRO de su celda y no se montan sobre las
++   congeladas (z-index 3). Sin esto la cabecera de Producto se superponía a Sec. y Requerimiento. */
++
++/* ── Anchos de partida (las columnas que se desplazan; se pueden arrastrar) ── */
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(5),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(5):not([colspan])  { width: 320px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(6),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(6):not([colspan])  { width: 140px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(7),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(7):not([colspan])  { width: 80px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(8),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(8):not([colspan])  { width: 150px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(9),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(9):not([colspan])  { width: 100px; }
++
++/* ── Anchos EXACTOS de las congeladas ── */
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(1),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(1):not([colspan])  { width: 40px !important; min-width: 40px !important; max-width: 40px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(2),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(2):not([colspan])  { width: 40px !important; min-width: 40px !important; max-width: 40px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(3),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(3):not([colspan])  { width: 130px !important; min-width: 130px !important; max-width: 130px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(4),  .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(4):not([colspan])  { width: 84px !important; min-width: 84px !important; max-width: 84px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(10), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(10):not([colspan]) { width: 170px !important; min-width: 170px !important; max-width: 170px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(11), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(11):not([colspan]) { width: 124px !important; min-width: 124px !important; max-width: 124px !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(12), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(12):not([colspan]) { width: 130px !important; min-width: 130px !important; max-width: 130px !important; }
++
++/* Producto: el código arriba (chico, en monoespaciada, cortado con … si no entra) y la descripción
++   debajo, que se parte en renglones dentro de su celda. */
++.req-cob-producto { display: flex; flex-direction: column; min-width: 0; }
++.req-cob-producto-cod { font-size: .72rem; opacity: .6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(5):not([colspan]) { overflow-wrap: anywhere; }
++
++/* ── Congeladas a la izquierda: offsets = suma de los anchos anteriores (0, 40, 80, 210) ── */
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(-n+4),
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(n+10) { position: sticky !important; z-index: 5 !important; background-color: var(--grilla-cab-fondo, #2b2622) !important; }
++.grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(-n+4):not([colspan]),
++.grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(n+10):not([colspan]) { position: sticky; z-index: 2; background-color: var(--paper, #efe9df) !important; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(1), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(1):not([colspan]) { left: 0; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(2), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(2):not([colspan]) { left: 40px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(3), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(3):not([colspan]) { left: 80px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(4), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(4):not([colspan]) { left: 210px; border-right: 1px solid var(--grilla-lineas, rgba(255,255,255,.25)) !important; }
++/* ── Congeladas a la derecha: offsets = suma de los anchos siguientes (Cobertura 0, Pendiente 130, A atender 254) ── */
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(12), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(12):not([colspan]) { right: 0; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(11), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(11):not([colspan]) { right: 130px; }
++.grid-req-cobertura-sticky .mud-table-head > tr > th:nth-child(10), .grid-req-cobertura-sticky .mud-table-body > tr > td:nth-child(10):not([colspan]) { right: 254px; border-left: 1px solid var(--grilla-lineas, rgba(255,255,255,.25)) !important; }
++
++/* La fila del detalle es una fila más de la grilla: al pasar el mouse por ella la regla global de
++   foco de app.css le pone fondo de foco y texto blanco, y el texto de la tabla interna
++   desaparecía. Se anula solo para esa fila (la única celda con colspan). */
++body:not(.nav-teclado) .grid-req-cobertura-sticky .mud-table-root .mud-table-body .mud-table-row:hover > td[colspan],
++.grid-req-cobertura-sticky .mud-table-root .mud-table-body .mud-table-row > td[colspan] {
++    background-color: var(--mud-palette-background-grey, #f1eee7) !important;
++    color: var(--ink, #16130f) !important;
++}
++.req-cob-detalle, .req-cob-detalle .req-cob-stock th, .req-cob-detalle .req-cob-stock td, .req-cob-detalle .req-cob-stock td * { color: var(--ink, #16130f) !important; }
++.req-cob-detalle .req-cob-reserva { color: var(--mud-palette-info, #2196f3) !important; }
++
++/* Detalle incrustado: tabla HTML común, para que las reglas por posición de arriba no la alcancen. */
++.grid-req-cobertura-sticky .req-cob-detalle { position: sticky; left: 0; box-sizing: border-box; width: min(100%, 1265px); padding: 8px 12px 12px 56px; background: var(--mud-palette-background-grey, #f1eee7); }
++.req-cob-detalle-titulo { font-family: 'Spline Sans Mono', monospace; font-size: .8rem; opacity: .7; margin-bottom: 6px; }
++.req-cob-stock-wrap { overflow-x: auto; border: 1px solid var(--line, rgba(22,19,15,.14)); border-radius: 6px; background: var(--tile, #fff); }
++.req-cob-stock { border-collapse: collapse; width: 100%; min-width: 1380px; font-size: .82rem; }
++.req-cob-stock th { text-align: left; font-weight: 600; padding: 6px 10px; white-space: nowrap; background: var(--paper, #efe9df); border-bottom: 1px solid var(--line, rgba(22,19,15,.14)); }
++.req-cob-stock td { padding: 6px 10px; border-bottom: 1px solid var(--line, rgba(22,19,15,.14)); vertical-align: middle; }
++.req-cob-stock tr:last-child td { border-bottom: 0; }
++.req-cob-stock .n { text-align: right; font-family: 'Spline Sans Mono', monospace; }
++.req-cob-stock th.n { font-family: inherit; }
++/* Ubicación (1ª) y Lote (2ª, el doble de ancho que antes: 200px). */
++.req-cob-stock th:nth-child(1) { min-width: 240px; }
++.req-cob-stock th:nth-child(2) { min-width: 200px; width: 200px; }
++.req-cob-stock td:nth-child(2) { white-space: nowrap; }
++.req-cob-vacio { padding: 12px; font-family: 'Spline Sans Mono', monospace; font-size: .8rem; opacity: .55; }
++.req-cob-reserva { display: inline-block; margin-left: 8px; padding: 0 7px; border: 1px solid var(--mud-palette-info, #2196f3); border-radius: 4px; font-size: .68rem; font-weight: 700; letter-spacing: .04em; }
++</style>
++
+ @if (NumMovimiento is null or 0)
+ {
+     <MudAlert Severity="Severity.Info" Dense="true" Class="ma-3">
+@@ -102,23 +203,10 @@
+             <MudIcon Icon="@Icons.Material.Filled.List" Size="Size.Small" />
+             <span>Líneas pendientes</span>
+             <MudSpacer />
+-            @* El gemelo de "Recibir todo" de Órdenes de Compra: completa la cantidad a
+-               despachar de TODAS las líneas con lo que queda pendiente. Respeta lo ya
+-               escrito a mano; para borrarlo está "Limpiar". *@
+-            <MudButton Size="Size.Small" Variant="Variant.Outlined"
+-                       StartIcon="@Icons.Material.Filled.DoneAll"
+-                       Disabled="@(!_hayQueCompletar)"
+-                       Title="Poner en cada línea todo lo que queda pendiente, sin tocar las que ya tienen cantidad"
+-                       OnClick="DespacharTodoPendiente">Despachar todo</MudButton>
+-            <MudButton Size="Size.Small" Variant="Variant.Text"
+-                       Disabled="@(!_hayCantidadEscrita)"
+-                       Title="Poner en cero la cantidad a despachar de todas las líneas"
+-                       OnClick="LimpiarDespachos">Limpiar</MudButton>
+-
+-            @* Asignar exige DOS cosas: la línea marcada Y una cantidad a despachar mayor
+-               que cero. Mismo criterio que en Órdenes de Compra: asignar una línea con la
+-               cantidad en cero no significa nada y deja en el movimiento una línea que
+-               después nadie sabe por qué está. *@
++
++            @* Asignar exige la línea marcada Y algo que atender: una línea sin stock
++               seleccionado no tiene nada que asignar. La cantidad que se asigna es la que el
++               SP dejó en "A atender". *@
+             <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                        EndIcon="@Icons.Material.Filled.ArrowForward"
+                        Disabled="@(!_asignables.Any())"
+@@ -127,7 +215,7 @@
+             @if (_marcadasSinCantidad > 0)
+             {
+                 <span class="mono" style="font-size:.74rem;color:var(--rust,#b8472d);margin-left:6px;">
+-                    @_marcadasSinCantidad sin cantidad
++                    @_marcadasSinCantidad sin stock que atender
+                 </span>
+             }
+             <GridClearFiltersButton OnClear="LimpiarFiltrosDetDisp" HasFilters="@_filtrosDetDisp.Values.Any(v => v is { Count: > 0 })" />
+@@ -136,110 +224,143 @@
+                 : _detalleDisponibles.Count.ToString())</span>
+         </div>
+ 
+-        <div class="grid-req-detalle-disponibles-sticky" data-resizable-grid="movimiento-req-detalles" data-alto-compartido="req-izquierda" data-cols-key="movimiento-req-det-disponibles"
++        @* Clase y clave de anchos NUEVAS (req-cobertura): las anteriores (grid-req-detalle-disponibles-sticky
++           y movimiento-req-det-disponibles) llevan reglas y anchos guardados por POSICIÓN de las
++           columnas viejas, y aplicados a estas se montaban unos sobre otros. Los anchos se pueden
++           arrastrar con el mouse y quedan recordados (gridColumnas.js, por data-cols-key). *@
++        <div class="grid-req-cobertura-sticky" data-resizable-grid="movimiento-req-detalles" data-alto-compartido="req-izquierda" data-cols-key="movimiento-req-cobertura"
+              style="position:relative;">
+             <MudDataGrid T="Linea" Items="@Ordenar(BaseDetDisp(-1), _ordenColDetDisp, _ordenAscDetDisp, ValorDetDisp)" Dense="true" Hover="true" Striped="true"
+                          ReadOnly="true" Height="100%" FixedHeader="true"
+                          MultiSelection="true" SelectedItems="_selDetalleDisponibles"
+-                             SelectedItemsChanged="OnSeleccionDetalleDisponiblesChanged">
++                         SelectedItemsChanged="OnSeleccionDetalleDisponiblesChanged">
+                 <Columns>
+                     <SelectColumn T="Linea" />
+-                    <PropertyColumn Property="x => x.NUM_REQUERIMIENTO_STOCK" Sortable="false">
++                    <HierarchyColumn T="Linea" Width="40px" ButtonDisabledFunc="@(l => !l.Stock.Any())" />
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                         <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Requerimiento" Activo="@(_ordenColDetDisp == 0)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(0))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(0)" ValorDe="@(l => ValorDetDisp(l, 0))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetDisp(0, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    @* Después del documento, no antes: hay una secuencia 1 por cada
+-                       requerimiento, así que sola no identifica ninguna línea. *@
+-                    <PropertyColumn Property="x => x.NUM_SECUENCIA" CellStyle="text-align:right;" Sortable="false">
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.NUM_REQUERIMIENTO_STOCK</span></CellTemplate>
++                    </TemplateColumn>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                         <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetDisp == 1)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(1))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(1)" ValorDe="@(l => ValorDetDisp(l, 1))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetDisp(1, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    @* Código y descripción en UNA columna. Eran dos, y entre las dos se llevaban
+-                       el ancho que necesitan las cantidades y los combos: el código es largo
+-                       y fijo, la descripción se parte en tres renglones, y la fila terminaba
+-                       midiendo el triple de alto.
+-
+-                       El código va arriba, chico y en monoespaciada; la descripción abajo, en
+-                       el cuerpo normal. Así se lee primero lo que identifica al producto para
+-                       una persona —el nombre— y el código queda a mano sin competir por la
+-                       atención. *@
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.NUM_SECUENCIA</span></CellTemplate>
++                    </TemplateColumn>
+                     <TemplateColumn Sortable="false">
+                         <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetDisp == 2)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(2))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(2)" ValorDe="@(l => ValorDetDisp(l, 2))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetDisp(2, v))" /></div></HeaderTemplate>
+-                        <CellTemplate Context="pr">
+-                            <div style="display:flex;flex-direction:column;line-height:1.25;">
+-                                <span class="mono" style="font-size:.72rem;opacity:.6;">@pr.Item.COD_PRODUCTO</span>
+-                                <span>@pr.Item.DES_PRODUCTO</span>
++                        <CellTemplate Context="ln">
++                            @* Código y descripción en UNA columna: el código arriba, chico y en monoespaciada;
++                               la descripción abajo. *@
++                            <div class="req-cob-producto">
++                                <span class="mono req-cob-producto-cod">@ln.Item.COD_PRODUCTO</span>
++                                <span>@ln.Item.DES_PRODUCTO</span>
+                             </div>
+                         </CellTemplate>
+                     </TemplateColumn>
+-                    <PropertyColumn Property="x => x.DES_UNIDAD_MEDIDA" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetDisp == 3)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(3))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(3)" ValorDe="@(l => ValorDetDisp(l, 3))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetDisp(3, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    <PropertyColumn Property="x => x.CAN_PRODUCTO" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cantidad" Activo="@(_ordenColDetDisp == 4)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(4))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(4)" ValorDe="@(l => ValorDetDisp(l, 4))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetDisp(4, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    <PropertyColumn Property="x => x.CAN_PENDIENTE" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Pendiente" Activo="@(_ordenColDetDisp == 5)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(5))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(5)" ValorDe="@(l => ValorDetDisp(l, 5))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetDisp(5, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-
+-                    @* A DESPACHAR: el gemelo de "Cantidad recibida" de Órdenes de Compra. Es
+-                       el único campo editable de la grilla, y ahora también la condición para
+-                       poder asignar.
+-
+-                       Se acota al PENDIENTE, no al disponible: despachar más de lo que falta
+-                       es un error de tecleo; despachar más de lo que hay en la ubicación
+-                       propuesta es un caso real —se completa desde otra ubicación— y no me
+-                       corresponde bloquearlo desde acá. Si prefieres que también tope contra
+-                       CAN_DISPONIBLE_ASIGNADA, es cambiar el Max. *@
+-                    <TemplateColumn Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="A despachar" Activo="@(_ordenColDetDisp == 6)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(6))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(6)" ValorDe="@(l => ValorDetDisp(l, 6))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetDisp(6, v))" /></div></HeaderTemplate>
+-                        <CellTemplate Context="ln">
+-                            <MudNumericField T="decimal?" Value="@ln.Item.CAN_PRODUCTO_DESPACHAR"
+-                                             ValueChanged="@(v => DespacharCambiada(ln.Item, v))"
+-                                             Min="0" Max="@(ln.Item.CAN_PENDIENTE ?? 0)"
+-                                             Format="@Decimales.FormatoCantidad" HideSpinButtons="true" Margin="Margin.Dense"
+-                                             Variant="Variant.Outlined" Class="campo-numerico-derecha" />
+-                        </CellTemplate>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cant. requerida" Activo="@(_ordenColDetDisp == 3)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(3))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(3)" ValorDe="@(l => ValorDetDisp(l, 3))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetDisp(3, v))" /></div></HeaderTemplate>
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad)</span></CellTemplate>
+                     </TemplateColumn>
+-
+-                    @* Lote y orden de producción en UNA celda, igual que en Órdenes de Compra.
+-
+-                       Acá va de SÓLO LECTURA —el diálogo abre sin poder cambiar nada— y la
+-                       diferencia con el otro lado tiene motivo: en la orden de compra el lote
+-                       lo pone quien recibe, porque la mercadería todavía no existe en el
+-                       almacén. En un requerimiento lo que se despacha YA ESTÁ en stock, y su
+-                       lote, proceso y orden son los de esa existencia. Cambiarlos acá dejaría
+-                       el despacho apuntando a un stock que no es el que se va a mover. *@
+-                    <TemplateColumn Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Lote / Orden" Activo="@(_ordenColDetDisp == 7)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(7))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(7)" ValorDe="@(l => ValorDetDisp(l, 7))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetDisp(7, v))" /></div></HeaderTemplate>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:center;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetDisp == 4)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(4))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(4)" ValorDe="@(l => ValorDetDisp(l, 4))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetDisp(4, v))" /></div></HeaderTemplate>
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.COD_UNIDAD_MEDIDA</span></CellTemplate>
++                    </TemplateColumn>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cant. req. sec." Activo="@(_ordenColDetDisp == 5)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(5))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(5)" ValorDe="@(l => ValorDetDisp(l, 5))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetDisp(5, v))" /></div></HeaderTemplate>
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.CAN_PRODUCTO_SECUNDARIA?.ToString(Decimales.FormatoCantidad)</span></CellTemplate>
++                    </TemplateColumn>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:center;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="UM sec." Activo="@(_ordenColDetDisp == 6)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(6))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(6)" ValorDe="@(l => ValorDetDisp(l, 6))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetDisp(6, v))" /></div></HeaderTemplate>
++                        <CellTemplate Context="ln"><span class="mono">@ln.Item.COD_UNIDAD_MEDIDA_SECUNDARIA</span></CellTemplate>
++                    </TemplateColumn>
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="A atender" Activo="@(_ordenColDetDisp == 7)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(7))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(7)" ValorDe="@(l => ValorDetDisp(l, 7))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetDisp(7, v))" /></div></HeaderTemplate>
+                         <CellTemplate Context="ln">
+-                            <div @onclick="@(() => VerLoteOrdenAsync(ln.Item))"
+-                                 title="Ver lote y orden de producción de la existencia a despachar"
+-                                 style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;">
+-                                <span class="mono" style="font-size:.78rem;">@ResumenLoteOrden(ln.Item)</span>
+-                                <MudIcon Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Style="opacity:.35;" />
+-                            </div>
++                            @* Pulsar la cantidad despliega el stock que el SP tomó para la línea, con su
++                               reserva de origen. Sin stock seleccionado no hay nada que desplegar. *@
++                            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="mono"
++                                       Disabled="@(!ln.Item.Stock.Any())"
++                                       EndIcon="@Icons.Material.Filled.UnfoldMore"
++                                       Title="Ver de dónde sale el stock a despachar"
++                                       OnClick="@(() => ln.Actions.ToggleHierarchyVisibilityForItemAsync())">
++                                @((ln.Item.CAN_ATENDER ?? 0).ToString(Decimales.FormatoCantidad))
++                            </MudButton>
+                         </CellTemplate>
+                     </TemplateColumn>
+-
+-                    @* La ubicación que el criterio eligió, con su disponible. Es lo que
+-                       convierte la lista en una propuesta y no en una consulta más. *@
+-                    <PropertyColumn Property="x => x.DES_UBICACION_ALMACEN_ASIGNADA" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Ubicación propuesta" Activo="@(_ordenColDetDisp == 8)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(8))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(8)" ValorDe="@(l => ValorDetDisp(l, 8))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(8)" ValoresActivosChanged="@(v => FiltroDetDisp(8, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    <PropertyColumn Property="x => x.CAN_DISPONIBLE_ASIGNADA" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Disp. ubicación" Activo="@(_ordenColDetDisp == 9)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(9))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(9)" ValorDe="@(l => ValorDetDisp(l, 9))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(9)" ValoresActivosChanged="@(v => FiltroDetDisp(9, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    <PropertyColumn Property="x => x.CAN_DISPONIBLE_TOTAL" Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Disp. total" Activo="@(_ordenColDetDisp == 10)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(10))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(10)" ValorDe="@(l => ValorDetDisp(l, 10))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(10)" ValoresActivosChanged="@(v => FiltroDetDisp(10, v))" /></div></HeaderTemplate>
+-                    </PropertyColumn>
+-                    @* La cobertura la resuelve el SP; acá sólo se le pone color, porque es
+-                       lo que se mira antes que el número. *@
++                    <TemplateColumn Sortable="false" CellStyle="text-align:right;">
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Pendiente" Activo="@(_ordenColDetDisp == 8)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(8))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(8)" ValorDe="@(l => ValorDetDisp(l, 8))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(8)" ValoresActivosChanged="@(v => FiltroDetDisp(8, v))" /></div></HeaderTemplate>
++                        <CellTemplate Context="ln"><span class="mono" style="@((ln.Item.CAN_PENDIENTE_ATENDER ?? 0) > 0 ? "color:var(--mud-palette-warning-darken);font-weight:600;" : "opacity:.5;")">@((ln.Item.CAN_PENDIENTE_ATENDER ?? 0).ToString(Decimales.FormatoCantidad))</span></CellTemplate>
++                    </TemplateColumn>
+                     <TemplateColumn Sortable="false">
+-                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cobertura" Activo="@(_ordenColDetDisp == 11)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(11))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(11)" ValorDe="@(l => ValorDetDisp(l, 11))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(11)" ValoresActivosChanged="@(v => FiltroDetDisp(11, v))" /></div></HeaderTemplate>
++                        <HeaderTemplate><div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Cobertura" Activo="@(_ordenColDetDisp == 9)" Ascendente="_ordenAscDetDisp" OnClick="@(() => ToggleOrdenDetDisp(9))" /><FiltroExcelColumna T="Linea" ItemsBase="@BaseDetDisp(9)" ValorDe="@(l => ValorDetDisp(l, 9))" ValoresActivos="@_filtrosDetDisp.GetValueOrDefault(9)" ValoresActivosChanged="@(v => FiltroDetDisp(9, v))" /></div></HeaderTemplate>
+                         <CellTemplate Context="ln">
+-                            <span class="req-cobertura @ClaseCobertura(ln.Item.DES_COBERTURA)">@ln.Item.DES_COBERTURA</span>
++                            @* La cobertura la resuelve el SP; acá sólo se le pone color. Va con texto
++                               además del color: no se depende sólo de él para leerla. *@
++                            <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="@ColorCobertura(ln.Item.DES_COBERTURA)">@ln.Item.DES_COBERTURA</MudChip>
+                         </CellTemplate>
+                     </TemplateColumn>
+                 </Columns>
++                @* Stock a despachar de la línea: lote, proceso, orden de producción y la
++                   reserva de la que sale. Se despliega desde "A atender". *@
++                <ChildRowContent Context="lineaRow">
++                    @* Tabla HTML común y no un MudDataGrid anidado: las reglas por posición de la
++                       grilla de arriba (anchos, columnas congeladas) no la alcanzan. *@
++                    <div class="req-cob-detalle">
++                        <div class="req-cob-detalle-titulo">
++                            Stock a despachar · secuencia @lineaRow.Item.NUM_SECUENCIA · @lineaRow.Item.COD_PRODUCTO
++                        </div>
++                        @if (!lineaRow.Item.Stock.Any())
++                        {
++                            <div class="req-cob-vacio">Sin stock seleccionado para esta línea.</div>
++                        }
++                        else
++                        {
++                            <div class="req-cob-stock-wrap">
++                                <table class="req-cob-stock">
++                                    <thead>
++                                        <tr>
++                                            <th>Ubicación</th>
++                                            <th>Lote</th>
++                                            <th>Proceso</th>
++                                            <th class="n">Orden prod.</th>
++                                            <th class="n">Ítem</th>
++                                            <th class="n">Unidad</th>
++                                            <th class="n">A despachar</th>
++                                            <th class="n">A despachar sec.</th>
++                                            <th class="n">Reserva</th>
++                                            <th class="n">Sec. reserva</th>
++                                        </tr>
++                                    </thead>
++                                    <tbody>
++                                        @foreach (var s in lineaRow.Item.Stock)
++                                        {
++                                            <tr>
++                                                <td>
++                                                    @* Ubicación: código y descripción juntos, en un mismo campo y en una sola línea. *@
++                                                    <span class="mono">@s.COD_UBICACION_ALMACEN</span>@if (!string.IsNullOrWhiteSpace(s.DES_UBICACION_ALMACEN)) { <span> · @s.DES_UBICACION_ALMACEN</span> }
++                                                </td>
++                                                <td>
++                                                    <span class="mono">@s.DES_LOTE_CONTROL</span>
++                                                    @if (s.FLG_RESERVA)
++                                                    {
++                                                        <span class="req-cob-reserva">RESERVA</span>
++                                                    }
++                                                </td>
++                                                <td>@s.DES_PROCESO</td>
++                                                <td class="n">@s.NUM_ORDEN_PRODUCCION</td>
++                                                <td class="n">@s.NUM_ORDEN_PRODUCCION_ITEM</td>
++                                                <td class="n">@s.NUM_ORDEN_PRODUCCION_UNIDAD</td>
++                                                <td class="n">@s.CAN_PRODUCTO.ToString(Decimales.FormatoCantidad)</td>
++                                                <td class="n">@s.CAN_PRODUCTO_SECUNDARIA?.ToString(Decimales.FormatoCantidad)</td>
++                                                <td class="n">@s.NUM_RESERVA_STOCK</td>
++                                                <td class="n">@s.NUM_SECUENCIA_RESERVA</td>
++                                            </tr>
++                                        }
++                                    </tbody>
++                                </table>
++                            </div>
++                        }
++                    </div>
++                </ChildRowContent>
+                 <NoRecordsContent>
+                     <div class="pa-3" style="opacity:.6;">@_motivoDetalleVacio</div>
+                 </NoRecordsContent>
+@@ -381,19 +502,6 @@
+     private bool _hayCambiosSinGrabar;
+     private decimal? _cargadoPara;
+ 
+-    /// <summary>Sólo para mostrar la DESCRIPCIÓN del lote en la celda en vez del número
+-    /// interno (ver ResumenLoteOrden). Esta grilla es de sólo lectura —el lote se define del
+-    /// lado de Órdenes de Compra al recibir, acá sólo se despacha lo que ya está en stock—
+-    /// así que no hace falta filtrar por entidad ni nada más: es la misma lista completa que
+-    /// usa el panel de Órdenes de Compra para lo mismo.</summary>
+-    private List<ComboboxItem> _lotes = new();
+-
+-    private async Task CargarLotesAsync()
+-    {
+-        if (_lotes.Count > 0) return;
+-        _lotes = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.LotesControlCombobox)) ?? new();
+-    }
+-
+     // ── Filtros de columna (estilo Excel), uno por grilla ──────────────────
+     private static List<T> AplicarFiltros<T>(List<T> items, Dictionary<int, HashSet<string>?> filtros, int colExcluida, Func<T, int, string> valorDe)
+     {
+@@ -422,16 +530,14 @@
+     {
+         0 => l.NUM_REQUERIMIENTO_STOCK.ToString(),
+         1 => l.NUM_SECUENCIA.ToString(),
+-        2 => l.COD_PRODUCTO ?? "",
+-        3 => l.DES_UNIDAD_MEDIDA ?? "",
+-        4 => l.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+-        5 => l.CAN_PENDIENTE?.ToString(Decimales.FormatoCantidad) ?? "",
+-        6 => l.CAN_PRODUCTO_DESPACHAR?.ToString(Decimales.FormatoCantidad) ?? "",
+-        7 => ResumenLoteOrden(l),
+-        8 => l.DES_UBICACION_ALMACEN_ASIGNADA ?? "",
+-        9 => l.CAN_DISPONIBLE_ASIGNADA?.ToString(Decimales.FormatoCantidad) ?? "",
+-        10 => l.CAN_DISPONIBLE_TOTAL?.ToString(Decimales.FormatoCantidad) ?? "",
+-        11 => l.DES_COBERTURA ?? "",
++        2 => $"{l.COD_PRODUCTO} · {l.DES_PRODUCTO}",
++        3 => l.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
++        4 => l.COD_UNIDAD_MEDIDA ?? "",
++        5 => l.CAN_PRODUCTO_SECUNDARIA?.ToString(Decimales.FormatoCantidad) ?? "",
++        6 => l.COD_UNIDAD_MEDIDA_SECUNDARIA ?? "",
++        7 => l.CAN_ATENDER?.ToString(Decimales.FormatoCantidad) ?? "",
++        8 => l.CAN_PENDIENTE_ATENDER?.ToString(Decimales.FormatoCantidad) ?? "",
++        9 => l.DES_COBERTURA ?? "",
+         _ => ""
+     };
+     private List<Linea> BaseDetDisp(int col) => AplicarFiltros(_detalleDisponibles, _filtrosDetDisp, col, ValorDetDisp);
+@@ -587,7 +693,6 @@
+         // Los disponibles NO dependen del movimiento, así que se piden siempre —incluso con
+         // la cabecera sin grabar—. Los asignados sí, y sin número no hay nada que pedir.
+         var tDisp = Http.SafeGetAsync<List<Cabecera>>(ApiRoutes.Logistica.MovimientosAlmacenRequerimientosDisponibles);
+-        await CargarLotesAsync();
+ 
+         if (NumMovimiento is null or 0)
+         {
+@@ -668,8 +773,14 @@
+         await CargarDetalleDisponiblesAsync();
+     }
+ 
+-    /// <summary>Una consulta por requerimiento marcado: el SP recibe uno solo. Van en
+-    /// paralelo, así que marcar cinco cuesta lo que el más lento y no la suma.</summary>
++    /// <summary>Una consulta por requerimiento marcado: el SP recibe uno solo, y desde que
++    /// recibe también el MOVIMIENTO deja escrita en la base la selección de stock de ese par
++    /// movimiento + requerimiento (por eso es un POST). Van en paralelo, así que marcar
++    /// cinco cuesta lo que el más lento y no la suma; no se pisan porque cada llamada toca
++    /// filas de un requerimiento distinto.
++    ///
++    /// Sin movimiento grabado no hay contra qué calcular: los disponibles de la grilla de
++    /// arriba se ven igual, pero su detalle espera a que exista la cabecera.</summary>
+     private async Task CargarDetalleDisponiblesAsync()
+     {
+         _selDetalleDisponibles = new();
+@@ -682,13 +793,22 @@
+             return;
+         }
+ 
+-        var tareas = _selDisponibles.Select(r => Http.SafeGetAsync<List<Linea>>(
+-            ApiRoutes.Logistica.MovimientosAlmacenRequerimientosDisponiblesDetalle(r.NUM_REQUERIMIENTO_STOCK, _criterio)));
++        if (NumMovimiento is null or 0)
++        {
++            _detalleDisponibles = new();
++            _motivoDetalleVacio = "Graba la cabecera del movimiento para ver el detalle: " +
++                                  "la cobertura se calcula contra el movimiento.";
++            StateHasChanged();
++            return;
++        }
++
++        var numMovimiento = (int)NumMovimiento.Value;
++        var tareas = _selDisponibles.Select(r => PedirCoberturaAsync(numMovimiento, r.NUM_REQUERIMIENTO_STOCK));
+ 
+         var resultados = await Task.WhenAll(tareas);
+ 
+-        // null es "falló la llamada", no "no hay datos": SafeGetAsync los confunde y acá se
+-        // separan, porque se arreglan en lugares distintos.
++        // null es "falló la llamada", no "no hay datos": se separan, porque se arreglan en
++        // lugares distintos.
+         if (resultados.All(r => r is null))
+         {
+             _detalleDisponibles = new();
+@@ -703,62 +823,73 @@
+         StateHasChanged();
+     }
+ 
+-    /// <summary>Color de la cobertura. Las cuatro palabras las decide el SP; acá sólo se
+-    /// traducen a un color, que es lo que se mira antes que el texto.</summary>
+-    private static string ClaseCobertura(string? cobertura) => (cobertura ?? "").Trim().ToUpperInvariant() switch
+-    {
+-        "COMPLETO"  => "req-cobertura-ok",
+-        "ASIGNADA"  => "req-cobertura-ok",
+-        "PARCIAL"   => "req-cobertura-parcial",
+-        "SIN STOCK" => "req-cobertura-sin",
+-        _           => ""
+-    };
+-
+-    /// <summary>Mueve a la derecha lo marcado. NO GRABA todavía, igual que en Órdenes de
+-    /// Compra: faltan los SP de alta y baja de línea asignada.</summary>
+-    private bool _hayQueCompletar
+-        => _detalleDisponibles.Any(x => (x.CAN_PENDIENTE ?? 0) > 0
+-                                     && (x.CAN_PRODUCTO_DESPACHAR ?? 0) <= 0);
+-
+-    private bool _hayCantidadEscrita
+-        => _detalleDisponibles.Any(x => (x.CAN_PRODUCTO_DESPACHAR ?? 0) > 0);
+-
+-    /// <summary>Pone en cada línea todo lo que queda pendiente, sin pisar lo escrito a mano.
+-    ///
+-    /// Se iguala contra el PENDIENTE y no contra la cantidad requerida: si un requerimiento
+-    /// de 100 ya despachó 40, lo que falta son 60. Cuando no hubo despachos previos los dos
+-    /// números coinciden, que es el caso normal.
+-    ///
+-    /// OJO: no mira el DISPONIBLE. Puede dejar líneas pidiendo más de lo que hay en la
+-    /// ubicación propuesta, y es a propósito —completar desde otra ubicación es un caso
+-    /// real—. Si prefieres que tope contra CAN_DISPONIBLE_ASIGNADA, es una línea.</summary>
+-    private void DespacharTodoPendiente()
++    /// <summary>Pide la cobertura de UN requerimiento y la deja con la forma de la grilla.
++    /// Devuelve null si la llamada falló.</summary>
++    private async Task<List<Linea>?> PedirCoberturaAsync(int numMovimiento, int numRequerimiento)
+     {
+-        foreach (var l in _detalleDisponibles)
++        try
+         {
+-            if ((l.CAN_PRODUCTO_DESPACHAR ?? 0) > 0) continue;
+-            var pendiente = l.CAN_PENDIENTE ?? 0;
+-            if (pendiente <= 0) continue;
+-            l.CAN_PRODUCTO_DESPACHAR = pendiente;
++            var resp = await Http.PostAsync(
++                ApiRoutes.Logistica.MovimientosAlmacenRequerimientosCobertura(numMovimiento, numRequerimiento, _criterio), null);
++            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<Cobertura>>();
++            if (!resp.IsSuccessStatusCode || r is not { Success: true, Data: not null }) return null;
++            return LineasDeCobertura(r.Data);
++        }
++        catch (Exception ex)
++        {
++            await ErrorLog.LogAsync(ex, nameof(MovimientoRequerimientosPanel), nameof(PedirCoberturaAsync),
++                $"mov={numMovimiento}, req={numRequerimiento}, criterio={_criterio}");
++            return null;
+         }
+-        _hayCambiosSinGrabar = true;
+-        Recordar();
+     }
+ 
+-    private void LimpiarDespachos()
++    /// <summary>Convierte los dos resultados del SP a UNA fila por línea del requerimiento, con
++    /// su stock colgado: es lo que dibuja la grilla y su detalle incrustado.
++    ///
++    /// La cantidad requerida es la que el SP trata como pendiente; A atender es lo que logró
++    /// cubrir y Pendiente lo que queda sin cubrir. Al asignar se envía A atender.</summary>
++    private static List<Linea> LineasDeCobertura(Cobertura r)
+     {
+-        foreach (var l in _detalleDisponibles) l.CAN_PRODUCTO_DESPACHAR = null;
+-        _hayCambiosSinGrabar = true;
+-        Recordar();
+-    }
++        var stock = r.Stock.ToLookup(s => s.NUM_SECUENCIA);
++        return r.Lineas.OrderBy(l => l.NUM_SECUENCIA).Select(l => new Linea
++        {
++            NUM_REQUERIMIENTO_STOCK      = l.NUM_REQUERIMIENTO_STOCK,
++            NUM_SECUENCIA                = l.NUM_SECUENCIA,
++            COD_ALMACEN                  = l.COD_ALMACEN,
++            DES_ALMACEN                  = l.DES_ALMACEN,
++            COD_PRODUCTO                 = l.COD_PRODUCTO,
++            DES_PRODUCTO                 = l.DES_PRODUCTO,
++            COD_UNIDAD_MEDIDA            = l.COD_UNIDAD_MEDIDA,
++            DES_UNIDAD_MEDIDA            = l.DES_UNIDAD_MEDIDA,
++            CAN_PRODUCTO                 = l.CAN_PRODUCTO,
++            COD_UNIDAD_MEDIDA_SECUNDARIA = l.COD_UNIDAD_MEDIDA_SECUNDARIA,
++            DES_UNIDAD_MEDIDA_SECUNDARIA = l.DES_UNIDAD_MEDIDA_SECUNDARIA,
++            CAN_PRODUCTO_SECUNDARIA      = l.CAN_PRODUCTO_SECUNDARIA,
++            CAN_ATENDER                  = l.CAN_ATENDER,
++            CAN_PENDIENTE_ATENDER        = l.CAN_PENDIENTE_ATENDER,
++            DES_COBERTURA                = l.DES_COBERTURA,
++            Stock                        = stock[l.NUM_SECUENCIA].OrderBy(x => x.NUM_ORDEN_SECUENCIA).ToList()
++        }).ToList();
++    }
++
++    /// <summary>Color de la cobertura. Las palabras las decide el SP; acá sólo se traducen a un
++    /// color: COMPLETO verde, ASIGNADA azul, PARCIAL ámbar, POR REVISAR gris.</summary>
++    private static Color ColorCobertura(string? cobertura) => (cobertura ?? "").Trim().ToUpperInvariant() switch
++    {
++        "COMPLETO" => Color.Success,
++        "ASIGNADA" => Color.Info,
++        "PARCIAL"  => Color.Warning,
++        _          => Color.Default
++    };
+ 
+-    /// <summary>Las marcadas que ADEMÁS tienen cantidad a despachar.</summary>
++    /// <summary>Las marcadas que ADEMÁS tienen algo que atender. La cantidad que se asigna es
++    /// la que el SP dejó en CAN_ATENDER.</summary>
+     private List<Linea> _asignables
+-        => _selDetalleDisponibles.Where(x => (x.CAN_PRODUCTO_DESPACHAR ?? 0) > 0).ToList();
++        => _selDetalleDisponibles.Where(x => (x.CAN_ATENDER ?? 0) > 0).ToList();
+ 
+-    /// <summary>Marcadas a las que les falta la cantidad, para el aviso al lado del botón.</summary>
++    /// <summary>Marcadas sin nada que atender (sin stock), para el aviso al lado del botón.</summary>
+     private int _marcadasSinCantidad
+-        => _selDetalleDisponibles.Count(x => (x.CAN_PRODUCTO_DESPACHAR ?? 0) <= 0);
++        => _selDetalleDisponibles.Count(x => (x.CAN_ATENDER ?? 0) <= 0);
+ 
+     /// <summary>El motivo exacto por el que el botón está apagado. Las dos condiciones se
+     /// arreglan en lugares distintos y merecen mensajes distintos.</summary>
+@@ -766,78 +897,9 @@
+         => !_selDetalleDisponibles.Any()
+                ? "Marca las líneas que vas a despachar"
+          : !_asignables.Any()
+-               ? "Las líneas marcadas tienen la cantidad a despachar en cero: escribe cuánto despachas"
++               ? "Las líneas marcadas no tienen stock que atender"
+          : $"Asignar {_asignables.Count} línea(s) al movimiento";
+ 
+-    /// <summary>Se acota al pendiente: más de lo que falta no es un caso de negocio, es un
+-    /// error de tecleo, y atajarlo acá es más barato que descubrirlo al grabar.</summary>
+-    private void DespacharCambiada(Linea linea, decimal? valor)
+-    {
+-        var tope = linea.CAN_PENDIENTE ?? 0;
+-        linea.CAN_PRODUCTO_DESPACHAR = valor is null ? null : Math.Clamp(valor.Value, 0, tope);
+-    }
+-
+-    /// <summary>Lo que se lee en la celda de lote y orden. Mismo formato que en Órdenes de
+-    /// Compra, para que las dos pestañas se lean igual.</summary>
+-    private string ResumenLoteOrden(Linea it)
+-    {
+-        var partes = new List<string>();
+-
+-        // La DESCRIPCIÓN del lote, no el número interno: se busca en _lotes. El número queda
+-        // de respaldo si el lote no aparece ahí.
+-        if (it.NUM_LOTE_CONTROL is { } lote)
+-        {
+-            var id = lote.ToString();
+-            var texto = _lotes.FirstOrDefault(l => string.Equals(l.Id, id, StringComparison.OrdinalIgnoreCase)) is { } l && !string.IsNullOrWhiteSpace(l.Texto)
+-                ? l.Texto
+-                : id;
+-            partes.Add(texto);
+-        }
+-
+-        if (!string.IsNullOrWhiteSpace(it.COD_PROCESO))
+-        {
+-            var orden = it.COD_PROCESO!;
+-            // El cero SÍ se muestra: es un número de orden real en esta base.
+-            if (it.NUM_ORDEN_PRODUCCION is { } n)
+-            {
+-                orden += $"/{n}";
+-                if (it.NUM_ORDEN_PRODUCCION_ITEM   is { } i) orden += $"/{i}";
+-                if (it.NUM_ORDEN_PRODUCCION_UNIDAD is { } u) orden += $"/{u}";
+-            }
+-            partes.Add(orden);
+-        }
+-
+-        return partes.Count == 0 ? "—" : string.Join(" · ", partes);
+-    }
+-
+-    /// <summary>Abre el mismo diálogo que Órdenes de Compra, en SÓLO LECTURA.
+-    ///
+-    /// SÍ lleva la lista de lotes (_lotes), aunque el combo esté deshabilitado: sin ella no
+-    /// tiene de dónde sacar la DESCRIPCIÓN del lote ya elegido, y se veía en blanco. El
+-    /// SoloLectura=true de más abajo es lo que impide elegir otro, no la lista vacía.</summary>
+-    private async Task VerLoteOrdenAsync(Linea it)
+-    {
+-        var parametros = new DialogParameters
+-        {
+-            // Antes iba vacía: el combo en sólo lectura no se despliega, pero SÍ necesita un
+-            // ítem que coincida con NumLoteControl para poder mostrar su descripción — sin
+-            // eso se veía en blanco aunque el lote existiera. _lotes es la misma lista que ya
+-            // usa esta pantalla para la descripción en la celda (ResumenLoteOrden).
+-            ["Lotes"]          = _lotes,
+-            ["NumLoteControl"] = it.NUM_LOTE_CONTROL?.ToString(),
+-            ["CodProceso"]     = it.COD_PROCESO,
+-            ["NumOrden"]       = it.NUM_ORDEN_PRODUCCION,
+-            ["NumItem"]        = (short?)it.NUM_ORDEN_PRODUCCION_ITEM,
+-            ["NumUnidad"]      = (byte?)it.NUM_ORDEN_PRODUCCION_UNIDAD,
+-            ["NumSecuencia"]   = it.NUM_SECUENCIA,
+-            ["DesProducto"]    = it.DES_PRODUCTO,
+-            ["SoloLectura"]    = true
+-        };
+-
+-        await DialogService.ShowAsync<LoteOrdenProduccionDialog>("Lote y orden de producción",
+-            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true });
+-    }
+-
+     /// <summary>Evita el doble clic. Los dos botones graban, y dos llamadas simultáneas
+     /// dejarían la misma línea asignada dos veces sin que nada lo avise.</summary>
+     private bool _trabajando;
+@@ -866,7 +928,7 @@
+         {
+             var lineas = ListaPedidoSecuencia.Armar(
+                 mover.Select(l => (l.NUM_REQUERIMIENTO_STOCK, l.NUM_SECUENCIA,
+-                                   l.CAN_PRODUCTO_DESPACHAR ?? 0m)));
++                                   l.CAN_ATENDER ?? 0m)));
+ 
+             var resp = await Http.PostAsJsonAsync(
+                 ApiRoutes.Logistica.MovimientosAlmacenRequerimientosAsignar(NumMovimiento.Value),

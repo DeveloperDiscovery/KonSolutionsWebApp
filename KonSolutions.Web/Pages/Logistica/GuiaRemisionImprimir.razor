@@ -1,0 +1,73 @@
+@using System.Globalization
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+@* BOTÓN «IMPRIMIR GUÍA» — imprime la guía de remisión con el diseño que el reporteador tiene asignado a un botón de la opción.
+
+   Es para los lugares donde la guía no está en una fila de grilla (la pestaña «Guía de remisión» del movimiento y la ficha de la
+   bandeja): ahí no hay una barra de botones que dibuje el de Seguridad, así que este lo dibuja solo si el reporte existe. Lo que
+   decide si aparece es lo mismo que decide en cualquier pantalla: que el botón (CodBoton) tenga un diseño en Reportes › Reportes en
+   botones y que el rol lo tenga habilitado en la opción. Sin eso no se dibuja nada.
+
+   Le pasa al reporte el número de movimiento y, si lo hay, el de la guía: el diálogo ya no los pregunta. Solo con el movimiento sale
+   la guía vigente del movimiento o, si todavía no tiene guía, un borrador sin validez para revisarlo antes de emitir. *@
+
+@if (_reporte is not null)
+{
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Print"
+               OnClick="Imprimir" Disabled="_abriendo">@Texto</MudButton>
+}
+
+@code {
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+    /// <summary>El botón de la opción que tiene el diseño de la guía. En la bandeja es IMPRIMIR (IM) y en movimientos, IMPRIMIR GUIA (IG).</summary>
+    [Parameter] public string CodBoton { get; set; } = "IG";
+    [Parameter] public decimal? NumMovimiento { get; set; }
+    [Parameter] public int? NumGuia { get; set; }
+    [Parameter] public string Texto { get; set; } = "Imprimir guía";
+
+    private ReporteOpcionBoton? _reporte;
+    private string? _cargadoPara;
+    private bool _abriendo;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var clave = $"{CodAplicacion}|{CodOpcionAplicacion}|{CodBoton}";
+        if (clave == _cargadoPara) return;
+        _cargadoPara = clave;
+        try
+        {
+            _reporte = string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion) || string.IsNullOrWhiteSpace(CodBoton)
+                ? null
+                : await Reportes.BotonAsync(CodAplicacion, CodOpcionAplicacion, CodBoton);
+        }
+        catch (Exception ex)
+        {
+            // Sin el botón, la pantalla sigue como siempre.
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionImprimir), nameof(OnParametersSetAsync));
+            _reporte = null;
+        }
+    }
+
+    private async Task Imprimir()
+    {
+        if (_reporte is null || _abriendo || string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion)) return;
+        _abriendo = true;
+        try
+        {
+            var fila = new Dictionary<string, string?>();
+            if (NumMovimiento is { } mov) fila["NUM_MOVIMIENTO_ALMACEN"] = mov.ToString(CultureInfo.InvariantCulture);
+            if (NumGuia is { } guia) fila["NUM_GUIA_REMISION"] = guia.ToString(CultureInfo.InvariantCulture);
+            await Reportes.AbrirAsync(DialogService, CodAplicacion, CodOpcionAplicacion, _reporte, fila, Texto);
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(GuiaRemisionImprimir), nameof(Imprimir));
+            await ErrorDialogHelper.MostrarMensajeAsync("No se pudo abrir la impresión de la guía. Ver detalle en el log de errores.", DialogService, nameof(GuiaRemisionImprimir), "Error al imprimir");
+        }
+        finally { _abriendo = false; }
+    }
+}

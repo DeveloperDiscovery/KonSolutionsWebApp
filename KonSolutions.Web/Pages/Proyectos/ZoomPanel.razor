@@ -1,0 +1,24 @@
+@* Contenedor con zoom para diagramas: botones − / + / ajustar, porcentaje y deslizador. Usa la propiedad CSS zoom (el diseño y las barras de desplazamiento
+   se ajustan solas). Con Ctrl + rueda también se acerca y se aleja. *@
+<div class="zoom-bar">
+    <MudIconButton Icon="@Icons.Material.Filled.ZoomOut" Size="Size.Small" OnClick="@(() => Ajustar(-10))" title="Alejar" />
+    <input type="range" min="30" max="200" step="5" value="@_zoom" @oninput="@(e => { if (int.TryParse(e.Value?.ToString(), out var v)) _zoom = v; })" style="width:140px;" />
+    <MudIconButton Icon="@Icons.Material.Filled.ZoomIn" Size="Size.Small" OnClick="@(() => Ajustar(10))" title="Acercar" />
+    <span class="mono" style="font-size:.78rem;min-width:44px;text-align:center;">@_zoom%</span>
+    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _zoom = 100)">100%</MudButton>
+</div>
+<div class="zoom-area" style="zoom:@(_zoom / 100.0);" @onwheel="OnWheel">
+    @ChildContent
+</div>
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    private int _zoom = 100;
+
+    private void Ajustar(int d) => _zoom = Math.Clamp(_zoom + d, 30, 200);
+
+    private void OnWheel(WheelEventArgs e)
+    {
+        if (e.CtrlKey) Ajustar(e.DeltaY < 0 ? 10 : -10);
+    }
+}

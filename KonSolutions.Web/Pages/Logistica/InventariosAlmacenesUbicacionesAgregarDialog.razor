@@ -1,0 +1,95 @@
+@* InventariosAlmacenesUbicacionesAgregarDialog.razor
+   -----------------------------------------------------------------------
+   Selección múltiple de ubicaciones del almacén (LOGISTICA.ALMACENES_UBICACIONES_ALMACEN,
+   combobox filtrado por COD_ALMACEN) para agregarlas como "a inventariar"
+   (LOGISTICA.INVENTARIOS_ALMACENES_UBICACIONES). No hay SP bulk: se hace un POST
+   (Insert, que es upsert) por cada ubicación marcada, secuencial, y se recarga. *@
+@using UbicacionModelo = KONSolutions.Shared.Models.Logistica.InventariosAlmacenesUbicaciones
+@using LogisticaRoute = KONSolutions.Web.Services.ApiRoutes.Logistica
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Agregar ubicaciones a inventariar</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Style="opacity:.7;font-size:.8rem;" Class="mb-3">Almacén @CodAlmacen — seleccione una o más ubicaciones.</MudText>
+        @if (!_disponibles.Any())
+        {
+            <MudText Class="pa-4 mono" Style="opacity:.5;">No hay ubicaciones disponibles para agregar (todas ya están asignadas, o el almacén no tiene ubicaciones definidas).</MudText>
+        }
+        else
+        {
+            <div class="d-flex gap-2 mb-2">
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="SeleccionarTodas">Seleccionar todas</MudButton>
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="DeseleccionarTodas">Deseleccionar todas</MudButton>
+            </div>
+            <MudSelect T="string" MultiSelection="true" @bind-SelectedValues="_seleccionadas"
+                       Label="Ubicaciones" Variant="Variant.Outlined" Class="mb-3">
+                @foreach (var u in _disponibles)
+                {
+                    <MudSelectItem T="string" Value="@u.Id">@u.Id - @u.Texto</MudSelectItem>
+                }
+            </MudSelect>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Cancel())" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" OnClick="Confirmar" Disabled="@(_guardando || !_seleccionadas.Any())" Style="@EstilosBoton.Confirmar">
+            @(_guardando ? "Guardando..." : "Agregar")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int NumInventario { get; set; }
+    [Parameter, EditorRequired] public string CodAlmacen { get; set; } = "";
+    [Parameter] public List<string> YaAgregadas { get; set; } = new();
+
+
+    private List<ComboboxItem> _todas = new();
+    private List<ComboboxItem> _disponibles => _todas.Where(t => !YaAgregadas.Contains(t.Id)).ToList();
+    private IEnumerable<string> _seleccionadas = new List<string>();
+    private bool _guardando;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Combobox de LOGISTICA.ALMACENES_UBICACIONES_ALMACEN filtrado por COD_ALMACEN
+        // (ya existe con ese filtro — se reusa en vez de traer todas las ubicaciones).
+        _todas = (await Http.SafeGetAsync<List<ComboboxItem>>($"{LogisticaRoute.AlmacenesUbicaciones}/combobox/{Uri.EscapeDataString(CodAlmacen)}")) ?? new();
+    }
+
+    private void SeleccionarTodas() => _seleccionadas = _disponibles.Select(x => x.Id).ToList();
+    private void DeseleccionarTodas() => _seleccionadas = new List<string>();
+
+    private async Task Confirmar()
+    {
+        _guardando = true;
+        var errores = new List<string>();
+        foreach (var cod in _seleccionadas.ToList())
+        {
+            var dto = new UbicacionModelo { NUM_INVENTARIO = NumInventario, COD_ALMACEN = CodAlmacen, COD_UBICACION_ALMACEN = cod };
+            var resp = await Http.PostAsJsonAsync(LogisticaRoute.InventariosAlmacenesUbicaciones, dto);
+            if (!resp.IsSuccessStatusCode) errores.Add(cod);
+        }
+        _guardando = false;
+
+        if (errores.Count == 0)
+        {
+            Snackbar.Add("Ubicaciones agregadas.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        else
+        {
+            await ErrorDialogHelper.MostrarMensajeAsync(
+                $"No se pudieron agregar: {string.Join(", ", errores)}. El resto sí se guardó.",
+                DialogService, nameof(InventariosAlmacenesUbicacionesAgregarDialog), "Error al guardar");
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+    }
+}

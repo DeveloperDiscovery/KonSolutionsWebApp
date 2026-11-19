@@ -1,0 +1,526 @@
+﻿@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Seguridad
+@using System.Net.Http.Json
+
+<style>
+    .aod-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:var(--input-space-h,16px); align-items:stretch; }
+    .aod-grid.aod-con-botones { grid-template-columns:minmax(0,5fr) minmax(0,14fr); }
+    .aod-form, .aod-botones { min-width:0; }
+    .aod-botones { border-left:1px solid rgba(0,0,0,.1); padding-left:var(--input-space-h,16px); position:relative; }
+    /* La grilla no aporta altura: el alto lo manda el formulario, asi que llega justo hasta el borde
+       inferior del rombo de vista previa (lo ultimo del formulario) y hace scroll por dentro. */
+    .aod-botones-in { position:absolute; top:0; bottom:0; left:var(--input-space-h,16px); right:0; }
+    .aod-botones .obp-grid .mud-table-container { max-height:none; }
+    .aod-fila-visual { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start; }
+    .aod-colores { display:flex; flex-direction:column; gap:8px; flex:1 1 180px; min-width:0; }
+    .aod-imagen { flex:0 0 auto; }
+    .aod-preview { flex:0 0 auto; }
+    @@media (max-width:820px) {
+        .aod-grid.aod-con-botones { grid-template-columns:minmax(0,1fr); }
+        .aod-botones { border-left:none; padding-left:0; border-top:1px solid rgba(0,0,0,.1); padding-top:12px; }
+        .aod-botones-in { position:static; }
+        .aod-botones .obp-grid .mud-table-container { max-height:min(62vh,420px); }
+    }
+</style>
+
+<MudDialog Style="width:98vw;max-width:98vw;">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo"
+                         Codigo="@(Item?.COD_OPCION_ORIGINAL)"
+                         Descripcion="@(Item?.DES_OPCION)" />
+    </TitleContent>
+
+    <DialogContent>
+        <EditForm Model="_form" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            @* Formulario a la izquierda y grilla de botones a la derecha (solo si la opción admite
+               botones y ya existe). En pantalla angosta la grilla baja debajo del formulario. *@
+            <div class="aod-grid @(_esModulo && Modo != CrudModo.Create ? "aod-con-botones" : "")">
+
+            <div class="aod-form">
+
+                <div class="d-flex align-center gap-2 mb-3">
+                    <div style="width:140px;flex-shrink:0;">
+                        <CampoTexto Tabla="SEGURIDAD.APLICACIONES_OPCIONES" Columna="COD_APLICACION"
+                                    @bind-Value="_form.COD_APLICACION"
+                                    Disabled="true" Class="" />
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <MudTextField Value="@_desAplicacion" Label="Descripción aplicación"
+                                      Variant="Variant.Outlined" Disabled="true" />
+                    </div>
+                </div>
+
+                <div class="d-flex align-center gap-2 mb-3">
+                    <div style="width:140px;flex-shrink:0;">
+                        <CampoTexto Tabla="SEGURIDAD.APLICACIONES_OPCIONES" Columna="COD_OPCION_APLICACION_PADRE"
+                                    @bind-Value="_form.COD_OPCION_APLICACION_PADRE"
+                                    Disabled="true" Class="" />
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <MudTextField Value="@_desOpcionPadre" Label="Descripción padre"
+                                      Variant="Variant.Outlined" Disabled="true" />
+                    </div>
+                </div>
+
+                <div class="d-flex align-center gap-2 mb-3">
+                    <div style="width:140px;flex-shrink:0;">
+                        <CampoTexto Tabla="SEGURIDAD.APLICACIONES_OPCIONES" Columna="COD_OPCION_APLICACION"
+                                    @bind-Value="_form.COD_OPCION_APLICACION"
+                                    Disabled="true" Class="" />
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <CampoTexto Tabla="SEGURIDAD.APLICACIONES_OPCIONES" Columna="DES_OPCION_APLICACION"
+                                    @bind-Value="_form.DES_OPCION_APLICACION"
+                                    Disabled="_readonly" Class="" IgnorarModoTexto="true" />
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <AriaCombo TItem="ComboboxItem"
+                                 Items="_tiposOpciones"
+                                 TextFunc="@(t => t.Texto)"
+                                 ValueFunc="@(t => t.Id)"
+                                 @bind-Value="_form.COD_TIPO_OPCION_APLICACION"
+                                 Label="Tipo de opción"
+                                 Disabled="_readonly" />
+                </div>
+
+                <CampoTextoEstable @bind-Value="_form.DES_FORMULARIO"
+                              Label="Formulario (ruta .razor)" Variant="Variant.Outlined"
+                              Class="mb-3" Disabled="@(_readonly || !_esModulo)"
+                              HelperText="Ej: Seguridad/TiposOpciones.razor" Immediate="true" />
+
+                @* La tabla que administra la opción. NO es cosmético: es contra este valor que el
+                   guardián de la API resuelve si el rol puede hacer GET/POST/PUT/DELETE. Hasta
+                   ahora no había campo, así que toda opción creada desde la pantalla nacía con
+                   DES_OBJETO en NULL y ningún rol podía tener permiso sobre ella — invisible en
+                   modo Auditoría, y un "le di el permiso y no lo toma" apenas se pase a Bloqueo.
+
+                   Va como combo y no como texto libre porque un nombre mal escrito no falla:
+                   simplemente nunca coincide, y el permiso no se aplica nunca. *@
+                <div class="mb-3">
+                    <AriaCombo TItem="string"
+                                 Items="_tablas"
+                                 TextFunc="@(t => t)"
+                                 ValueFunc="@(t => t)"
+                                 @bind-Value="_form.DES_OBJETO"
+                                 Label="Objeto (tabla que administra)"
+                                 Disabled="@(_readonly || !_esModulo)" />
+                </div>
+
+                @* Parámetro fijo genérico de la opción — sobrevive a moverla de carpeta
+                   (vive en la misma fila, ver PROC_SEGURIDAD_OPCIONES_MOVE). Ej: "CLI" para
+                   fijar el Tipo de Entidad en una pantalla de Entidades reutilizada. *@
+                <CampoTextoEstable @bind-Value="_form.DES_PARAMETRO"
+                              Label="Parámetro" Variant="Variant.Outlined"
+                              Class="mb-3" Disabled="_readonly"
+                              HelperText="Opcional — valor fijo que lee la pantalla destino (ej. 'CLI')" Immediate="true" />
+
+                <div class="mb-3">
+                    <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Password" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool" @bind-Value="_form.FLG_EXIGE_PASSWORD"
+                                     Disabled="@(_readonly || _form.COD_TIPO_OPCION_APLICACION != "MDL")"
+                                     Label="Exige contraseña" Color="Color.Primary" /></div>
+                    <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Keyboard" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool" @bind-Value="_form.FLG_TECLADO_VIRTUAL"
+                                     Disabled="@_readonly"
+                                     Label="Habilitar teclado virtual" Color="Color.Primary" /></div>
+                    @* Sólo tiene sentido en una opción que abre pantalla (MDL): una carpeta
+                       o un submódulo no se abre en una pestaña, así que no hay nada que
+                       duplicar. Mismo criterio que "Exige contraseña". *@
+                    <div class="d-flex align-center gap-1"><MudIcon Icon="@Icons.Material.Filled.Tab" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool?" @bind-Value="_form.FLG_MULTI_LOAD"
+                                     Disabled="@(_readonly || _form.COD_TIPO_OPCION_APLICACION != "MDL")"
+                                     Label="Permitir varias pestañas" Color="Color.Primary" /></div>
+                </div>
+
+                @* Estado: viaja bundleado en /loadcombos junto con Tipo de opción y Aplicación
+                   (mismo query que usaba el EstadoCombo genérico para esta tabla). *@
+                <div class="estado-combo-wrap @(!string.IsNullOrEmpty(_colorEstadoActual) ? "estado-combo-con-punto" : "")">
+                    @if (!string.IsNullOrEmpty(_colorEstadoActual))
+                    {
+                        <div class="estado-combo-dot" style="background:@_colorEstadoActual;"></div>
+                    }
+                    <AriaCombo TItem="EstadoItem" Items="_estados"
+                               TextFunc="@(e => e.DesEstado)" ValueFunc="@(e => e.CodEstado.ToString())"
+                               Value="@(_form.COD_ESTADO?.ToString())" ValueChanged="OnEstadoChanged"
+                               Label="Estado" Disabled="_readonly" Class="mb-3">
+                        <OptionTemplate Context="e">
+                            <div class="d-flex align-center gap-2">
+                                @if (!string.IsNullOrEmpty(e.BackColor))
+                                {
+                                    <div style="width:10px;height:10px;border-radius:50%;background:@e.BackColor;flex-shrink:0;"></div>
+                                }
+                                <span>@e.DesEstado</span>
+                            </div>
+                        </OptionTemplate>
+                    </AriaCombo>
+                </div>
+
+                @* Colores, imagen de la opción y vista previa del tile (rombo) en la misma fila.
+                   La vista previa es el tile de verdad (.ws-tile en app.css, mismo criterio de colores
+                   que el Menú de Tiles); se muestra si hay color O ícono. *@
+                <div class="aod-fila-visual">
+                    <div class="aod-colores">
+                        <div>
+                            <MudText Typo="Typo.caption" Class="mono mb-1" Style="opacity:.6;">Color de fondo (tile)</MudText>
+                            <ColorConSwatch @bind-Text="_form.DES_BACKCOLOR" Label="Fondo" Disabled="_readonly" />
+                        </div>
+                        <div>
+                            <MudText Typo="Typo.caption" Class="mono mb-1" Style="opacity:.6;">Color de texto</MudText>
+                            <ColorConSwatch @bind-Text="_form.DES_FORECOLOR" Label="Texto" Disabled="_readonly" />
+                        </div>
+                    </div>
+                    <div class="aod-imagen">
+                        <ImagePicker Image="_form.IMG_ICONO"
+                                     ImageChanged="@(v => _form.IMG_ICONO = v)"
+                                     Label="Icono" ReadOnly="_readonly" />
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_form.DES_BACKCOLOR) || !string.IsNullOrWhiteSpace(_form.DES_FORECOLOR) || _form.IMG_ICONO is not null)
+                    {
+                        <div class="aod-preview">
+                            <MudText Typo="Typo.caption" Class="mono mb-1" Style="opacity:.6;">Vista previa:</MudText>
+                            @* El ancho fijo es el mismo max-width que .ws-tile usa en toda la app:
+                               sin él, el tile se estira y el hexágono se deforma. *@
+                            <div style="width:120px;">
+                                <div class="ws-tile" style="@EstiloTilePreview()">
+                                    @if (_form.IMG_ICONO is not null)
+                                    {
+                                        <img src="@IconoPreviewSrc" class="ws-tile-ico" alt="Ícono de la opción" />
+                                    }
+                                    else
+                                    {
+                                        <MudIcon Icon="@Icons.Material.Filled.Dashboard" Class="ws-tile-ico-mud" />
+                                    }
+                                    <div class="ws-tile-lbl">@(string.IsNullOrWhiteSpace(_form.DES_OPCION_APLICACION) ? "Opción" : _form.DES_OPCION_APLICACION)</div>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+
+            </div>
+
+            @if (_esModulo && Modo != CrudModo.Create)
+            {
+                <div class="aod-botones"><div class="aod-botones-in">
+                    <OpcionBotonesPanel CodAplicacion="@_form.COD_APLICACION"
+                                        CodOpcion="@_form.COD_OPCION_APLICACION"
+                                        DesAplicacion="@_desAplicacion"
+                                        CodOpcionPadre="@_form.COD_OPCION_APLICACION_PADRE"
+                                        DesOpcionPadre="@_desOpcionPadre"
+                                        DesOpcion="@_desOpcion"
+                                        ReadOnly="_readonly" />
+                </div></div>
+            }
+
+            </div>
+
+            <div class="d-flex align-center gap-2 mt-4 dialog-acciones-fijas">
+                <PanelAuditoria CodUsuarioRegistro="@_form.COD_USUARIO_REGISTRO"
+                                CodEstacionRegistro="@_form.COD_ESTACION_REGISTRO"
+                                FecRegistro="@_form.FEC_REGISTRO"
+                                CodUsuarioActualizacion="@_form.COD_USUARIO_ACTUALIZACION"
+                                CodEstacionActualizacion="@_form.COD_ESTACION_ACTUALIZACION"
+                                FecActualizacion="@_form.FEC_ACTUALIZACION" />
+                @* MudSpacer en vez de justify-space-between: cuando el registro es nuevo el
+                   PanelAuditoria no pinta nada y, con un solo hijo, space-between dejaba los
+                   botones a la izquierda. El spacer los empuja a la derecha siempre. *@
+                <MudSpacer />
+                @* Botones configurados con FLG_DIALOG para esta opción, a la izquierda de Cancelar y
+                   separados por una línea, como en RequerimientoDocumento. Sólo sobre un registro que
+                   ya existe; su estado decide si cada uno está habilitado. *@
+                @if (Modo != CrudModo.Create && !string.IsNullOrWhiteSpace(CodAplicacion))
+                {
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                                     CodTipoEstado="@_form.COD_TIPO_ESTADO" CodEstadoActual="@_form.COD_ESTADO" />
+                    <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+                }
+                <div class="d-flex gap-2">
+                @if (Modo == CrudModo.Read)
+                {
+                    <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.ArrowBack"
+                               Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));">Regresar</MudButton>
+                }
+                else
+                {
+                    <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Cancel"
+                               Style="background-color:var(--boton-forecolor,var(--paper));color:var(--boton-backcolor,var(--ink));">Cancelar</MudButton>
+                }
+                @if (Modo == CrudModo.Delete)
+                {
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.Delete" Disabled="_guardando"
+                               Style="@EstilosBoton.Eliminar">
+                        @if (_guardando) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                        Eliminar
+                    </MudButton>
+                }
+                else if (Modo != CrudModo.Read)
+                {
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Save" Disabled="_guardando">
+                        @if (_guardando) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                        Guardar
+                    </MudButton>
+                }
+                </div>
+            </div>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public NodoOpcion? Item  { get; set; }
+    [Parameter] public NodoOpcion? Padre { get; set; }
+    [Parameter] public CrudModo    Modo  { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre). Con ella el pie muestra los botones
+    // marcados como Diálogo.
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    // Los botones de diálogo se conectan acá, por su código. Mientras uno no tenga su acción,
+    // tocarlo avisa en vez de no hacer nada (mismo criterio que RequerimientoDocumento).
+    private Task OnAccionDialog(BotonTreeviewItem b) => AvisarBotonSinConectar(b);
+
+    private async Task AvisarBotonSinConectar(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre {_form.COD_OPCION_APLICACION}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(AplicacionesOpcionesDialog), "Acción pendiente");
+    }
+
+    private AplicacionesOpcionesFormDto _form = new();
+
+    /// <summary>Colores del tile de la vista previa. Mismo criterio que MenuTilesPage.EstiloTile:
+    /// el color de fondo pinta también el borde, y cada uno se aplica sólo si está configurado —
+    /// un color vacío deja el del tema en vez de pintar de negro.</summary>
+    private string EstiloTilePreview()
+    {
+        // .ws-tile trae cursor:pointer y el efecto de levantarse al pasar por encima, porque en
+        // el menú se hace clic. Acá es una muestra, no un botón: sin esto parecía clickeable.
+        var s = "cursor:default;pointer-events:none;";
+        if (!string.IsNullOrWhiteSpace(_form.DES_BACKCOLOR)) s += $"background:{_form.DES_BACKCOLOR};border-color:{_form.DES_BACKCOLOR};";
+        if (!string.IsNullOrWhiteSpace(_form.DES_FORECOLOR)) s += $"color:{_form.DES_FORECOLOR};";
+        return s;
+    }
+
+    /// <summary>Mismo criterio que ImagePicker: el data URI lo arma ImagenDataUri, que
+    /// declara el formato real en vez de dar PNG por sentado.</summary>
+    private string IconoPreviewSrc => KONSolutions.Web.Services.ImagenDataUri.De(_form.IMG_ICONO);
+    private List<ComboboxItem> _tiposOpciones = new();
+    private List<string>       _tablas        = new();
+    private List<ComboboxItem> _aplicaciones  = new();
+    private List<EstadoItem>   _estados       = new();
+    private bool _guardando;
+
+    /// <summary>Color del estado actualmente seleccionado, para el punto que se ve sobre el
+    /// combo cerrado (mismo detalle visual que EstadoCombo.razor).</summary>
+    private string? _colorEstadoActual => _estados.FirstOrDefault(e => e.CodEstado == _form.COD_ESTADO)?.BackColor;
+
+    private void OnEstadoChanged(string? v)
+    {
+        _form.COD_ESTADO = int.TryParse(v, out var n) ? n : null;
+    }
+
+    private string _desAplicacion  = "";
+    private string _desOpcionPadre = "";
+    private string _desOpcion      = "";
+
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private bool _esModulo => _form.COD_TIPO_OPCION_APLICACION is "MDL" or "SMD";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Inicializar _form ANTES del primer await para que EstadoCombo reciba COD_ESTADO en el primer render
+        if (Modo == CrudModo.Create)
+        {
+            _form.COD_APLICACION              = Padre?.COD_APLICACION_ORIGINAL ?? "";
+            _form.COD_OPCION_APLICACION       = "";
+            _form.COD_OPCION_APLICACION_PADRE = Padre?.COD_OPCION_ORIGINAL ?? "";
+            _form.COD_TIPO_OPCION_APLICACION  = "";
+            _desOpcionPadre = string.IsNullOrEmpty(_form.COD_OPCION_APLICACION_PADRE)
+                                ? ""
+                                : Padre?.DES_OPCION ?? "";
+        }
+        else if (Item is not null)
+        {
+            _form.COD_APLICACION              = Item.COD_APLICACION_ORIGINAL;
+            _form.COD_OPCION_APLICACION       = Item.COD_OPCION_ORIGINAL;
+            _form.COD_OPCION_APLICACION_PADRE = Item.COD_OPCION_APLICACION_PADRE;
+            _form.DES_OPCION_APLICACION       = Item.DES_OPCION_APLICACION;
+            _form.COD_TIPO_OPCION_APLICACION  = Item.COD_TIPO;
+            _form.DES_FORMULARIO              = Item.DES_PAGINA ?? "";
+            _form.IMG_ICONO                   = Item.IMG_ICONO;
+            _form.COD_ESTADO                  = Item.COD_ESTADO;
+            _desOpcionPadre = Item.DES_OPCION_APLICACION_PADRE;
+            _desOpcion      = Item.DES_OPCION_APLICACION;
+        }
+
+        // Cargar listas y detalle completo en paralelo. Tipo de opción + Aplicación + Estado
+        // viajan juntos en Loadcombos (CargarCombosAsync); Tablas (Objeto) queda aparte: es
+        // metadata de esquema, no un SP de catálogo.
+        var tareas = new List<Task> { CargarCombosAsync(), CargarTablas() };
+        if (Modo != CrudModo.Create && Item is not null)
+            tareas.Add(CargarDetalleAsync());
+        await Task.WhenAll(tareas);
+
+        // Completar campos que dependen de la lista de aplicaciones
+        _desAplicacion = DesAplicacion(_form.COD_APLICACION);
+    }
+
+    // Carga el registro completo desde SHOWBYID para tener COD_ESTADO, COD_TIPO_OPCION, etc.
+    private async Task CargarDetalleAsync()
+    {
+        if (Item is null) return;
+        try
+        {
+            var url = $"{ApiRoutes.Seguridad.AplicacionesOpciones}" +
+                      $"/{Uri.EscapeDataString(Item.COD_APLICACION_ORIGINAL)}" +
+                      $"/{Uri.EscapeDataString(Item.COD_OPCION_ORIGINAL)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<AplicacionesOpcionesFormDto>>(url);
+            if (r?.Data is not null)
+            {
+                _form.DES_OPCION_APLICACION      = r.Data.DES_OPCION_APLICACION;
+                _form.COD_TIPO_OPCION_APLICACION = r.Data.COD_TIPO_OPCION_APLICACION;
+                _form.DES_FORMULARIO             = r.Data.DES_FORMULARIO;
+                _form.DES_PARAMETRO              = r.Data.DES_PARAMETRO;
+                // Se arrastra aunque la pantalla no lo muestre: es la tabla contra la que el
+                // guardián de la API resuelve el permiso. Si no vuelve en el guardado, editar
+                // la opción la deja en NULL y el rol pierde el acceso sin que nadie lo note.
+                _form.DES_OBJETO                = r.Data.DES_OBJETO;
+                _form.FLG_EXIGE_PASSWORD         = r.Data.FLG_EXIGE_PASSWORD;
+                _form.FLG_TECLADO_VIRTUAL        = r.Data.FLG_TECLADO_VIRTUAL;
+                _form.FLG_MULTI_LOAD             = r.Data.FLG_MULTI_LOAD;
+                _form.IMG_ICONO                  = r.Data.IMG_ICONO;
+                _form.DES_BACKCOLOR              = r.Data.DES_BACKCOLOR;
+                _form.DES_FORECOLOR              = r.Data.DES_FORECOLOR;
+                _form.COD_TIPO_ESTADO            = r.Data.COD_TIPO_ESTADO;
+                _form.COD_ESTADO                 = r.Data.COD_ESTADO;
+                _form.COD_USUARIO_REGISTRO       = r.Data.COD_USUARIO_REGISTRO;
+                _form.COD_ESTACION_REGISTRO      = r.Data.COD_ESTACION_REGISTRO;
+                _form.FEC_REGISTRO               = r.Data.FEC_REGISTRO;
+                _form.COD_USUARIO_ACTUALIZACION  = r.Data.COD_USUARIO_ACTUALIZACION;
+                _form.COD_ESTACION_ACTUALIZACION = r.Data.COD_ESTACION_ACTUALIZACION;
+                _form.FEC_ACTUALIZACION          = r.Data.FEC_ACTUALIZACION;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Tipo de opción + Aplicación + Estado en un solo viaje
+    /// (PROC_SEGURIDAD_APLICACIONES_OPCIONES_LOADCOMBOS). Si falla, los combos quedan vacíos
+    /// y el resto del diálogo sigue funcionando: es una ayuda de carga, no un requisito.</summary>
+    private async Task CargarCombosAsync()
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Seguridad.AplicacionesOpcionesLoadcombos}?codTipoEstado={_form.COD_TIPO_ESTADO ?? 0}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<AplicacionesOpcionesLoadCombosResult>>(url);
+            _tiposOpciones = r?.Data?.TiposOpciones ?? new();
+            _aplicaciones  = r?.Data?.Aplicaciones ?? new();
+            _estados       = r?.Data?.Estados ?? new();
+            if (_form.COD_TIPO_ESTADO is null or 0) _form.COD_TIPO_ESTADO = r?.Data?.CodTipoEstado;
+
+            // Al crear, preseleccionar el estado marcado EsDefault (si aún no hay uno elegido).
+            if (Modo == CrudModo.Create && _form.COD_ESTADO is null)
+                _form.COD_ESTADO = _estados.FirstOrDefault(e => e.EsDefault)?.CodEstado;
+        }
+        catch { }
+    }
+
+    /// <summary>Tablas del esquema, para el combo de DES_OBJETO. Si falla, el combo queda vacío
+    /// y el resto del diálogo sigue funcionando: es una ayuda de carga, no un requisito.</summary>
+    private async Task CargarTablas()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<string>>>(ApiRoutes.Sistema.Tablas);
+            _tablas = r?.Data ?? new();
+        }
+        catch { }
+    }
+
+    // Busca la descripción de la aplicación en la lista ya cargada
+    private string DesAplicacion(string cod) =>
+        _aplicaciones.FirstOrDefault(a => a.Id == cod)?.Texto ?? "";
+
+    private async Task Submit()
+    {
+        _guardando = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var url = $"{ApiRoutes.Seguridad.AplicacionesOpciones}/{Uri.EscapeDataString(_form.COD_APLICACION)}/{Uri.EscapeDataString(_form.COD_OPCION_APLICACION)}";
+                var t0  = DateTime.Now;
+                Console.WriteLine($"[SP] EXEC PROC_SEGURIDAD_APLICACIONES_OPCIONES_DELETE @COD_APLICACION = '{_form.COD_APLICACION}', @COD_OPCION_APLICACION = '{_form.COD_OPCION_APLICACION}'");
+                var res  = await Http.DeleteAsync(url);
+                var raw  = await res.Content.ReadAsStringAsync();
+                ApiResponse<object>? body = null;
+                try { body = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<object>>(raw, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); } catch (System.Text.Json.JsonException) { }
+                Console.WriteLine($"[TRACE] {DateTime.Now:HH:mm:ss.fff} — DELETE resultado | HTTP={res.StatusCode} | Msg={body?.Message} (+{(DateTime.Now-t0).TotalMilliseconds:0}ms)");
+                if (res.IsSuccessStatusCode)
+                { Snackbar.Add("Opción eliminada correctamente.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAsync(res, ErrorLog, DialogService, nameof(AplicacionesOpcionesDialog), nameof(Submit));
+                }
+            }
+            else if (Modo == CrudModo.Create || Modo == CrudModo.Update)
+            {
+                var t0 = DateTime.Now;
+                Console.WriteLine($"[SP] EXEC PROC_SEGURIDAD_APLICACIONES_OPCIONES_INSERT" +
+                    $" @COD_APLICACION = '{_form.COD_APLICACION}'," +
+                    $" @COD_OPCION_APLICACION = '{_form.COD_OPCION_APLICACION}'," +
+                    $" @COD_OPCION_APLICACION_PADRE = '{_form.COD_OPCION_APLICACION_PADRE}'," +
+                    $" @DES_OPCION_APLICACION = '{_form.DES_OPCION_APLICACION}'," +
+                    $" @COD_TIPO_OPCION_APLICACION = '{_form.COD_TIPO_OPCION_APLICACION}'," +
+                    $" @DES_FORMULARIO = '{_form.DES_FORMULARIO}'," +
+                    $" @FLG_EXIGE_PASSWORD = {(_form.FLG_EXIGE_PASSWORD ? 1 : 0)}," +
+                    $" @FLG_TECLADO_VIRTUAL = {(_form.FLG_TECLADO_VIRTUAL ? 1 : 0)}," +
+                    $" @FLG_MULTI_LOAD = {(_form.FLG_MULTI_LOAD == true ? 1 : 0)}," +
+                    $" @COD_TIPO_ESTADO = '{_form.COD_TIPO_ESTADO}'," +
+                    $" @COD_ESTADO = '{_form.COD_ESTADO}'," +
+                    $" @IMG_ICONO = {((_form.IMG_ICONO?.Length ?? 0) > 0 ? $"0x{Convert.ToHexString(_form.IMG_ICONO!)[..Math.Min(40, _form.IMG_ICONO!.Length * 2)]}…" : "NULL")}");
+
+                var res  = await Http.GuardarAsync(ApiRoutes.Seguridad.AplicacionesOpciones, _form, Modo == CrudModo.Create);
+                var raw  = await res.Content.ReadAsStringAsync();
+                ApiResponse<object>? body = null;
+                try { body = System.Text.Json.JsonSerializer.Deserialize<ApiResponse<object>>(raw, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); } catch (System.Text.Json.JsonException) { }
+                Console.WriteLine($"[TRACE] {DateTime.Now:HH:mm:ss.fff} — INSERT resultado | HTTP={res.StatusCode} | Success={body?.Success} | Msg={body?.Message} (+{(DateTime.Now-t0).TotalMilliseconds:0}ms)");
+
+                if (res.IsSuccessStatusCode)
+                {
+                    var msg = Modo == CrudModo.Create ? "Opción creada correctamente." : "Opción actualizada correctamente.";
+                    Snackbar.Add(msg, Severity.Success);
+                    MudDialog.Close(DialogResult.Ok(true));
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAsync(res, ErrorLog, DialogService, nameof(AplicacionesOpcionesDialog), nameof(Submit));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TRACE] {DateTime.Now:HH:mm:ss.fff} — EXCEPCION: {ex.Message}");
+            await ErrorDialogHelper.MostrarMensajeAsync(ex.Message, DialogService, nameof(AplicacionesOpcionesDialog));
+            await ErrorLog.LogAsync(ex, nameof(AplicacionesOpcionesDialog), nameof(Submit));
+        }
+        finally { _guardando = false; }
+    }
+}

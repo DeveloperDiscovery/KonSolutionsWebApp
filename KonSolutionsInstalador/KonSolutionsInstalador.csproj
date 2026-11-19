@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Instalador de la web (servicio de Windows KonSolutionsWeb, que sirve la aplicacion Blazor sin IIS). Un .exe de consola (pide permisos de administrador) que copia el servidor y el sitio,
+       configura la direccion de la API, el puerto y el certificado, abre el firewall, lo inicia y verifica que el sitio carga y que la API acepta a esta web. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Instalador</AssemblyName>
+    <RootNamespace>KonSolutionsInstalador</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+</Project>

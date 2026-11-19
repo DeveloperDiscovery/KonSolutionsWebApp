@@ -1,0 +1,1135 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Models
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@*
+    Documento del Registro de Compras (FINANZAS.COMPROBANTES_PAGO y _DETALLE), embebido como segunda solapa de RegistroCompras.razor — mismo esquema que
+    PedidoComercialDocumento.razor (el de las órdenes de compra): dos paneles de cabecera lado a lado y, debajo, lo que cuelga del documento.
+
+    · Qué inputs se habilitan lo deciden las características del Tipo de operación (ESTANDAR.TIPOS_OPERACION): el centro de costo con FLG_CENTRO_COSTO, el proyecto con
+      FLG_PROYECTO, el lote con FLG_LOTE_CONTROL y el incoterm con FLG_COMERCIO_EXTERIOR. FLG_BIEN decide qué órdenes se pueden asociar: de bienes o de servicios.
+    · Los tipos de comprobante que se ofrecen son los del tipo de operación (TIPOS_COMPROBANTE_POR_OPERACION); si el tipo no tiene ninguno, los de la lista general.
+    · El detalle (líneas, órdenes, conciliación) se habilita cuando la cabecera está grabada: todo cuelga del NUM_REGISTRO, que lo genera la base.
+    · Los botones de flujo (validar, enviar a aprobación, aprobar, contabilizar y anular) son los del menú con FLG_DIALOG; esta pantalla los reconoce por DES_METODO y los
+      oculta cuando el estado del comprobante no los admite. La base vuelve a exigir cada regla.
+*@
+<style>
+    .rc-importes .mud-input-slot { text-align: right; }
+    .rc-resultado-OK { color: var(--mud-palette-success); }
+    .rc-resultado-OBS, .rc-resultado-RET { color: var(--mud-palette-warning); }
+    .rc-resultado-EXC, .rc-resultado-BLQ { color: var(--mud-palette-error); }
+</style>
+<div class="documento-logistica">
+    @* Ocultar la cabecera amplía el detalle: la cabecera sigue en la pantalla (no se pierde nada de lo escrito), solo se esconde *@
+    @if (_cabeceraOculta)
+    {
+        <div class="d-flex align-center gap-2 mb-2 flex-wrap" data-panel="barra-cabecera">
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.UnfoldMore" OnClick="@(() => _cabeceraOculta = false)" data-accion="mostrar-cabecera">Mostrar cabecera</MudButton>
+            <MudChip T="string" Size="Size.Small" Color="@ColorEstado" data-estado="@_m.COD_ESTADO_ALIAS_CONCILIACION">@RegistroCompraEstados.Texto(_m.COD_ESTADO_ALIAS_CONCILIACION)</MudChip>
+            <span class="mono" data-campo="resumen-cabecera">@_m.COD_TIPO_COMPROBANTE_PAGO @_m.NUM_COMPROBANTE_PAGO · Total @(_m.VAL_TOTAL?.ToString("N2") ?? "0.00")</span>
+        </div>
+    }
+    <EditForm Context="formulario" Model="_m" OnValidSubmit="Submit">
+        <div style="@(_cabeceraOculta ? "display:none;" : null)" data-panel="cabecera">
+        <MudGrid Spacing="2">
+            <!-- ══════════════ PANEL IZQUIERDO: el comprobante ══════════════ -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);height:100%;">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="5">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposOperacion"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_TIPO_OPERACION" ValueChanged="CambiarTipoOperacion"
+                                       Label="Tipo de operación" Obligatorio="true" Disabled="@(_soloLectura || _tieneOrdenes)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_tiposComprobante"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_TIPO_COMPROBANTE_PAGO" ValueChanged="@(v => _m.COD_TIPO_COMPROBANTE_PAGO = v)"
+                                       Label="Tipo de comprobante" Obligatorio="true" Disabled="@_soloLectura" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="3">
+                            <MudTextField Variant="Variant.Outlined" T="string" @bind-Value="_m.NUM_COMPROBANTE_PAGO" Immediate="true" MaxLength="20"
+                                          OnKeyDown="OnNumeroKeyDown" OnBlur="OnNumeroBlur"
+                                          Label="Serie - número" Placeholder="F001-00000123" Required="true" Disabled="@_soloLectura" Class="mb-3" data-campo="numero-comprobante" />
+                        </MudItem>
+
+                        <MudItem xs="12" md="8">
+                            <AriaCombo TItem="ComboboxItem" Items="_proveedores"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.COD_ENTIDAD?.ToString("0"))"
+                                       ValueChanged="CambiarProveedor"
+                                       SearchFunc="BuscarProveedorAsync" MinCharacters="2" TextoInicial="@_textoProveedorInicial"
+                                       Label="Proveedor" Obligatorio="true" Disabled="@(_soloLectura || _tieneOrdenes)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudTextField Variant="Variant.Outlined" T="string" Value="@_m.NUM_DOCUMENTO_IDENTIDAD" ReadOnly="true" Disabled="true" Label="RUC / documento" Class="mb-3" />
+                        </MudItem>
+
+                        <MudItem xs="6" md="4">
+                            <MudDatePicker Variant="Variant.Outlined" Label="Fecha de emisión" @bind-Date="_m.FEC_COMPROBANTE_PAGO" Editable="true" Required="true" Disabled="@_soloLectura" Class="mb-3"
+                                           DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" data-campo="fecha-emision" />
+                        </MudItem>
+                        <MudItem xs="6" md="4">
+                            <MudDatePicker Variant="Variant.Outlined" Label="Fecha de vencimiento" @bind-Date="_m.FEC_VENCIMIENTO" Editable="true" Disabled="@_soloLectura" Class="mb-3"
+                                           DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" data-campo="fecha-vencimiento" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker Variant="Variant.Outlined" Label="Fecha de recepción" @bind-Date="_m.FEC_RECEPCION" Editable="true" Disabled="@_soloLectura" Class="mb-3"
+                                           DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" data-campo="fecha-recepcion" />
+                        </MudItem>
+
+
+                        @* Lo que habilita el tipo de operación. Los campos se ven siempre y se deshabilitan cuando el tipo no los admite (mismo criterio que la orden de compra). *@
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_centrosCosto"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_CENTRO_COSTO_SOLICITANTE" ValueChanged="@(v => _m.COD_CENTRO_COSTO_SOLICITANTE = v)"
+                                       Label="Centro de costo solicitante" Disabled="@(_soloLectura || !_habilitaCentroCosto)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_centrosCosto"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_CENTRO_COSTO_DESTINO" ValueChanged="@(v => _m.COD_CENTRO_COSTO_DESTINO = v)"
+                                       Label="Centro de costo destino" Disabled="@(_soloLectura || !_habilitaCentroCosto)" Class="mb-3" />
+                        </MudItem>
+                        @* Motivo de la devolución o del cargo (script 86): solo con un tipo de operación de devolución o cargo; propone el motivo por defecto del tipo *@
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_motivos"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.COD_MOTIVO?.ToString())" ValueChanged="@(v => _m.COD_MOTIVO = int.TryParse(v, out var n) ? n : null)"
+                                       Label="@(_tipo?.FLG_CARGO == true ? "Motivo del cargo" : "Motivo de la devolución")" Disabled="@(_soloLectura || !_habilitaMotivo)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_proyectos"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.NUM_PROYECTO?.ToString())" ValueChanged="@(v => _m.NUM_PROYECTO = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Proyecto" Disabled="@(_soloLectura || !_habilitaProyecto)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="4">
+                            <MudTextField Variant="Variant.Outlined" T="string" @bind-Value="_m.NUM_LOTE_CONTROL" MaxLength="30" Immediate="true"
+                                          Label="Lote de control" Disabled="@(_soloLectura || !_habilitaLote)" Class="mb-3" data-campo="lote" />
+                        </MudItem>
+                        <MudItem xs="6" md="4">
+                            <AriaCombo TItem="ComboboxItem" Items="_incoterms"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_INCOTERM" ValueChanged="@(v => _m.COD_INCOTERM = v)"
+                                       Label="Incoterm" Disabled="@(_soloLectura || !_habilitaComercioExterior)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.UnfoldLess" OnClick="@(() => _cabeceraOculta = true)" data-accion="ocultar-cabecera">Ocultar cabecera</MudButton>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+
+            <!-- ══════════════ PANEL DERECHO: importes, estado y acciones ══════════════ -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="0" Class="pa-3 d-flex flex-column" Style="border:1px solid var(--line);height:100%;">
+                    <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                        <MudChip T="string" Size="Size.Medium" Color="@ColorEstado" data-estado="@_m.COD_ESTADO_ALIAS_CONCILIACION">@RegistroCompraEstados.Texto(_m.COD_ESTADO_ALIAS_CONCILIACION)</MudChip>
+                        @if (_tipo is not null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" data-clase="@(_tipo.FLG_BIEN ? "bienes" : "servicios")">@(_tipo.FLG_BIEN ? "Bienes: se valida contra órdenes de compra de bienes" : "Servicios: se valida contra órdenes de servicio")</MudChip>
+                        }
+                        @if (_cabeceraGrabada)
+                        {
+                            <span class="mono" style="opacity:.7;">Registro N° <span data-campo="num-registro">@_m.NUM_REGISTRO.ToString("0")</span></span>
+                        }
+                        else
+                        {
+                            <span class="mono" style="opacity:.7;">Registro N° (automático)</span>
+                        }
+                        @if (_m.FLG_TIENE_XML == true)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Code" OnClick="VerXml" data-accion="ver-xml">Ver XML</MudButton>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_m.DES_JUSTIFICACION))
+                    {
+                        <MudAlert Severity="Severity.Normal" Dense="true" Class="mb-3" data-campo="justificacion-registrada">Justificación: @_m.DES_JUSTIFICACION</MudAlert>
+                    }
+
+                    <MudGrid Spacing="2" Class="rc-importes">
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@_m.COD_MONEDA" ValueChanged="@(v => _m.COD_MONEDA = v)"
+                                       Label="Moneda" Disabled="@_soloLectura" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <MudNumericField T="decimal?" Variant="Variant.Outlined" @bind-Value="_m.FAC_TIPO_CAMBIO" Min="0" Format="0.######" Label="Tipo de cambio" Disabled="@_soloLectura" Class="mb-3" HideSpinButtons="true" data-campo="tipo-cambio" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_formasPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.COD_FORMA_PAGO?.ToString())" ValueChanged="@(v => _m.COD_FORMA_PAGO = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Forma de pago" Disabled="@(_soloLectura || _esNota)" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="6" md="3">
+                            <AriaCombo TItem="ComboboxItem" Items="_condicionesPago"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.COD_CONDICION_PAGO?.ToString())" ValueChanged="@(v => _m.COD_CONDICION_PAGO = int.TryParse(v, out var n) ? n : null)"
+                                       Label="Condición de pago" Disabled="@(_soloLectura || _esNota)" Class="mb-3" />
+                        </MudItem>
+
+                        @* Descuento de la cabecera: el tipo elegido trae la tasa, que no se tipea (igual que en la orden de compra). Al asociar una orden el comprobante lo toma de ella si todavía no lo tiene. *@
+                        <MudItem xs="12" md="6">
+                            <AriaCombo TItem="ComboboxItem" Items="TiposDescuentoItems"
+                                       TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                       Value="@(_m.COD_TIPO_DESCUENTO?.ToString())" ValueChanged="CambiarTipoDescuento"
+                                       Label="Tipo de descuento" Disabled="@_soloLectura" Class="mb-3" />
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudNumericField Variant="Variant.Outlined" T="decimal?" Value="_m.TAS_DESCUENTO" ReadOnly="true" Label="Tasa de descuento (%)" Format="@Decimales.FormatoPorcentual" Disabled="true" Class="mb-3" data-campo="tasa-descuento" />
+                        </MudItem>
+                        <MudItem xs="12" md="8">
+                            @* El PDF del comprobante se SELECCIONA (no se escribe su nombre): queda en la pantalla y se sube al grabar; el nombre se guarda con la cabecera. *@
+                            <div class="mb-3 pa-2 d-flex align-center gap-2 flex-wrap" style="border:1px solid var(--line);border-radius:6px;min-height:56px;" data-campo="archivo-pdf">
+                                <MudIcon Icon="@Icons.Material.Filled.PictureAsPdf" Color="@(HayPdf ? Color.Error : Color.Default)" />
+                                <div style="flex:1 1 120px;min-width:0;">
+                                    <div style="font-size:.7rem;opacity:.65;">Archivo PDF</div>
+                                    <div class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@NombrePdf" data-campo="archivo-pdf-nombre">@(HayPdf ? NombrePdf : "Sin archivo PDF")</div>
+                                </div>
+                                @if (_pdfBytes is not null)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" data-aviso="pdf-pendiente">Se sube al grabar</MudChip>
+                                }
+                                else if (_pdfQuitar && !string.IsNullOrWhiteSpace(_m.DES_NOMBRE_ARCHIVO_PDF))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" data-aviso="pdf-quitar">Se quita al grabar</MudChip>
+                                }
+                                @if (!_soloLectura)
+                                {
+                                    <MudFileUpload T="IBrowserFile" Accept=".pdf,application/pdf" FilesChanged="ElegirPdf" data-accion="pdf-elegir">
+                                        <ActivatorContent>
+                                            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.UploadFile">@(HayPdf ? "Cambiar PDF" : "Seleccionar PDF")</MudButton>
+                                        </ActivatorContent>
+                                    </MudFileUpload>
+                                }
+                                @if (HayPdf)
+                                {
+                                    <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Visibility" OnClick="VerPdf" data-accion="pdf-ver">Ver</MudButton>
+                                    @if (!_soloLectura)
+                                    {
+                                        <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="QuitarPdf" data-accion="pdf-quitar">Quitar</MudButton>
+                                    }
+                                }
+                            </div>
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudTextField Variant="Variant.Outlined" T="string" @bind-Value="_m.DES_OBSERVACION" MaxLength="500" Lines="2" Immediate="true" Label="Observación" Disabled="@_soloLectura" Class="mb-3" data-campo="observacion" />
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudSpacer />
+                    <div class="d-flex align-center gap-2 mt-4 flex-wrap">
+                        <MudSpacer />
+                        @if (_cabeceraGrabada && !string.IsNullOrWhiteSpace(CodAplicacion))
+                        {
+                            <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                             Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog" Fila="@_m"
+                                             MotivoDeshabilitar="@(b => RegistroCompraFlujo.Motivo(b.DES_METODO, _m.COD_ESTADO_ALIAS_CONCILIACION))" />
+                            <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+                        }
+                        <MudButton StartIcon="@Icons.Material.Filled.Close" OnClick="Cerrar" Disabled="_saving" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar" data-accion="cerrar">Cerrar</MudButton>
+                        @if (!_soloLectura || Modo == CrudModo.Delete)
+                        {
+                            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="@(Modo == CrudModo.Delete ? Color.Error : Color.Primary)"
+                                       StartIcon="@Icons.Material.Filled.Save" Disabled="_saving" data-accion="guardar">
+                                @(Modo == CrudModo.Delete ? "Eliminar" : _cabeceraGrabada ? "Guardar cambios" : "Grabar cabecera")
+                            </MudButton>
+                        }
+                    </div>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        </div>
+    </EditForm>
+
+    @* Los valores totales del documento los calcula el estándar al registrar las líneas (FINANZAS.COMPROBANTES_PAGO_CALCULO), con la matriz del tipo de operación: aquí solo se ven.
+       Van a la derecha de la grilla de líneas, como en las órdenes de compra, y comparten su clave de alto (data-resizable-grid) para quedar siempre a la misma altura hasta la barra de estado. *@
+    @{
+        RenderFragment panelCalculo = @<div data-panel="calculo" data-resizable-grid="registro-compra-detalle" data-cols-key="registro-compra-calculo" style="flex:1 1 200px;min-width:0;">
+            <MudDataGrid T="RegistroCompraCalculo" Items="_calculo" Dense="true" Hover="true" Striped="true" ReadOnly="true" Height="@AltoGrilla" FixedHeader="true">
+                <Columns>
+                    <TemplateColumn Title="Concepto" Sortable="false" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <CellTemplate><span data-concepto="@context.Item.COD_TIPO_VALOR_CALCULO">@(string.IsNullOrWhiteSpace(context.Item.DES_TIPO_VALOR_CALCULO) ? context.Item.COD_TIPO_VALOR_CALCULO : context.Item.DES_TIPO_VALOR_CALCULO)</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Tasa" Sortable="false" Width="60px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <CellTemplate><span class="mono" data-tasa="@context.Item.COD_TIPO_VALOR_CALCULO">@(context.Item.TAS_IMPUESTO?.ToString("N2"))</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Valor" Sortable="false" Width="90px" CellStyle="text-align:right;" HeaderStyle="text-align:right;">
+                        <CellTemplate><span class="mono" data-valor="@context.Item.COD_TIPO_VALOR_CALCULO">@(context.Item.VAL_CALCULO?.ToString("N2") ?? "—")</span></CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent>
+                    <MudText Class="pa-4 mono" Style="opacity:.5;font-size:.8rem;" data-aviso="@(_cabeceraGrabada ? null : "calculo-pendiente")" data-vacio="@(_cabeceraGrabada ? "calculo" : null)">
+                        @(_cabeceraGrabada ? "Este tipo de operación no tiene conceptos de cálculo configurados (Tipos de operación, cálculo): el total es la suma de las líneas." : "Se calculan al registrar las líneas.")
+                    </MudText>
+                </NoRecordsContent>
+            </MudDataGrid>
+            <div class="d-flex align-center gap-4 mt-2 mono" style="font-size:.82rem;opacity:.7;">
+                <span>Conceptos <b>@_calculo.Count</b></span>
+                <MudSpacer />
+                <span>Total del comprobante <b data-campo="total" style="opacity:1;">@(_m.VAL_TOTAL?.ToString("N2") ?? "0.00")</b></span>
+            </div>
+        </div>;
+        RenderFragment gridLineas = @<MudDataGrid T="RegistroCompraLinea" Items="@BaseDetalle(-1)" Dense="true" Hover="true" Striped="true" Height="@AltoGrilla" FixedHeader="true">
+                        <Columns>
+                            <TemplateColumn Sortable="false">
+                                <HeaderTemplate>@ColumnaDetalle("N°", 0, true)</HeaderTemplate>
+                                <CellTemplate><span class="mono">@context.Item.NUM_SECUENCIA</span></CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false">
+                                <HeaderTemplate>@ColumnaDetalle("Producto", 1)</HeaderTemplate>
+                                <CellTemplate>@TextoProducto(context.Item)</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false">
+                                <HeaderTemplate>@ColumnaDetalle("Cód. proveedor", 2)</HeaderTemplate>
+                                <CellTemplate><span class="mono">@context.Item.COD_PRODUCTO_ENTIDAD</span></CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                                <HeaderTemplate>@ColumnaDetalle("Cantidad", 3, true)</HeaderTemplate>
+                                <CellTemplate>@context.Item.CAN_PRODUCTO?.ToString("0.######")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false">
+                                <HeaderTemplate>@ColumnaDetalle("Unidad", 4)</HeaderTemplate>
+                                <CellTemplate>@(context.Item.COD_UNIDAD_MEDIDA ?? context.Item.COD_UNIDAD_MEDIDA_COMPROBANTE)</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                                <HeaderTemplate>@ColumnaDetalle("Precio", 5, true)</HeaderTemplate>
+                                <CellTemplate>@context.Item.PRE_UNITARIO?.ToString("0.00####")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                                <HeaderTemplate>@ColumnaDetalle("Desc. %", 6, true)</HeaderTemplate>
+                                <CellTemplate><span data-celda="descuento">@context.Item.TAS_DESCUENTO?.ToString(Decimales.FormatoPorcentual)</span></CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false" CellStyle="text-align:right;">
+                                <HeaderTemplate>@ColumnaDetalle("Total", 7, true)</HeaderTemplate>
+                                <CellTemplate>@context.Item.VAL_TOTAL?.ToString("N2")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Sortable="false">
+                                <HeaderTemplate>@ColumnaDetalle("Orden", 8)</HeaderTemplate>
+                                <CellTemplate>
+                                    @if (context.Item.NUM_PEDIDO_COMERCIAL is { } np)
+                                    {
+                                        <span class="mono" title="@($"Orden {np:0}, línea {context.Item.NUM_SECUENCIA_PEDIDO_COMERCIAL}: pide {context.Item.CAN_ORDEN:0.######} a {context.Item.PRE_ORDEN:0.00####}")" data-orden-linea="@np.ToString("0")">@np.ToString("0") / @context.Item.NUM_SECUENCIA_PEDIDO_COMERCIAL</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="opacity:.5;" data-sin-orden="true">sin orden</span>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="" Sortable="false">
+                                <CellTemplate>
+                                    @{ var ln = context.Item; }
+                                    @if (!_soloLectura)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditarLinea(ln))" title="Modificar la línea" data-accion="linea-editar" data-linea="@ln.NUM_SECUENCIA" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => EliminarLinea(ln))" title="Quitar la línea" data-accion="linea-eliminar" data-linea="@ln.NUM_SECUENCIA" />
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="lineas">Sin líneas.@(_pedidos.Count > 0 && !_soloLectura ? " Usa «Traer de las órdenes» para pasar las de las órdenes asociadas." : "")</MudText></NoRecordsContent>
+                    </MudDataGrid>;
+    }
+
+    @* ── Lo que cuelga del comprobante ── *@
+    <MudPaper Elevation="0" Class="mt-4 pa-3" Style="border:1px solid var(--line);">
+        @if (!_cabeceraGrabada)
+        {
+            <div class="d-flex gap-3" style="flex-wrap:wrap;align-items:flex-start;">
+                <div data-resizable-grid="registro-compra-detalle-nuevo" style="position:relative;flex:4 1 480px;min-width:0;">
+                    <MudText Class="mono mb-2" Style="opacity:.6;" data-aviso="detalle-bloqueado">Graba la cabecera para cargar las líneas y asociar las órdenes.</MudText>
+                    @gridLineas
+                </div>
+                @panelCalculo
+            </div>
+        }
+        else
+        {
+            <MudTabs Elevation="0" Rounded="true" PanelClass="pt-3" KeepPanelsAlive="true" @bind-ActivePanelIndex="_tabDetalle">
+                <MudTabPanel Text="@($"Líneas ({_lineas.Count})")" Icon="@Icons.Material.Filled.ListAlt">
+                    <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                        @if (!_soloLectura)
+                        {
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => EditarLinea(null))" data-accion="linea-nueva">Agregar línea</MudButton>
+                            <MudTooltip Text="@(_pedidos.Count == 0 ? "Primero asocia las órdenes en la pestaña Órdenes." : "Pasa al detalle las líneas de las órdenes asociadas.")">
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.PlaylistAdd" OnClick="TraerLineas" Disabled="@(_pedidos.Count == 0)" data-accion="traer-lineas">Traer de las órdenes</MudButton>
+                            </MudTooltip>
+                            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="Autovincular" Disabled="@(_pedidos.Count == 0 || _lineas.Count == 0)" data-accion="autovincular">Vincular solas</MudButton>
+                        }
+                        <MudSpacer />
+                        <GridClearFiltersButton OnClear="LimpiarFiltrosDetalle" HasFilters="@(_filtrosDetalle.Any(f => f.Value is not null))" />
+                        <span class="mono" style="opacity:.75;" data-campo="suma-lineas">Σ líneas: @_sumaLineas.ToString("N2")</span>
+                    </div>
+                    <div class="d-flex gap-3" style="flex-wrap:wrap;align-items:flex-start;">
+                    <div data-resizable-grid="registro-compra-detalle" style="position:relative;flex:4 1 480px;min-width:0;">
+                    @gridLineas
+                    <div class="grid-resize-handle"></div>
+                    </div>
+                    @panelCalculo
+                    </div>
+                </MudTabPanel>
+
+                @* Notas de crédito/débito con tipo de operación de incidencia de producto: se asocian ítem por ítem a la factura que afectan
+                   (script 85) y no tienen órdenes. *@
+                @if (_tipo?.FLG_INCIDENCIA_PRODUCTO == true)
+                {
+                    <MudTabPanel Text="Factura afectada" Icon="@Icons.Material.Filled.Receipt">
+                        <RegistroCompraIncidenciasPanel NumRegistro="_m.NUM_REGISTRO" AltoGrilla="@(_cabeceraOculta ? "max(240px, calc(100vh - 520px))" : "380px")" SoloLectura="_soloLectura" EsDevolucion="_tipo.FLG_DEVOLUCION" EsAnulacion="_tipo.FLG_ANULACION" PermiteGuia="_permiteGuia"
+                                                        OnCambio="@(async () => { _huboCambios = true; await CargarDetalleAsync(); })" />
+                    </MudTabPanel>
+                }
+                else
+                {
+                <MudTabPanel Text="@($"Órdenes ({_pedidos.Count})")" Icon="@Icons.Material.Filled.ShoppingCart">
+                    <div class="d-flex align-center gap-2 mb-2">
+                        @if (!_soloLectura)
+                        {
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AddLink" OnClick="AsociarPedidos" Disabled="@(_m.COD_ENTIDAD is null)" data-accion="asociar-ordenes">Asociar órdenes</MudButton>
+                        }
+                        <span class="mono" style="opacity:.7;">@(EsBien ? "Órdenes de compra de bienes" : "Órdenes de servicio") del proveedor</span>
+                    </div>
+                    <div data-resizable-grid="registro-compra-ordenes" style="position:relative;">
+                    <MudDataGrid T="RegistroCompraPedido" Items="_pedidos" Dense="true" Hover="true" Striped="true" Height="@AltoGrilla" FixedHeader="true">
+                        <Columns>
+                            <TemplateColumn Title="Orden" Sortable="false"><CellTemplate><span class="mono">@context.Item.NUM_PEDIDO_COMERCIAL.ToString("0")</span></CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Tipo" Sortable="false"><CellTemplate>@context.Item.DES_TIPO_OPERACION</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Descripción" Sortable="false"><CellTemplate>@context.Item.DES_PEDIDO_COMERCIAL</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Fecha" Sortable="false"><CellTemplate>@context.Item.FEC_PEDIDO?.ToString("dd/MM/yyyy")</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Moneda" Sortable="false"><CellTemplate>@context.Item.COD_MONEDA</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Total" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.VAL_TOTAL?.ToString("N2")</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Estado" Sortable="false"><CellTemplate>@context.Item.DES_ESTADO</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Líneas vinculadas" Sortable="false" CellStyle="text-align:right;"><CellTemplate>@context.Item.NUM_LINEAS_VINCULADAS</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="" Sortable="false">
+                                <CellTemplate>
+                                    @{ var pd = context.Item; }
+                                    @if (!_soloLectura)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.LinkOff" Size="Size.Small" Color="Color.Error" OnClick="@(() => Desasociar(pd))" title="Quitar la orden del comprobante" data-accion="desasociar" data-orden="@pd.NUM_PEDIDO_COMERCIAL.ToString("0")" />
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="pedidos">Sin órdenes asociadas.</MudText></NoRecordsContent>
+                    </MudDataGrid>
+                    <div class="grid-resize-handle"></div>
+                    </div>
+                </MudTabPanel>
+                }
+
+                @* Anticipos: facturas de anticipo (FLG_ANTICIPO) del proveedor que se aplican por su monto total a esta factura (script 95). *@
+                @if (_tipo is not null && _tipo.FLG_ANTICIPO == false && _tipo.FLG_INCIDENCIA_PRODUCTO != true && !_esNota)
+                {
+                    <MudTabPanel Text="Anticipos" Icon="@Icons.Material.Filled.Payments">
+                        <RegistroCompraAnticiposPanel NumRegistro="_m.NUM_REGISTRO" SoloLectura="_soloLectura"
+                                                      OnCambio="@(async () => { _huboCambios = true; await CargarDetalleAsync(); })" />
+                    </MudTabPanel>
+                }
+
+                <MudTabPanel Text="@($"Conciliación ({_hallazgos.Count})")" Icon="@Icons.Material.Filled.FactCheck">
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                        Lo que encontró la última validación, paso por paso. Se vuelve a calcular cada vez que se valida.
+                    </MudAlert>
+                    <div data-resizable-grid="registro-compra-conciliacion" style="position:relative;">
+                    <MudDataGrid T="RegistroCompraHallazgo" Items="_hallazgos" Dense="true" Hover="true" Striped="true" Height="@AltoGrilla" FixedHeader="true">
+                        <Columns>
+                            <TemplateColumn Title="Paso" Sortable="false"><CellTemplate>@NombrePaso(context.Item.NUM_PASO)</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Resultado" Sortable="false"><CellTemplate><span class="@($"rc-resultado-{context.Item.COD_RESULTADO}")" data-resultado="@context.Item.COD_RESULTADO">@TextoResultado(context.Item.COD_RESULTADO)</span></CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Línea" Sortable="false"><CellTemplate>@context.Item.NUM_SECUENCIA</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Detalle" Sortable="false"><CellTemplate>@context.Item.DES_MENSAJE</CellTemplate></TemplateColumn>
+                            <TemplateColumn Title="Orden / ingresada / facturada" Sortable="false" CellStyle="text-align:right;">
+                                <CellTemplate>
+                                    @if (context.Item.CAN_ORDEN is not null || context.Item.CAN_INGRESADA is not null || context.Item.CAN_FACTURADA is not null)
+                                    {
+                                        <span class="mono">@Num(context.Item.CAN_ORDEN) / @Num(context.Item.CAN_INGRESADA) / @Num(context.Item.CAN_FACTURADA)</span>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Precio orden / comprobante" Sortable="false" CellStyle="text-align:right;">
+                                <CellTemplate>
+                                    @if (context.Item.PRE_ORDEN is not null || context.Item.PRE_COMPROBANTE is not null)
+                                    {
+                                        <span class="mono">@Num(context.Item.PRE_ORDEN) / @Num(context.Item.PRE_COMPROBANTE)</span>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Esperado / comprobante" Sortable="false" CellStyle="text-align:right;">
+                                <CellTemplate>
+                                    @if (context.Item.VAL_ESPERADO is not null || context.Item.VAL_COMPROBANTE is not null)
+                                    {
+                                        <span class="mono">@Num(context.Item.VAL_ESPERADO) / @Num(context.Item.VAL_COMPROBANTE)</span>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="conciliacion">Todavía no se validó este comprobante.</MudText></NoRecordsContent>
+                    </MudDataGrid>
+                    <div class="grid-resize-handle"></div>
+                    </div>
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    /// <summary>El comprobante a abrir (de la lista); nulo = nuevo.</summary>
+    [Parameter] public RegistroCompra? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter, EditorRequired] public string? CodClaseOperacion { get; set; }
+    [Parameter] public string? CodTipoOperacionSugerido { get; set; }
+    [Parameter] public RegistroCompraCombos Combos { get; set; } = new();
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private RegistroCompra _m = new();
+    private bool _saving, _huboCambios;
+    private int _tabDetalle;
+    private string? _textoProveedorInicial;
+
+    private List<RegistroCompraLinea> _lineas = new();
+    private List<RegistroCompraPedido> _pedidos = new();
+    private List<RegistroCompraHallazgo> _hallazgos = new();
+    private List<RegistroCompraCalculo> _calculo = new();
+
+    private List<ComboboxItem> _tiposOperacion = new(), _tiposComprobante = new(), _monedas = new(), _formasPago = new(), _condicionesPago = new(),
+                               _incoterms = new(), _proyectos = new(), _centrosCosto = new(), _proveedores = new(), _tiposDescuento = new();
+
+    private bool _cabeceraGrabada => _m.NUM_REGISTRO > 0;
+    private bool _tieneOrdenes => _pedidos.Count > 0;
+    private bool _soloLectura => Modo is CrudModo.Read or CrudModo.Delete || (_cabeceraGrabada && !RegistroCompraEstados.Editable(_m.COD_ESTADO_ALIAS_CONCILIACION));
+
+    private RegistroCompraTipoOperacion? _tipo => Combos.TIPOS_OPERACION.FirstOrDefault(t => t.COD_TIPO_OPERACION == _m.COD_TIPO_OPERACION);
+    private bool EsBien => _tipo?.FLG_BIEN ?? true;
+    private bool _habilitaCentroCosto => _tipo?.FLG_CENTRO_COSTO == true;
+    private bool _habilitaProyecto => _tipo?.FLG_PROYECTO == true;
+    private bool _habilitaLote => _tipo?.FLG_LOTE_CONTROL == true;
+    private bool _habilitaComercioExterior => _tipo?.FLG_COMERCIO_EXTERIOR == true;
+    /// <summary>El motivo se habilita solo con un tipo de operación de devolución o de cargo (son excluyentes).</summary>
+    /// <summary>Notas de crédito y débito (SUNAT 07 y 08, o un tipo de operación de incidencia de producto): no tienen condición ni forma de pago, siguen las de la factura que afectan.</summary>
+    private bool _cabeceraOculta;
+    /// <summary>Las guías solo se asocian con FLG_INCIDENCIA_PRODUCTO y (FLG_DEVOLUCION o FLG_CARGO).</summary>
+    private bool _permiteGuia => _tipo?.FLG_INCIDENCIA_PRODUCTO == true && (_tipo.FLG_DEVOLUCION || _tipo.FLG_CARGO);
+    /// <summary>Alto de las grillas del detalle: con la cabecera oculta ocupan casi toda la pantalla.</summary>
+    private string AltoGrilla => _cabeceraOculta ? "max(260px, calc(100vh - 400px))" : "420px";
+    private bool _esNota => _tipo?.FLG_INCIDENCIA_PRODUCTO == true || _tipo?.FLG_DEVOLUCION == true || _tipo?.FLG_CARGO == true || FormatoDe(_m.COD_TIPO_COMPROBANTE_PAGO)?.COD_COMPROBANTE_PAGO_SUNAT is 7 or 8;
+    private bool _habilitaMotivo => _tipo?.FLG_DEVOLUCION == true || _tipo?.FLG_CARGO == true;
+    private List<ComboboxItem> _motivos = new();
+    private int? _motivosTipoCargado;
+    private decimal _sumaLineas => _lineas.Sum(l => l.VAL_TOTAL ?? 0m);
+
+    // ── PDF del comprobante: se selecciona en la pantalla y se sube al grabar la cabecera ────────────────────────────────
+    private byte[]? _pdfBytes;                 // el PDF elegido que todavía no se subió
+    private string? _pdfNombrePendiente;       // su nombre
+    private bool _pdfQuitar;                   // se pidió quitar el que está guardado
+    private const long MaxPdf = 20L * 1024 * 1024;
+    private string? NombrePdf => _pdfQuitar && _pdfBytes is null ? null : _pdfNombrePendiente ?? _m.DES_NOMBRE_ARCHIVO_PDF;
+    private bool HayPdf => !string.IsNullOrWhiteSpace(NombrePdf);
+
+    private async Task ElegirPdf(IBrowserFile? archivo)
+    {
+        if (archivo is null) return;
+        if (!string.Equals(Path.GetExtension(archivo.Name), ".pdf", StringComparison.OrdinalIgnoreCase))
+        { await ErrorDialogHelper.MostrarAvisoAsync("Elige un archivo PDF.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        if (archivo.Size > MaxPdf)
+        { await ErrorDialogHelper.MostrarAvisoAsync("El PDF pesa más de 20 MB.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        try
+        {
+            using var stream = archivo.OpenReadStream(MaxPdf);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            _pdfBytes = ms.ToArray();
+            _pdfNombrePendiente = Path.GetFileName(archivo.Name);
+            _pdfQuitar = false;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(ElegirPdf));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo leer el archivo. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraDocumento));
+        }
+    }
+
+    /// <summary>Descarta el elegido; si ya había uno guardado, se quita también al grabar (si no había nada guardado no hay nada que borrar en el servidor).</summary>
+    private void QuitarPdf() { _pdfBytes = null; _pdfNombrePendiente = null; _pdfQuitar = !string.IsNullOrWhiteSpace(_m.DES_NOMBRE_ARCHIVO_PDF); }
+
+    private async Task VerPdf()
+    {
+        await DialogService.ShowAsync<RegistroCompraPdfDialog>("",
+            new DialogParameters { ["NumRegistro"] = _m.NUM_REGISTRO, ["Nombre"] = NombrePdf, ["Bytes"] = _pdfBytes },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+    }
+
+    /// <summary>Después de grabar la cabecera: sube el PDF elegido o quita el guardado. Si falla, la cabecera ya quedó grabada y el PDF sigue elegido en pantalla para volver a intentarlo.</summary>
+    private async Task AplicarPdfAsync(decimal numRegistro)
+    {
+        if (_pdfBytes is not null)
+        {
+            using var contenido = new MultipartFormDataContent();
+            var archivo = new ByteArrayContent(_pdfBytes);
+            archivo.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/pdf");
+            contenido.Add(archivo, "archivo", _pdfNombrePendiente ?? "comprobante.pdf");
+            var resp = await Http.PostAsync($"{ApiRoutes.Comercial.RegistroCompras}/{numRegistro:0}/pdf", contenido);
+            if (resp.IsSuccessStatusCode) { _pdfBytes = null; _pdfNombrePendiente = null; }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(AplicarPdfAsync), "El comprobante se grabó, pero no se pudo guardar el PDF (sigue elegido: vuelve a grabar)");
+        }
+        else if (_pdfQuitar)
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.RegistroCompras}/{numRegistro:0}/pdf");
+            if (resp.IsSuccessStatusCode) _pdfQuitar = false;
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(AplicarPdfAsync), "El comprobante se grabó, pero no se pudo quitar el PDF");
+        }
+    }
+
+    // ── Orden y filtros de la grilla de líneas (estilo Excel, como en las órdenes de compra) ─────────────────────────────
+    // Cada columna tiene un número; el filtro de una columna se calcula sobre las filas que dejan pasar las DEMÁS columnas (BaseDetalle(col)).
+    private readonly Dictionary<int, HashSet<string>?> _filtrosDetalle = new();
+    private int? _ordenColDetalle;
+    private bool _ordenAscDetalle = true;
+
+    private static string TextoProducto(RegistroCompraLinea l)
+    {
+        var des = string.IsNullOrWhiteSpace(l.DES_PRODUCTO) ? (l.DES_PRODUCTO_COMPROBANTE ?? "") : l.DES_PRODUCTO!;
+        return string.IsNullOrWhiteSpace(l.COD_PRODUCTO) ? des : string.IsNullOrWhiteSpace(des) ? l.COD_PRODUCTO : $"{l.COD_PRODUCTO} · {des}";   // «CÓDIGO · descripción»
+    }
+
+    /// <summary>El texto que se ve en la celda de cada columna: es el valor que se filtra.</summary>
+    private static string ValorDetalle(RegistroCompraLinea l, int col) => col switch
+    {
+        0 => l.NUM_SECUENCIA.ToString(),
+        1 => TextoProducto(l),
+        2 => l.COD_PRODUCTO_ENTIDAD ?? "",
+        3 => l.CAN_PRODUCTO?.ToString("0.######") ?? "",
+        4 => l.COD_UNIDAD_MEDIDA ?? l.COD_UNIDAD_MEDIDA_COMPROBANTE ?? "",
+        5 => l.PRE_UNITARIO?.ToString("0.00####") ?? "",
+        6 => l.TAS_DESCUENTO?.ToString(Decimales.FormatoPorcentual) ?? "",
+        7 => l.VAL_TOTAL?.ToString("N2") ?? "",
+        8 => l.NUM_PEDIDO_COMERCIAL is { } np ? $"{np:0} / {l.NUM_SECUENCIA_PEDIDO_COMERCIAL}" : "sin orden",
+        _ => ""
+    };
+
+    /// <summary>Las columnas de números se ordenan por su valor (no por su texto: «9» va antes que «10»).</summary>
+    private static decimal? NumeroDetalle(RegistroCompraLinea l, int col) => col switch
+    {
+        0 => l.NUM_SECUENCIA, 3 => l.CAN_PRODUCTO, 5 => l.PRE_UNITARIO, 6 => l.TAS_DESCUENTO, 7 => l.VAL_TOTAL, 8 => l.NUM_PEDIDO_COMERCIAL, _ => null
+    };
+
+    private List<RegistroCompraLinea> BaseDetalle(int col) => AplicarFiltrosDetalle(OrdenarDetalle(_lineas), col);
+
+    private List<RegistroCompraLinea> OrdenarDetalle(List<RegistroCompraLinea> items)
+    {
+        if (_ordenColDetalle is not { } c) return items;
+        return _ordenAscDetalle
+            ? items.OrderBy(x => NumeroDetalle(x, c) ?? decimal.MinValue).ThenBy(x => ValorDetalle(x, c), StringComparer.CurrentCultureIgnoreCase).ToList()
+            : items.OrderByDescending(x => NumeroDetalle(x, c) ?? decimal.MinValue).ThenByDescending(x => ValorDetalle(x, c), StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    private List<RegistroCompraLinea> AplicarFiltrosDetalle(List<RegistroCompraLinea> src, int excepto)
+    {
+        if (!_filtrosDetalle.Any(f => f.Key != excepto && f.Value is not null)) return src;
+        IEnumerable<RegistroCompraLinea> q = src;
+        foreach (var (c, v) in _filtrosDetalle)
+        {
+            if (c == excepto || v is null) continue;
+            q = q.Where(x => v.Contains(ValorDetalle(x, c)));
+        }
+        return q.ToList();
+    }
+
+    private void ToggleOrdenDetalle(int col) { if (_ordenColDetalle == col) _ordenAscDetalle = !_ordenAscDetalle; else { _ordenColDetalle = col; _ordenAscDetalle = true; } }
+    private void FiltroDetalle(int c, HashSet<string>? v) { _filtrosDetalle[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosDetalle() { foreach (var k in _filtrosDetalle.Keys.ToList()) _filtrosDetalle[k] = null; StateHasChanged(); }
+
+    /// <summary>El encabezado de una columna de la grilla de líneas: el título que ordena al pulsarlo y el filtro con la lista de valores.</summary>
+    private RenderFragment ColumnaDetalle(string titulo, int col, bool derecha = false) => @<div class="d-flex align-center gap-1 @(derecha ? "justify-end" : "")" data-columna="@col">
+        <EncabezadoOrdenable Texto="@titulo" Activo="@(_ordenColDetalle == col)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(col))" />
+        <FiltroExcelColumna T="RegistroCompraLinea" ItemsBase="@BaseDetalle(col)" ValorDe="@(x => ValorDetalle(x, col))"
+                            ValoresActivos="_filtrosDetalle.GetValueOrDefault(col)" ValoresActivosChanged="@(v => FiltroDetalle(col, v))" />
+    </div>;
+
+    private Color ColorEstado => (_m.COD_ESTADO_ALIAS_CONCILIACION ?? "REG").ToUpperInvariant() switch
+    {
+        "VAL" or "APR" or "CON" => Color.Success,
+        "OBS" or "RET" => Color.Warning,
+        "EXC" or "BLQ" => Color.Error,
+        "ANU" => Color.Dark,
+        _ => Color.Default
+    };
+
+    // El nombre de cada paso del diagrama de conciliación.
+    private static string NombrePaso(int paso) => paso switch
+    {
+        2 => "2 · SUNAT / OSE", 3 => "3 · Proveedor y órdenes", 4 => "4 · Ingresos de almacén", 5 => "5 · Cantidades",
+        6 => "6 · Precios", 7 => "7 · Importes", 8 => "8 · Duplicidad y condiciones", _ => paso.ToString()
+    };
+    private static string TextoResultado(string r) => r switch
+    {
+        "OK" => "Conforme", "OBS" => "Observación", "RET" => "Retenida", "EXC" => "Excepción", "BLQ" => "Bloqueo", _ => r
+    };
+    private static string Num(decimal? v) => v is null ? "—" : v.Value.ToString("0.######");
+
+    protected override async Task OnInitializedAsync()
+    {
+        ArmarCombos();
+        await CargarCentrosCostoAsync();
+
+        if (Item is not null && Item.NUM_REGISTRO > 0)
+        {
+            await CargarFichaAsync(Item.NUM_REGISTRO);
+        }
+        else
+        {
+            _m = new RegistroCompra
+            {
+                COD_CLASE_OPERACION = CodClaseOperacion ?? "",
+                COD_ESTADO_ALIAS_CONCILIACION = "REG",
+                COD_TIPO_OPERACION = TipoInicial(),
+                FEC_COMPROBANTE_PAGO = DateTime.Today
+            };
+            AplicarTipoOperacion(false);
+            await CargarMotivosAsync(true);
+        }
+    }
+
+    /// <summary>El tipo que sugiere la lista si es de la clase; si no, el primero.</summary>
+    private string TipoInicial()
+        => !string.IsNullOrWhiteSpace(CodTipoOperacionSugerido) && Combos.TIPOS_OPERACION.Any(t => t.COD_TIPO_OPERACION == CodTipoOperacionSugerido)
+            ? CodTipoOperacionSugerido!
+            : Combos.TIPOS_OPERACION.FirstOrDefault()?.COD_TIPO_OPERACION ?? "";
+
+    private void ArmarCombos()
+    {
+        _tiposOperacion = Combos.TIPOS_OPERACION.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION ?? t.COD_TIPO_OPERACION }).ToList();
+        _monedas = Combos.MONEDAS.Select(c => new ComboboxItem { Id = c.Id ?? "", Texto = c.Texto ?? c.Id ?? "" }).ToList();
+        _formasPago = Combos.FORMAS_PAGO.Select(c => new ComboboxItem { Id = c.Id ?? "", Texto = c.Texto ?? c.Id ?? "" }).ToList();
+        _condicionesPago = Combos.CONDICIONES_PAGO.Select(c => new ComboboxItem { Id = c.Id ?? "", Texto = c.Texto ?? c.Id ?? "" }).ToList();
+        _incoterms = Combos.INCOTERMS.Select(c => new ComboboxItem { Id = c.Id ?? "", Texto = c.Texto ?? c.Id ?? "" }).ToList();
+        _proyectos = Combos.PROYECTOS.Select(c => new ComboboxItem { Id = c.Id ?? "", Texto = c.Texto ?? c.Id ?? "" }).ToList();
+        _tiposDescuento = Combos.TIPOS_DESCUENTO.Select(c => new ComboboxItem { Id = c.COD_TIPO_DESCUENTO.ToString(), Texto = c.DES_TIPO_DESCUENTO ?? c.COD_TIPO_DESCUENTO.ToString() }).ToList();
+    }
+
+    /// <summary>Los tipos de descuento del combo. Si el comprobante tiene uno que la lista no trae (los catálogos de la pestaña se cargaron antes de correr el SQL, o el tipo ya no se ofrece), se agrega con la descripción
+    /// que trae la ficha: así el combo siempre muestra el tipo del comprobante.</summary>
+    private List<ComboboxItem> TiposDescuentoItems
+    {
+        get
+        {
+            if (_m.COD_TIPO_DESCUENTO is { } c && _tiposDescuento.All(t => t.Id != c.ToString()))
+                return _tiposDescuento.Append(new ComboboxItem { Id = c.ToString(), Texto = string.IsNullOrWhiteSpace(_m.DES_TIPO_DESCUENTO) ? c.ToString() : _m.DES_TIPO_DESCUENTO! }).ToList();
+            return _tiposDescuento;
+        }
+    }
+
+    /// <summary>Al elegir el tipo de descuento la tasa es la del tipo (no se tipea); sin tipo no hay descuento.</summary>
+    private void CambiarTipoDescuento(string? valor)
+    {
+        var tipo = int.TryParse(valor, out var n) ? Combos.TIPOS_DESCUENTO.FirstOrDefault(x => x.COD_TIPO_DESCUENTO == n) : null;
+        _m.COD_TIPO_DESCUENTO = tipo?.COD_TIPO_DESCUENTO;
+        _m.DES_TIPO_DESCUENTO = tipo?.DES_TIPO_DESCUENTO;
+        _m.TAS_DESCUENTO = tipo?.TAS_DESCUENTO;
+    }
+
+    private async Task CargarCentrosCostoAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>($"{ApiRoutes.Contabilidad.CentrosCosto}/combobox");
+            _centrosCosto = r?.Data ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(CargarCentrosCostoAsync)); }
+    }
+
+    /// <summary>Los tipos de comprobante del tipo de operación; si no tiene ninguno propio, todos. Y limpia lo que el tipo no habilita.</summary>
+    private void AplicarTipoOperacion(bool limpiarCampos)
+    {
+        var propios = Combos.TIPOS_COMPROBANTE_POR_OPERACION.Where(t => t.COD_TIPO_OPERACION == _m.COD_TIPO_OPERACION).ToList();
+        var origen = propios.Count > 0 ? propios : Combos.TIPOS_COMPROBANTE;
+        _tiposComprobante = origen.Select(t => new ComboboxItem { Id = t.COD_TIPO_COMPROBANTE_PAGO, Texto = t.DES_TIPO_COMPROBANTE_PAGO ?? t.COD_TIPO_COMPROBANTE_PAGO }).DistinctBy(x => x.Id).ToList();
+        if (!string.IsNullOrWhiteSpace(_m.COD_TIPO_COMPROBANTE_PAGO) && _tiposComprobante.All(t => t.Id != _m.COD_TIPO_COMPROBANTE_PAGO)) _m.COD_TIPO_COMPROBANTE_PAGO = null;
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_COMPROBANTE_PAGO) && _tiposComprobante.Count == 1) _m.COD_TIPO_COMPROBANTE_PAGO = _tiposComprobante[0].Id;
+        if (limpiarCampos) LimpiarCamposQueNoAplican();
+    }
+
+    /// <summary>Pone en null lo que el tipo de operación no habilita, antes de grabar: un valor que quedó de otro tipo no debe viajar.</summary>
+    private void LimpiarCamposQueNoAplican()
+    {
+        if (!_habilitaCentroCosto) { _m.COD_CENTRO_COSTO_SOLICITANTE = null; _m.COD_CENTRO_COSTO_DESTINO = null; }
+        if (!_habilitaProyecto) _m.NUM_PROYECTO = null;
+        if (!_habilitaLote) _m.NUM_LOTE_CONTROL = null;
+        if (!_habilitaComercioExterior) _m.COD_INCOTERM = null;
+        if (!_habilitaMotivo) { _m.COD_MOTIVO = null; _m.COD_TIPO_MOTIVO = null; }
+    }
+
+    /// <summary>Carga los motivos del tipo de motivo del tipo de operación (si el motivo está habilitado) y, sin motivo, propone el por defecto.</summary>
+    private async Task CargarMotivosAsync(bool proponerDefecto)
+    {
+        var t = _habilitaMotivo ? _tipo?.COD_TIPO_MOTIVO : null;
+        if (t is null) { _motivos = new(); _motivosTipoCargado = null; return; }
+        if (_motivosTipoCargado != t)
+        {
+            var l = await Http.SafeGetAsync<List<Motivo>>($"{ApiRoutes.Estandar.MotivosPorTipo}/{t}") ?? new();
+            _motivos = l.Where(m => m.COD_MOTIVO is not null).Select(m => new ComboboxItem { Id = m.COD_MOTIVO!.Value.ToString(), Texto = m.DES_MOTIVO ?? m.COD_MOTIVO.ToString()! }).ToList();
+            _motivosTipoCargado = t;
+        }
+        // un motivo que vino de otro tipo de motivo ya no sirve
+        if (_m.COD_MOTIVO is { } mo && _motivos.All(x => x.Id != mo.ToString())) _m.COD_MOTIVO = null;
+        if (proponerDefecto && _m.COD_MOTIVO is null) _m.COD_MOTIVO = _tipo?.COD_MOTIVO_DEFAULT;
+    }
+
+    private async Task CambiarTipoOperacion(string? valor)
+    {
+        _m.COD_TIPO_OPERACION = valor ?? "";
+        AplicarTipoOperacion(true);
+        await CargarMotivosAsync(true);
+    }
+
+    private async Task CargarFichaAsync(decimal numRegistro)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<RegistroCompra>>($"{ApiRoutes.Comercial.RegistroCompras}/{numRegistro:0}");
+            _m = r?.Data ?? Item ?? new RegistroCompra();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(CargarFichaAsync));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo leer el comprobante. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraDocumento));
+            _m = Item ?? new RegistroCompra();
+        }
+        _textoProveedorInicial = _m.DES_ENTIDAD;
+        if (_m.COD_ENTIDAD is { } cod)
+            _proveedores = new() { new ComboboxItem { Id = cod.ToString("0"), Texto = _m.DES_ENTIDAD ?? cod.ToString("0") } };
+        AplicarTipoOperacion(false);
+        await CargarMotivosAsync(false);
+        await CargarDetalleAsync(false);
+    }
+
+    /// <summary>El total de la cabecera sale del cálculo: tras cada cambio de líneas se lee de nuevo la ficha para no mostrar uno viejo.</summary>
+    private async Task RefrescarTotalAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<RegistroCompra>>($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}");
+            if (r?.Data is { } f) { _m.VAL_TOTAL = f.VAL_TOTAL; _m.COD_ESTADO_ALIAS_CONCILIACION = f.COD_ESTADO_ALIAS_CONCILIACION; _m.DES_ESTADO_CONCILIACION = f.DES_ESTADO_CONCILIACION; _m.FLG_EDITABLE = f.FLG_EDITABLE; }
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(RefrescarTotalAsync)); }
+    }
+
+    /// <summary>Líneas, órdenes asociadas, conciliación y valores del documento: se leen de nuevo cada vez que algo cambia (lo vinculado, el estado y los totales los mueve la base).</summary>
+    private async Task CargarDetalleAsync(bool refrescarFicha = true)
+    {
+        if (!_cabeceraGrabada) return;
+        var url = $"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}";
+        try
+        {
+            var lineas = Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraLinea>>>($"{url}/lineas");
+            var pedidos = Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraPedido>>>($"{url}/pedidos");
+            var conciliacion = Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraHallazgo>>>($"{url}/conciliacion");
+            var calculo = Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraCalculo>>>($"{url}/calculo");
+            await Task.WhenAll(lineas, pedidos, conciliacion, calculo);
+            _lineas = lineas.Result?.Data ?? new();
+            _pedidos = pedidos.Result?.Data ?? new();
+            _hallazgos = conciliacion.Result?.Data ?? new();
+            _calculo = calculo.Result?.Data ?? new();
+            if (refrescarFicha) await RefrescarTotalAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(CargarDetalleAsync));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo leer el detalle del comprobante. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraDocumento));
+        }
+    }
+
+    // ── Proveedor ─────────────────────────────────────────────────────────────────────────────
+    private async Task<IEnumerable<ComboboxItem>> BuscarProveedorAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.Entidades}/search?search={Uri.EscapeDataString(texto)}";
+            if (!string.IsNullOrWhiteSpace(_tipo?.COD_TIPO_ENTIDAD)) url += $"&desTiposEntidad={Uri.EscapeDataString(_tipo!.COD_TIPO_ENTIDAD + "_")}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(url, ct);
+            var lista = (r?.Data ?? new()).Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString("0") ?? "", Texto = string.IsNullOrWhiteSpace(e.DES_COMERCIAL) ? e.DES_NOMBRE_COMPLETO : e.DES_COMERCIAL }).ToList();
+            foreach (var e in r?.Data ?? new()) if (e.COD_ENTIDAD is { } c) _docProveedor[c.ToString("0")] = e.NUM_DOCUMENTO_IDENTIDAD;
+            _proveedores = lista;
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ComboboxItem>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(BuscarProveedorAsync)); return Enumerable.Empty<ComboboxItem>(); }
+    }
+
+    /// <summary>El RUC / documento de cada proveedor que trajo la búsqueda, para mostrarlo al elegirlo (el combo solo guarda código y nombre).</summary>
+    private readonly Dictionary<string, string?> _docProveedor = new();
+
+    private void CambiarProveedor(string? valor)
+    {
+        _m.COD_ENTIDAD = decimal.TryParse(valor, out var n) ? n : null;
+        _m.NUM_DOCUMENTO_IDENTIDAD = valor is not null && _docProveedor.TryGetValue(valor, out var doc) && !string.IsNullOrWhiteSpace(doc) ? doc.Trim() : null;
+    }
+
+    // ── Serie - número: al dar Enter (o al salir del campo) se arma con el formato del tipo de comprobante, como en Movimientos de Almacén ──
+    private Task OnNumeroKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or "NumpadEnter") NormalizarNumero(avisar: true);
+        return Task.CompletedTask;
+    }
+    private Task OnNumeroBlur(FocusEventArgs _) { NormalizarNumero(avisar: false); return Task.CompletedTask; }
+
+    /// <summary>El prefijo y las longitudes de serie y número del tipo de comprobante elegido (los trae el combo: no hace falta otro permiso para leerlos).</summary>
+    private RegistroCompraTipoComprobante? FormatoDe(string? cod)
+    {
+        if (string.IsNullOrWhiteSpace(cod)) return null;
+        return Combos.TIPOS_COMPROBANTE_POR_OPERACION.FirstOrDefault(t => t.COD_TIPO_OPERACION == _m.COD_TIPO_OPERACION && t.COD_TIPO_COMPROBANTE_PAGO == cod && t.VAL_LONGITUD_SERIE is not null)
+            ?? Combos.TIPOS_COMPROBANTE.FirstOrDefault(t => t.COD_TIPO_COMPROBANTE_PAGO == cod)
+            ?? Combos.TIPOS_COMPROBANTE_POR_OPERACION.FirstOrDefault(t => t.COD_TIPO_COMPROBANTE_PAGO == cod);
+    }
+
+    /// <summary>La misma regla de Movimientos de Almacén (KONSolutions.Shared.Common.NumeroComprobante): "f1-4234" con prefijo F, serie de 4 y número de 8 queda "F001-00004234".
+    /// Lo que no entra no se recorta: se blanquea y se dice por qué. Con Enter, si el tipo no tiene formato se avisa; al salir del campo no (para no molestar).</summary>
+    private void NormalizarNumero(bool avisar)
+    {
+        if (_soloLectura || string.IsNullOrWhiteSpace(_m.NUM_COMPROBANTE_PAGO)) return;
+        var tipo = FormatoDe(_m.COD_TIPO_COMPROBANTE_PAGO);
+        if (tipo is null)
+        {
+            if (avisar) Snackbar.Add("Elige el tipo de comprobante: el número se arma según el formato de su tipo.", Severity.Info);
+            return;
+        }
+        if (tipo.VAL_LONGITUD_SERIE is not > 0 || tipo.VAL_LONGITUD_NUMERO is not > 0)
+        {
+            if (avisar) Snackbar.Add($"El tipo de comprobante {tipo.COD_TIPO_COMPROBANTE_PAGO} no tiene cargadas las longitudes de serie y número.", Severity.Info);
+            return;
+        }
+        var r = NumeroComprobante.Normalizar(_m.NUM_COMPROBANTE_PAGO, NumeroComprobante.PrefijoDe(tipo.COD_PREFIJO_SUNAT, tipo.COD_PREFIJO), tipo.VAL_LONGITUD_SERIE, tipo.VAL_LONGITUD_NUMERO);
+        if (r.Valor == _m.NUM_COMPROBANTE_PAGO && r.Error is null && r.Aviso is null) return;
+        _m.NUM_COMPROBANTE_PAGO = r.Valor;
+        if (r.Error is not null) Snackbar.Add(r.Error, Severity.Warning);
+        else if (r.Aviso is not null) Snackbar.Add(r.Aviso, Severity.Info);
+        StateHasChanged();
+    }
+
+    // ── Guardar ───────────────────────────────────────────────────────────────────────────────
+    private RegistroCompraSaveDto ADto(RegistroCompraSaveDto d)
+    {
+        d.COD_TIPO_OPERACION = _m.COD_TIPO_OPERACION; d.COD_ENTIDAD = _m.COD_ENTIDAD; d.COD_TIPO_COMPROBANTE_PAGO = _m.COD_TIPO_COMPROBANTE_PAGO ?? "";
+        d.NUM_COMPROBANTE_PAGO = (_m.NUM_COMPROBANTE_PAGO ?? "").Trim(); d.FEC_COMPROBANTE_PAGO = _m.FEC_COMPROBANTE_PAGO;
+        d.NUM_SECUENCIA_DIRECCION = _m.NUM_SECUENCIA_DIRECCION; d.FEC_VENCIMIENTO = _m.FEC_VENCIMIENTO; d.FEC_RECEPCION = _m.FEC_RECEPCION;
+        d.COD_MONEDA = _m.COD_MONEDA; d.FAC_TIPO_CAMBIO = _m.FAC_TIPO_CAMBIO; d.COD_FORMA_PAGO = _esNota ? null : _m.COD_FORMA_PAGO; d.COD_CONDICION_PAGO = _esNota ? null : _m.COD_CONDICION_PAGO;
+        d.COD_CENTRO_COSTO_SOLICITANTE = _m.COD_CENTRO_COSTO_SOLICITANTE; d.COD_CENTRO_COSTO_DESTINO = _m.COD_CENTRO_COSTO_DESTINO;
+        d.NUM_PROYECTO = _m.NUM_PROYECTO; d.NUM_LOTE_CONTROL = _m.NUM_LOTE_CONTROL; d.COD_SUCURSAL = _m.COD_SUCURSAL; d.COD_INCOTERM = _m.COD_INCOTERM;
+        d.COD_MOTIVO = _habilitaMotivo ? _m.COD_MOTIVO : null;
+        d.COD_TIPO_DESCUENTO = _m.COD_TIPO_DESCUENTO; d.TAS_DESCUENTO = _m.COD_TIPO_DESCUENTO is null ? null : _m.TAS_DESCUENTO;
+        d.DES_OBSERVACION = _m.DES_OBSERVACION; d.DES_NOMBRE_ARCHIVO_PDF = HayPdf ? NombrePdf : null;
+        return d;
+    }
+
+    private async Task Submit()
+    {
+        if (Modo == CrudModo.Delete) { await Eliminar(); return; }
+        if (_soloLectura) return;
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_OPERACION)) { await ErrorDialogHelper.MostrarAvisoAsync("Elige el tipo de operación.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        if (_m.COD_ENTIDAD is null) { await ErrorDialogHelper.MostrarAvisoAsync("Elige el proveedor.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_COMPROBANTE_PAGO)) { await ErrorDialogHelper.MostrarAvisoAsync("Elige el tipo de comprobante.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        if (string.IsNullOrWhiteSpace(_m.NUM_COMPROBANTE_PAGO)) { await ErrorDialogHelper.MostrarAvisoAsync("Escribe la serie y el número del comprobante.", DialogService, nameof(RegistroCompraDocumento)); return; }
+        if (_m.FEC_COMPROBANTE_PAGO is null) { await ErrorDialogHelper.MostrarAvisoAsync("Elige la fecha de emisión.", DialogService, nameof(RegistroCompraDocumento)); return; }
+
+        LimpiarCamposQueNoAplican();
+        _saving = true;
+        try
+        {
+            var esAlta = !_cabeceraGrabada;
+            HttpResponseMessage resp;
+            if (esAlta)
+            {
+                var dto = new RegistroCompraInsertDto { COD_CLASE_OPERACION = CodClaseOperacion ?? _m.COD_CLASE_OPERACION };
+                ADto(dto);
+                resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.RegistroCompras, dto);
+            }
+            else
+            {
+                var dto = new RegistroCompraUpdateDto { NUM_REGISTRO = _m.NUM_REGISTRO };
+                ADto(dto);
+                resp = await Http.PutAsJsonAsync(ApiRoutes.Comercial.RegistroCompras, dto);
+            }
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(Submit));
+                return;
+            }
+            _huboCambios = true;
+            if (esAlta)
+            {
+                var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+                if (decimal.TryParse(cuerpo?.Data?.Codigo, out var generado))
+                {
+                    Snackbar.Add($"Comprobante N° {generado:0} registrado. Ya puedes cargar las líneas y asociar las órdenes.", Severity.Success);
+                    await CargarFichaAsync(generado);
+                    await AplicarPdfAsync(generado);
+                }
+                else await ErrorDialogHelper.MostrarAvisoAsync("El comprobante se registró, pero la base no devolvió su número: ábrelo desde la lista para cargarle líneas.", DialogService, nameof(RegistroCompraDocumento));
+            }
+            else
+            {
+                Snackbar.Add("Comprobante actualizado.", Severity.Success);
+                await CargarFichaAsync(_m.NUM_REGISTRO);
+                await AplicarPdfAsync(_m.NUM_REGISTRO);
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraDocumento));
+        }
+        finally { _saving = false; }
+    }
+
+    private async Task Eliminar()
+    {
+        _saving = true;
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}");
+            if (resp.IsSuccessStatusCode) { Snackbar.Add("Comprobante eliminado.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(Eliminar), "No se pudo eliminar el comprobante");
+        }
+        finally { _saving = false; }
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync(_huboCambios);
+
+    // ── Líneas ────────────────────────────────────────────────────────────────────────────────
+    private async Task EditarLinea(RegistroCompraLinea? linea)
+    {
+        var dlg = await DialogService.ShowAsync<RegistroCompraLineaDialog>("",
+            new DialogParameters { ["NumRegistro"] = _m.NUM_REGISTRO, ["Linea"] = linea, ["ConGuia"] = _permiteGuia, ["TasaDescuentoGeneral"] = _m.TAS_DESCUENTO },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false }) { _huboCambios = true; await CargarDetalleAsync(); }
+    }
+
+    /// <summary>Pasa de una vez al detalle las líneas de las órdenes asociadas (cada una queda vinculada a su línea de la orden).</summary>
+    private async Task TraerLineas()
+    {
+        var dlg = await DialogService.ShowAsync<RegistroCompraTraerLineasDialog>("",
+            new DialogParameters { ["NumRegistro"] = _m.NUM_REGISTRO, ["LineasActuales"] = _lineas },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false })
+        {
+            _huboCambios = true;
+            await CargarDetalleAsync();
+            Snackbar.Add($"Se agregaron {(res.Data is int n ? n : 0)} línea(s) de las órdenes. Revisa cantidades y precios con «Modificar».", Severity.Success);
+        }
+    }
+
+    private async Task EliminarLinea(RegistroCompraLinea linea)
+    {
+        var ok = await DialogService.ShowMessageBox("Quitar línea", $"¿Quitar la línea {linea.NUM_SECUENCIA} del comprobante?", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}/lineas/{linea.NUM_SECUENCIA}");
+        if (resp.IsSuccessStatusCode) { _huboCambios = true; Snackbar.Add("Línea quitada.", Severity.Success); await CargarDetalleAsync(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(EliminarLinea), "No se pudo quitar la línea");
+    }
+
+    // ── Órdenes ───────────────────────────────────────────────────────────────────────────────
+    private async Task AsociarPedidos()
+    {
+        if (_m.COD_ENTIDAD is null) return;
+        var dlg = await DialogService.ShowAsync<RegistroCompraPedidosDialog>("",
+            new DialogParameters { ["NumRegistro"] = _m.NUM_REGISTRO, ["EsBien"] = EsBien },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false } && res.Data is true) { _huboCambios = true; await CargarDetalleAsync(); await TomarDatosDeLaOrdenAsync(); }
+    }
+
+    /// <summary>Al asociar una orden la base completa en el comprobante el descuento y el incoterm de la orden (solo si el comprobante no los tenía): se leen de la ficha sin tocar lo que ya hay en pantalla.</summary>
+    private async Task TomarDatosDeLaOrdenAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<RegistroCompra>>($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}");
+            if (r?.Data is not { } f) return;
+            if (_m.COD_TIPO_DESCUENTO is null && f.COD_TIPO_DESCUENTO is not null) { _m.COD_TIPO_DESCUENTO = f.COD_TIPO_DESCUENTO; _m.DES_TIPO_DESCUENTO = f.DES_TIPO_DESCUENTO; _m.TAS_DESCUENTO = f.TAS_DESCUENTO; }
+            if (string.IsNullOrWhiteSpace(_m.COD_INCOTERM) && !string.IsNullOrWhiteSpace(f.COD_INCOTERM)) _m.COD_INCOTERM = f.COD_INCOTERM;
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(TomarDatosDeLaOrdenAsync)); }
+    }
+
+    private async Task Desasociar(RegistroCompraPedido p)
+    {
+        // las líneas del comprobante vinculadas a esa orden se eliminan con ella (vinieron de la orden): se avisa cuántas son
+        var n = _lineas.Count(l => l.NUM_PEDIDO_COMERCIAL == p.NUM_PEDIDO_COMERCIAL
+                                   && string.Equals(l.COD_CLASE_OPERACION_PEDIDO, p.COD_CLASE_OPERACION, StringComparison.OrdinalIgnoreCase)
+                                   && string.Equals(l.COD_TIPO_OPERACION_PEDIDO, p.COD_TIPO_OPERACION, StringComparison.OrdinalIgnoreCase));
+        var aviso = n == 0 ? "Ninguna línea del comprobante está vinculada a ella."
+                  : n == 1 ? "Se eliminará también la línea del comprobante vinculada a ella."
+                  : $"Se eliminarán también las {n} líneas del comprobante vinculadas a ella.";
+        var ok = await DialogService.ShowMessageBox("Quitar orden", $"¿Quitar la orden {p.NUM_PEDIDO_COMERCIAL:0} del comprobante? {aviso}", yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var url = $"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}/pedidos/{Uri.EscapeDataString(p.COD_CLASE_OPERACION)}/{Uri.EscapeDataString(p.COD_TIPO_OPERACION)}/{p.NUM_PEDIDO_COMERCIAL:0}";
+        var resp = await Http.DeleteAsync(url);
+        if (resp.IsSuccessStatusCode) { _huboCambios = true; Snackbar.Add(n == 0 ? "Orden quitada." : $"Orden quitada y {n} línea(s) eliminada(s).", Severity.Success); await CargarDetalleAsync(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(Desasociar), "No se pudo quitar la orden");
+    }
+
+    private async Task Autovincular()
+    {
+        var resp = await Http.PostAsync($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}/autovincular", null);
+        if (resp.IsSuccessStatusCode) { _huboCambios = true; Snackbar.Add("Líneas vinculadas a las órdenes.", Severity.Success); await CargarDetalleAsync(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraDocumento), nameof(Autovincular), "No se pudieron vincular las líneas");
+    }
+
+    // ── XML ───────────────────────────────────────────────────────────────────────────────────
+    private async Task VerXml()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<RegistroCompraXml>>($"{ApiRoutes.Comercial.RegistroCompras}/{_m.NUM_REGISTRO:0}/xml");
+            var x = r?.Data;
+            if (x is null) { await ErrorDialogHelper.MostrarAvisoAsync("Este comprobante no tiene XML.", DialogService, nameof(RegistroCompraDocumento)); return; }
+            await DialogService.ShowMessageBox($"XML · {x.DES_NOMBRE_ARCHIVO}", (MarkupString)$"<pre style=\"max-height:60vh;overflow:auto;white-space:pre-wrap;\">{System.Net.WebUtility.HtmlEncode(x.DES_XML ?? "")}</pre>", yesText: "Cerrar");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraDocumento), nameof(VerXml));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo leer el XML. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompraDocumento));
+        }
+    }
+
+    // ── Flujo: validar, enviar a aprobación, aprobar, contabilizar y anular ───────────────────
+    // Las acciones son las mismas que usa la lista (RegistroCompraFlujo); aquí solo se recarga lo que cambió.
+    private RegistroCompraFlujo? _flujo;
+    private RegistroCompraFlujo Flujo => _flujo ??= new RegistroCompraFlujo(Http, Snackbar, ErrorLog, DialogService, nameof(RegistroCompraDocumento));
+
+    private Task OnAccionDialog(BotonTreeviewItem b) => EjecutarMetodo((b.DES_METODO ?? "").Trim(), b);
+
+    internal async Task EjecutarMetodo(string metodo, BotonTreeviewItem? b = null)
+    {
+        if (!RegistroCompraFlujo.EsDeFlujo(metodo))
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync(
+                $"El botón \"{b?.DES_BOTON_OPCION ?? b?.COD_BOTON_OPCION ?? metodo}\" todavía no tiene una acción conectada en esta pantalla.",
+                DialogService, nameof(RegistroCompraDocumento), "Acción pendiente");
+            return;
+        }
+        if (await Flujo.EjecutarAsync(metodo, _m.NUM_REGISTRO, _m.COD_ESTADO_ALIAS_CONCILIACION, _m.DES_JUSTIFICACION))
+        {
+            _huboCambios = true;
+            await CargarFichaAsync(_m.NUM_REGISTRO);
+            if (metodo == RegistroCompraFlujo.Validar) _tabDetalle = 2;
+        }
+    }
+
+    // Lo que usa la lista cuando el botón de flujo se pulsa desde la grilla, con el documento ya abierto: mismo efecto.
+    public decimal NumRegistroActual => _m.NUM_REGISTRO;
+    public bool EsSoloLectura => _soloLectura;
+}

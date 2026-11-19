@@ -1,0 +1,100 @@
+@* Una version de tiempo estandar de una operacion (script SQL 121): nace en BORRADOR; el tiempo base se escribe o se toma de un estudio de tiempos, y el SAM se calcula
+   con el suplemento. Se aprueba desde la ficha (con su fecha de vigencia). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método con que se obtuvo" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="metodo">
+            @foreach (var x in _metodos) { <MudSelectItem T="string" Value="@x.COD">@x.COD · @x.DES</MudSelectItem> }
+        </MudSelect>
+        <div class="d-flex align-center gap-2 mt-2">
+            <MudSelect T="int?" Value="_m.NUM_ESTUDIO_TIEMPO" ValueChanged="CambiaEstudio" Label="Estudio de tiempos (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" data-campo="estudio">
+                @foreach (var s in _estudios) { <MudSelectItem T="int?" Value="@((int?)s.NUM_ESTUDIO_TIEMPO)">N.° @s.NUM_ESTUDIO_TIEMPO · @s.FEC_ESTUDIO.ToString("dd/MM/yyyy") · base @OperacionesApi.Min(s.VAL_TIEMPO_BASE)</MudSelectItem> }
+            </MudSelect>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="NuevoEstudio" StartIcon="@Icons.Material.Filled.Add" data-accion="nuevo-estudio">Estudio</MudButton>
+        </div>
+        <div class="d-flex gap-3 mt-2">
+            <MudNumericField T="decimal?" @bind-Value="_m.VAL_TIEMPO_BASE" Label="Tiempo base (min por unidad)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0m" HelperText="@(_m.NUM_ESTUDIO_TIEMPO is null ? "" : "Vacío = el del estudio")" data-campo="base" />
+            <MudNumericField T="decimal" @bind-Value="_m.VAL_SUPLEMENTO_PCT" Label="Suplemento %" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0m" Max="200m" data-campo="suplemento" />
+        </div>
+        <MudText Class="mt-2 mono" data-zona="sam">SAM = @OperacionesApi.Min(BaseEfectiva) × (1 + @(_m.VAL_SUPLEMENTO_PCT.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)) / 100) = <b>@OperacionesApi.Min(Sam)</b> min</MudText>
+        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar borrador</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Operacion Operacion { get; set; } = new();
+    /// <summary>La version en borrador que se modifica; nulo = version nueva.</summary>
+    [Parameter] public OperacionTiempo? Version { get; set; }
+
+    private OperacionTiempoGuardarDto _m = new();
+    private List<CatalogoOperacionItem> _metodos = new();
+    private List<EstudioTiempo> _estudios = new();
+    private bool _guardando;
+    private string _error = "";
+
+    private decimal? BaseEfectiva => _m.VAL_TIEMPO_BASE ?? _estudios.FirstOrDefault(s => s.NUM_ESTUDIO_TIEMPO == _m.NUM_ESTUDIO_TIEMPO)?.VAL_TIEMPO_BASE;
+    private decimal? Sam => BaseEfectiva is { } b ? Math.Round(b * (1 + _m.VAL_SUPLEMENTO_PCT / 100m), 6) : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _m = new OperacionTiempoGuardarDto { COD_OPERACION = Operacion.COD_OPERACION, COD_METODO_TIEMPO = "CRONO", VAL_SUPLEMENTO_PCT = 10 };
+        if (Version is not null)
+            _m = new OperacionTiempoGuardarDto
+            {
+                COD_OPERACION = Version.COD_OPERACION, NUM_VERSION = Version.NUM_VERSION, COD_METODO_TIEMPO = Version.COD_METODO_TIEMPO, NUM_ESTUDIO_TIEMPO = Version.NUM_ESTUDIO_TIEMPO,
+                VAL_TIEMPO_BASE = Version.VAL_TIEMPO_BASE, VAL_SUPLEMENTO_PCT = Version.VAL_SUPLEMENTO_PCT, DES_OBSERVACION = Version.DES_OBSERVACION
+            };
+        var c = await OperacionesApi.LeerAsync<Dictionary<string, List<CatalogoOperacionItem>>>(Http, IngRoute.OperacionesCombos);
+        _metodos = c.Data?.GetValueOrDefault("metodos") ?? new();
+        if (!c.Ok) _error = c.Mensaje ?? "";
+        await CargarEstudios();
+    }
+
+    private async Task CargarEstudios()
+    {
+        var e = await OperacionesApi.LeerAsync<List<EstudioTiempo>>(Http, IngRoute.Operacion(Operacion.COD_OPERACION, "estudios"));
+        _estudios = e.Data ?? new();
+    }
+
+    private void CambiaEstudio(int? n)
+    {
+        _m.NUM_ESTUDIO_TIEMPO = n;
+        if (n is not null) _m.VAL_TIEMPO_BASE = null;   // el tiempo base sale del estudio, salvo que se escriba otro
+    }
+
+    private async Task NuevoEstudio()
+    {
+        var dlg = await DialogService.ShowAsync<EstudioTiempoDialog>("Nuevo estudio de tiempos", new DialogParameters { ["Operacion"] = Operacion },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        var r = await dlg.Result;
+        if (r is { Canceled: false })
+        {
+            await CargarEstudios();
+            CambiaEstudio(_estudios.Select(s => (int?)s.NUM_ESTUDIO_TIEMPO).Max());
+        }
+    }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_m.COD_METODO_TIEMPO)) { _error = "Elige el método."; return; }
+        if (BaseEfectiva is null or <= 0) { _error = "Indica el tiempo base o elige un estudio de tiempos."; return; }
+        _guardando = true;
+        var r = await OperacionesApi.EnviarAsync<OperacionTiempoResultado>(Http, HttpMethod.Post, IngRoute.OperacionesTiempos, _m);
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar."; return; }
+        Snackbar.Add($"Versión {r.Data?.NUM_VERSION} guardada como borrador.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

@@ -1,0 +1,86 @@
+@* Resumen previo a incorporar: qué líneas van a entrar al pedido y de qué requerimientos
+   sale cada cantidad. Es sólo de lectura — confirma o cancela. Va antes de grabar porque
+   la acumulación junta filas de varios requerimientos y conviene verla antes, no después. *@
+@using KONSolutions.Shared.Models.Comercial
+
+<MudDialog Style="width:min(720px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Incorporar al pedido</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Style="opacity:.75;">
+            @Grupos.Count línea(s) van a entrar al pedido, a partir de @TotalOrigenes línea(s) de requerimiento.
+        </MudText>
+
+        <table class="tabla-simple-editable" style="width:100%;">
+            <thead>
+                <tr>
+                    <th>Producto</th>
+                    @* Cada fila de este resumen es una línea del pedido. Desde que la orden de
+                       producción separa grupos, el mismo producto puede aparecer varias veces:
+                       sin esta columna, el resumen se leía como si estuviera repetido. *@
+                    <th style="width:150px;">Orden prod.</th>
+                    <th style="width:110px;">Unidad</th>
+                    <th style="width:130px;text-align:right;">Cantidad</th>
+                    <th style="width:150px;">Tipo de precio</th>
+                    <th style="width:140px;text-align:right;">Precio</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var g in Grupos)
+                {
+                    <tr>
+                        <td>@($"{g.COD_PRODUCTO} - {g.DES_PRODUCTO}")</td>
+                        <td class="mono">@(g.SinOrdenProduccion ? "—" : $"{g.COD_PROCESO} · {g.NUM_ORDEN_PRODUCCION}")</td>
+                        <td>@g.COD_UNIDAD_MEDIDA</td>
+                        <td style="text-align:right;" class="mono">@g.CAN_PRODUCTO.ToString("N6")</td>
+                        <td>@g.DES_TIPO_PRECIO</td>
+                        <td style="text-align:right;" class="mono">
+                            @(g.PRE_UNITARIO?.ToString("N6") ?? "—") @g.COD_MONEDA
+                        </td>
+                    </tr>
+                    @* El origen va debajo de su producto y no en otra tabla: lo que importa es
+                       ver de dónde sale cada cantidad sin tener que cruzar dos listas. *@
+                    @foreach (var o in g.Origenes)
+                    {
+                        <tr>
+                            <td colspan="6" class="mono" style="opacity:.6;font-size:.78rem;padding-left:24px;">
+                                requerimiento @o.NUM_REQUERIMIENTO_STOCK, línea @o.NUM_SECUENCIA
+                                · @(o.CAN_PRODUCTO?.ToString("N6")) @o.COD_UNIDAD_MEDIDA
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+
+        @if (Grupos.Any(g => g.PRE_UNITARIO is null or 0))
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                Hay productos sin precio cargado para este proveedor. Entran igual, con precio en
+                cero, para completarlos a mano en las líneas del pedido.
+            </MudAlert>
+        }
+
+        @if (Grupos.Any(g => g.Origenes.Count > 1))
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                Hay productos pedidos en más de un requerimiento: entran como una sola línea con la
+                cantidad sumada.
+            </MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled"
+                   Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                   OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))">Incorporar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public List<GrupoRequerimientoIncorporar> Grupos { get; set; } = new();
+
+    private int TotalOrigenes => Grupos.Sum(g => g.Origenes.Count);
+}

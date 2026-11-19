@@ -1,0 +1,391 @@
+@* Lectura de etiquetas RFID al RECIBIR una transferencia (Confirmación de Recepción de Transferencias).
+
+   El ingreso todavía no existe: se crea cuando se confirma la recepción. Por eso cada etiqueta que se lee acá se REVISA contra la
+   salida (POST confirmacion-recepcion/lectura, que no graba nada) y, si pasa, queda en la lista de esta pantalla; las etiquetas se
+   graban todas juntas al confirmar, dentro de la misma transacción que crea el ingreso.
+
+   Qué pasa cuando el SP rechaza una etiqueta (lo dice el número de error de la respuesta):
+     50708          — el producto se mide (un rollo) y la etiqueta no se leyó al enviar: se pide el peso y se reenvía la MISMA etiqueta.
+     50706          — la etiqueta ya ingresó en otro movimiento y no tiene una salida leída después: se pregunta y, si se acepta, se
+                      reenvía con FLG_FORZAR.
+     cualquier otro — (no es de la salida, sobra, no es RFID...) un aviso corto y la caja queda lista para la siguiente. No se abre
+                      un diálogo por cada rechazo: recibiendo cien etiquetas seguidas sería insoportable.
+
+   Las etiquetas que llegan mientras otra se está revisando (o espera su peso) no se pierden: quedan en cola y se atienden de a una,
+   en el orden en que se leyeron. La caja de la etiqueta SOLO la vacía el propio Enter: lo que haya en ella cuando termina una
+   revisión es la etiqueta siguiente que el lector todavía está escribiendo.
+
+   El panel no sabe nada del resto de la pantalla: la página le pasa la lista de etiquetas leídas (la misma instancia, que el panel
+   modifica) y se entera de cada cambio con OnCambio para marcar las líneas completas como conformes. *@
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using System.Text.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+@inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);" data-recepcion="lectura">
+    <div class="d-flex align-center gap-2 mb-2" style="flex-wrap:wrap;">
+        <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Size="Size.Small" />
+        <MudText Typo="Typo.subtitle2">Lectura de etiquetas al recibir</MudText>
+        <MudChip T="string" Size="Size.Small" Color="@(Requisito == "R" ? Color.Warning : Color.Default)" Variant="Variant.Outlined">
+            @(Requisito == "R" ? "Obligatoria" : "Optativa")
+        </MudChip>
+        <MudText Typo="Typo.caption" Style="opacity:.7;">
+            @(Requisito == "R"
+                ? "Lee todas las etiquetas RFID: no se puede confirmar hasta completar lo enviado."
+                : "Lee las etiquetas RFID que llegan. Una línea en la que no leas nada pasa al ingreso con las etiquetas de la salida; en una línea que sí leas, quedan solo las que leíste.")
+        </MudText>
+        <MudButton Variant="Variant.Text" Size="Size.Small" Style="margin-left:auto;text-transform:none;"
+                   StartIcon="@(_logOculto ? Icons.Material.Filled.Visibility : Icons.Material.Filled.VisibilityOff)"
+                   OnClick="AlternarLogAsync" data-recepcion="log-alternar">
+            @(_logOculto ? (_historial.Count > 0 ? $"Mostrar log ({_historial.Count})" : "Mostrar log") : "Ocultar log")
+        </MudButton>
+    </div>
+
+    <MudGrid Class="align-end" Spacing="2">
+        <MudItem xs="12" sm="@(_esperaPeso ? 8 : 12)">
+            <MudTextField T="string" @ref="_campoEtiqueta" @bind-Value="_etiqueta" Label="RFID" Variant="Variant.Outlined"
+                          Immediate="true" Disabled="Disabled" Class="mb-1"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.QrCode"
+                          OnKeyDown="OnEtiquetaKey" />
+        </MudItem>
+        @if (_esperaPeso)
+        {
+            @* 50708: el producto se mide y la etiqueta no se leyó al enviar. La etiqueta ya se leyó; falta su peso. *@
+            <MudItem xs="12" sm="4">
+                <div class="d-flex align-end gap-2">
+                    <MudNumericField T="decimal?" @ref="_campoPeso" @bind-Value="_peso" Label="Peso / cantidad" Variant="Variant.Outlined"
+                                     Immediate="true" Min="0" Class="mb-1" HideSpinButtons="true" OnKeyDown="OnPesoKey" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Medium" title="Leer con este peso"
+                                   OnClick="ConfirmarPesoAsync" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Medium" title="Descartar esta etiqueta"
+                                   OnClick="DescartarPesoAsync" />
+                </div>
+            </MudItem>
+        }
+    </MudGrid>
+
+    @if (_esperaPeso)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-1 mb-0">@_mensajePeso</MudAlert>
+    }
+    @if (_cola.Count > 0)
+    {
+        <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.7;">@_cola.Count etiqueta(s) en cola…</MudText>
+    }
+
+    @if (_historial.Count > 0 && !_logOculto)
+    {
+        <div class="mt-2" style="font-size:.78rem;max-height:96px;overflow:auto;" data-recepcion="historial">
+            @foreach (var h in _historial)
+            {
+                <div style="display:flex;gap:6px;align-items:baseline;">
+                    <MudIcon Icon="@(h.Ok ? Icons.Material.Filled.Check : Icons.Material.Filled.ErrorOutline)"
+                             Color="@(h.Ok ? Color.Success : Color.Error)" Size="Size.Small" Style="flex-shrink:0;position:relative;top:3px;" />
+                    <span class="mono" style="opacity:.55;flex-shrink:0;">@h.Hora.ToString("HH:mm:ss")</span>
+                    <span style="@(h.Ok ? "" : "color:var(--mud-palette-error);")">@h.Texto</span>
+                </div>
+            }
+        </div>
+    }
+
+    @if (Leidas.Count > 0)
+    {
+        <div class="mt-2" data-recepcion="leidas">
+            <MudText Typo="Typo.caption" Style="opacity:.75;font-weight:700;">Etiquetas leídas (@Leidas.Count)</MudText>
+            <div style="max-height:150px;overflow:auto;">
+                <table class="tabla-simple-editable" style="width:100%;font-size:.78rem;">
+                    <thead style="position:sticky;top:0;z-index:1;">
+                        <tr>
+                            <th style="width:50px;">Línea</th>
+                            <th>Producto</th>
+                            <th>Etiqueta</th>
+                            <th style="width:110px;text-align:right;">Cantidad</th>
+                            <th style="width:50px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var e in Leidas.AsEnumerable().Reverse().ToList())
+                        {
+                            var et = e;
+                            <tr>
+                                <td class="mono">@et.Linea</td>
+                                <td>
+                                    <span class="mono" style="font-size:.7rem;opacity:.6;">@et.CodProducto</span> @et.DesProducto
+                                    @if (et.Forzada)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" title="Se leyó de todos modos">forzada</MudChip>
+                                    }
+                                </td>
+                                <td class="mono" style="font-size:.72rem;" title="@et.Etiqueta">@Corta(et.Etiqueta)</td>
+                                <td class="mono" style="text-align:right;">@et.Cantidad.ToString("0.######") @et.Um</td>
+                                <td style="text-align:center;">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                                   title="Quitar esta lectura" Disabled="Disabled" OnClick="@(() => QuitarAsync(et))" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+</MudPaper>
+
+@code {
+    /// <summary>La salida que se está recibiendo.</summary>
+    [Parameter] public decimal NumSalida { get; set; }
+    /// <summary>O = optativa · R = obligatoria. Solo cambia el rótulo: lo que se exige al confirmar lo controla el SP.</summary>
+    [Parameter] public string Requisito { get; set; } = "O";
+    /// <summary>Las etiquetas ya leídas. Es la lista de la página: el panel le agrega y le quita.</summary>
+    [Parameter] public List<EtiquetaLeida> Leidas { get; set; } = new();
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>Se dispara cada vez que cambia la lista de etiquetas leídas.</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    /// <summary>Una etiqueta que pasó la revisión: se graba al confirmar la recepción.</summary>
+    public sealed class EtiquetaLeida
+    {
+        /// <summary>Línea de la SALIDA a la que pertenece.</summary>
+        public int Linea { get; set; }
+        public string Etiqueta { get; set; } = "";
+        public decimal Cantidad { get; set; }
+        public bool Forzada { get; set; }
+        public bool EnSalida { get; set; }
+        public string? CodProducto { get; set; }
+        public string? DesProducto { get; set; }
+        public string? Um { get; set; }
+    }
+
+    private sealed record Registro(bool Ok, string Texto, DateTime Hora);
+
+    private MudTextField<string>? _campoEtiqueta;
+    private MudNumericField<decimal?>? _campoPeso;
+    private readonly List<Registro> _historial = new();
+    private string? _etiqueta, _etiquetaPendiente, _mensajePeso;
+    private decimal? _peso;
+    private bool _procesando, _esperaPeso, _enfocarPeso, _enfocarEtiqueta, _forzarPendiente;
+    // Las etiquetas que llegan mientras otra se está revisando (o espera su peso) no se descartan: se atienden en orden, de a una.
+    private readonly Queue<string> _cola = new();
+
+    // El log (el historial de lecturas con su hora) se puede ocultar. La elección es de este navegador y vale para todos los
+    // paneles de lectura: si no se puede leer (modo privado, almacenamiento bloqueado), el log se muestra.
+    private const string ClaveLogOculto = "lecturaLogOculto";
+    private bool _logOculto;
+
+    private async Task AlternarLogAsync()
+    {
+        _logOculto = !_logOculto;
+        try { await LocalStorage.SetItemAsync(ClaveLogOculto, _logOculto); }
+        catch { /* solo se pierde recordar la elección */ }
+        _enfocarEtiqueta = true;   // el clic no le quita el foco al lector
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _logOculto = await LocalStorage.GetItemAsync<bool>(ClaveLogOculto); }
+        catch { _logOculto = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender || _enfocarEtiqueta)
+        {
+            _enfocarEtiqueta = false;
+            if (_campoEtiqueta is not null && !Disabled) await _campoEtiqueta.FocusAsync();
+        }
+        if (_enfocarPeso)
+        {
+            _enfocarPeso = false;
+            if (_campoPeso is not null) await _campoPeso.FocusAsync();
+        }
+    }
+
+    private async Task OnEtiquetaKey(KeyboardEventArgs e)
+    {
+        if (e.Key != "Enter") return;
+        await LeerAsync();
+    }
+
+    private async Task OnPesoKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await ConfirmarPesoAsync();
+    }
+
+    private async Task LeerAsync()
+    {
+        var etiqueta = _etiqueta?.Trim();
+        if (string.IsNullOrEmpty(etiqueta) || Disabled) return;
+        // La caja queda lista para la siguiente etiqueta desde ya; esta se atiende cuando le toque.
+        _etiqueta = null;
+        _cola.Enqueue(etiqueta);
+        if (_esperaPeso) Snackbar.Add("Falta el peso de la etiqueta anterior: la nueva quedó en cola.", Severity.Warning);
+        await ProcesarColaAsync();
+    }
+
+    /// <summary>Atiende la cola de a una, en orden. Se detiene si una etiqueta pide su peso (sigue cuando se resuelve).</summary>
+    private async Task ProcesarColaAsync()
+    {
+        if (_procesando) return;   // el que ya está procesando atenderá lo que llegue
+        _procesando = true;
+        try
+        {
+            while (!_esperaPeso && _cola.TryDequeue(out var etiqueta))
+                await EnviarAsync(etiqueta, null, false);
+        }
+        finally
+        {
+            _procesando = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ConfirmarPesoAsync()
+    {
+        if (_etiquetaPendiente is null) return;
+        if (_peso is not > 0) { Snackbar.Add("Indica el peso o la cantidad de la etiqueta, mayor que cero.", Severity.Warning); return; }
+        await EnviarAsync(_etiquetaPendiente, _peso, _forzarPendiente);
+        await ProcesarColaAsync();
+    }
+
+    private void DescartarPendiente()
+    {
+        _esperaPeso = false;
+        _etiquetaPendiente = _mensajePeso = null;
+        _peso = null;
+        _forzarPendiente = false;
+        _enfocarEtiqueta = true;
+    }
+
+    /// <summary>El usuario descarta la etiqueta que esperaba su peso: lo que quedó en cola sigue su curso.</summary>
+    private async Task DescartarPesoAsync()
+    {
+        DescartarPendiente();
+        await ProcesarColaAsync();
+    }
+
+    /// <summary>Lo ya leído por línea de la salida: el SP lo usa para elegir la línea a la que cabe la etiqueta y para no pasarse de lo enviado.</summary>
+    private List<RecepcionLecturaLeida> Acumulado()
+        => Leidas.GroupBy(x => x.Linea).Select(g => new RecepcionLecturaLeida { NUM_SECUENCIA = g.Key, CAN_PRODUCTO = g.Sum(x => x.Cantidad) }).ToList();
+
+    private async Task EnviarAsync(string etiqueta, decimal? peso, bool forzar)
+    {
+        // Aquí NO se toca la caja (_etiqueta): LeerAsync ya la vació al encolar, y lo que haya en ella ahora es la etiqueta SIGUIENTE
+        // que el lector todavía está escribiendo.
+        try
+        {
+            if (Leidas.Any(x => x.Etiqueta == etiqueta))
+            {
+                Registrar(false, $"{Corta(etiqueta)}: ya se leyó en esta recepción.");
+                Snackbar.Add("Esa etiqueta ya se leyó en esta recepción.", Severity.Warning);
+                DescartarPendiente();
+                return;
+            }
+            var dto = new RecepcionLecturaDto
+            {
+                NUM_MOVIMIENTO_ALMACEN = NumSalida,
+                COD_STICKER_RFID       = etiqueta,
+                CAN_PRODUCTO           = peso,
+                FLG_FORZAR             = forzar,
+                Leidas                 = Acumulado()
+            };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.ConfirmacionRecepcionLectura, dto);
+            var cuerpo = await resp.Content.ReadAsStringAsync();
+            var r = Leer(cuerpo);
+
+            if (resp.IsSuccessStatusCode && r?.Data is { } ok)
+            {
+                Leidas.Add(new EtiquetaLeida
+                {
+                    Linea = ok.NUM_SECUENCIA ?? 0, Etiqueta = etiqueta, Cantidad = ok.CAN_LEIDA ?? 1, Forzada = forzar,
+                    EnSalida = ok.FLG_EN_SALIDA == true, CodProducto = ok.COD_PRODUCTO, DesProducto = ok.DES_PRODUCTO, Um = ok.COD_UNIDAD_MEDIDA
+                });
+                Registrar(true, $"{ok.COD_PRODUCTO} · línea {ok.NUM_SECUENCIA} · +{ok.CAN_LEIDA?.ToString("0.######")} {ok.COD_UNIDAD_MEDIDA}"
+                                + (ok.CAN_ENVIADA is { } env ? $" de {env.ToString("0.######")} enviados" : ""));
+                if (!string.IsNullOrWhiteSpace(ok.DES_ADVERTENCIA)) Snackbar.Add(ok.DES_ADVERTENCIA, Severity.Warning);
+                DescartarPendiente();
+                await OnCambio.InvokeAsync();
+                return;
+            }
+
+            var numero = r?.Data?.ErrorNumber;
+            var mensaje = string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo revisar la etiqueta." : r!.Message;
+            switch (numero)
+            {
+                case 50708:   // el producto se mide y la etiqueta no se leyó al enviar: falta el peso
+                    _etiquetaPendiente = etiqueta;
+                    _forzarPendiente = forzar;
+                    _mensajePeso = mensaje;
+                    _esperaPeso = true;
+                    _enfocarPeso = true;
+                    return;
+
+                case 50706:   // ya ingresó en otro movimiento
+                    if (await ConfirmarForzadoAsync(mensaje))
+                    {
+                        await EnviarAsync(etiqueta, peso, true);
+                        return;
+                    }
+                    Registrar(false, $"{Corta(etiqueta)}: no se leyó ({mensaje})");
+                    DescartarPendiente();
+                    return;
+
+                case not null:
+                    Registrar(false, $"{Corta(etiqueta)}: {mensaje}");
+                    Snackbar.Add(mensaje, Severity.Error);
+                    DescartarPendiente();
+                    return;
+
+                default:
+                    // Sin número de error del SP: validación del modelo, sesión vencida, error del servidor...
+                    await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RecepcionLecturaPanel), nameof(EnviarAsync));
+                    return;
+            }
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RecepcionLecturaPanel), nameof(EnviarAsync));
+            Snackbar.Add("No se pudo revisar la etiqueta. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally
+        {
+            _enfocarEtiqueta = !_esperaPeso;
+            StateHasChanged();
+        }
+    }
+
+    private async Task QuitarAsync(EtiquetaLeida e)
+    {
+        if (Disabled) return;
+        Leidas.Remove(e);
+        Registrar(true, $"{Corta(e.Etiqueta)}: se quitó de la lectura.");
+        await OnCambio.InvokeAsync();
+    }
+
+    private async Task<bool> ConfirmarForzadoAsync(string mensaje)
+    {
+        var si = await DialogService.ShowMessageBox("La etiqueta ya ingresó", mensaje + " ¿La lees de todos modos?",
+                                                    yesText: "Leer de todos modos", cancelText: "No leerla");
+        return si == true;
+    }
+
+    private void Registrar(bool ok, string texto)
+    {
+        _historial.Insert(0, new Registro(ok, texto, DateTime.Now));
+        if (_historial.Count > 6) _historial.RemoveRange(6, _historial.Count - 6);
+    }
+
+    private static ApiResponse<RecepcionLecturaResultado>? Leer(string cuerpo)
+    {
+        if (string.IsNullOrWhiteSpace(cuerpo)) return null;
+        try { return JsonSerializer.Deserialize<ApiResponse<RecepcionLecturaResultado>>(cuerpo, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+        catch (JsonException) { return null; }   // la respuesta de una validación de modelo (400) no es un ApiResponse
+    }
+
+    // Las etiquetas RFID miden 100 caracteres o más: se muestra el final, que es lo que las distingue.
+    private static string Corta(string etiqueta) => etiqueta.Length <= 24 ? etiqueta : "…" + etiqueta[^22..];
+}

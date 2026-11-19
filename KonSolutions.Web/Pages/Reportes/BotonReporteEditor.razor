@@ -1,0 +1,365 @@
+@using KONSolutions.Shared.Models.Reportes
+@inject ReportesWebService Reportes
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+@* REPORTEADOR · EL REPORTE DE UN BOTÓN
+
+   Qué diseño dispara un botón de una opción, en qué formato y de dónde sale cada parámetro. Lo usan la pantalla
+   Reportes en botones (a la derecha de su lista) y el panel de botones del diálogo de la opción (Seguridad ›
+   Opciones de aplicaciones), dentro de BotonReporteDialog. Graba y quita con la API de Reportes en botones, así que
+   pide el permiso de esa pantalla. OnCambio avisa después de grabar o de quitar el reporte.
+
+   COPIA DEL ARCHIVO: si se elige una ruta (ENTORNO.PATHFILES), cada archivo que genera el botón se guarda también ahí,
+   con el nombre armado con los datos de la fila (lo arma la API, ver ReporteCopiaArchivo). *@
+@if (_det is not { } det)
+{
+    <MudText Class="pa-4" Typo="Typo.body2" Style="opacity:.6;">@(_error ?? "Leyendo el botón...")</MudText>
+}
+else
+{
+    var b = det.Boton;
+    var diseno = _disenos.FirstOrDefault(x => x.NUM_DISENO == _numDiseno);
+    <div class="pa-2 px-3 rep-cab d-flex align-center gap-2 flex-wrap">
+        <span>@b.DES_OPCION_APLICACION · @b.DES_BOTON_OPCION</span>
+        <MudSpacer />
+        @if (b.NUM_DISENO is not null)
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Error" Style="@EstilosBoton.Eliminar"
+                       StartIcon="@Icons.Material.Filled.LinkOff" Disabled="_grabando" OnClick="Quitar">Quitar reporte</MudButton>
+        }
+        <MudButton Size="Size.Small" Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Save"
+                   Disabled="@(_grabando || _numDiseno is null)" OnClick="Grabar">@(_grabando ? "Grabando..." : "Grabar")</MudButton>
+    </div>
+    <div class="pa-3">
+        <div class="rep-ficha mb-3">
+            <div><span class="rep-lbl">Aplicación</span><div>@($"{b.COD_APLICACION} - {b.DES_APLICACION}")</div></div>
+            <div><span class="rep-lbl">Opción</span><div>@($"{b.COD_OPCION_APLICACION} - {b.DES_OPCION_APLICACION}")</div></div>
+            <div><span class="rep-lbl">Pantalla</span><div class="mono" style="font-size:.78rem;">@(b.DES_FORMULARIO ?? "—")</div></div>
+            <div><span class="rep-lbl">Botón</span><div>@($"{b.COD_BOTON_OPCION} - {b.DES_BOTON_OPCION}") @foreach (var z in Zonas(b)) { <span class="rep-chip ml-1">@z</span> }</div></div>
+        </div>
+
+        <div class="rep-grid4">
+            <MudSelect T="int?" Value="_numDiseno" ValueChanged="ElegirDiseno" Label="Diseño que dispara *" Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var g in _disenos.Where(x => x.FLG_HABILITADO || x.NUM_DISENO == _numDiseno).GroupBy(x => x.COD_TIPO_DISENO).OrderByDescending(g => g.Key))
+                {
+                    foreach (var x in g.OrderBy(x => x.DES_DISENO))
+                    {
+                        <MudSelectItem T="int?" Value="@x.NUM_DISENO">@($"{(x.COD_TIPO_DISENO == "FIC" ? "Ficha" : x.COD_TIPO_DISENO == "BAN" ? "Libre" : "Listado")} · {x.DES_DISENO}")</MudSelectItem>
+                    }
+                }
+            </MudSelect>
+            <MudSelect T="string" @bind-Value="_formato" Label="Formato por defecto" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(diseno is null)">
+                @foreach (var f in Formatos(diseno))
+                {
+                    <MudSelectItem T="string" Value="@f">@ReportesWebService.NombreFormato(f)</MudSelectItem>
+                }
+            </MudSelect>
+            <MudSwitch T="bool" @bind-Value="_elegirFormato" Label="Dejar elegir el formato" Color="Color.Primary" />
+            <MudSwitch T="bool" @bind-Value="_vistaPrevia" Label="PDF en vista previa" Color="Color.Primary" />
+        </div>
+        <MudText Typo="Typo.caption" Style="opacity:.65;">
+            Con "Dejar elegir el formato" el diálogo muestra todos los formatos del diseño; sin él, sale directo en el formato por defecto.
+            Sin vista previa, el PDF se descarga.
+        </MudText>
+
+        <div class="d-flex align-center gap-2 mt-4 mb-1">
+            <MudText Typo="Typo.subtitle2" Style="font-weight:800;">COPIA DEL ARCHIVO</MudText>
+        </div>
+        <div class="rep-copia">
+            <MudSelect T="string" @bind-Value="_ruta" Label="Guardar una copia en" Variant="Variant.Outlined" Margin="Margin.Dense"
+                       ToStringFunc="@(r => string.IsNullOrEmpty(r) ? SinCopia : r)">
+                <MudSelectItem T="string" Value="@string.Empty">@SinCopia</MudSelectItem>
+                @foreach (var r in _rutas)
+                {
+                    <MudSelectItem T="string" Value="@r.COD_KEY_PATHFILE">@r.COD_KEY_PATHFILE</MudSelectItem>
+                }
+                @if (!string.IsNullOrEmpty(_ruta) && _rutas.All(r => r.COD_KEY_PATHFILE != _ruta))
+                {
+                    <MudSelectItem T="string" Value="@_ruta">@($"{_ruta} (inactiva)")</MudSelectItem>
+                }
+            </MudSelect>
+            @* Sin Placeholder: un ejemplo de fondo se confundía con un nombre grabado (y la copia salía con el nombre de
+               siempre), y app.css usa :placeholder-shown para bajar la etiqueta al campo vacío, así que cualquier texto de
+               fondo queda debajo de la etiqueta. El ejemplo va abajo, con «Usar este ejemplo». *@
+            <MudTextField T="string" @bind-Value="_nombreArchivo" Label="Nombre del archivo" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          MaxLength="200" Disabled="@string.IsNullOrEmpty(_ruta)" />
+        </div>
+        @if (!string.IsNullOrEmpty(_ruta))
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.65;">
+                Cada archivo que genera el botón (PDF, Word, Excel o CSV) se guarda también en
+                <span class="mono">@(RutaCompleta() ?? "(la ruta no tiene servidor)")</span>.
+                Entre llaves va una columna de la fila (o un parámetro, o una columna del reporte) y, después de dos puntos, su formato:
+                <span class="mono">{NUM_PEDIDO_COMERCIAL:0000000000}</span> rellena con ceros; <span class="mono">{FECHA:yyyyMMdd}</span> es la fecha del día.
+                No pongas la extensión: la pone el formato. Si ya hay un archivo con ese nombre, se guarda otro con _2, _3...
+                Sin nombre, la copia lleva el nombre de siempre del reporte.
+            </MudText>
+            <div class="d-flex align-center gap-2 flex-wrap mt-1" style="font-size:.78rem;">
+                <span style="opacity:.65;">Ejemplo:</span>
+                <span class="mono">@EjemploNombre</span>
+                @if (string.IsNullOrWhiteSpace(_nombreArchivo))
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ContentPaste"
+                               OnClick="@(() => _nombreArchivo = EjemploNombre)">Usar este ejemplo</MudButton>
+                }
+            </div>
+        }
+
+        @if (_numDiseno is not null)
+        {
+            <div class="d-flex align-center gap-2 mt-4 mb-1">
+                <MudText Typo="Typo.subtitle2" Style="font-weight:800;">DE DÓNDE SALE CADA PARÁMETRO</MudText>
+            </div>
+            @if (det.Parametros.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Style="opacity:.6;">La fuente del diseño no tiene parámetros.</MudText>
+            }
+            else
+            {
+                <div style="overflow:auto;">
+                    <table class="tabla-simple-editable rep-tabla">
+                        <thead>
+                            <tr><th>Parámetro</th><th>Etiqueta</th><th>Tipo</th><th style="width:210px;">Origen</th><th style="width:180px;">Campo o valor</th><th>Queda así</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in det.Parametros.OrderBy(x => x.NUM_ORDEN))
+                            {
+                                var x = p;
+                                <tr class="@(x.FLG_SISTEMA ? "rep-sistema" : "")">
+                                    <td class="mono" style="font-weight:700;">@(x.DES_PARAMETRO + (x.FLG_OBLIGATORIO ? " *" : ""))</td>
+                                    <td>@x.DES_ETIQUETA</td>
+                                    <td class="mono" style="font-size:.72rem;opacity:.7;">@x.DES_TIPO_DATO</td>
+                                    <td>
+                                        @if (x.FLG_SISTEMA)
+                                        {
+                                            <span style="opacity:.7;">Sistema</span>
+                                        }
+                                        else
+                                        {
+                                            <select class="rep-input" value="@x.COD_ORIGEN" @onchange="@(e => CambiarOrigen(x, e.Value?.ToString() ?? "AUT"))">
+                                                <option value="AUT">Automático</option>
+                                                <option value="DLG">Se pide en el diálogo</option>
+                                                <option value="FIL">Campo de la fila</option>
+                                                <option value="FIJ">Valor fijo</option>
+                                            </select>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (x.COD_ORIGEN is "FIL" or "FIJ")
+                                        {
+                                            <input class="rep-input @(x.COD_ORIGEN == "FIL" ? "mono" : "")" value="@x.DES_VALOR"
+                                                   placeholder="@(x.COD_ORIGEN == "FIL" ? "NOMBRE_DEL_CAMPO" : "valor")"
+                                                   @onchange="@(e => x.DES_VALOR = Vacio(e.Value?.ToString()))" />
+                                        }
+                                        else { <span style="opacity:.4;">—</span> }
+                                    </td>
+                                    <td style="font-size:.74rem;opacity:.8;">@Explicar(x)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <MudText Typo="Typo.caption" Style="opacity:.65;">
+                    Fechas fijas como aaaa-mm-dd y números con punto decimal. Un parámetro de fila que la pantalla no manda queda vacío (NULL),
+                    y si es obligatorio el reporte avisa.
+                </MudText>
+            }
+
+            <MudAlert Severity="Severity.Normal" Dense="true" Class="mt-3" Icon="@Icons.Material.Filled.Code">
+                <div style="font-size:.8rem;">
+                    En <span class="mono">@(b.DES_FORMULARIO ?? "la pantalla")</span>, el <span class="mono">AccionesBotones</span> de la zona
+                    @(b.FLG_GRILLA ? "de la grilla lleva Fila=\"@item\"" : b.FLG_DIALOG ? "del diálogo lleva Fila=\"@_model\"" : "del encabezado lleva Fila con los datos de la pantalla")
+                    para que los parámetros automáticos y de fila se llenen. Sin Fila, se piden en el diálogo.
+                </div>
+            </MudAlert>
+        }
+    </div>
+}
+
+<style>
+    .rep-cab { background:var(--grilla-cab-fondo,#163a5f); color:var(--grilla-cab-texto,#ffd54f); font-weight:700; }
+    .rep-chip { font-size:.64rem; padding:1px 6px; border-radius:8px; background:#eceff1; color:#37474f; font-weight:700; }
+    .rep-ficha { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; font-size:.84rem; }
+    .rep-lbl { font-size:.7rem; opacity:.65; text-transform:uppercase; font-weight:700; }
+    .rep-grid4 { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; align-items:center; }
+    .rep-copia { display:grid; grid-template-columns:minmax(220px,1fr) minmax(300px,2fr); gap:10px; align-items:center; }
+    @@media (max-width: 700px) { .rep-copia { grid-template-columns:1fr; } }
+    .rep-tabla { width:100%; font-size:.8rem; }
+    .rep-tabla td { vertical-align:middle; }
+    .rep-input { width:100%; border:1px solid #cfd8dc; border-radius:4px; padding:3px 6px; font-size:.8rem; background:#fff; }
+    .rep-sistema td { background:#ede7f6; }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public string CodAplicacion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodOpcion { get; set; } = "";
+    [Parameter, EditorRequired] public string CodBoton { get; set; } = "";
+    /// <summary>Los diseños para elegir. Si no vienen, los lee (con el permiso de Reportes en botones).</summary>
+    [Parameter] public List<ReporteDiseno>? Disenos { get; set; }
+    /// <summary>Después de grabar o de quitar el reporte (ya releído).</summary>
+    [Parameter] public EventCallback OnCambio { get; set; }
+
+    private const string SinCopia = "(no guardar copia)";
+    /// <summary>El nombre de una proforma o una orden de compra: PRFRM_LCBIE_0000000001.</summary>
+    private const string EjemploNombre = "{COD_CLASE_OPERACION}_{COD_TIPO_OPERACION}_{NUM_PEDIDO_COMERCIAL:0000000000}";
+
+    private List<ReporteDiseno> _disenos = new();
+    private List<ReporteRuta> _rutas = new();
+    private ReporteBotonDetalle? _det;
+    private int? _numDiseno;
+    private string _formato = "PDF";
+    private bool _elegirFormato, _vistaPrevia = true, _grabando;
+    private string? _error;
+    /// <summary>La ruta de la copia ("" = no se guarda) y el nombre con marcas.</summary>
+    private string _ruta = "";
+    private string? _nombreArchivo;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // OnParametersSet corre después de esto: los diseños hacen falta ya para ajustar el formato al leer.
+        if (Disenos is not null) _disenos = Disenos;
+        else
+        {
+            var (d, err) = await Reportes.GetAsync<List<ReporteDiseno>>(ApiRoutes.Reportes.BotonesDisenos);
+            _disenos = d ?? new();
+            if (err is not null) Snackbar.Add(err, Severity.Warning);
+        }
+        var (r, errRutas) = await Reportes.GetAsync<List<ReporteRuta>>(ApiRoutes.Reportes.BotonesRutas);
+        _rutas = r ?? new();
+        if (errRutas is not null) Snackbar.Add(errRutas, Severity.Warning);
+        await Leer(null);
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Disenos is not null) _disenos = Disenos;
+    }
+
+    private async Task Leer(int? numDiseno)
+    {
+        var (d, err) = await Reportes.GetAsync<ReporteBotonDetalle>(ApiRoutes.Reportes.BotonDetalle(CodAplicacion, CodOpcion, CodBoton, numDiseno));
+        if (d is null)
+        {
+            _error = err ?? "No se pudo leer el botón.";
+            if (_det is not null) Snackbar.Add(_error, Severity.Warning);
+            return;
+        }
+        var cambio = numDiseno is not null;
+        _det = d;
+        if (!cambio)
+        {
+            _numDiseno = d.Boton.NUM_DISENO;
+            _formato = d.Boton.COD_FORMATO_DEFECTO ?? "PDF";
+            _elegirFormato = d.Boton.FLG_ELEGIR_FORMATO ?? false;
+            _vistaPrevia = d.Boton.FLG_VISTA_PREVIA ?? true;
+            _ruta = d.Boton.COD_KEY_PATHFILE ?? "";
+            _nombreArchivo = d.Boton.DES_NOMBRE_ARCHIVO;
+        }
+        AjustarFormato();
+    }
+
+    /// <summary>La ruta completa de la elegida: la de la lista de rutas activas o, si está inactiva, la que trajo el botón.</summary>
+    private string? RutaCompleta()
+        => _rutas.FirstOrDefault(r => r.COD_KEY_PATHFILE == _ruta)?.DES_PATH_FILE
+           ?? (_det?.Boton.COD_KEY_PATHFILE == _ruta ? _det?.Boton.DES_PATH_FILE : null);
+
+    /// <summary>Otro diseño trae otros parámetros: se vuelven a leer (los orígenes grabados son del diseño anterior y no se arrastran).</summary>
+    private async Task ElegirDiseno(int? num)
+    {
+        if (_det is null) return;
+        _numDiseno = num;
+        if (num is null) { _det.Parametros.Clear(); return; }
+        await Leer(num);
+    }
+
+    private void AjustarFormato()
+    {
+        var f = Formatos(_disenos.FirstOrDefault(x => x.NUM_DISENO == _numDiseno));
+        if (f.Count > 0 && !f.Contains(_formato)) _formato = f[0];
+    }
+
+    private static List<string> Formatos(ReporteDiseno? d)
+    {
+        var l = new List<string>();
+        if (d is null) return l;
+        if (d.FLG_PDF) l.Add("PDF");
+        if (d.FLG_DOC) l.Add("DOC");
+        if (d.FLG_XLS) l.Add("XLS");
+        if (d.FLG_CSV) l.Add("CSV");
+        return l;
+    }
+
+    private static void CambiarOrigen(ReporteBotonParametro p, string origen)
+    {
+        p.COD_ORIGEN = origen;
+        if (origen is not ("FIL" or "FIJ")) p.DES_VALOR = null;
+        else if (origen == "FIL" && string.IsNullOrWhiteSpace(p.DES_VALOR)) p.DES_VALOR = p.DES_PARAMETRO.TrimStart('@');
+    }
+
+    /// <summary>Cómo queda el parámetro, en palabras (también lo usa el diálogo del botón).</summary>
+    public static string Explicar(ReporteBotonParametro p)
+    {
+        var campo = p.DES_PARAMETRO.TrimStart('@');
+        return p.COD_ORIGEN switch
+        {
+            "SIS" => p.COD_VALOR_DEFECTO switch { "ROL" => "El rol activo.", "ESTACION" => "La estación (IP).", _ => "El usuario conectado." },
+            "DLG" => p.FLG_VISIBLE ? "Se pide siempre en el diálogo." : "Es un parámetro oculto en la fuente: no se va a ver en el diálogo.",
+            "FIL" => string.IsNullOrWhiteSpace(p.DES_VALOR) ? "Falta el nombre del campo." : $"Del campo {p.DES_VALOR} de la fila.",
+            "FIJ" => string.IsNullOrWhiteSpace(p.DES_VALOR) ? "Vacío: queda NULL." : $"Siempre «{p.DES_VALOR}».",
+            _ => p.FLG_VISIBLE ? $"Del campo {campo} de la fila; si no viene, se pide." : $"Del campo {campo} de la fila; si no viene, NULL."
+        };
+    }
+
+    public static IEnumerable<string> Zonas(ReporteBoton b)
+    {
+        if (b.FLG_HEADER) yield return "Encabezado";
+        if (b.FLG_GRILLA) yield return "Grilla";
+        if (b.FLG_DIALOG) yield return "Diálogo";
+    }
+
+    private async Task Grabar()
+    {
+        if (_det is null || _grabando) return;
+        if (_numDiseno is null) { Snackbar.Add("Elige el diseño.", Severity.Warning); return; }
+        var falta = _det.Parametros.FirstOrDefault(p => p.COD_ORIGEN == "FIL" && string.IsNullOrWhiteSpace(p.DES_VALOR));
+        if (falta is not null) { Snackbar.Add($"Falta el campo de la fila de {falta.DES_PARAMETRO}.", Severity.Warning); return; }
+        var b = _det.Boton;
+        _grabando = true;
+        try
+        {
+            var dto = new ReporteBotonGrabarDto
+            {
+                COD_APLICACION = b.COD_APLICACION, COD_OPCION_APLICACION = b.COD_OPCION_APLICACION, COD_BOTON_OPCION = b.COD_BOTON_OPCION,
+                NUM_DISENO = _numDiseno, COD_FORMATO_DEFECTO = _formato, FLG_ELEGIR_FORMATO = _elegirFormato, FLG_VISTA_PREVIA = _vistaPrevia,
+                // Sin ruta no hay copia: el nombre no se graba.
+                COD_KEY_PATHFILE = Vacio(_ruta), DES_NOMBRE_ARCHIVO = Vacio(_ruta) is null ? null : Vacio(_nombreArchivo),
+                Parametros = _det.Parametros.Where(p => !p.FLG_SISTEMA).ToList()
+            };
+            var (_, err) = await Reportes.PostAsync<bool>(ApiRoutes.Reportes.Botones, dto);
+            if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+            Reportes.Invalidar();
+            Snackbar.Add("Reporte asignado al botón.", Severity.Success);
+            await Leer(null);
+            await OnCambio.InvokeAsync();
+        }
+        finally { _grabando = false; }
+    }
+
+    private async Task Quitar()
+    {
+        if (_det is null) return;
+        var b = _det.Boton;
+        var ok = await DialogService.ShowMessageBox("Quitar reporte", $"¿Quitar el reporte «{b.DES_DISENO}» del botón {b.DES_BOTON_OPCION}? El botón sigue en la opción y vuelve a atenderlo la pantalla.",
+                                                    yesText: "Quitar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var err = await Reportes.DeleteAsync(ApiRoutes.Reportes.BotonQuitar(b.COD_APLICACION, b.COD_OPCION_APLICACION, b.COD_BOTON_OPCION));
+        if (err is not null) { Snackbar.Add(err, Severity.Warning); return; }
+        Reportes.Invalidar();
+        Snackbar.Add("Reporte quitado.", Severity.Success);
+        await Leer(null);
+        await OnCambio.InvokeAsync();
+    }
+
+    private static string? Vacio(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}

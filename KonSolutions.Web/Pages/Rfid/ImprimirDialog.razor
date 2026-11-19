@@ -1,0 +1,259 @@
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@implements IDisposable
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* IMPRIMIR: pide imprimir las etiquetas que faltan de la emisión (o las primeras n) en una impresora RFID.
+
+   El navegador no puede hablar con la impresora de la planta: este diálogo deja un TRABAJO en la cola (RFID.TRABAJOS_IMPRESION) y el SERVICIO del agente
+   (agente-rfid servicio, en la PC de la planta) lo toma, imprime etiqueta por etiqueta —cada una enrola su chip, graba el EPC al imprimir y lo comprueba— e informa
+   el avance. Aquí se ve ese avance (se actualiza solo cada pocos segundos), se puede cancelar y, si nadie toma el trabajo, avisa que el servicio no responde.
+   Una emisión solo puede tener un trabajo activo a la vez. *@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Imprimir etiquetas · emisión @Emision.NUM_EMISION</MudText>
+    </TitleContent>
+    <DialogContent>
+        <div class="mb-3" style="line-height:1.5;" data-resumen="imprimir">
+            <span class="mono" style="font-size:.9rem;" data-faltan="@PorImprimir">
+                Faltan <strong>@PorImprimir</strong> etiquetas por imprimir (@_e.CAN_PENDIENTES por enrolar@(Enroladas > 0 ? $" y {Enroladas} enroladas sin grabar" : "")).
+            </span>
+        </div>
+
+        @if (_activo is null)
+        {
+            @if (_impresoras.Count == 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3" data-aviso="sin-impresoras">
+                    No hay equipos RFID para imprimir. Una impresora es un producto del grupo de equipos RFID (Configuración general &gt; RFID) con su ficha técnica (dirección, puerto, plantilla).
+                </MudAlert>
+            }
+            else if (!_hayImpresorasDeVerdad)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3" data-aviso="sin-tipo-impresora">
+                    Ningún equipo figura como impresora (sub familia «Impresora» o protocolo ZPL): se muestran todos los equipos RFID.
+                </MudAlert>
+            }
+            <MudGrid Class="align-end" Spacing="2">
+                <MudItem xs="12" sm="7">
+                    <MudSelect T="string" Label="Impresora" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_equipo" data-campo="impresora" Disabled="_trabajando">
+                        @foreach (var i in _impresoras)
+                        {
+                            <MudSelectItem T="string" Value="@i.COD_PRODUCTO">@i.DES_PRODUCTO@(string.IsNullOrWhiteSpace(i.DES_TIPO_EQUIPO) ? "" : $" · {i.DES_TIPO_EQUIPO}")</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" sm="5">
+                    <MudNumericField T="int?" Label="Cuántas (vacío = todas)" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_cantidad" Min="1" Max="@PorImprimir"
+                                     HideSpinButtons="true" Disabled="_trabajando" data-campo="cantidad" />
+                </MudItem>
+            </MudGrid>
+            <MudText Typo="Typo.caption" Class="mb-2" Style="display:block;opacity:.7;">
+                La impresora tiene que tener etiquetas con chip puestas. Cada etiqueta se enrola con el TID de su chip y se graba al imprimir.
+            </MudText>
+        }
+        else
+        {
+            <div data-trabajo-activo="@_activo.NUM_TRABAJO">
+                <div class="d-flex align-center gap-2 mb-1">
+                    <EstadoChip Estado="@_activo.DES_ESTADO_TRABAJO" BackColor="@(_activo.COD_ESTADO_TRABAJO == "E" ? "#cfe2ff" : "#fff3cd")" ForeColor="@(_activo.COD_ESTADO_TRABAJO == "E" ? "#0a3d91" : "#7a5a00")" />
+                    <span class="mono" style="font-size:.85rem;">Trabajo @_activo.NUM_TRABAJO · @_activo.DES_EQUIPO · pedido por @_activo.COD_USUARIO_SOLICITUD</span>
+                </div>
+                <MudProgressLinear Value="@Porcentaje(_activo)" Color="Color.Success" Size="Size.Medium" Rounded="true" Class="my-1" Indeterminate="@(_activo.COD_ESTADO_TRABAJO == "P")" />
+                <span class="mono" style="font-size:.85rem;" data-avance-trabajo="true">
+                    @_activo.CAN_IMPRESAS@(_activo.CAN_SOLICITADAS is { } n ? $" de {n}" : "") impresas@(_activo.CAN_FALLIDAS > 0 ? $" · {_activo.CAN_FALLIDAS} fallidas (repuestas)" : "")
+                </span>
+                @if (!string.IsNullOrWhiteSpace(_activo.DES_MENSAJE))
+                {
+                    <div class="mt-1" style="font-size:.85rem;" data-mensaje-trabajo="true">@_activo.DES_MENSAJE</div>
+                }
+                @if (_activo.FLG_CANCELAR)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2" data-aviso="cancelando">Cancelación pedida: el servicio se detiene al terminar la etiqueta que está imprimiendo.</MudAlert>
+                }
+                @if (AvisoServicio() is { } aviso)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2" data-aviso="servicio">@aviso</MudAlert>
+                }
+            </div>
+        }
+
+        @if (_resultado is not null)
+        {
+            <MudAlert Severity="@(_resultado.COD_ESTADO_TRABAJO == "T" ? Severity.Success : _resultado.COD_ESTADO_TRABAJO == "C" ? Severity.Info : Severity.Error)" Dense="true" Class="mt-3" data-resultado-trabajo="@_resultado.COD_ESTADO_TRABAJO">
+                <strong>@_resultado.DES_ESTADO_TRABAJO</strong> · trabajo @_resultado.NUM_TRABAJO: @_resultado.CAN_IMPRESAS impresas@(_resultado.CAN_FALLIDAS > 0 ? $", {_resultado.CAN_FALLIDAS} fallidas" : "").
+                @_resultado.DES_MENSAJE
+            </MudAlert>
+        }
+
+        @if (_historial.Count > 0)
+        {
+            <MudText Typo="Typo.subtitle2" Class="mt-4 mb-1">Trabajos anteriores</MudText>
+            <MudSimpleTable Dense="true" Hover="true" Style="font-size:.8rem;" data-historial="true">
+                <thead><tr><th>N°</th><th>Pedido</th><th>Impresora</th><th>Estado</th><th>Impresas</th></tr></thead>
+                <tbody>
+                @foreach (var t in _historial)
+                {
+                    <tr data-historial-fila="@t.NUM_TRABAJO">
+                        <td class="mono">@t.NUM_TRABAJO</td>
+                        <td>@t.FEC_SOLICITUD.ToString("dd/MM HH:mm") · @t.COD_USUARIO_SOLICITUD</td>
+                        <td>@t.DES_EQUIPO</td>
+                        <td>@t.DES_ESTADO_TRABAJO</td>
+                        <td class="mono">@t.CAN_IMPRESAS@(t.CAN_FALLIDAS > 0 ? $" (+{t.CAN_FALLIDAS} fallidas)" : "")</td>
+                    </tr>
+                }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="ActualizarAsync" Disabled="_trabajando" StartIcon="@Icons.Material.Filled.Refresh" data-accion="actualizar">Actualizar</MudButton>
+        @if (_activo is not null)
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="CancelarAsync" Disabled="@(_trabajando || _activo.FLG_CANCELAR)" StartIcon="@Icons.Material.Filled.Cancel" data-accion="cancelar-trabajo">Cancelar trabajo</MudButton>
+        }
+        else
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ImprimirAsync" StartIcon="@Icons.Material.Filled.Print"
+                       Disabled="@(_trabajando || string.IsNullOrWhiteSpace(_equipo) || PorImprimir == 0)" data-accion="imprimir">Imprimir</MudButton>
+        }
+        <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Close(DialogResult.Ok(_cambio)))" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public RfidEmision Emision { get; set; } = default!;
+    /// <summary>Cada cuántos milisegundos se actualiza solo el avance mientras hay un trabajo activo (0 = no se actualiza solo: las pruebas usan «Actualizar»).</summary>
+    [Parameter] public int IntervaloMs { get; set; } = 3000;
+    /// <summary>Segundos sin que nadie tome el trabajo (pendiente) o sin latido (en proceso) para avisar que el servicio no responde.</summary>
+    [Parameter] public int SegundosAvisoPendiente { get; set; } = 60;
+    [Parameter] public int SegundosAvisoSinLatido { get; set; } = 120;
+
+    private RfidEmision _e = default!;
+    private List<RfidEquipoCombo> _impresoras = new();
+    private bool _hayImpresorasDeVerdad;
+    private string? _equipo;
+    private int? _cantidad;
+    private List<RfidTrabajoImpresion> _trabajos = new();
+    private RfidTrabajoImpresion? _activo;
+    private RfidTrabajoImpresion? _resultado;
+    private List<RfidTrabajoImpresion> _historial = new();
+    private bool _trabajando, _cambio;
+    private CancellationTokenSource? _fin;
+
+    private int Enroladas => Math.Max(0, _e.CAN_ENROLADAS - _e.CAN_GRABADAS);
+    private int PorImprimir => _e.CAN_PENDIENTES + Enroladas;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _e = Emision;
+        var todos = await Http.SafeGetAsync<List<RfidEquipoCombo>>(ApiRoutes.Rfid.EquiposCombo) ?? new();
+        var impresoras = todos.Where(EsImpresora).ToList();
+        _hayImpresorasDeVerdad = impresoras.Count > 0;
+        _impresoras = impresoras.Count > 0 ? impresoras : todos;
+        _equipo = _impresoras.FirstOrDefault(i => string.Equals(i.COD_PRODUCTO, Emision.COD_PRODUCTO_EQUIPO, StringComparison.OrdinalIgnoreCase))?.COD_PRODUCTO
+                  ?? (_impresoras.Count == 1 ? _impresoras[0].COD_PRODUCTO : null);
+        await ActualizarAsync();
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender || IntervaloMs <= 0) return;
+        _fin = new CancellationTokenSource();
+        _ = Task.Run(() => RefrescarSolo(_fin.Token));
+    }
+
+    private async Task RefrescarSolo(CancellationToken ct)
+    {
+        using var reloj = new PeriodicTimer(TimeSpan.FromMilliseconds(IntervaloMs));
+        try
+        {
+            while (await reloj.WaitForNextTickAsync(ct))
+                if (_activo is not null && !_trabajando) await InvokeAsync(async () => { await ActualizarAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>Una impresora es un equipo de sub familia «Impresora» o que habla ZPL.</summary>
+    private static bool EsImpresora(RfidEquipoCombo e)
+        => (e.DES_TIPO_EQUIPO ?? "").Contains("IMPRES", StringComparison.OrdinalIgnoreCase)
+        || string.Equals((e.DES_PROTOCOLO ?? "").Trim(), "ZPL", StringComparison.OrdinalIgnoreCase);
+
+    private async Task ActualizarAsync()
+    {
+        var antes = _activo;
+        _trabajos = await Http.SafeGetAsync<List<RfidTrabajoImpresion>>(ApiRoutes.Rfid.ImpresionDeEmision(Emision.NUM_EMISION)) ?? new();
+        _activo = _trabajos.Where(t => t.COD_ESTADO_TRABAJO is "P" or "E").OrderByDescending(t => t.NUM_TRABAJO).FirstOrDefault();
+        _historial = _trabajos.Where(t => t.NUM_TRABAJO != _activo?.NUM_TRABAJO).OrderByDescending(t => t.NUM_TRABAJO).Take(5).ToList();
+        _e = await Http.SafeGetAsync<RfidEmision>($"{ApiRoutes.Rfid.Emisiones}/{Emision.NUM_EMISION}") ?? _e;
+        // un trabajo que estaba activo y ya terminó: se muestra cómo terminó
+        if (antes is not null && _activo is null)
+        {
+            _resultado = _trabajos.FirstOrDefault(t => t.NUM_TRABAJO == antes.NUM_TRABAJO);
+            _historial = _historial.Where(t => t.NUM_TRABAJO != _resultado?.NUM_TRABAJO).ToList();
+            _cambio = true;
+        }
+    }
+
+    private async Task ImprimirAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_equipo)) { Snackbar.Add("Elige la impresora.", Severity.Warning); return; }
+        _trabajando = true; _resultado = null;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Rfid.Impresion, new RfidImprimirDto { NUM_EMISION = Emision.NUM_EMISION, COD_PRODUCTO_EQUIPO = _equipo, CAN_SOLICITADAS = _cantidad });
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RfidTrabajoCreado>>();
+                Snackbar.Add(r?.Message is { Length: > 0 } m ? m : "Trabajo de impresión pedido.", Severity.Success);
+                _cambio = true;
+                await ActualizarAsync();
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ImprimirDialog), nameof(ImprimirAsync), "No se pudo pedir la impresión");
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task CancelarAsync()
+    {
+        if (_activo is null) return;
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.GuardarAsync(ApiRoutes.Rfid.ImpresionCancelar(_activo.NUM_TRABAJO), new { }, false);
+            if (resp.IsSuccessStatusCode)
+            {
+                var r = await resp.Content.ReadFromJsonAsync<ApiResponse<RfidTrabajoEstado>>();
+                Snackbar.Add(r?.Message is { Length: > 0 } m ? m : "Cancelación pedida.", Severity.Info);
+                _cambio = true;
+                await ActualizarAsync();
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ImprimirDialog), nameof(CancelarAsync), "No se pudo cancelar el trabajo");
+        }
+        finally { _trabajando = false; }
+    }
+
+    private static double Porcentaje(RfidTrabajoImpresion t)
+        => t.CAN_SOLICITADAS is { } n && n > 0 ? Math.Min(100.0, 100.0 * t.CAN_IMPRESAS / n) : 0;
+
+    /// <summary>Si nadie toma el trabajo, o el servicio dejó de mandar latidos, el servicio de la planta no está respondiendo.</summary>
+    private string? AvisoServicio()
+    {
+        if (_activo is not { NUM_SEGUNDOS_ESPERA: { } s }) return null;
+        if (_activo.COD_ESTADO_TRABAJO == "P" && s >= SegundosAvisoPendiente)
+            return $"Nadie ha tomado el trabajo en {Duracion(s)}: el servicio del agente en la planta (agente-rfid servicio) está apagado o no llega a la API. Revisa la PC de la impresora. El trabajo queda en cola y se imprime cuando el servicio vuelva; también lo puedes cancelar.";
+        if (_activo.COD_ESTADO_TRABAJO == "E" && s >= SegundosAvisoSinLatido)
+            return $"El servicio no manda señales desde hace {Duracion(s)}: puede haberse caído. Si vuelve a arrancar retoma este trabajo donde quedó.";
+        return null;
+    }
+
+    private static string Duracion(int segundos) => segundos < 120 ? $"{segundos} s" : $"{segundos / 60} min";
+
+    public void Dispose() { try { _fin?.Cancel(); _fin?.Dispose(); } catch { } }
+}

@@ -1,0 +1,2948 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.MovimientosAlmacen
+@using DetalleModel = KONSolutions.Shared.Models.Logistica.MovimientosAlmacenDetalle
+@using KONSolutions.Shared.Models.Logistica
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+@inject MenuService MenuService
+@inject ConfiguracionGeneralService ConfigGeneral
+@inject IJSRuntime JS
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using TipoComprobanteModel = KONSolutions.Shared.Models.Estandar.TiposComprobantesPago
+@using TransporteModel = KONSolutions.Shared.Models.Logistica.MovimientosAlmacenTransporte
+@using EspecificacionModel = KONSolutions.Shared.Models.Estandar.ProductosEspecificacionesTecnicas
+@using TransporteFichaModel = KONSolutions.Shared.Models.Logistica.Transportes
+@using ItemTecnicoModel = KONSolutions.Shared.Models.Comercial.EspecificacionesItemsTecnicosComboDependiente
+@using DocumentoIdentidadModel = KONSolutions.Shared.Models.Estandar.EntidadesDocumentosIdentidad
+@using DireccionEntidadModel = KONSolutions.Shared.Models.Comercial.EntidadesDirecciones
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   EL DOCUMENTO DE UN MOVIMIENTO DE ALMACEN
+
+   Componente, no página: no lleva @page ni entrada en WorkspaceRegistry. Lo
+   renderiza MovimientosAlmacen.razor dentro de su segunda solapa, igual que hacen
+   Reserva y Requerimiento con los suyos.
+
+   DOS REGLAS GOBIERNAN LA CABECERA, Y SE APLICAN UNA SOBRE OTRA:
+
+     1. LA MATRIZ POR MODO — cada campo está habilitado, deshabilitado u oculto
+        según se esté creando, modificando, consultando o eliminando. Vive en
+        Estado(), abajo, escrita tal cual la pasaste.
+
+     2. LAS DIECISIETE BANDERAS del tipo de movimiento — un campo que la matriz da
+        por habilitado igual se oculta si su bandera está en false. Vive en Visible().
+
+   El orden importa: primero la matriz dice qué se puede tocar, después las banderas
+   dicen qué tiene sentido mostrar para ESTE tipo de movimiento.
+   ───────────────────────────────────────────────────────────────────────────── *@
+
+<EditForm Context="formulario" Model="_m" OnValidSubmit="Guardar" OnInvalidSubmit="MostrarCabeceraPorError">
+    <DataAnnotationsValidator />
+
+    @* ── LAS CUATRO PESTAÑAS ───────────────────────────────────────────────────
+       Todo lo que se escribe vive acá arriba; la grilla del detalle va abajo, fuera
+       de las pestañas, porque es la misma para todas.
+
+       Documento reúne los campos del movimiento. Transportista, lo del transporte.
+       Requerimientos y Órdenes de Compra quedan preparadas pero vacías: cuando se
+       llenen, van a ser el lugar desde donde se traen líneas al detalle. *@
+    <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4">
+
+        @* ═══════════════════════════ DOCUMENTO ═══════════════════════════ *@
+        <MudTabPanel Text="Documento" Icon="@Icons.Material.Filled.Description">
+
+            @* LA DISTRIBUCION, Y POR QUE ES UNA SOLA REJILLA
+
+                 fila 1   Tipo de Movimiento · N.° de Movimiento · Almacén ·
+                          Fecha de Movimiento · Fecha de Recepción (en salidas, de Inicio de Traslado)
+                 fila 2   Entidad · Tipo de Documento · N.° de Documento · Lote de Control
+                 fila 3   Almacén Destino/Origen · N.° Mov. Origen/Destino ·
+                          Centro de Costo · Observación (ocupa las filas 3 y 4)
+                 fila 4   Motivo · Estado
+
+               TODOS los campos son celdas de UNA MISMA rejilla de 24 columnas, y cada uno
+               declara cuántas ocupa. No hay bloques anidados ni contenedores hermanos que
+               haya que emparejar: dentro de una fila de una rejilla, los bordes de arriba
+               coinciden por construcción. Es la respuesta a los tops descuadrados —el
+               problema no era cuánto bajaba cada campo, era que los estaba midiendo contra
+               contenedores distintos.
+
+               24 y no 12 porque las dos fechas necesitan 2 columnas cada una: con 12, lo más
+               angosto posible era 1/12 y quedaban desproporcionadas.
+
+               LA SEPARACIÓN HORIZONTAL NO PUEDE SER column-gap ACÁ. Un gap se aplica entre
+               cada par de pistas, y con 24 pistas hay 23 huecos repartidos por dentro de la
+               fila: un campo de 8 columnas se come 7 de ellos y queda más angosto de lo que
+               su span dice, y la separación visible deja de coincidir con la configurada.
+
+               Por eso la clase es rejilla-campos y no campos-config: hace lo mismo que
+               MudGrid —medio espacio de padding a cada lado de la celda y un margen negativo
+               en el contenedor—, así entre dos campos vecinos quedan sus dos medios, que es
+               exactamente la Separación horizontal de Configuración General, tenga la rejilla
+               las columnas que tenga. La vertical sigue siendo row-gap, que ahí sí es una
+               sola por fila. *@
+
+            @* ── ACCESOS DIRECTOS ─────────────────────────────────────────────────
+               Fila de botones, uno por cada tipo de movimiento que ESTE usuario marcó
+               como atajo (LOGISTICA.USUARIOS_TIPOS_MOVIMIENTO_DIRECT_ACCESS). Va ENTRE
+               las pestañas y la primera fila de inputs: es lo primero que se toca al
+               abrir un movimiento nuevo, antes de tocar el combo de Tipo de Movimiento.
+
+               Cada botón lleva el IMG_ICONO del tipo (el mismo que se sube en Tipos de
+               Movimiento) y el nombre completo como tooltip. Un clic llena el combo de
+               Tipo de Movimiento y dispara la misma carga de banderas/dependientes que
+               elegirlo a mano (OnTipoMovimientoChanged): así los inputs quedan
+               habilitados o deshabilitados según la configuración de ESE tipo, igual
+               que si se hubiera elegido del combo.
+
+               La "x" en la esquina quita el atajo sin abrir nada más: es el mismo
+               DELETE que usa el botón de estrella de al lado del combo.
+
+               FILTRADOS POR ALMACÉN, igual que el combo de Tipo de Movimiento.
+               La tabla de accesos directos no guarda almacén —es sólo usuario + clase +
+               tipo—, así que el filtro no sale de una columna propia: sale de comparar
+               contra _tiposDelRol, que ya es "los tipos de movimiento que el rol tiene
+               habilitados EN ESE ALMACÉN" (CargarTiposDelRol). Un acceso directo a un tipo
+               que ese almacén no ofrece no tiene nada que hacer en la fila: clickearlo
+               dejaría el combo con un valor que _tiposDelRol de inmediato invalida. *@
+            @* LA CABECERA SE PUEDE OCULTAR para darle todo el alto al detalle (botón de la barra del detalle). Se oculta con
+               display:none y no con @if: así los combos conservan lo escrito y no se vuelven a crear al mostrarla. Nada de lo
+               que se oculta se pierde: sigue en _m y se graba igual. La barra de botones (Cerrar, Guardar, Transferir…) queda. *@
+            <div style="@(CabeceraOculta ? "display:none;" : null)">
+            @if (AccesosDirectosVisibles.Count > 0)
+            {
+                <div class="d-flex align-center gap-2 flex-wrap mb-3">
+                    @foreach (var acceso in AccesosDirectosVisibles)
+                    {
+                        <div style="position:relative;display:inline-block;">
+                            <MudTooltip Text="@(acceso.DES_TIPO_MOVIMIENTO ?? acceso.COD_TIPO_MOVIMIENTO)">
+                                <MudButton Variant="Variant.Filled"
+                                           Style="background:#fff;color:var(--ink);box-shadow:0 2px 6px rgba(0,0,0,.25);min-width:48px;width:48px;height:48px;padding:4px;border-radius:8px;"
+                                           OnClick="@(() => AplicarAccesoDirecto(acceso))">
+                                    @if (acceso.IMG_ICONO is { Length: > 0 })
+                                    {
+                                        <img src="@($"data:image/png;base64,{Convert.ToBase64String(acceso.IMG_ICONO)}")"
+                                             style="width:26px;height:26px;object-fit:contain;" alt="" />
+                                    }
+                                    else
+                                    {
+                                        <MudIcon Icon="@Icons.Material.Filled.Bolt" />
+                                    }
+                                </MudButton>
+                            </MudTooltip>
+                            @if (!_readonly)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                               Style="position:absolute;top:-8px;right:-8px;background:#c62828;color:#fff;width:18px;height:18px;padding:0;min-width:18px;"
+                                               title="Quitar de accesos directos"
+                                               OnClick="@(() => QuitarAccesoDirecto(acceso.COD_TIPO_MOVIMIENTO))" />
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            <div class="rejilla-campos" style="grid-template-columns:repeat(24,minmax(0,1fr));">
+
+                @* ── Fila 1 ─────────────────────────────────────────────────── *@
+                @if (Ver("COD_ALMACEN"))
+                {
+                    <div style="grid-column:span 7;">
+                        @* Los almacenes DEL ROL (PROC_SEGURIDAD_ROLES_USUARIO_ALMACENES_SHOWCOMBOX),
+                           no todos los de la base. Cambiar de almacén recarga los tipos de
+                           movimiento, que también dependen del rol Y del almacén. *@
+                        <AriaCombo TItem="ComboboxItem" Items="_almacenesDelRol"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@_m.COD_ALMACEN" ValueChanged="OnAlmacenChanged"
+                                   Label="Almacén" Obligatorio="true"
+                                   Disabled="@(!Editable("COD_ALMACEN"))" Class="" />
+                    </div>
+                }
+                @if (Ver("COD_TIPO_MOVIMIENTO"))
+                {
+                    <div style="grid-column:span 8;">
+                        <div class="d-flex align-end gap-1">
+                            <div style="flex:1;min-width:0;">
+                                @* Los tipos habilitados para el rol EN ESE ALMACÉN
+                                   (PROC_SEGURIDAD_ROLES_USUARIO_ALMACENES_TIPOS_MOVIMIENTO_SHOWCOMBOX). *@
+                                <AriaCombo TItem="ComboboxItem" Items="_tiposDelRol"
+                                           TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                           Value="@_m.COD_TIPO_MOVIMIENTO" ValueChanged="OnTipoMovimientoChanged"
+                                           Label="Tipo de Movimiento" Obligatorio="true"
+                                           Disabled="@(!Editable("COD_TIPO_MOVIMIENTO"))" Class="" />
+                            </div>
+                            @* Marca o quita el tipo elegido como acceso directo. Sólo tiene sentido
+                               con un tipo puesto: sin eso no hay nada que fijar. *@
+                            @if (!string.IsNullOrWhiteSpace(_m.COD_TIPO_MOVIMIENTO) && Editable("COD_TIPO_MOVIMIENTO"))
+                            {
+                                <MudTooltip Text="@(EsAccesoDirecto(_m.COD_TIPO_MOVIMIENTO) ? "Quitar de accesos directos" : "Agregar a accesos directos")">
+                                    <MudIconButton Icon="@(EsAccesoDirecto(_m.COD_TIPO_MOVIMIENTO) ? Icons.Material.Filled.Star : Icons.Material.Filled.StarBorder)"
+                                                   Style="color:var(--boton-backcolor,var(--ink));margin-bottom:4px;"
+                                                   OnClick="ToggleAccesoDirectoActual" />
+                                </MudTooltip>
+                            }
+                        </div>
+                    </div>
+                }
+                @if (Ver("NUM_MOVIMIENTO_ALMACEN"))
+                {
+                    <div style="grid-column:span 5;">
+                        <CampoTexto Label="N.° de Movimiento" Value="@(_m.NUM_MOVIMIENTO_ALMACEN?.ToString() ?? "")"
+                                    ValueChanged="@(_ => { })" Disabled="true" />
+                    </div>
+                }
+                @if (Ver("FEC_MOVIMENTO_ALMACEN"))
+                {
+                    <div style="grid-column:span 2;">
+                        <MudDatePicker Label="Fecha de Movimiento" @bind-Date="_m.FEC_MOVIMENTO_ALMACEN"
+                                       DateFormat="dd/MM/yyyy" Variant="Variant.Outlined"
+                                       Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                                       Disabled="@(!Editable("FEC_MOVIMENTO_ALMACEN"))" />
+                    </div>
+                }
+                @if (Ver("FEC_RECEPCION"))
+                {
+                    <div style="grid-column:span 2;">
+                        <MudDatePicker Label="@RotuloFechaRecepcion" @bind-Date="_m.FEC_RECEPCION"
+                                       DateFormat="dd/MM/yyyy" Variant="Variant.Outlined"
+                                       Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
+                                       Disabled="@(!Editable("FEC_RECEPCION"))" />
+                    </div>
+                }
+
+                @* ── Fila 2 ─────────────────────────────────────────────────── *@
+                @if (Ver("COD_ENTIDAD"))
+                {
+                    <div style="grid-column:span 10;">
+                        @* Entidades del tipo que declara el tipo de movimiento, no el catálogo
+                           entero: un movimiento de compra ofrece proveedores, uno de venta
+                           clientes. *@
+                        <AriaCombo TItem="ComboboxItem" Items="_entidades"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_m.COD_ENTIDAD?.ToString())"
+                                   ValueChanged="OnEntidadChanged"
+                                   Label="@RotuloEntidad" Disabled="@(!Editable("COD_ENTIDAD"))" Class="" />
+                        @* El campo en gris puede querer decir dos cosas muy distintas: que el
+                           tipo no usa entidad, o que la usa y no hay ninguna cargada de ese
+                           tipo. La segunda merece decirse: si no, se busca el error en la
+                           pantalla cuando está en el maestro de entidades. *@
+                        @if (!string.IsNullOrWhiteSpace(_flags.COD_TIPO_ENTIDAD_ASOCIADA) && _entidades.Count == 0)
+                        {
+                            <MudText Typo="Typo.caption" Style="opacity:.7;">
+                                Sin entidades del tipo @_flags.COD_TIPO_ENTIDAD_ASOCIADA.
+                            </MudText>
+                        }
+                    </div>
+                }
+                @if (Ver("COD_TIPO_COMPROBANTE_PAGO"))
+                {
+                    <div style="grid-column:span 5;">
+                        @* Sólo los comprobantes que el tipo de movimiento acepta
+                           (LOGISTICA.TIPOS_MOVIMIENTO_TIPOS_COMPROBATE_PAGO), no el catálogo
+                           general de comprobantes. *@
+                        <AriaCombo TItem="ComboboxItem" Items="_comprobantesCombo"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_m.COD_TIPO_COMPROBANTE_PAGO" Label="Tipo de Documento"
+                                   Disabled="@(!Editable("COD_TIPO_COMPROBANTE_PAGO"))" Class="" />
+                    </div>
+                }
+                @if (Ver("NUM_COMPROBANTE_PAGO"))
+                {
+                    <div style="grid-column:span 5;">
+                        @* Se normaliza al SALIR del campo (OnBlur), no en cada tecla: mientras
+                           escribes "T1-453" el texto pasa por "T", "T1", "T1-"… y normalizar
+                           cada uno de esos estados intermedios no tiene sentido. Tampoco se
+                           normaliza al grabar: ahí el cambio quedaría escondido hasta que ya
+                           no se puede revisar. *@
+                        <CampoTexto Label="Número de Documento" @bind-Value="_m.NUM_COMPROBANTE_PAGO"
+                                    OnBlur="NormalizarNumeroComprobante"
+                                    Disabled="@(!Editable("NUM_COMPROBANTE_PAGO"))" />
+                    </div>
+                }
+                @if (Ver("NUM_LOTE_CONTROL"))
+                {
+                    <div style="grid-column:span 4;">
+                        @* Los lotes de la ENTIDAD elegida. El SP de combo recibe @COD_ENTIDAD
+                           —opcional— y filtra; sin entidad devuelve todos, que es lo correcto
+                           para un movimiento que no la usa. *@
+                        <AriaCombo TItem="ComboboxItem" Items="_lotesControl"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_m.NUM_LOTE_CONTROL" Label="Lote de Control"
+                                   Disabled="@(!Editable("NUM_LOTE_CONTROL"))" Class="" />
+                    </div>
+                }
+
+                @* ── Fila 3 ─────────────────────────────────────────────────── *@
+                @if (Ver("COD_ALMACEN_SINCRONIZADO"))
+                {
+                    <div style="grid-column:span 5;">
+                        @* Qué almacenes se ofrecen lo dice el ALCANCE del tipo (ver AlmacenesContrarios):
+                           entre sucursales de la empresa, los de OTRA sucursal; entre almacenes de la
+                           sucursal, los de la MISMA sucursal sin el propio; entre ubicaciones, solo el
+                           almacén del movimiento. Nunca el propio, salvo en esta última: transferir a sí
+                           mismo no mueve nada. Obligatorio cuando el tipo es de transferencia (también
+                           lo valida el SP). En el traslado entre ubicaciones el destino se completa
+                           solo y no se elige. *@
+                        <AriaCombo TItem="ComboboxItem" Items="@AlmacenesContrarios()"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_m.COD_ALMACEN_SINCRONIZADO" Label="@RotuloAlmacenSincronizado"
+                                   Obligatorio="@(_flags.FLG_TRANSFERENCIA == true)"
+                                   Disabled="@(!Editable("COD_ALMACEN_SINCRONIZADO"))" Class="" />
+                    </div>
+                }
+                @if (Ver("NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO"))
+                {
+                    <div style="grid-column:span 5;">
+                        <CampoTexto Label="@RotuloMovimientoSincronizado"
+                                    Value="@(_m.NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO?.ToString() ?? "")"
+                                    ValueChanged="@(v => _m.NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO = decimal.TryParse(v, out var d) ? d : null)"
+                                    Disabled="@(!Editable("NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO"))" />
+                    </div>
+                }
+                @if (Ver("COD_CENTRO_COSTO"))
+                {
+                    <div style="grid-column:span 5;">
+                        <AriaCombo TItem="ComboboxItem" Items="_combos.CentrosCosto"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   @bind-Value="_m.COD_CENTRO_COSTO" Label="Centro de Costo Solicitante"
+                                   Disabled="@(!Editable("COD_CENTRO_COSTO"))" Class="" />
+                    </div>
+                }
+
+                @* La observación: última columna, y ocupa las filas 3 y 4. Su borde de arriba
+                   coincide con el de Almacén Destino/Origen porque son celdas de la MISMA
+                   fila de la MISMA rejilla — no porque se haya ajustado a ojo. *@
+                @if (Ver("DES_OBSERVACION"))
+                {
+                    <div style="grid-column:span 9;grid-row:span 2;">
+                        @* campo-abarca-separacion: el alto crece exactamente lo que mide la
+                           separación vertical entre inputs, para cubrir la franja que queda
+                           entre las dos filas que ocupa. Top y ancho, sin tocar. *@
+                        <MudTextField @bind-Value="_m.DES_OBSERVACION" Label="Descripción de observación"
+                                      Lines="5" Variant="Variant.Outlined" Class="campo-abarca-separacion"
+                                      Disabled="@(!Editable("DES_OBSERVACION"))" />
+                    </div>
+                }
+
+                @* ── Fila 4 ─────────────────────────────────────────────────── *@
+                @* Proyecto abre la fila 4. Va en esta fila y no en la de arriba porque la 3 ya
+                   suma sus 24 columnas: meterlo ahí obligaba a angostar Centro de Costo hasta
+                   cortarle el rótulo, que es lo que se veía en tu captura. *@
+                @if (Ver("NUM_PROYECTO"))
+                {
+                    <div style="grid-column:span 5;">
+                        <AriaCombo TItem="ComboboxItem" Items="_proyectos"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_m.NUM_PROYECTO?.ToString())"
+                                   ValueChanged="@(v => _m.NUM_PROYECTO = int.TryParse(v, out var n) ? n : null)"
+                                   Label="Proyecto" Disabled="@(!Editable("NUM_PROYECTO"))" Class="" />
+                    </div>
+                }
+                @if (Ver("COD_MOTIVO"))
+                {
+                    @* Combo, no caja de texto: acá se ELIGE el motivo. La lista sale del tipo
+                       de motivo que declara el tipo de movimiento. *@
+                    <div style="grid-column:span 5;">
+                        <AriaCombo TItem="ComboboxItem" Items="_motivos"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@(_m.COD_MOTIVO?.ToString())"
+                                   ValueChanged="@(v => _m.COD_MOTIVO = int.TryParse(v, out var n) ? n : null)"
+                                   Label="Motivo" Disabled="@(!Editable("COD_MOTIVO") || _motivos.Count == 0)" Class="" />
+                    </div>
+                }
+                @if (Ver("COD_ESTADO"))
+                {
+                    <div style="grid-column:span 5;">
+                        @* EL TIPO DE ESTADO LO DEFINE EL TIPO DE MOVIMIENTO, en su
+                           COD_TIPO_ESTADO_RELACIONADO. Sin tipo elegido no se pregunta nada:
+                           el campo va vacío y bloqueado, que es la verdad de ese momento.
+                           Preguntarle a la tabla —DesTabla— era lo que sacaba el cartel
+                           "Sin estados disponibles". *@
+                        @if (_flags.COD_TIPO_ESTADO_RELACIONADO is { } codTipoEstado)
+                        {
+                            <EstadoCombo CodTipoEstado="@codTipoEstado"
+                                         @bind-Value="_m.COD_ESTADO"
+                                         CodTipoEstadoChanged="@(v => _m.COD_TIPO_ESTADO = v)"
+                                         Disabled="@(!Editable("COD_ESTADO"))" Class="" />
+                        }
+                        else
+                        {
+                            <CampoTexto Label="Estado" Value="" ValueChanged="@(_ => { })" Disabled="true" />
+                        }
+                    </div>
+                }
+            </div>
+            </div>@* fin de la cabecera ocultable *@
+
+            @* Los botones, DEBAJO DEL ESTADO y dentro de la pestaña Documento: son los que
+               graban la CABECERA, no algo del detalle de más abajo. Mismo lugar que en
+               Requerimientos.
+
+               Grabar no cierra: deja la cabecera grabada y el foco en el detalle. Del
+               documento se sale con Cerrar. *@
+            <div class="d-flex align-center gap-2 mt-4">
+                @if (CabeceraOculta)
+                {
+                    @* Con la cabecera oculta, qué movimiento es. *@
+                    <MudText Typo="Typo.body2" Style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@ResumenCabecera">
+                        @ResumenCabecera
+                    </MudText>
+                }
+                <MudSpacer />
+                @* Botones configurados con FLG_DIALOG (por ejemplo, TRANSFERIR). Mismo lugar que en
+                   RequerimientoDocumento: a la izquierda de Cerrar y Grabar, separados por una
+                   línea, y sólo con la cabecera grabada, porque actúan sobre un movimiento que
+                   existe. El estado del movimiento decide si cada uno está habilitado. *@
+                @if (_cabeceraGrabada && !string.IsNullOrWhiteSpace(CodAplicacion))
+                {
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" Fila="@_m"
+                                     Zona="@AccionesBotones.ZonaBotones.Dialog" OnAccion="OnAccionDialog"
+                                     CodTipoEstado="@_m.COD_TIPO_ESTADO" CodEstadoActual="@_m.COD_ESTADO" />
+                    <div style="width:1px;align-self:stretch;background:var(--line);margin:0 4px;"></div>
+                }
+                <MudButton StartIcon="@Icons.Material.Filled.Close" OnClick="Cerrar" Disabled="_saving"
+                           Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+                @if (!_readonly)
+                {
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Save" Disabled="_saving">
+                        @(Modo == CrudModo.Delete ? "Eliminar" : _cabeceraGrabada ? "Guardar cambios" : "Grabar cabecera")
+                    </MudButton>
+                }
+            </div>
+
+            @* ── DETALLE ───────────────────────────────────────────────────────────────
+               DENTRO de la pestaña Documento, no debajo de las pestañas.
+
+               Estaba afuera para decir "es del movimiento, no de una pestaña", pero el
+               efecto era el contrario: se veía también bajo Transportista, Requerimientos y
+               Órdenes de Compra, donde no tiene nada que ver y compite con lo que sí importa
+               en esas pestañas.
+
+               Alto FIJO y cabecera fija, como en Requerimientos y Reservas: la grilla no crece
+               con las líneas, así que los botones de arriba no se van moviendo de lugar a
+               medida que se carga. El borde de abajo se arrastra para cambiar el alto; doble
+               clic vuelve al original. *@
+            @* Alta, modificación y eliminación A MANO del detalle. Las reglas viven en
+               TipoBloqueaDetalleManual y PuedeAgregarDetalleManual (abajo):
+                 - tipos comerciales y de requerimiento: no; las líneas entran desde sus pestañas.
+                 - ingreso de una transferencia: no; sus líneas las genera la salida.
+                 - los demás (la salida de una transferencia incluida): sí.
+               Cuando no se puede, el aviso dice por qué en vez de esconder el botón sin más. *@
+            @if (_bloqueadoPorEstado)
+            {
+                @* Va aparte porque en solo lectura el aviso de abajo no se muestra. *@
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3 mb-0">
+                    @_motivoEstado
+                </MudAlert>
+            }
+            else if (!PuedeAgregarDetalleManual && !_readonly && MotivoSinAltaManual is { } motivoSinAlta)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3 mb-0">
+                    @motivoSinAlta
+                </MudAlert>
+            }
+
+            @* Lectura de etiquetas (código de barras / RFID). El panel y el aviso dependen del requisito del
+               TIPO de movimiento: N no los muestra, O deja leer, R además avisa lo que falta leer. *@
+            @if (RequisitoLectura == "R" && !_readonly && _pendientes.Count > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3 mb-0">
+                    <strong>Faltan lecturas.</strong> Este tipo de movimiento exige leer las etiquetas y el movimiento no se podrá aceptar así:
+                    <ul style="margin:4px 0 0;padding-left:18px;">
+                        @foreach (var p in _pendientes.Take(5))
+                        {
+                            <li>Línea @p.NUM_SECUENCIA · <span class="mono">@p.COD_PRODUCTO</span> — @p.DES_PROBLEMA</li>
+                        }
+                    </ul>
+                    @if (_pendientes.Count > 5) { <span>… y @(_pendientes.Count - 5) línea(s) más.</span> }
+                </MudAlert>
+            }
+            @if (MostrarPanelLectura)
+            {
+                <MovimientoLecturaPanel @ref="_panelLectura" NumMovimiento="@_m.NUM_MOVIMIENTO_ALMACEN!.Value"
+                                        Requisito="@RequisitoLectura" Lineas="_detalle"
+                                        PuedeAutomatico="PuedeAgregarDetalleManual" ConDestino="SalidaConDestino"
+                                        OnLectura="AlLeerAsync" />
+            }
+
+            <MudPaper Elevation="0" Style="border:1px solid var(--line);" Class="mt-3">
+                <div class="d-flex align-center gap-2 mb-1">
+                    @if (PuedeAgregarDetalleManual)
+                    {
+                        @* En una salida las líneas salen del stock con disponible del almacén; en
+                           un ingreso se cargan con producto, ubicación y lote. *@
+                        <MudButton Variant="Variant.Filled" Size="Size.Small" Style="@EstilosBoton.Confirmar" Class="ma-1"
+                                   StartIcon="@Icons.Material.Filled.PlaylistAdd" OnClick="AgregarLineas">
+                            @(_flags.FLG_POSITIVO == false ? "Agregar desde el stock" : "Agregar línea")
+                        </MudButton>
+                    }
+                    <MudSpacer />
+                    @if (_cabeceraGrabada)
+                    {
+                        <MudIconButton Icon="@(_detalleExpandido ? Icons.Material.Filled.CloseFullscreen : Icons.Material.Filled.OpenInFull)"
+                                       Size="Size.Small" Class="ma-1" OnClick="AlternarDetalleExpandido"
+                                       title="@(_detalleExpandido ? "Mostrar la cabecera" : "Expandir el detalle (oculta la cabecera)")" />
+                    }
+                    <GridClearFiltersButton OnClear="LimpiarFiltrosDetalle" HasFilters="@(_filtrosDetalle.Any(f => f.Value is not null))" />
+                </div>
+                <div data-resizable-grid="movimiento-detalle" style="position:relative;">
+                <MudDataGrid T="DetalleModel" Items="@BaseDetalle(-1)" Dense="true" Hover="true" Striped="true"
+                             Height="460px" FixedHeader="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.NUM_SECUENCIA" Sortable="false" CellStyle="text-align:right;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Sec." Activo="@(_ordenColDetalle == 0)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(0))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(0)" ValorDe="@(x => x.NUM_SECUENCIA?.ToString() ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetalle(0, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+
+                        @* Código y descripción en UNA columna, igual que en los paneles de
+                           órdenes de compra y requerimientos. Eran dos, y entre las dos se
+                           llevaban el ancho que necesitan las cantidades: el código es largo
+                           y fijo, la descripción se parte en varios renglones, y la fila
+                           terminaba midiendo el triple de alto. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Producto" Activo="@(_ordenColDetalle == 1)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(1))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(1)" ValorDe="@(x => x.COD_PRODUCTO ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetalle(1, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="pr">
+                                <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                    <span class="mono" style="font-size:.72rem;opacity:.6;">@pr.Item.COD_PRODUCTO</span>
+                                    <span>@pr.Item.DES_PRODUCTO</span>
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* Lote, proceso y orden de producción en una sola celda que abre el
+                           mismo diálogo que los paneles. Acá va en SOLO LECTURA: esta grilla
+                           es el resultado de lo ya asignado, y el lote se elige del lado de
+                           disponibles, antes de asignar. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Lote / Orden" Activo="@(_ordenColDetalle == 2)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(2))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(2)" ValorDe="@(x => ResumenLoteOrden(x))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetalle(2, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="ln">
+                                <div @onclick="@(() => VerLoteOrdenAsync(ln.Item))"
+                                     title="Clic para ver el lote y la orden de producción"
+                                     style="cursor:pointer;min-height:24px;display:flex;align-items:center;gap:6px;">
+                                    <span class="mono" style="font-size:.78rem;">@ResumenLoteOrden(ln.Item)</span>
+                                    <MudIcon Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Style="opacity:.35;" />
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+
+                        @* La DESCRIPCIÓN de la unidad, no el código: "Kilogramo" se lee,
+                           "KG " hay que saberlo. Si el SP no la trajo, cae al código antes
+                           que dejar la celda en blanco. *@
+                        <PropertyColumn Property="@(x => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA) ? x.COD_UNIDAD_MEDIDA : x.DES_UNIDAD_MEDIDA)"
+                                        Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="UM" Activo="@(_ordenColDetalle == 3)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(3))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(3)"
+                                                        ValorDe="@(x => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA) ? (x.COD_UNIDAD_MEDIDA ?? "") : x.DES_UNIDAD_MEDIDA)"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetalle(3, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        @* Seis decimales: es lo que tiene la columna en la tabla
+                           (VAL_DECIMAL = decimal(10,6)). Ver "1,00" cuando lo guardado es
+                           1,000125 es peor que ver un número largo. *@
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO"
+                                        Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cantidad" Activo="@(_ordenColDetalle == 4)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(4))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(4)" ValorDe="@(x => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetalle(4, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CAN_PRODUCTO_SECUNDARIO"
+                                        Format="@Decimales.FormatoCantidad" CellStyle="text-align:right;" Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Cant. sec." Activo="@(_ordenColDetalle == 5)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(5))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(5)" ValorDe="@(x => x.CAN_PRODUCTO_SECUNDARIO?.ToString(Decimales.FormatoCantidad) ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetalle(5, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(x => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA_SECUNDARIO) ? x.COD_UNIDAD_MEDIDA_SECUNDARIO : x.DES_UNIDAD_MEDIDA_SECUNDARIO)"
+                                        Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="UM sec." Activo="@(_ordenColDetalle == 6)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(6))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(6)"
+                                                        ValorDe="@(x => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA_SECUNDARIO) ? (x.COD_UNIDAD_MEDIDA_SECUNDARIO ?? "") : x.DES_UNIDAD_MEDIDA_SECUNDARIO)"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(6)" ValoresActivosChanged="@(v => FiltroDetalle(6, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+
+                        @* Acá SÍ van código y descripción de la ubicación, a diferencia de
+                           los paneles: esta grilla es el documento que queda, y el código es
+                           lo que se busca cuando hay que ir físicamente a ver. *@
+                        <TemplateColumn Sortable="false">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Ubicación" Activo="@(_ordenColDetalle == 7)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(7))" />
+                                    <FiltroExcelColumna T="DetalleModel" ItemsBase="@BaseDetalle(7)" ValorDe="@(x => x.COD_UBICACION_ALMACEN ?? "")"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(7)" ValoresActivosChanged="@(v => FiltroDetalle(7, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="ub">
+                                <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                    <span class="mono" style="font-size:.72rem;opacity:.6;">@ub.Item.COD_UBICACION_ALMACEN</span>
+                                    <span>@ub.Item.DES_UBICACION_ALMACEN</span>
+                                    @* En la salida de una transferencia, a qué ubicación del almacén destino entra. *@
+                                    @if (SalidaConDestino && !string.IsNullOrWhiteSpace(ub.Item.COD_UBICACION_ALMACEN_SINCRONIZADO))
+                                    {
+                                        <span class="mono" style="font-size:.7rem;opacity:.7;" title="Ubicación en el almacén destino">→ @ub.Item.COD_UBICACION_ALMACEN_SINCRONIZADO</span>
+                                    }
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        @* Lecturas: cuántas etiquetas tiene la línea (abre la lista para cambiar un peso o quitar una
+                           mal leída), la advertencia si el tipo exige leer y la línea no está completa, y el atajo para
+                           leer en ESA línea. Sin orden ni filtro: es información de apoyo, no una columna del documento. *@
+                        <TemplateColumn Title="Lecturas" Sortable="false" Hidden="@(!UsaLectura)">
+                            <CellTemplate>
+                                <div class="d-flex align-center gap-1" style="min-height:24px;">
+                                    @* Con lecturas, TODA la zona de la celda abre la grilla de lecturas de la línea (no solo el chip). *@
+                                    @if (EtiquetasDe(context.Item) is { N: > 0 } et)
+                                    {
+                                        <div role="button" data-lecturas="@context.Item.NUM_SECUENCIA"
+                                             style="flex:1;min-height:32px;cursor:pointer;display:flex;align-items:center;gap:4px;"
+                                             title="@($"{et.N} lectura(s) · {et.Total.ToString(Decimales.FormatoCantidad)} {context.Item.COD_UNIDAD_MEDIDA}. Clic para ver las lecturas.")"
+                                             @onclick="@(() => VerEtiquetasAsync(context.Item))">
+                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Style="pointer-events:none;"
+                                                     Color="@(PendienteDe(context.Item) is null ? Color.Success : Color.Warning)">@et.N</MudChip>
+                                            @* De qué tipo son las lecturas: RFID, código de barras, o los dos si la línea mezcla. *@
+                                            @if (et.Rfid > 0)
+                                            {
+                                                <MudIcon Icon="@Icons.Material.Filled.Sensors" Size="Size.Small" Style="opacity:.8;" data-tipo-lectura="RFID"
+                                                         title="@($"RFID ({et.Rfid})")" />
+                                            }
+                                            @if (et.Codebar > 0)
+                                            {
+                                                <MudIcon Icon="@IconoCodigoBarras" Size="Size.Small" Style="opacity:.8;" data-tipo-lectura="CODEBAR"
+                                                         title="@($"Código de barras ({et.Codebar})")" />
+                                            }
+                                            @if (RequisitoLectura == "R" && !_readonly && PendienteDe(context.Item) is { } pendiente)
+                                            {
+                                                <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Color="Color.Warning" Size="Size.Small" title="@pendiente.DES_PROBLEMA" />
+                                            }
+                                        </div>
+                                    }
+                                    else if (RequisitoLectura == "R" && !_readonly && PendienteDe(context.Item) is { } pend)
+                                    {
+                                        <MudTooltip Text="@pend.DES_PROBLEMA">
+                                            <MudIcon Icon="@Icons.Material.Filled.WarningAmber" Color="Color.Warning" Size="Size.Small" />
+                                        </MudTooltip>
+                                    }
+                                    @if (MostrarLeerEnLinea(context.Item))
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.QrCodeScanner" Size="Size.Small"
+                                                       title="Leer etiquetas en esta línea"
+                                                       OnClick="@(() => _panelLectura?.SeleccionarLinea(context.Item.NUM_SECUENCIA ?? 0))" />
+                                    }
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        @* Las acciones NO están para todas las líneas.
+
+                           Una línea que vino de un requerimiento o de una orden de compra se
+                           quita desde el panel que la asignó, nunca desde acá: ese panel
+                           además le devuelve lo atendido a su documento de origen. Borrarla
+                           de este lado dejaría al requerimiento o a la orden creyendo que
+                           sigue atendida, y nada lo avisaría.
+
+                           Cuando no hay acción, se muestra el motivo en vez de dejar la celda
+                           vacía: una celda en blanco se lee como una pantalla a medio hacer. *@
+                        <TemplateColumn Title="Acciones" Sortable="false">
+                            <CellTemplate>
+                                @if (_readonly && !_bloqueadoPorEstado)
+                                {
+                                }
+                                else if (!PuedeTocarLinea(context.Item))
+                                {
+                                    <MudTooltip Text="@MotivoLineaBloqueada(context.Item)">
+                                        <MudIcon Icon="@Icons.Material.Filled.Lock" Size="Size.Small" Style="opacity:.3;" />
+                                    </MudTooltip>
+                                }
+                                else
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                                   title="@(TieneEtiquetas(context.Item) ? MotivoLineaConEtiquetas : "Modificar la línea")"
+                                                   Disabled="@TieneEtiquetas(context.Item)"
+                                                   OnClick="@(() => ModificarLinea(context.Item))" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                                   title="Quitar la línea"
+                                                   OnClick="@(() => QuitarLinea(context.Item))" />
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent>
+                        <MudText Typo="Typo.body2" Class="pa-4" Style="opacity:.6;">
+                            Sin líneas.
+                        </MudText>
+                    </NoRecordsContent>
+                </MudDataGrid>
+                @* Arrastrar el borde inferior cambia el alto; doble clic vuelve al original. *@
+                <div class="grid-resize-handle"></div>
+                </div>
+            </MudPaper>
+        </MudTabPanel>
+
+        @* ═════════════════════════ TRANSPORTISTA ═════════════════════════
+           SÓLO EXISTE si el movimiento mueve mercadería fuera de la empresa o entre
+           sucursales: comercial, o transferencia entre sucursales. En los demás no hay
+           transporte que declarar, y una pestaña vacía invita a buscar qué falta.
+
+           Ojo con la diferencia: los campos de adentro se DESHABILITAN según la matriz; la
+           pestaña entera se OCULTA. Es una decisión distinta — acá no hay nada que mostrar
+           en gris, directamente no aplica. *@
+        @if (VerPestanaTransportista)
+        {
+        <MudTabPanel Text="Transportista" Icon="@Icons.Material.Filled.LocalShipping">
+            @* Los seis en UNA fila, como pediste.
+
+               rejilla-campos y no campos-config: con 24 columnas el column-gap se aplica
+               entre cada par de pistas y un campo que ocupa 6 se come 5 de esos huecos, así
+               que ni los anchos ni la separación salen como se declaran. rejilla-campos
+               reparte medio espacio por celda, como hace MudGrid.
+
+                   Transportista 6 · Brevete 3 · Dir. Origen 5 · Ubigeo 2 · Dir. Destino 5 · Ubigeo 3  = 24 *@
+            <div class="rejilla-campos" style="grid-template-columns:repeat(24,minmax(0,1fr));">
+                @if (Ver("COD_ENTIDAD_TRANSPORTISTA"))
+                {
+                    <div style="grid-column:span 6;">
+                        @* Entidades del tipo TRN, no el catálogo entero. *@
+                        <AriaCombo TItem="ComboboxItem" Items="_transportistas"
+                                   TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                   Value="@(_m.COD_ENTIDAD_TRANSPORTISTA?.ToString())"
+                                   ValueChanged="OnTransportistaChanged"
+                                   Label="Transportista" Disabled="@(!Editable("COD_ENTIDAD_TRANSPORTISTA"))" Class="" />
+                    </div>
+                    @* El brevete, al lado: es lo que se controla en la ruta. Sale del documento
+                       de identidad tipo 6 de ESA entidad, y es de sólo lectura — se mantiene
+                       en el maestro de entidades, no acá. *@
+                    <div style="grid-column:span 3;">
+                        <CampoTexto Label="Brevete" Value="@(_brevete ?? "")"
+                                    ValueChanged="@(_ => { })" Disabled="true" Class="" />
+                    </div>
+                }
+
+                @* Los dos PUNTOS del traslado —partida y llegada— los RESUELVE el SHOWBYID, no
+                   la pantalla:
+
+                     · una SALIDA parte de la sucursal del almacén del movimiento y llega al
+                       OTRO punto;
+                     · un INGRESO es al revés: parte del OTRO punto y llega a la sucursal.
+
+                   El OTRO punto es la sucursal del almacén contrario en una transferencia, y
+                   en el resto la dirección de la entidad que se ELIGE acá. Esa elección es lo
+                   único que se graba (NUM_SECUENCIA_DIRECCION): el texto de las direcciones se
+                   lee de las sucursales y de la entidad cada vez, así que si cambian, el
+                   movimiento lo refleja.
+
+                   Esa decisión vive en el SP porque depende de las banderas del tipo y de dos
+                   caminos distintos de JOIN. Repetirla acá sería tener la misma regla escrita
+                   en dos lugares, condenados a separarse. Por eso, donde el otro punto se
+                   elige, el combo ocupa el lugar del texto de ESE punto y el otro punto sigue
+                   siendo de sólo lectura. *@
+                <div style="grid-column:span 5;">
+                    @if (UsaDireccionDeLaEntidad && EsIngreso && Ver("NUM_SECUENCIA_DIRECCION"))
+                    {
+                        @DireccionDeLaEntidad()
+                    }
+                    else
+                    {
+                        <CampoTexto Label="Dirección de Origen" Value="@(_m.DES_DIRECCION_ORIGEN ?? "")"
+                                    ValueChanged="@(_ => { })" Disabled="true" Class="" />
+                    }
+                </div>
+                <div style="grid-column:span 2;">
+                    <CampoTexto Label="Ubigeo de Origen" Value="@(_m.DES_UBIGEO_ORIGEN ?? "")"
+                                ValueChanged="@(_ => { })" Disabled="true" Class="" />
+                </div>
+                @if (Ver("DES_DIRECCION_DESTINO"))
+                {
+                    <div style="grid-column:span 5;">
+                        @if (UsaDireccionDeLaEntidad && !EsIngreso && Ver("NUM_SECUENCIA_DIRECCION"))
+                        {
+                            @DireccionDeLaEntidad()
+                        }
+                        else
+                        {
+                            <CampoTexto Label="Dirección de Destino" Value="@(_m.DES_DIRECCION_DESTINO ?? "")"
+                                        ValueChanged="@(_ => { })" Disabled="true" Class="" />
+                        }
+                    </div>
+                }
+                @if (Ver("COD_UBIGEO_DESTINO"))
+                {
+                    <div style="grid-column:span 3;">
+                        <CampoTexto Label="Ubigeo de Destino" Value="@(_m.DES_UBIGEO ?? _m.COD_UBIGEO_DESTINO ?? "")"
+                                    ValueChanged="@(_ => { })" Disabled="true" Class="" />
+                    </div>
+                }
+            </div>
+
+            @* ── TRANSPORTES ───────────────────────────────────────────────────────────
+               El CRUD vive EN LA GRILLA, sin diálogo: son tres datos —el transporte, si es
+               acarreo y una observación— y abrir una ventana para eso es más ceremonia que
+               trabajo.
+
+               Las especificaciones técnicas van en UNA celda, juntas. Son las del maestro del
+               transporte (placa, inscripción, certificado): acá no se editan, se muestran
+               para saber qué unidad se está declarando. *@
+            <div class="d-flex align-center justify-space-between mt-4 mb-2">
+                <div>
+                    <MudText Typo="Typo.subtitle2">Transportes</MudText>
+                    <MudText Class="mono" Style="opacity:.5;font-size:.74rem;">
+                        @if (_cabeceraGrabada) { <text>@_transportes.Count asignados</text> }
+                        else { <text>Graba la cabecera para asignar transportes</text> }
+                    </MudText>
+                    @* Un movimiento lleva UN vehículo principal y, como opción, UNO de acarreo. Se dice
+                       acá qué rol tendrá el próximo que se agregue, para no hacer adivinar. *@
+                    @if (_cabeceraGrabada && !_readonly)
+                    {
+                        <MudText Class="mono" Style="opacity:.6;font-size:.74rem;">@ReglaVehiculosMovimiento.TextoRolDelNuevo(_numPrincipales, _numAcarreos)</MudText>
+                    }
+                </div>
+                @if (_cabeceraGrabada && !_readonly)
+                {
+                    <div class="d-flex align-center gap-2">
+                        @* Al triple del ancho que toma por sí solo: la descripción de un
+                           transporte es larga —unidad, marca, placa— y en el ancho natural se
+                           cortaba justo en lo que sirve para distinguir uno de otro.
+
+                           Con min() para que en una pantalla angosta no se pase del contenedor
+                           y empuje al botón fuera de la vista. *@
+                        <div style="flex:0 0 auto;width:min(720px,55vw);">
+                            <AriaCombo TItem="ComboboxItem" Items="_transportesDisponibles"
+                                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                       @bind-Value="_transporteNuevo" Label="Transporte" Class="" />
+                        </div>
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Size="Size.Small" Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   Disabled="@(string.IsNullOrWhiteSpace(_transporteNuevo) || _rolNuevo == ReglaVehiculosMovimiento.Rol.Ninguno)"
+                                   OnClick="AgregarTransporte">Agregar</MudButton>
+                    </div>
+                }
+            </div>
+
+            @if (_cabeceraGrabada)
+            {
+                @if (_problemaVehiculos is not null)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">@_problemaVehiculos</MudAlert>
+                }
+                <div class="d-flex align-center gap-2 mb-1">
+                    <MudSpacer />
+                    <GridClearFiltersButton OnClear="LimpiarFiltrosTransporte" HasFilters="@(_filtrosTransporte.Any(f => f.Value is not null))" />
+                </div>
+                <div data-resizable-grid="movimiento-transportes" data-default-height="220" style="position:relative;">
+                <MudDataGrid T="TransporteModel" Items="@BaseTransporte(-1)" Dense="true" Hover="true" Striped="true"
+                             Height="100%" FixedHeader="true">
+                    <Columns>
+                        <TemplateColumn Sortable="false" Width="220">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Transporte" Activo="@(_ordenColTransporte == 0)" Ascendente="_ordenAscTransporte" OnClick="@(() => ToggleOrdenTransporte(0))" />
+                                    <FiltroExcelColumna T="TransporteModel" ItemsBase="@BaseTransporte(0)" ValorDe="@(x => x.COD_TRANSPORTE ?? "")"
+                                                        ValoresActivos="_filtrosTransporte.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroTransporte(0, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="tr">
+                                <div class="mono">@tr.Item.COD_TRANSPORTE</div>
+                                <div style="font-size:.78rem;opacity:.75;">@tr.Item.DES_TRANSPORTE</div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false">
+                            @* Todas en una celda, como pediste: una debajo de otra, cada una
+                               con su nombre. Es información de contexto, no una grilla más. *@
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Datos del vehículo" Activo="@(_ordenColTransporte == 1)" Ascendente="_ordenAscTransporte" OnClick="@(() => ToggleOrdenTransporte(1))" />
+                                    @* Filtra por el mismo texto de la celda, todo junto: es un dato
+                                       compuesto y no tiene sentido partirlo en columnas propias. *@
+                                    <FiltroExcelColumna T="TransporteModel" ItemsBase="@BaseTransporte(1)" ValorDe="@(x => TextoEspecificaciones(x))"
+                                                        ValoresActivos="_filtrosTransporte.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroTransporte(1, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="tr">
+                                @if (_especificaciones.TryGetValue(tr.Item.COD_TRANSPORTE ?? "", out var lista) && lista.Count > 0)
+                                {
+                                    <div style="font-size:.78rem;line-height:1.35;">
+                                        @foreach (var e in lista)
+                                        {
+                                            <div><span style="opacity:.6;">@(e.DES_ESPECIFICACION_TECNICA_SINGULAR ?? e.DES_ESPECIFICACION_TECNICA):</span> <span class="mono">@ValorEspecificacion(e)</span></div>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span style="opacity:.45;">Sin especificaciones cargadas</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                        @* FLG_ACARREO queda fuera del filtro a propósito: es lo que pediste
+                           excluir. *@
+                        <TemplateColumn Title="Acarreo" Sortable="false" Width="110" CellStyle="text-align:center;" HeaderStyle="text-align:center;">
+                            <CellTemplate Context="tr">
+                                @{ var fila = tr.Item; }
+                                @* El rol se elige al agregar. El interruptor solo se habilita si el cambio deja al
+                                   movimiento válido (un principal y, como máximo, un acarreo): sirve para arreglar uno que
+                                   venía mal. Para cambiar el rol de uno que está bien, se quita y se agrega de nuevo. *@
+                                <span title="@TituloAcarreo(fila)">
+                                    <MudSwitch T="bool" Value="@(fila.FLG_ACARREO == true)"
+                                               ValueChanged="@(v => CambiarAcarreo(fila, v))"
+                                               Color="Color.Primary" Disabled="@(_readonly || !PuedeCambiarAcarreo(fila))" />
+                                </span>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Width="300">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Observación" Activo="@(_ordenColTransporte == 2)" Ascendente="_ordenAscTransporte" OnClick="@(() => ToggleOrdenTransporte(2))" />
+                                    <FiltroExcelColumna T="TransporteModel" ItemsBase="@BaseTransporte(2)" ValorDe="@(x => x.DES_OBSERVACION ?? "")"
+                                                        ValoresActivos="_filtrosTransporte.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroTransporte(2, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate Context="tr">
+                                @{ var fila = tr.Item; }
+                                <CampoTexto Label="" MostrarLabel="false" Value="@(fila.DES_OBSERVACION ?? "")"
+                                            ValueChanged="@(v => fila.DES_OBSERVACION = v)"
+                                            OnBlur="@(() => GuardarTransporte(fila))"
+                                            Disabled="_readonly" Class="" Margin="Margin.Dense" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="" Sortable="false" Width="60" CellStyle="text-align:center;">
+                            <CellTemplate Context="tr">
+                                @{ var fila = tr.Item; }
+                                @if (!_readonly)
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                   title="Quitar el transporte" OnClick="@(() => QuitarTransporte(fila))" />
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent>
+                        <MudText Typo="Typo.body2" Class="pa-4" Style="opacity:.6;">Sin transportes asignados.</MudText>
+                    </NoRecordsContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+                </div>
+            }
+        </MudTabPanel>
+        }
+
+        @* ══════════ GUÍA DE REMISIÓN ══════════
+           Una salida con la cabecera ya grabada: antes de grabar no hay número de movimiento y la
+           guía se arma con lo grabado. La pestaña revisa si el movimiento está en condiciones de
+           emitir su guía y, si ya la tiene, muestra su estado (ver GuiaRemisionPanel). *@
+        @if (MuestraGuiaRemision)
+        {
+            <MudTabPanel Text="Guía de remisión" Icon="@Icons.Material.Filled.FactCheck">
+                <GuiaRemisionPanel NumMovimiento="@_m.NUM_MOVIMIENTO_ALMACEN" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" OnGuiaCambiada="GuiaCambiadaAsync" />
+            </MudTabPanel>
+        }
+
+        @* ══════════ REQUERIMIENTOS Y ÓRDENES DE COMPRA ══════════
+           Cada una aparece SÓLO en el tipo de movimiento que la usa. Una pestaña que no
+           corresponde no es neutra: invita a entrar, y adentro no hay nada que hacer.
+
+           Las dos condiciones son excluyentes por construcción, así que nunca se ven
+           juntas. Y mientras no haya un tipo elegido, _flags viene vacío y no se ve
+           ninguna de las dos, que es lo correcto: todavía no se sabe qué clase de
+           movimiento es. *@
+        @if (MuestraRequerimientos)
+        {
+            <MudTabPanel Text="Requerimientos" Icon="@Icons.Material.Filled.Assignment">
+                @* Mismo esquema que Órdenes de Compra, en su propio componente por el mismo
+                   motivo: este archivo ya es largo. *@
+                <MovimientoRequerimientosPanel NumMovimiento="@_m.NUM_MOVIMIENTO_ALMACEN"
+                                           OnDetalleCambiado="RecargarDetalleDesdePanel"
+                                           MotivoSoloLectura="@_motivoEstado" />
+            </MudTabPanel>
+        }
+
+        @* Devolución de compra: asociar guías de compra del mismo proveedor y elegir items/cantidades a devolver. *@
+        @if (MuestraDevolucionCompra)
+        {
+            <MudTabPanel Text="Devolución de compra" Icon="@Icons.Material.Filled.AssignmentReturn">
+                <MovimientoDevolucionCompraPanel NumMovimiento="@_m.NUM_MOVIMIENTO_ALMACEN"
+                                           OnDetalleCambiado="RecargarDetalleDesdePanel"
+                                           MotivoSoloLectura="@_motivoEstado"
+                                           CodEntidad="@_m.COD_ENTIDAD?.ToString()"
+                                           DesEntidad="@(_entidades.FirstOrDefault(e => e.Id == _m.COD_ENTIDAD?.ToString())?.Texto)" />
+            </MudTabPanel>
+        }
+
+        @if (MuestraCompras)
+        {
+            <MudTabPanel Text="Órdenes de Compra" Icon="@Icons.Material.Filled.ShoppingCart">
+                @* Las cuatro grillas viven en su propio componente: este archivo ya es largo y
+                   ahí adentro el bloque se entiende solo. Recibe el número del movimiento, que
+                   es lo único que necesitan tres de las cuatro consultas. *@
+                <MovimientoOrdenesCompraPanel NumMovimiento="@_m.NUM_MOVIMIENTO_ALMACEN"
+                                           OnDetalleCambiado="RecargarDetalleDesdePanel"
+                                           MotivoSoloLectura="@_motivoEstado"
+                                           CodEntidad="@_m.COD_ENTIDAD"
+                                           DesEntidad="@(_entidades.FirstOrDefault(e => e.Id == _m.COD_ENTIDAD?.ToString())?.Texto)" />
+            </MudTabPanel>
+        }
+    </MudTabs>
+
+</EditForm>
+
+@code {
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú de la pantalla (Movimientos de Almacén): de ella salen los botones
+    // marcados como Diálogo que van en el pie.
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // Los botones de diálogo se conectan acá. Mientras uno no tenga su acción, tocarlo avisa
+    // en vez de no hacer nada (mismo criterio que RequerimientoDocumento).
+    private Task OnAccionDialog(BotonTreeviewItem b)
+        => EsBotonTransferir(b) ? TransferirAsync() : AvisarBotonSinConectar(b);
+
+    /// <summary>Reconoce el botón TRANSFERIR: primero por DES_METODO ("Transferir") y, como
+    /// respaldo, por el nombre, alias o tooltip visible — mismo criterio que "Versiones" en
+    /// Diseños. No por COD_BOTON_OPCION: ese código cambia de una opción a otra. Lo usa también
+    /// la grilla de Movimientos de Almacén.</summary>
+    public static bool EsBotonTransferir(BotonTreeviewItem b)
+    {
+        if (string.Equals(b.DES_METODO?.Trim(), "Transferir", StringComparison.OrdinalIgnoreCase)) return true;
+        var n = ((b.DES_BOTON_OPCION ?? b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+        return n.Contains("TRANSFER");
+    }
+
+    /// <summary>La confirmación de TRANSFERIR, la misma desde el documento y desde la grilla.</summary>
+    public static async Task<bool> ConfirmarTransferenciaAsync(IDialogService dialogService, decimal num)
+    {
+        var dlg = await dialogService.ShowAsync<ConfirmarAccionDialog>("Transferir",
+            new DialogParameters
+            {
+                ["Titulo"] = "Transferir",
+                ["IconoTitulo"] = Icons.Material.Filled.LocalShipping,
+                ["Mensaje"] = $"¿Transferir el movimiento N° {num}? Pasa a su estado de enviado.",
+                ["TextoConfirmar"] = "Transferir",
+                ["IconoConfirmar"] = Icons.Material.Filled.LocalShipping
+            },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraSmall, FullWidth = true });
+        return (await dlg.Result) is { Canceled: false };
+    }
+
+    /// <summary>PROC_LOGISTICA_MOVIMIENTOS_ALMACEN_TRANSFERIR: pasa el movimiento a su estado
+    /// "enviado" (alias ENV). Si el estado actual lo permite ya lo decidió el botón, con su flujo.
+    /// Después se relee la cabecera: con el estado nuevo cambian los botones del pie y si el
+    /// detalle se puede tocar.</summary>
+    private async Task TransferirAsync()
+    {
+        if (_m.NUM_MOVIMIENTO_ALMACEN is not { } num) return;
+        if (!await ConfirmarTransferenciaAsync(DialogService, num)) return;
+        _saving = true;
+        try
+        {
+            var resp = await Http.PostAsync(ApiRoutes.Logistica.MovimientosAlmacenTransferir(num), null);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"Movimiento N° {num} transferido.", Severity.Success);
+                _huboCambios = true;
+                await RecargarCabeceraAsync();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(TransferirAsync), "No se pudo transferir");
+            }
+        }
+        finally { _saving = false; }
+    }
+
+    // ── El detalle, sujeto al estado de la cabecera ─────────────────────────────────
+    /// <summary>Por qué el estado actual de la cabecera no deja tocar el detalle (null: lo deja).
+    ///
+    /// Lo decide el flujo de estados del botón de MODIFICAR de esta opción (el que tiene
+    /// FLG_ACCION_PUT), con el mismo SP que habilita los botones del pie
+    /// (PROC_ESTANDAR_OPCIONES_PROCESOS_ESTADOS_FLUJOS_DEPENDENCIA_VALIDA): si en este estado no se
+    /// puede modificar el movimiento, tampoco agregar, cambiar o quitar sus líneas, ni desde la
+    /// grilla ni desde las pestañas Requerimientos / Órdenes de Compra.
+    ///
+    /// Sin tipo de estado, sin botón de modificar o si la validación no responde, no se bloquea
+    /// nada: es lo que pasaba antes.</summary>
+    private string? _motivoFlujo;
+    /// <summary>Por qué el documento no se puede modificar: el flujo de estados del botón MODIFICAR (_motivoFlujo) o la guía de remisión ya
+    /// enviada a SUNAT (_motivoGuia). La guía manda: es lo que no se puede deshacer.</summary>
+    private string? _motivoEstado => _motivoGuia ?? _motivoFlujo;
+    private string? _motivoGuia;
+    private (int? Tipo, int? Estado) _estadoValidado = (-1, -1);
+
+    /// <summary>El botón MODIFICAR de la opción: por su nombre primero (es el que se ve y se
+    /// configura en Configuración de Flujos de los Estados), así no depende de cómo estén
+    /// marcadas las acciones HTTP de los demás botones —NUEVO o ANULAR también pueden traer
+    /// PUT—. Si ninguno se llama así, el que tenga sólo la acción PUT, sin POST ni DELETE.</summary>
+    private static BotonTreeviewItem? BotonModificar(IEnumerable<BotonTreeviewItem> botones)
+    {
+        var conCodigo = botones.Where(b => !string.IsNullOrWhiteSpace(b.COD_BOTON_OPCION))
+                               .OrderBy(b => b.NUM_ORDEN_PRESENTACION ?? int.MaxValue).ToList();
+        static string Nombre(BotonTreeviewItem b)
+            => ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_METODO ?? "")).ToUpperInvariant();
+        return conCodigo.FirstOrDefault(b => Nombre(b).Contains("MODIFIC"))
+            ?? conCodigo.FirstOrDefault(b => b.FLG_ACCION_PUT == true && b.FLG_ACCION_POST != true && b.FLG_ACCION_DELETE != true);
+    }
+
+    private async Task ValidarEstadoDetalleAsync()
+    {
+        if (_estadoValidado == (_m.COD_TIPO_ESTADO, _m.COD_ESTADO)) return;
+        _estadoValidado = (_m.COD_TIPO_ESTADO, _m.COD_ESTADO);
+        _motivoFlujo = null;
+        if (!_cabeceraGrabada || _m.COD_TIPO_ESTADO is not { } tipo || _m.COD_ESTADO is not { } estado
+            || string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion)) return;
+
+        // Los botones de la opción, frescos: el documento puede validar antes de que el pie
+        // (AccionesBotones) los refresque. Mismo llamado que hace AccionesBotones al iniciar.
+        await MenuService.AsegurarBotonesFrescosAsync(CodAplicacion, CodOpcionAplicacion);
+        var modificar = BotonModificar(MenuService.GetBotonesPorOpcion(CodAplicacion, CodOpcionAplicacion));
+        if (modificar is null)
+        {
+            await ErrorLog.TraceAsync($"DETALLE SUJETO AL ESTADO — la opción {CodAplicacion}/{CodOpcionAplicacion} no tiene botón MODIFICAR habilitado para el rol: el detalle no se bloquea.");
+            return;
+        }
+
+        var r = await Http.SafeGetAsync<KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosDependenciaValidaResult>(
+            $"{ApiRoutes.Estandar.OpcionesProcesosEstadosFlujosDependenciaValidar}" +
+            $"?codAplicacion={Uri.EscapeDataString(CodAplicacion)}&codOpcionAplicacion={Uri.EscapeDataString(CodOpcionAplicacion)}" +
+            $"&codBotonOpcion={Uri.EscapeDataString(modificar.COD_BOTON_OPCION!)}&codTipoEstado={tipo}&codEstadoActual={estado}");
+        // La evidencia, igual que "VALIDAR FLUJO" en AccionesBotones: qué botón se validó, con qué
+        // estado y qué respondió el SP.
+        await ErrorLog.TraceAsync(
+            $"DETALLE SUJETO AL ESTADO — movimiento {_m.NUM_MOVIMIENTO_ALMACEN}: botón {modificar.DES_BOTON_OPCION ?? modificar.DES_ALIAS} " +
+            $"(@COD_BOTON_OPCION={modificar.COD_BOTON_OPCION}) @COD_TIPO_ESTADO={tipo} @COD_ESTADO_ACTUAL={estado} " +
+            $"→ FLG_VALIDO={(r?.FLG_VALIDO.ToString() ?? "null (sin respuesta)")} {r?.DES_MENSAJE}");
+        if (r is { FLG_VALIDO: false })
+            _motivoFlujo = "En el estado actual el movimiento no se puede modificar, ni la cabecera ni el detalle (flujo de estados del botón "
+                          + $"{modificar.DES_BOTON_OPCION ?? modificar.COD_BOTON_OPCION}). {r.DES_MENSAJE}";
+    }
+
+    /// <summary>Una guía de remisión ENVIADA o ACEPTADA congela el movimiento: lo que se envió a SUNAT tiene que seguir siendo lo que dice el
+    /// movimiento. La base ya lo impide (script 08_GUIAS_REMISION_BLOQUEO_MOVIMIENTO.sql); esto lo deja de solo lectura con el motivo a la vista,
+    /// en vez de dejar escribir y avisar recién al grabar. Solo se pregunta en un movimiento que puede tener guía (una salida ya grabada).</summary>
+    private async Task ValidarGuiaAsync()
+    {
+        var antes = _motivoGuia;
+        _motivoGuia = null;
+        if (MuestraGuiaRemision && _m.NUM_MOVIMIENTO_ALMACEN is { } num)
+        {
+            var b = await Http.SafeGetAsync<GuiaRemisionBloqueo>(ApiRoutes.Logistica.GuiaRemisionBloqueoPorMovimiento(num));
+            if (b is { FLG_BLOQUEADO: true }) _motivoGuia = b.DES_MENSAJE;
+        }
+        if (antes != _motivoGuia) StateHasChanged();
+    }
+
+    /// <summary>La pestaña de la guía emitió, consultó o reintentó: la guía pudo pasar a ENVIADA o ACEPTADA (o volver a editable).</summary>
+    private Task GuiaCambiadaAsync() => ValidarGuiaAsync();
+
+    private async Task AvisarBotonSinConectar(BotonTreeviewItem b)
+    {
+        await ErrorLog.TraceAsync(
+            $"BOTÓN DE DIÁLOGO — {b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION} " +
+            $"(método configurado: {b.DES_METODO ?? "sin método"}) sobre el movimiento {_m.NUM_MOVIMIENTO_ALMACEN}");
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(MovimientoAlmacenDocumento), "Acción pendiente");
+    }
+
+    private Modelo _m = new();
+
+    private List<DetalleModel> _detalle = new();
+
+    // ── Filtro de columna, estilo Excel, para la grilla de detalle ────────────────────────
+    private readonly Dictionary<int, HashSet<string>?> _filtrosDetalle = new();
+
+    private List<DetalleModel> BaseDetalle(int col) => AplicarFiltrosDetalle(OrdenarDetalle(_detalle), col);
+
+    private string ValorDetalle(DetalleModel x, int col) => col switch
+    {
+        0 => x.NUM_SECUENCIA?.ToString() ?? "",
+        1 => x.COD_PRODUCTO ?? "",
+        2 => ResumenLoteOrden(x),
+        3 => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA) ? (x.COD_UNIDAD_MEDIDA ?? "") : x.DES_UNIDAD_MEDIDA,
+        4 => x.CAN_PRODUCTO?.ToString(Decimales.FormatoCantidad) ?? "",
+        5 => x.CAN_PRODUCTO_SECUNDARIO?.ToString(Decimales.FormatoCantidad) ?? "",
+        6 => string.IsNullOrWhiteSpace(x.DES_UNIDAD_MEDIDA_SECUNDARIO) ? (x.COD_UNIDAD_MEDIDA_SECUNDARIO ?? "") : x.DES_UNIDAD_MEDIDA_SECUNDARIO,
+        7 => x.COD_UBICACION_ALMACEN ?? "",
+        _ => ""
+    };
+
+    private int? _ordenColDetalle;
+    private bool _ordenAscDetalle = true;
+    private void ToggleOrdenDetalle(int col) { if (_ordenColDetalle == col) _ordenAscDetalle = !_ordenAscDetalle; else { _ordenColDetalle = col; _ordenAscDetalle = true; } }
+    private List<DetalleModel> OrdenarDetalle(List<DetalleModel> items) => _ordenColDetalle is not { } col ? items : _ordenAscDetalle ? items.OrderBy(x => ValorDetalle(x, col)).ToList() : items.OrderByDescending(x => ValorDetalle(x, col)).ToList();
+
+    private List<DetalleModel> AplicarFiltrosDetalle(List<DetalleModel> src, int ex)
+    {
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosDetalle) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<DetalleModel> q = src;
+        foreach (var (c, v) in _filtrosDetalle)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorDetalle(x, c)));
+        }
+        return q.ToList();
+    }
+
+    private void FiltroDetalle(int c, HashSet<string>? v) { _filtrosDetalle[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosDetalle() { foreach (var k in _filtrosDetalle.Keys.ToList()) _filtrosDetalle[k] = null; StateHasChanged(); }
+    private MovimientosAlmacenLoadCombosResult _combos = new();
+    private TiposMovimiento _flags = new();
+
+    // ── Qué pestañas corresponden a este tipo de movimiento ──────────────────────────
+    //
+    // Las dos salen del TIPO, no del documento: es el tipo el que dice si este movimiento
+    // atiende compras o requerimientos.
+
+    /// <summary>Órdenes de Compra: comercial y que SUMA stock.
+    ///
+    /// Los dos flags, no sólo el comercial: una salida comercial también es comercial, y
+    /// ahí no se reciben órdenes de compra — se despacha. Lo que trae mercadería contra
+    /// una orden es el movimiento positivo.</summary>
+    private bool MuestraCompras
+        => _flags.FLG_COMERCIAL == true && _flags.FLG_POSITIVO == true;
+
+    /// <summary>Devolución de compra: comercial, devolución y que RESTA stock (FLG_POSITIVO = false; NULL no es una salida).</summary>
+    private bool MuestraDevolucionCompra
+        => _flags.FLG_COMERCIAL == true && _flags.FLG_DEVOLUCION == true && _flags.FLG_POSITIVO == false;
+
+    /// <summary>Requerimientos: de requerimiento y que RESTA stock.
+    ///
+    /// El requerimiento se atiende sacando del almacén, así que el movimiento es negativo.
+    ///
+    /// Comparo contra false y no uso "distinto de true" a propósito: la columna es
+    /// NULLABLE en TIPOS_MOVIMIENTO, y un tipo con el flag sin definir no es un tipo
+    /// negativo, es un tipo sin clasificar. Con NULL la pestaña no aparece, que es la misma
+    /// respuesta que daría SQL para FLG_POSITIVO = 0.</summary>
+    private bool MuestraRequerimientos
+        => _flags.FLG_REQUERIMIENTO == true && _flags.FLG_POSITIVO == false;
+
+    /// <summary>Guía de remisión: una SALIDA con la cabecera grabada. Se compara contra false por la misma razón
+    /// que Requerimientos: FLG_POSITIVO es NULLABLE y un tipo sin clasificar no es una salida.
+    /// Se muestra en toda salida y no solo en las comerciales o las transferencias: qué motivos exigen guía
+    /// lo decidirán las reglas por motivo, y esconder la pestaña antes de eso sería decidirlo a ciegas.</summary>
+    private bool MuestraGuiaRemision
+        => _cabeceraGrabada && _flags.FLG_POSITIVO == false;
+
+
+    /// <summary>Motivos del tipo de motivo que declara el tipo de movimiento. Se recarga al
+    /// cambiar de tipo: los motivos de un tipo no significan nada en otro.</summary>
+    private List<ComboboxItem> _motivos = new();
+    private List<TiposMovimiento> _tipos = new();
+
+    /// <summary>Los proyectos, en su propia petición. El LOADCOMBOS del módulo no los trae:
+    /// agregarlos ahí es tocar el SP, y eso es una decisión de base, no de pantalla. Va en
+    /// paralelo con el resto, así que no suma espera.</summary>
+    private List<ComboboxItem> _proyectos = new();
+
+    /// <summary>La clase de movimiento sale de Configuración General
+    /// (COD_CLASE_MOVIMIENTO_ALMACEN), como manda la planilla. La matriz la oculta en los
+    /// cuatro modos: no se elige, se hereda.
+    ///
+    /// "MOV" queda sólo como respaldo para el caso en que la configuración no la tenga
+    /// cargada. Sin respaldo, una configuración incompleta dejaría la pantalla sin tipos de
+    /// movimiento y sin explicación a la vista.</summary>
+    private const string ClaseMovimientoPorDefecto = "MOV";
+    private string ClaseMovimiento = ClaseMovimientoPorDefecto;
+
+    /// <summary>Entidades del tipo que declara el tipo de movimiento
+    /// (COD_TIPO_ENTIDAD_ASOCIADA). Vacía = no hay a quién elegir y el campo va en gris.</summary>
+    private List<ComboboxItem> _entidades = new();
+
+    /// <summary>Los comprobantes que ACEPTA este tipo de movimiento, con su control de
+    /// correlativo. Es la tabla hija que se cargó desde el diálogo de Tipos de Movimiento.</summary>
+    private List<ComprobanteDelTipo> _comprobantesDelTipo = new();
+
+    /// <summary>Sólo lo que esta pantalla usa de esa tabla. Un modelo propio y mínimo evita
+    /// arrastrar el modelo entero para leer dos columnas.</summary>
+    private class ComprobanteDelTipo
+    {
+        public string COD_TIPO_COMPROBANTE_PAGO { get; set; } = "";
+        public string? DES_TIPO_COMPROBANTE_PAGO { get; set; }
+        public int FLG_CONTROL_CORRELATIVO { get; set; }
+
+        // El formato del número, que ahora viaja en la misma lectura (ver script 29).
+        public string? COD_PREFIJO { get; set; }
+        public string? COD_PREFIJO_SUNAT { get; set; }
+        public int? VAL_LONGITUD_SERIE { get; set; }
+        public int? VAL_LONGITUD_NUMERO { get; set; }
+    }
+
+    /// <summary>Almacenes y tipos de movimiento DEL ROL, no los de la base entera: los dos SPs
+    /// de la planilla filtran por COD_ROL_USUARIO. Un usuario sólo ve lo que su rol habilita.</summary>
+    private List<ComboboxItem> _almacenesDelRol = new();
+    private List<ComboboxItem> _tiposDelRol = new();
+
+    // ── TRANSPORTISTA Y TRANSPORTES ───────────────────────────────────────────────
+
+    /// <summary>La pestaña SE OCULTA entera cuando el movimiento no lleva transporte.
+    ///
+    /// Es la misma condición que habilita al transportista, y a propósito: si no hay a quién
+    /// declarar como transportista, tampoco hay transportes ni guía. Mostrar una pestaña
+    /// vacía invita a buscar qué falta.</summary>
+    private bool VerPestanaTransportista =>
+        _flags.FLG_COMERCIAL == true ||
+        (_flags.FLG_TRANSFERENCIA_SUCURSALES_EMPRESA == true && _flags.FLG_TRANSFERENCIA == true);
+
+    /// <summary>Entidades del tipo TRN. El catálogo completo no sirve acá: un transportista es
+    /// una entidad de ese tipo, no cualquiera.</summary>
+    private List<ComboboxItem> _transportistas = new();
+    private const string TipoEntidadTransportista = "TRN";
+
+    /// <summary>Brevete del transportista: documento de identidad tipo 6 de esa entidad.</summary>
+    private const int TipoDocumentoBrevete = 6;
+    private string? _brevete;
+
+    private List<TransporteModel> _transportes = new();
+
+    // ── Filtro de columna, estilo Excel, para la grilla de transportes ────────────────────
+    private readonly Dictionary<int, HashSet<string>?> _filtrosTransporte = new();
+
+    private List<TransporteModel> BaseTransporte(int col) => AplicarFiltrosTransporte(OrdenarTransporte(_transportes), col);
+
+    private string ValorTransporte(TransporteModel x, int col) => col switch
+    {
+        0 => x.COD_TRANSPORTE ?? "",
+        1 => TextoEspecificaciones(x),
+        2 => x.DES_OBSERVACION ?? "",
+        _ => ""
+    };
+
+    private int? _ordenColTransporte;
+    private bool _ordenAscTransporte = true;
+    private void ToggleOrdenTransporte(int col) { if (_ordenColTransporte == col) _ordenAscTransporte = !_ordenAscTransporte; else { _ordenColTransporte = col; _ordenAscTransporte = true; } }
+    private List<TransporteModel> OrdenarTransporte(List<TransporteModel> items) => _ordenColTransporte is not { } col ? items : _ordenAscTransporte ? items.OrderBy(x => ValorTransporte(x, col)).ToList() : items.OrderByDescending(x => ValorTransporte(x, col)).ToList();
+
+    private List<TransporteModel> AplicarFiltrosTransporte(List<TransporteModel> src, int ex)
+    {
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosTransporte) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<TransporteModel> q = src;
+        foreach (var (c, v) in _filtrosTransporte)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorTransporte(x, c)));
+        }
+        return q.ToList();
+    }
+
+    private void FiltroTransporte(int c, HashSet<string>? v) { _filtrosTransporte[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosTransporte() { foreach (var k in _filtrosTransporte.Keys.ToList()) _filtrosTransporte[k] = null; StateHasChanged(); }
+
+    /// <summary>El texto de "Datos del vehículo" tal como se ve en la celda, todo junto en una
+    /// sola línea: es lo que compara el filtro Excel de esa columna.</summary>
+    private string TextoEspecificaciones(TransporteModel tr)
+    {
+        if (!_especificaciones.TryGetValue(tr.COD_TRANSPORTE ?? "", out var lista) || lista.Count == 0)
+            return "";
+        return string.Join(" · ", lista.Select(e =>
+            $"{e.DES_ESPECIFICACION_TECNICA_SINGULAR ?? e.DES_ESPECIFICACION_TECNICA}: {ValorEspecificacion(e)}"));
+    }
+    private List<ComboboxItem> _transportesTodos = new();
+    private string? _transporteNuevo;
+
+    /// <summary>Las especificaciones técnicas por transporte, cacheadas: se piden UNA vez por
+    /// transporte y no una vez por redibujado de la grilla.</summary>
+    private readonly Dictionary<string, List<EspecificacionModel>> _especificaciones = new();
+
+    /// <summary>Los que todavía no están asignados: ofrecer uno que ya está sólo consigue que
+    /// el SP devuelva "ya existe un registro con esa clave".</summary>
+    private List<ComboboxItem> _transportesDisponibles => _transportesTodos
+        .Where(t => !_transportes.Any(x => x.COD_TRANSPORTE == t.Id))
+        .ToList();
+
+    private async Task CargarTransportistas()
+    {
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.Entidad>>(
+            ApiRoutes.Estandar.EntidadesPorTipo(TipoEntidadTransportista)) ?? new();
+        _transportistas = lista
+            .Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = e.DES_NOMBRE_COMPLETO })
+            .ToList();
+    }
+
+    /// <summary>El brevete del transportista elegido. Sólo lectura: se mantiene en el maestro
+    /// de entidades. Si no lo tiene cargado, el campo queda vacío — y eso es un dato, no un
+    /// error: quiere decir que a esa entidad le falta el documento.</summary>
+    private async Task CargarBrevete()
+    {
+        _brevete = null;
+        if (_m.COD_ENTIDAD_TRANSPORTISTA is not { } cod) return;
+
+        var doc = await Http.SafeGetAsync<DocumentoIdentidadModel>(
+            ApiRoutes.Estandar.EntidadDocumentoIdentidad(cod, TipoDocumentoBrevete));
+        _brevete = doc?.NUM_DOCUMENTO_IDENTIDAD;
+    }
+
+    private async Task OnTransportistaChanged(string? v)
+    {
+        _m.COD_ENTIDAD_TRANSPORTISTA = decimal.TryParse(v, out var d) ? d : null;
+        await CargarBrevete();
+    }
+
+    // ── PUNTO DE PARTIDA / DE LLEGADA ────────────────────────────────────────────────────
+
+    /// <summary>El OTRO punto del traslado es una dirección de la entidad: movimiento comercial
+    /// que no es transferencia. En una transferencia el otro punto es la sucursal del almacén
+    /// contrario y no se elige — lo resuelve el SHOWBYID (ver el comentario de la pestaña).</summary>
+    private bool UsaDireccionDeLaEntidad =>
+        _flags.FLG_COMERCIAL == true && string.IsNullOrWhiteSpace(_m.COD_ALMACEN_SINCRONIZADO);
+
+    /// <summary>Un ingreso PARTE de la entidad (su dirección es el punto de partida); una salida
+    /// LLEGA a ella (es el punto de llegada). Sin sentido definido se lee como salida, que es
+    /// el caso de la guía de remisión.</summary>
+    private bool EsIngreso => _flags.FLG_POSITIVO == true;
+
+    private string RotuloDireccionDeLaEntidad => EsIngreso ? "Dirección de Partida" : "Dirección de Entrega";
+
+    /// <summary>Las direcciones de la entidad elegida, completas, para poder mostrar su ubigeo
+    /// apenas se elige una — sin esperar a que la base la devuelva al grabar.</summary>
+    private List<DireccionEntidadModel> _direccionesEntidad = new();
+    private List<ComboboxItem> _direccionesCombo = new();
+
+    /// <summary>De qué entidad son las que están cargadas: recargar al grabar la misma entidad
+    /// sería una llamada de más.</summary>
+    private decimal? _entidadDeLasDirecciones;
+
+    /// <param name="autoElegirUnica">true cuando el usuario acaba de elegir la entidad: si tiene
+    /// UNA sola dirección, no hay nada que decidir. Al abrir un movimiento ya grabado NO: ahí lo
+    /// que figura es lo que está en la base, y completarlo solo mostraría algo que no se grabó.</param>
+    private async Task CargarDireccionesEntidad(bool autoElegirUnica = false)
+    {
+        if (!UsaDireccionDeLaEntidad || _m.COD_ENTIDAD is not { } cod)
+        {
+            _direccionesEntidad = new();
+            _direccionesCombo = new();
+            _entidadDeLasDirecciones = null;
+            return;
+        }
+
+        if (_entidadDeLasDirecciones != cod)
+        {
+            _direccionesEntidad = await Http.SafeGetAsync<List<DireccionEntidadModel>>(
+                $"{ApiRoutes.Comercial.EntidadesDirecciones}?codEntidad={cod}") ?? new();
+            _direccionesCombo = _direccionesEntidad
+                .Where(d => d.NUM_SECUENCIA is not null)
+                .Select(d => new ComboboxItem { Id = d.NUM_SECUENCIA!.Value.ToString(), Texto = d.DES_DIRECCION ?? "" })
+                .ToList();
+            _entidadDeLasDirecciones = cod;
+        }
+
+        if (autoElegirUnica && _direccionesCombo.Count == 1 && _m.NUM_SECUENCIA_DIRECCION is null
+            && Editable("NUM_SECUENCIA_DIRECCION"))
+            ElegirDireccionEntidad(_direccionesCombo[0].Id);
+    }
+
+    private void OnDireccionEntidadChanged(string? v) => ElegirDireccionEntidad(v);
+
+    /// <summary>Elige (o quita) la dirección y acerca lo que se ve al lado a lo que va a devolver
+    /// el SHOWBYID después de grabar: la dirección y el ubigeo del punto que le toca. El otro
+    /// punto —el de la sucursal— no se toca: sigue siendo lo último que devolvió la base.</summary>
+    private void ElegirDireccionEntidad(string? v)
+    {
+        _m.NUM_SECUENCIA_DIRECCION = int.TryParse(v, out var n) ? n : null;
+        var d = _m.NUM_SECUENCIA_DIRECCION is { } sec
+            ? _direccionesEntidad.FirstOrDefault(x => x.NUM_SECUENCIA == sec)
+            : null;
+
+        if (EsIngreso)
+        {
+            _m.DES_DIRECCION_ORIGEN = d?.DES_DIRECCION;
+            _m.DES_UBIGEO_ORIGEN = d?.DES_UBIGEO;
+        }
+        else
+        {
+            _m.DES_DIRECCION_DESTINO = d?.DES_DIRECCION;
+            _m.COD_UBIGEO_DESTINO = d?.COD_UBIGEO;
+            _m.DES_UBIGEO = d?.DES_UBIGEO;
+        }
+    }
+
+    /// <summary>El combo de la dirección de la entidad. Es el mismo en los dos sentidos: lo único
+    /// que cambia es el rótulo y en qué lugar de la fila se dibuja (ver la pestaña).</summary>
+    private RenderFragment DireccionDeLaEntidad() => @<text>
+        <AriaCombo TItem="ComboboxItem" Items="_direccionesCombo"
+                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                   Value="@(_m.NUM_SECUENCIA_DIRECCION?.ToString())"
+                   ValueChanged="OnDireccionEntidadChanged"
+                   Label="@RotuloDireccionDeLaEntidad" Disabled="@(!Editable("NUM_SECUENCIA_DIRECCION"))" Class="" />
+        @* Gris por falta de dirección o por falta de entidad no se ven igual de explicables:
+           la segunda se resuelve eligiendo la entidad; la primera, en el maestro de entidades. *@
+        @if (_m.COD_ENTIDAD is not null && _direccionesCombo.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.7;">Esta entidad no tiene direcciones registradas.</MudText>
+        }
+    </text>;
+
+    private async Task CargarTransportes()
+    {
+        if (!_cabeceraGrabada) { _transportes = new(); return; }
+
+        _transportes = await Http.SafeGetAsync<List<TransporteModel>>(
+            ApiRoutes.Logistica.MovimientosAlmacenTransporteDe(_m.NUM_MOVIMIENTO_ALMACEN!.Value)) ?? new();
+
+        if (_transportesTodos.Count == 0)
+            _transportesTodos = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.TransportesCombobox) ?? new();
+
+        foreach (var t in _transportes) await CargarEspecificaciones(t.COD_TRANSPORTE);
+    }
+
+    /// <summary>Las especificaciones técnicas de un transporte SON LAS DE SU PRODUCTO.
+    ///
+    /// Yo las estaba pidiendo a LOGISTICA.TRANSPORTES_ESPECIFICACIONES_TECNICAS —el SP que
+    /// figura en la especificación— y por eso la celda salía vacía: esa tabla quedó en desuso.
+    /// El propio TransporteDocumentoDialog lo dice en un comentario: "ya no una tabla propia
+    /// de Transportes", y muestra las del producto vía COD_PRODUCTO_TRANSPORTE.
+    ///
+    /// Así que son dos pasos: la ficha del transporte da su producto, y el producto da sus
+    /// especificaciones. Las dos quedan cacheadas por transporte — si no, serían dos llamadas
+    /// por cada redibujado de la grilla.</summary>
+    private async Task CargarEspecificaciones(string? codTransporte)
+    {
+        if (string.IsNullOrWhiteSpace(codTransporte) || _especificaciones.ContainsKey(codTransporte)) return;
+
+        // Se marca ya, aunque venga vacío: evita repetir las dos llamadas para un transporte
+        // que realmente no tiene producto o no tiene especificaciones.
+        _especificaciones[codTransporte] = new();
+
+        var ficha = await Http.SafeGetAsync<TransporteFichaModel>(
+            $"{ApiRoutes.Logistica.Transportes}/{Uri.EscapeDataString(codTransporte)}");
+        if (string.IsNullOrWhiteSpace(ficha?.COD_PRODUCTO_TRANSPORTE)) return;
+
+        _especificaciones[codTransporte] = await Http.SafeGetAsync<List<EspecificacionModel>>(
+            $"{ApiRoutes.Estandar.ProductosEspecificacionesTecnicas}?codProducto={Uri.EscapeDataString(ficha.COD_PRODUCTO_TRANSPORTE)}") ?? new();
+
+        await CargarItemsTecnicos(_especificaciones[codTransporte]);
+    }
+
+    /// <summary>El valor de una especificación, tomado de la columna que corresponde a SU TIPO.
+    ///
+    /// Una especificación guarda su valor en una columna distinta según sea texto, número,
+    /// fecha, hora, lógico o lista — no hay una sola columna "valor". Mirar sólo
+    /// VAL_ESPECIFICACION_TENICA, como hacía antes, dejaba en blanco todo lo que no fuera
+    /// numérico: justamente la placa, el certificado y la constancia de inscripción.</summary>
+    private string ValorEspecificacion(EspecificacionModel e)
+    {
+        if (e.FLG_LOGICO == true)     return e.LOG_ESPECIFICACION_TENICA == true ? "Sí" : "No";
+        if (e.FLG_FECHA == true)      return e.FEC_ESPECIFICACION_TENICA?.ToString("dd/MM/yyyy") ?? "";
+        if (e.FLG_HORA == true)       return e.HOR_ESPECIFICACION_TENICA?.ToString(@"hh\:mm") ?? "";
+        if (e.FLG_FECHA_HORA == true) return e.FEC_ESPECIFICACION_TENICA?.ToString("dd/MM/yyyy HH:mm") ?? "";
+
+        // Texto y números: viajan en STR_ o en VAL_.
+        if (!string.IsNullOrWhiteSpace(e.STR_ESPECIFICACION_TENICA)) return e.STR_ESPECIFICACION_TENICA!;
+        if (!string.IsNullOrWhiteSpace(e.VAL_ESPECIFICACION_TENICA)) return e.VAL_ESPECIFICACION_TENICA!;
+
+        // LISTA: acá no hay ningún texto guardado. Lo que se guarda es COD_ITEM_TECNICO, el
+        // identificador del ítem elegido, y su descripción vive en el maestro de ítems
+        // técnicos. Es lo que le pasaba a Color, Combustible y Carrocería: tienen valor, pero
+        // no en ninguna de las columnas de texto.
+        if (e.COD_ITEM_TECNICO is { } cod)
+            return _itemsTecnicos.TryGetValue(Clave(e.COD_ESPECIFICACION_TECNICA, cod), out var des) && !string.IsNullOrWhiteSpace(des)
+                ? des
+                // Si la descripción no se pudo traer, se muestra el código en vez de nada: un
+                // número dice poco, pero un blanco no distingue entre "sin valor" y "no pude
+                // leerlo", y esa diferencia es la que costó dos entregas.
+                : $"#{cod}";
+
+        return "";
+    }
+
+    /// <summary>Descripciones de los ítems técnicos, indexadas por especificación + ítem.
+    ///
+    /// Se piden por ESPECIFICACIÓN y se cachean para todo el documento: distintos transportes
+    /// comparten las mismas especificaciones —color, combustible, carrocería— así que la
+    /// segunda unidad no vuelve a pedir nada.</summary>
+    private readonly Dictionary<string, string> _itemsTecnicos = new();
+    private readonly HashSet<string> _itemsPedidos = new();
+    private static string Clave(string codEspecificacion, int codItem) => $"{codEspecificacion}|{codItem}";
+
+    private async Task CargarItemsTecnicos(IEnumerable<EspecificacionModel> especificaciones)
+    {
+        // Sólo las que guardan un ítem de lista: el resto ya trae su valor como texto.
+        var codigos = especificaciones
+            .Where(e => e.COD_ITEM_TECNICO is not null && !string.IsNullOrWhiteSpace(e.COD_ESPECIFICACION_TECNICA))
+            .Select(e => e.COD_ESPECIFICACION_TECNICA)
+            .Distinct()
+            .Where(c => _itemsPedidos.Add(c))
+            .ToList();
+
+        foreach (var cod in codigos)
+        {
+            var items = await Http.SafeGetAsync<List<ItemTecnicoModel>>(
+                $"{ApiRoutes.Ingenieria.EspecificacionesItemsTecnicosComboDependientes}?codEspecificacionTecnica={Uri.EscapeDataString(cod)}") ?? new();
+
+            foreach (var i in items)
+                _itemsTecnicos[Clave(cod, i.COD_ITEM_TECNICO)] = i.DES_ITEM_TECNICO ?? "";
+        }
+    }
+
+    /// <summary>Cuántos vehículos principales y cuántos de acarreo tiene el movimiento, y qué rol
+    /// tendrá el próximo. La regla (un principal, como máximo un acarreo, el acarreo no va sin
+    /// principal) también la aplica la base: acá solo se evita ofrecer lo que va a rechazar.</summary>
+    private int _numPrincipales => _transportes.Count(t => t.FLG_ACARREO != true);
+    private int _numAcarreos    => _transportes.Count(t => t.FLG_ACARREO == true);
+    private ReglaVehiculosMovimiento.Rol _rolNuevo => ReglaVehiculosMovimiento.RolDelNuevo(_numPrincipales, _numAcarreos);
+    private string? _problemaVehiculos => _cabeceraGrabada ? ReglaVehiculosMovimiento.Problema(_numPrincipales, _numAcarreos) : null;
+
+    private bool PuedeCambiarAcarreo(TransporteModel fila) =>
+        ReglaVehiculosMovimiento.PuedeCambiar(_numPrincipales, _numAcarreos, fila.FLG_ACARREO == true, fila.FLG_ACARREO != true);
+
+    private string TituloAcarreo(TransporteModel fila) => PuedeCambiarAcarreo(fila)
+        ? ""
+        : "Un movimiento lleva un vehículo principal y, como máximo, uno de acarreo. El rol se elige al agregar: para cambiarlo, quita el vehículo y agrégalo de nuevo.";
+
+    private async Task AgregarTransporte()
+    {
+        if (string.IsNullOrWhiteSpace(_transporteNuevo) || !_cabeceraGrabada) return;
+
+        // El rol lo decide la regla: el principal si falta; si no, el acarreo. Sin rol posible no se agrega.
+        var rol = _rolNuevo;
+        if (rol == ReglaVehiculosMovimiento.Rol.Ninguno)
+        {
+            Snackbar.Add(ReglaVehiculosMovimiento.TextoRolDelNuevo(_numPrincipales, _numAcarreos), Severity.Warning);
+            return;
+        }
+
+        var dto = new
+        {
+            NUM_MOVIMIENTO_ALMACEN = _m.NUM_MOVIMIENTO_ALMACEN,
+            COD_TRANSPORTE = _transporteNuevo,
+            FLG_ACARREO = rol == ReglaVehiculosMovimiento.Rol.Acarreo,
+            DES_OBSERVACION = (string?)null
+        };
+        var resp = await Http.GuardarAsync(ApiRoutes.Logistica.MovimientosAlmacenTransporte, dto, esNuevo: true);
+        if (resp.IsSuccessStatusCode)
+        {
+            _transporteNuevo = null;
+            await CargarTransportes();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(AgregarTransporte));
+    }
+
+    /// <summary>El interruptor de acarreo graba solo: es un dato de una sola pulsación, y
+    /// obligar a un botón "guardar" para un sí/no sobra.</summary>
+    private async Task CambiarAcarreo(TransporteModel fila, bool valor)
+    {
+        var anterior = fila.FLG_ACARREO;
+        fila.FLG_ACARREO = valor;
+        // Si la base lo rechaza (la regla de los vehículos), el interruptor vuelve a como estaba.
+        if (!await GuardarTransporte(fila))
+        {
+            fila.FLG_ACARREO = anterior;
+            await CargarTransportes();
+        }
+    }
+
+    /// <summary>Graba la fila con PUT. La observación se manda al SALIR del campo, no en cada
+    /// tecla: si no, sería una petición por letra.</summary>
+    private async Task<bool> GuardarTransporte(TransporteModel fila)
+    {
+        var dto = new
+        {
+            NUM_MOVIMIENTO_ALMACEN = _m.NUM_MOVIMIENTO_ALMACEN,
+            fila.COD_TRANSPORTE,
+            fila.FLG_ACARREO,
+            fila.DES_OBSERVACION
+        };
+        var resp = await Http.GuardarAsync(ApiRoutes.Logistica.MovimientosAlmacenTransporte, dto, esNuevo: false);
+        if (resp.IsSuccessStatusCode) return true;
+        await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(GuardarTransporte));
+        return false;
+    }
+
+    private async Task QuitarTransporte(TransporteModel fila)
+    {
+        var resp = await Http.DeleteAsync(
+            $"{ApiRoutes.Logistica.MovimientosAlmacenTransporte}/{_m.NUM_MOVIMIENTO_ALMACEN}/{Uri.EscapeDataString(fila.COD_TRANSPORTE ?? "")}");
+        if (resp.IsSuccessStatusCode) await CargarTransportes();
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(QuitarTransporte), "No se pudo quitar el transporte");
+    }
+
+    /// <summary>Lotes de control de la entidad elegida. Se recargan al cambiar de entidad: el
+    /// lote de un proveedor no significa nada en el documento de otro.</summary>
+    private List<ComboboxItem> _lotesControl = new();
+    private bool _saving, _huboCambios;
+
+    private bool _readonly       => Modo is CrudModo.Read or CrudModo.Delete || _bloqueadoPorEstado;
+    /// <summary>El estado de la cabecera no deja modificar el movimiento (flujo del botón
+    /// MODIFICAR, ver ValidarEstadoDetalleAsync): el documento queda de solo lectura, cabecera y
+    /// detalle. No en Eliminar: anular tiene su propio flujo, el de su botón.</summary>
+    private bool _bloqueadoPorEstado => Modo != CrudModo.Delete && _motivoEstado is not null;
+    private bool _cabeceraGrabada => _m.NUM_MOVIMIENTO_ALMACEN is > 0;
+
+    // ── LA MATRIZ POR MODO ────────────────────────────────────────────────────
+    // E = habilitado · D = deshabilitado · H = oculto.
+    //
+    // EL ORDEN ACÁ ES: Crear · MODIFICAR · VER · Eliminar.
+    // TU PLANILLA VIENE EN: CREATE · READ · UPDATE · DELETE.
+    //
+    // O sea que las dos del medio están cruzadas entre un lado y el otro. Al pasar la
+    // planilla las copié tal cual y quedó al revés: lo que tenía que poder editarse al
+    // MODIFICAR se podía editar al VER, y viceversa. Por eso observación y fecha de
+    // recepción salían bloqueadas sobre un documento ya grabado.
+    //
+    // Al traer una fila nueva de la planilla: intercambiar la 2ª y la 3ª letra.
+    private static readonly Dictionary<string,string> Matriz = new()
+    {
+        ["NUM_MOVIMIENTO_ALMACEN"]              = "DDDD",
+        ["COD_CLASE_MOVIMIENTO"]                = "HHHH",
+        ["COD_TIPO_MOVIMIENTO"]                 = "EDDD",
+        ["COD_ALMACEN"]                         = "EDDD",
+        ["FEC_MOVIMENTO_ALMACEN"]               = "EEDD",
+        ["FEC_RECEPCION"]                       = "EEDD",
+        ["COD_ENTIDAD"]                         = "EEDD",
+        ["COD_TIPO_COMPROBANTE_PAGO"]           = "EEDD",
+        // Igual que la entidad y el tipo de documento: se puede corregir mientras el
+        // documento no tenga líneas (ver PorDetalle).
+        ["NUM_COMPROBANTE_PAGO"]                = "EEDD",
+        ["DES_OBSERVACION"]                     = "EEDD",
+        ["COD_CENTRO_COSTO"]                    = "EEDD",
+        ["NUM_PROYECTO"]                        = "EEDD",
+        ["NUM_LOTE_CONTROL"]                    = "EDDD",
+        ["NUM_REQUERIMIENTO_STOCK_ATENDIDO"]    = "HHHH",
+        ["NUM_RESERVA_STOCK_ATENDIDO"]          = "HHHH",
+        ["COD_ALMACEN_SINCRONIZADO"]            = "EDDD",
+        ["NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO"] = "DDDD",
+        ["COD_CLASE_OPERACION"]                 = "HHHH",
+        ["COD_TIPO_OPERACION"]                  = "HHHH",
+        ["MUM_PEDIDO_COMERCIAL"]                = "HHHH",
+        ["NUM_REGISTRO"]                        = "HHHH",
+        ["COD_ENTIDAD_TRANSPORTISTA"]           = "EEDD",
+        // La dirección de la entidad que es el OTRO punto del traslado (punto de llegada en
+        // una salida, de partida en un ingreso). Es lo único de los dos puntos que se elige y
+        // se graba. Antes estaba oculta y el movimiento no tenía cómo decir adónde llegaba.
+        ["NUM_SECUENCIA_DIRECCION"]             = "EEDD",
+        // La planilla las daba por editables, pero eso fue ANTES del ALTER del SHOWBYID:
+        // ahora las direcciones de los dos puntos las calcula el SP. Escribibles dejarían al
+        // usuario tipear algo que la próxima lectura le pisa sin avisar.
+        ["DES_DIRECCION_DESTINO"]               = "DDDD",
+        ["COD_UBIGEO_DESTINO"]                  = "DDDD",
+        ["COD_TIPO_MOTIVO"]                     = "HHHH",
+        ["COD_MOTIVO"]                          = "EEDD",
+        ["COD_TIPO_ESTADO"]                     = "HHHH",
+        ["COD_ESTADO"]                          = "DDDD",
+    };
+
+    private int Col => Modo switch { CrudModo.Create => 0, CrudModo.Update => 1, CrudModo.Read => 2, _ => 3 };
+    private char Estado(string campo) => Matriz.TryGetValue(campo, out var s) ? s[Col] : 'E';
+
+    /// <summary>Se dibuja el campo. LA MATRIZ MANDA, y nada más.
+    ///
+    /// Antes esto también miraba la bandera del tipo de movimiento, y ahí estaba el problema:
+    /// sin tipo elegido las diecisiete banderas están en false, así que un documento nuevo
+    /// abría casi vacío y los campos iban apareciendo a medida que se elegía el tipo. La
+    /// pantalla crecía y encogía, y de entrada no se veía qué datos lleva un movimiento.
+    ///
+    /// Ahora el formulario se muestra COMPLETO desde el principio y lo que cambia es qué se
+    /// puede escribir. Se ve la forma del documento antes de empezar a llenarlo.</summary>
+    private bool Ver(string campo) => Estado(campo) != 'H';
+
+    /// <summary>Se puede escribir en él: la matriz lo da por editable Y la bandera del tipo lo
+    /// habilita. Un campo que el tipo no usa se ve, en gris, y no se puede tocar — que es
+    /// distinto de no existir.</summary>
+    private bool Editable(string campo) => Estado(campo) == 'E' && !_readonly && PorBandera(campo) && PorDetalle(campo);
+
+    /// <summary>Hay tres campos que dejan de poder cambiarse EN CUANTO EL DOCUMENTO TIENE
+    /// LÍNEAS: la entidad, el tipo de documento y su número.
+    ///
+    /// No es un capricho de pantalla. Las líneas ya se cargaron contra ESA entidad y ESE
+    /// comprobante —el lote de control salió de la entidad, el correlativo depende del tipo—,
+    /// así que cambiarlos con detalle cargado deja un documento que se contradice consigo
+    /// mismo. Mientras no haya una sola línea, cambiar es gratis.
+    ///
+    /// El número del documento va con los otros dos: es el del comprobante que ampara ESAS
+    /// líneas. Y además es el campo que más se corrige —un dígito mal tipeado se ve recién al
+    /// releer— así que tenerlo bloqueado desde el momento de grabar la cabecera obligaba a
+    /// borrar el movimiento entero para arreglar un número.</summary>
+    private bool PorDetalle(string campo) => campo switch
+    {
+        "COD_ENTIDAD" or "COD_TIPO_COMPROBANTE_PAGO" or "NUM_COMPROBANTE_PAGO" => _detalle.Count == 0,
+        _ => true
+    };
+
+    /// <summary>El almacén contrario se nombra según el sentido del tipo: en un ingreso
+    /// (FLG_POSITIVO = 1) la mercadería VIENE de él, es el origen; en una salida VA a él, es el
+    /// destino. Sin tipo elegido todavía no hay sentido y queda el rótulo doble.</summary>
+    private string RotuloAlmacenSincronizado => _flags.FLG_POSITIVO switch
+    {
+        true  => "Almacén Origen",
+        false => "Almacén Destino",
+        _     => "Almacén Destino/Origen"
+    };
+
+    private string RotuloMovimientoSincronizado => _flags.FLG_POSITIVO switch
+    {
+        true  => "N.° de Movimiento Origen",
+        false => "N.° de Movimiento Destino",
+        _     => "N.° de Movimiento Origen/Destino"
+    };
+
+    /// <summary>Las reglas del almacén contrario, antes de mandar nada a la base. El SP las
+    /// vuelve a validar; acá es para decirlo en el momento y con el rótulo que se ve.</summary>
+    private string? ValidarTransferencia()
+    {
+        // Traslado entre ubicaciones: el destino es el mismo almacén. Se pone acá también por si
+        // el almacén cambió después de elegir el tipo.
+        if (EsTrasladoUbicaciones)
+        {
+            _m.COD_ALMACEN_SINCRONIZADO = _m.COD_ALMACEN;
+            return null;
+        }
+        var rotulo = RotuloAlmacenSincronizado.ToLowerInvariant();
+        if (_flags.FLG_TRANSFERENCIA == true && string.IsNullOrWhiteSpace(_m.COD_ALMACEN_SINCRONIZADO))
+        {
+            // Si además el campo está bloqueado, el usuario no puede arreglarlo desde acá:
+            // falta el alcance de la transferencia en el tipo de movimiento.
+            return Editable("COD_ALMACEN_SINCRONIZADO")
+                ? $"El tipo de movimiento es de transferencia: el {rotulo} es obligatorio."
+                : "El tipo de movimiento es de transferencia, pero no tiene marcado entre qué se transfiere " +
+                  "(sucursales de la empresa o almacenes de la sucursal), así que no se puede elegir el almacén. " +
+                  "Revísalo en Tipos de Movimiento.";
+        }
+        if (!string.IsNullOrWhiteSpace(_m.COD_ALMACEN_SINCRONIZADO) && _m.COD_ALMACEN_SINCRONIZADO == _m.COD_ALMACEN)
+            return $"El {rotulo} no puede ser el mismo almacén del movimiento.";
+        if (!string.IsNullOrWhiteSpace(_m.COD_ALMACEN_SINCRONIZADO))
+            return MotivoAlmacenContrarioNoPermitido(_m.COD_ALMACEN_SINCRONIZADO);
+        return null;
+    }
+
+    // ── EL ALMACÉN CONTRARIO SEGÚN EL ALCANCE DE LA TRANSFERENCIA ─────────────
+    //
+    // El tipo de movimiento dice entre qué se transfiere (son excluyentes en su diálogo):
+    //   · entre sucursales de la empresa  → el otro almacén es de una sucursal DISTINTA a la del
+    //                                       almacén del movimiento;
+    //   · entre almacenes de la sucursal  → es de la MISMA sucursal (y no es el propio);
+    //   · entre ubicaciones del almacén   → es el mismo almacén del movimiento.
+    // La sucursal de cada almacén la trae el LoadCombos (AlmacenesSucursal). Si no llegó (API
+    // anterior a ese campo) no hay con qué comparar y el combo se comporta como antes.
+
+    private bool HaySucursalesDeAlmacenes => _combos.AlmacenesSucursal.Count > 0;
+
+    /// <summary>Sucursal de un almacén; null si no tiene o no se sabe.</summary>
+    private string? SucursalDe(string? codAlmacen) =>
+        string.IsNullOrWhiteSpace(codAlmacen) ? null
+        : _combos.AlmacenesSucursal.FirstOrDefault(a => a.CodAlmacen == codAlmacen)?.CodSucursal;
+
+    /// <summary>¿Este almacén es de la sucursal que pide el alcance? null = sí, o no hay alcance
+    /// por sucursal que aplicar; con texto = por qué no.</summary>
+    private string? MotivoAlmacenContrarioNoPermitido(string codContrario)
+    {
+        if (_flags.FLG_TRANSFERENCIA != true || !HaySucursalesDeAlmacenes) return null;
+        var mismaSucursal = _flags.FLG_TRANSFERENCIA_ALMACENES_SUCURSAL == true;
+        var otraSucursal  = _flags.FLG_TRANSFERENCIA_SUCURSALES_EMPRESA == true;
+        if (!mismaSucursal && !otraSucursal) return null;
+
+        var rotulo = RotuloAlmacenSincronizado.ToLowerInvariant();
+        var propia = SucursalDe(_m.COD_ALMACEN);
+        if (propia is null)
+            return $"El almacén del movimiento ({_m.COD_ALMACEN}) no tiene sucursal asignada, así que no se puede saber qué almacenes admite el {rotulo}. " +
+                   "Asígnale una sucursal en Almacenes.";
+
+        var otra = SucursalDe(codContrario);
+        if (otra is null)
+            return $"El almacén {codContrario} no tiene sucursal asignada, así que no se puede usar como {rotulo} en una transferencia entre " +
+                   (mismaSucursal && !otraSucursal ? "almacenes de la sucursal." : "sucursales.");
+
+        if (mismaSucursal && otra == propia) return null;
+        if (otraSucursal && otra != propia) return null;
+
+        return mismaSucursal && !otraSucursal
+            ? $"El {rotulo} {codContrario} es de otra sucursal ({otra}): en este tipo de movimiento tiene que ser un almacén de la sucursal {propia}, la del almacén del movimiento."
+            : $"El {rotulo} {codContrario} es de la misma sucursal del almacén del movimiento ({propia}): en este tipo de movimiento tiene que ser un almacén de otra sucursal.";
+    }
+
+    /// <summary>Los almacenes que se ofrecen como destino/origen (ver el bloque de arriba). El
+    /// valor ya elegido se muestra siempre, aunque hoy el alcance no lo permita (un documento
+    /// grabado antes de esta regla): si no, el combo lo vería vacío como si no lo tuviera.</summary>
+    private List<ComboboxItem> AlmacenesContrarios()
+    {
+        var todos  = _combos.Almacenes;
+        var propio = _m.COD_ALMACEN;
+
+        var lista = EsTrasladoUbicaciones
+            ? todos.Where(a => a.Id == propio).ToList()
+            : todos.Where(a => a.Id != propio
+                               && (!HaySucursalesDeAlmacenes || MotivoAlmacenContrarioNoPermitido(a.Id) is null)).ToList();
+
+        var actual = _m.COD_ALMACEN_SINCRONIZADO;
+        if (!string.IsNullOrWhiteSpace(actual) && lista.All(a => a.Id != actual)
+            && todos.FirstOrDefault(a => a.Id == actual) is { } elegido)
+            lista.Add(elegido);
+        return lista;
+    }
+
+    /// <summary>Después de cambiar el almacén o el tipo, el almacén contrario elegido puede haber
+    /// dejado de servir (otra sucursal, otro alcance). Se limpia en vez de dejarlo grabar. Solo
+    /// se llama desde esas dos acciones del usuario: al ABRIR un documento no se toca lo grabado.</summary>
+    private void AjustarAlmacenContrario()
+    {
+        if (EsTrasladoUbicaciones) { _m.COD_ALMACEN_SINCRONIZADO = _m.COD_ALMACEN; return; }
+        if (string.IsNullOrWhiteSpace(_m.COD_ALMACEN_SINCRONIZADO)) return;
+        if (_m.COD_ALMACEN_SINCRONIZADO == _m.COD_ALMACEN
+            || MotivoAlmacenContrarioNoPermitido(_m.COD_ALMACEN_SINCRONIZADO) is not null)
+            _m.COD_ALMACEN_SINCRONIZADO = null;
+    }
+
+    /// <summary>LAS DIECISIETE BANDERAS, en el único lugar donde importan.
+    ///
+    /// Un campo que la matriz da por editable igual queda BLOQUEADO si su bandera está en
+    /// false: no tiene sentido cargar el comprobante en un movimiento que no usa
+    /// comprobantes. Los campos que no figuran acá no dependen de ninguna bandera.</summary>
+    private bool PorBandera(string campo) => campo switch
+    {
+        // Entidad: la planilla no la ata a una bandera sino a que EXISTAN entidades del tipo
+        // que declara el tipo de movimiento (COD_TIPO_ENTIDAD_ASOCIADA). Sin tipo elegido, o
+        // con un tipo que no declara entidad, no hay a quién elegir y el campo queda en gris.
+        "COD_ENTIDAD" => _entidades.Count > 0,
+
+        // Transportista: comercial, o transferencia entre sucursales de la empresa.
+        "COD_ENTIDAD_TRANSPORTISTA" =>
+            _flags.FLG_COMERCIAL == true ||
+            (_flags.FLG_TRANSFERENCIA_SUCURSALES_EMPRESA == true && _flags.FLG_TRANSFERENCIA == true),
+
+        // Dirección de la entidad: sólo cuando el otro punto del traslado ES la entidad, y
+        // hace falta que haya una elegida de quien pedirle las direcciones.
+        "NUM_SECUENCIA_DIRECCION" => UsaDireccionDeLaEntidad && _m.COD_ENTIDAD is not null,
+
+        // Tipo de documento: igual que entidad, por existencia. Los comprobantes que acepta
+        // el tipo de movimiento salen de LOGISTICA.TIPOS_MOVIMIENTO_TIPOS_COMPROBATE_PAGO.
+        "COD_TIPO_COMPROBANTE_PAGO" => _comprobantesDelTipo.Count > 0,
+
+        // Número de documento: sólo se escribe a mano cuando el comprobante elegido NO lleva
+        // control de correlativo. Si lo lleva, el número lo pone la base y acá no se toca.
+        "NUM_COMPROBANTE_PAGO" => ComprobanteElegido is { FLG_CONTROL_CORRELATIVO: 0 },
+
+        "COD_CENTRO_COSTO" => _flags.FLG_CONSIGNA_CENTRO_COSTO == true,
+        "NUM_PROYECTO" => _flags.FLG_CONSIGNA_PROYECTO == true,
+        "NUM_LOTE_CONTROL" => _flags.FLG_CONSIGNA_LOTE_CONTROL == true,
+
+        // Almacén destino/origen: NO es "cualquier transferencia" sino una de las dos con
+        // alcance declarado. Un tipo marcado sólo como transferencia, sin decir entre qué,
+        // no tiene almacén contrario que ofrecer.
+        "COD_ALMACEN_SINCRONIZADO" =>
+            _flags.FLG_TRANSFERENCIA_SUCURSALES_EMPRESA == true ||
+            _flags.FLG_TRANSFERENCIA_ALMACENES_SUCURSAL == true,
+
+        // FEC_RECEPCION sirve a los dos sentidos: en un ingreso es la fecha en que se recibe; en una
+        // salida, la fecha de inicio del traslado (la que lleva la guía de remisión). Solo queda en
+        // gris mientras el tipo no diga si es ingreso o salida. El rótulo lo pone RotuloFechaRecepcion.
+        "FEC_RECEPCION" => _flags.FLG_POSITIVO is not null,
+
+        // Motivo: habilitado sólo si el tipo declara un tipo de motivo destino.
+        "COD_MOTIVO" => _flags.COD_TIPO_MOTIVO_DESTINO is not null,
+
+        _ => true
+    };
+
+    /// <summary>El rótulo de FEC_RECEPCION según el sentido del tipo de movimiento: en una salida
+    /// es la fecha de inicio del traslado; en un ingreso, o sin tipo elegido, la de recepción.</summary>
+    private string RotuloFechaRecepcion => _flags.FLG_POSITIVO == false
+        ? "Fecha de Inicio de Traslado"
+        : "Fecha de Recepción";
+
+    /// <summary>Con qué nombre se pide la entidad en ESTE documento: "Proveedor", "Cliente",
+    /// "Transportista". Lo dice el tipo de movimiento a través de su tipo de entidad asociada,
+    /// que el SHOWBYID ya trae resuelto (DES_TIPO_ENTIDAD).
+    ///
+    /// "Entidad" queda de respaldo mientras no haya tipo elegido: un rótulo genérico dice
+    /// menos, pero un rótulo vacío no dice nada.</summary>
+    private string RotuloEntidad => Rotular(
+        !string.IsNullOrWhiteSpace(_m.DES_TIPO_ENTIDAD) ? _m.DES_TIPO_ENTIDAD!
+      : !string.IsNullOrWhiteSpace(_desTipoEntidad)     ? _desTipoEntidad!
+      : "Entidad");
+
+    /// <summary>Los maestros guardan las descripciones en mayúsculas ("PROVEEDORES"), que como
+    /// rótulo de un campo grita. Se muestra en capitalización de oración: primera letra en
+    /// mayúscula y el resto en minúscula.
+    ///
+    /// Se transforma SÓLO AL MOSTRAR. El dato de la base no se toca: si mañana alguien carga
+    /// una descripción bien escrita, se respeta igual.</summary>
+    private static string Rotular(string texto) =>
+        string.IsNullOrWhiteSpace(texto) ? texto
+      : char.ToUpper(texto[0]) + texto[1..].ToLower();
+
+    /// <summary>El mismo rótulo, pero resuelto en el momento en que se ELIGE el tipo: ahí
+    /// todavía no hubo SHOWBYID que lo traiga, y el usuario ya cambió de tipo.</summary>
+    private string? _desTipoEntidad;
+
+    /// <summary>La descripción de un tipo de entidad, desde su maestro. Se cachea por código:
+    /// dentro de un mismo documento el tipo cambia pocas veces.</summary>
+    private readonly Dictionary<string, string> _desTiposEntidad = new();
+    private async Task<string?> DescripcionTipoEntidadAsync(string cod)
+    {
+        if (_desTiposEntidad.TryGetValue(cod, out var cacheada)) return cacheada;
+
+        var lista = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.TiposEntidadesCombobox) ?? new();
+        foreach (var x in lista) _desTiposEntidad[x.Id] = x.Texto;
+
+        return _desTiposEntidad.TryGetValue(cod, out var d) ? d : null;
+    }
+
+    /// <summary>La fila de TIPOS_MOVIMIENTO_TIPOS_COMPROBATE_PAGO del comprobante elegido —de
+    /// ahí sale FLG_CONTROL_CORRELATIVO, que decide si el número se escribe o lo pone la
+    /// base.</summary>
+    private ComprobanteDelTipo? ComprobanteElegido =>
+        _comprobantesDelTipo.FirstOrDefault(c => c.COD_TIPO_COMPROBANTE_PAGO == _m.COD_TIPO_COMPROBANTE_PAGO);
+
+    protected override async Task OnInitializedAsync()
+    {
+        // La fila de la GRILLA no alcanza: el SHOWALL no trae lo que arma el SHOWBYID —el tipo
+        // de entidad con su descripción, las direcciones de origen y destino, el motivo—. Por
+        // eso el documento se abría con el rótulo en "PRV" en vez del nombre del tipo, y con
+        // las direcciones vacías hasta que uno grababa.
+        //
+        // Se relee por su clave apenas se abre. Es un viaje más, sobre un documento que el
+        // usuario acaba de pedir explícitamente.
+        if (Item is not null)
+        {
+            _m = Item;
+            if (_m.NUM_MOVIMIENTO_ALMACEN is > 0)
+                _m = await Http.SafeGetAsync<Modelo>(
+                    $"{ApiRoutes.Logistica.MovimientosAlmacen}/{_m.NUM_MOVIMIENTO_ALMACEN}") ?? Item;
+        }
+        // La clase NO se pone acá: todavía no se leyó de Configuración General. Se asigna
+        // unas líneas más abajo, una vez que se sabe cuál es.
+        else _m = new Modelo { FEC_MOVIMENTO_ALMACEN = DateTime.Today };
+
+        // La clase de movimiento PRIMERO: los tipos se piden filtrados por ella, así que
+        // pedirlos antes de saberla traería los de la clase equivocada.
+        await CargarClaseMovimiento();
+        if (string.IsNullOrEmpty(_m.COD_CLASE_MOVIMIENTO)) _m.COD_CLASE_MOVIMIENTO = ClaseMovimiento;
+
+        // Combos y tipos en paralelo: son peticiones independientes y esperarlas en fila
+        // suma su tiempo sin necesidad.
+        await Task.WhenAll(CargarCombos(), CargarTipos(), CargarProyectos(), CargarAlmacenesDelRol(), CargarAccesosDirectos());
+        await CargarTiposDelRol();
+        var tipoAbierto = await LeerTipoAsync(_m.COD_TIPO_MOVIMIENTO);
+        AplicarBanderas(tipoAbierto);
+        _desTipoEntidad = _m.DES_TIPO_ENTIDAD;
+        await CargarDependientesDelTipo();
+
+        // Al ABRIR uno ya grabado, esNuevo: false — el motivo guardado manda sobre el valor
+        // por defecto del tipo. Si no, abrir un documento viejo le cambiaria el motivo solo.
+        //
+        // El tipo sale de LeerTipoAsync y no de buscarlo en _tipos: esa lista está filtrada
+        // por clase y, si la clase no coincide, no encuentra nada y el combo de motivos queda
+        // vacío. Es el mismo pozo en el que ya caímos con las banderas.
+        await CargarMotivosAsync(tipoAbierto, esNuevo: !_cabeceraGrabada);
+
+        AsegurarMotivoDeLaFila();
+        await CargarTransportistas();
+        await CargarBrevete();
+        await CargarDireccionesEntidad();
+
+        if (_cabeceraGrabada) { await CargarDetalle(); await CargarTransportes(); }
+        await ValidarEstadoDetalleAsync();
+        await ValidarGuiaAsync();
+    }
+
+    /// <summary>Los ocho combos en UN viaje. Sin esto serían ocho peticiones cada vez que se
+    /// abre un movimiento, contra las seis conexiones que abre el navegador por servidor.</summary>
+    private async Task CargarCombos()
+    {
+        var r = await Http.SafeGetAsync<MovimientosAlmacenLoadCombosResult>(
+            ApiRoutes.Logistica.MovimientosAlmacenLoadcombosPorClase(ClaseMovimiento));
+        if (r is not null) _combos = r;
+    }
+
+    private async Task CargarProyectos() =>
+        _proyectos = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Proyectos.ProyectosDocCombobox) ?? new();
+
+    // ── ACCESOS DIRECTOS DE TIPO DE MOVIMIENTO ──────────────────────────────────────
+    // Uno por usuario logueado (el servidor decide quién es, del token: el DTO que se manda
+    // no lleva COD_USUARIO real, el backend lo pisa). Se recargan por clase de movimiento:
+    // un atajo de "MOV" no significa nada en otra clase.
+    private List<UsuariosTiposMovimientoDirectAccess> _accesosDirectos = new();
+
+    private async Task CargarAccesosDirectos()
+        => _accesosDirectos = await Http.SafeGetAsync<List<UsuariosTiposMovimientoDirectAccess>>(
+               ApiRoutes.Logistica.UsuariosTiposMovimientoDirectAccessDe(ClaseMovimiento)) ?? new();
+
+    /// <summary>Los accesos directos del usuario que además son válidos EN EL ALMACÉN
+    /// elegido: _tiposDelRol ya viene filtrada por rol + almacén (CargarTiposDelRol), así
+    /// que un acceso directo cuyo tipo no está ahí es de otro almacén y no se muestra.
+    /// Se recalcula sola cada vez que cambia _tiposDelRol o _accesosDirectos: no hace falta
+    /// mantenerla sincronizada a mano en cada punto donde cualquiera de las dos cambia.</summary>
+    private List<UsuariosTiposMovimientoDirectAccess> AccesosDirectosVisibles
+        => _accesosDirectos.Where(a => _tiposDelRol.Any(t => t.Id == a.COD_TIPO_MOVIMIENTO)).ToList();
+
+    private bool EsAccesoDirecto(string? cod)
+        => cod is not null && _accesosDirectos.Any(a => a.COD_TIPO_MOVIMIENTO == cod);
+
+    private async Task ToggleAccesoDirectoActual()
+    {
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_MOVIMIENTO)) return;
+        if (EsAccesoDirecto(_m.COD_TIPO_MOVIMIENTO)) await QuitarAccesoDirecto(_m.COD_TIPO_MOVIMIENTO);
+        else await AgregarAccesoDirectoAsync(_m.COD_TIPO_MOVIMIENTO);
+    }
+
+    private async Task AgregarAccesoDirectoAsync(string codTipoMovimiento)
+    {
+        var dto = new UsuariosTiposMovimientoDirectAccessInsertDto
+        {
+            COD_CLASE_MOVIMIENTO = ClaseMovimiento,
+            COD_TIPO_MOVIMIENTO = codTipoMovimiento
+        };
+        var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.UsuariosTiposMovimientoDirectAccess, dto);
+        if (resp.IsSuccessStatusCode) await CargarAccesosDirectos();
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(AgregarAccesoDirectoAsync));
+    }
+
+    private async Task QuitarAccesoDirecto(string codTipoMovimiento)
+    {
+        var resp = await Http.DeleteAsync(
+            $"{ApiRoutes.Logistica.UsuariosTiposMovimientoDirectAccess}/{Uri.EscapeDataString(ClaseMovimiento)}/{Uri.EscapeDataString(codTipoMovimiento)}");
+        if (resp.IsSuccessStatusCode) await CargarAccesosDirectos();
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(QuitarAccesoDirecto), "No se pudo quitar el acceso directo");
+    }
+
+    /// <summary>Un clic en el botón hace lo mismo que elegir ese tipo del combo: llena
+    /// COD_TIPO_MOVIMIENTO y dispara OnTipoMovimientoChanged, que ya trae las banderas, los
+    /// motivos y las listas dependientes — así los inputs quedan habilitados o
+    /// deshabilitados exactamente como si se hubiera elegido a mano.</summary>
+    private async Task AplicarAccesoDirecto(UsuariosTiposMovimientoDirectAccess acceso)
+    {
+        if (!Editable("COD_TIPO_MOVIMIENTO")) return;
+        await OnTipoMovimientoChanged(acceso.COD_TIPO_MOVIMIENTO);
+    }
+
+    /// <summary>La clase de movimiento de almacén, desde Configuración General.</summary>
+    private async Task CargarClaseMovimiento()
+    {
+        var cfg = await ConfigGeneral.GetParaLayoutAsync();
+        var clase = cfg?.COD_CLASE_MOVIMIENTO_ALMACEN;
+        if (!string.IsNullOrWhiteSpace(clase)) ClaseMovimiento = clase.Trim();
+    }
+
+    /// <summary>Los almacenes del rol activo. Sin rol no se pide nada: la lista vacía y el
+    /// combo en gris dicen la verdad de ese momento mejor que el catálogo completo.</summary>
+    private async Task CargarAlmacenesDelRol()
+    {
+        var rol = MenuService.RolActivo;
+        if (string.IsNullOrWhiteSpace(rol)) { _almacenesDelRol = new(); return; }
+        _almacenesDelRol = await Http.SafeGetAsync<List<ComboboxItem>>(
+            $"{ApiRoutes.Seguridad.RolesAlmacenes}/combobox/{Uri.EscapeDataString(rol)}") ?? new();
+    }
+
+    /// <summary>Los tipos de movimiento del rol EN EL ALMACÉN elegido. Depende de los dos, así
+    /// que se recarga cada vez que cambia el almacén.</summary>
+    private async Task CargarTiposDelRol()
+    {
+        var rol = MenuService.RolActivo;
+        if (string.IsNullOrWhiteSpace(rol) || string.IsNullOrWhiteSpace(_m.COD_ALMACEN))
+        { _tiposDelRol = new(); return; }
+        _tiposDelRol = await Http.SafeGetAsync<List<ComboboxItem>>(
+            $"{ApiRoutes.Seguridad.RolesAlmacenesTiposMovimiento}/combobox/{Uri.EscapeDataString(rol)}/{Uri.EscapeDataString(_m.COD_ALMACEN!)}") ?? new();
+    }
+
+    /// <summary>Cambiar de almacén cambia qué tipos de movimiento hay. El tipo elegido se
+    /// conserva sólo si sobrevive a la nueva lista: dejarlo puesto cuando el rol no lo tiene
+    /// habilitado en ese almacén sería guardar algo que la seguridad no permite.</summary>
+    private async Task OnAlmacenChanged(string? v)
+    {
+        _m.COD_ALMACEN = v ?? "";
+        // El destino/origen ya elegido sigue solo si todavía vale para el almacén nuevo: no puede
+        // ser el mismo almacén, y según el alcance del tipo tiene que ser de la misma sucursal o
+        // de otra. En el traslado entre ubicaciones es al revés: sigue al almacén.
+        AjustarAlmacenContrario();
+        await CargarTiposDelRol();
+        if (!_tiposDelRol.Any(t => t.Id == _m.COD_TIPO_MOVIMIENTO))
+            await OnTipoMovimientoChanged(null);
+    }
+
+    /// <summary>Lo que depende del TIPO de movimiento: las entidades de su tipo de entidad y
+    /// los comprobantes que acepta. Las dos listas deciden además si sus campos se pueden
+    /// tocar (ver PorBandera), así que se recargan juntas cada vez que cambia el tipo.</summary>
+    private async Task CargarDependientesDelTipo()
+    {
+        await Task.WhenAll(CargarEntidadesDelTipo(), CargarComprobantesDelTipo(), CargarLotesControl());
+    }
+
+    private async Task CargarEntidadesDelTipo()
+    {
+        var tipoEntidad = _flags.COD_TIPO_ENTIDAD_ASOCIADA;
+        if (string.IsNullOrWhiteSpace(tipoEntidad)) { _entidades = new(); _desTipoEntidad = null; return; }
+
+        // El rótulo SIEMPRE es la descripción del tipo de entidad, nunca su código: "PRV" no le
+        // dice nada a quien carga el documento. En un documento nuevo todavía no hubo SHOWBYID
+        // que la traiga, así que se busca en el maestro de tipos de entidad.
+        if (string.IsNullOrWhiteSpace(_m.DES_TIPO_ENTIDAD))
+            _desTipoEntidad = await DescripcionTipoEntidadAsync(tipoEntidad);
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.Entidad>>(
+            ApiRoutes.Estandar.EntidadesPorTipo(tipoEntidad)) ?? new();
+        _entidades = lista
+            .Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = e.DES_NOMBRE_COMPLETO })
+            .ToList();
+    }
+
+    private async Task CargarLotesControl()
+    {
+        var ruta = _m.COD_ENTIDAD is { } e
+            ? ApiRoutes.Logistica.LotesControlComboboxDe(e)
+            : ApiRoutes.Logistica.LotesControlCombobox;
+        _lotesControl = await Http.SafeGetAsync<List<ComboboxItem>>(ruta) ?? new();
+    }
+
+    /// <summary>Cambiar de entidad cambia los lotes disponibles. El lote elegido se conserva
+    /// sólo si sigue estando en la lista nueva.</summary>
+    private async Task OnEntidadChanged(string? v)
+    {
+        _m.COD_ENTIDAD = decimal.TryParse(v, out var d) ? d : null;
+        await CargarLotesControl();
+        if (!_lotesControl.Any(l => l.Id == _m.NUM_LOTE_CONTROL)) _m.NUM_LOTE_CONTROL = null;
+
+        // La dirección elegida es de la entidad ANTERIOR: con otra entidad no existe o, peor,
+        // existe con el mismo número y es de otro lugar. Se descarta y se piden las de la nueva.
+        ElegirDireccionEntidad(null);
+        await CargarDireccionesEntidad(autoElegirUnica: true);
+    }
+
+    /// <summary>Normaliza lo digitado contra el formato del tipo de comprobante elegido.
+    ///
+    /// El formato lo declara el TIPO (VAL_LONGITUD_SERIE / VAL_LONGITUD_NUMERO), así que hace
+    /// falta su ficha; se pide una vez y se guarda mientras no cambie el comprobante.
+    ///
+    /// La regla en sí vive en KONSolutions.Shared.Common.NumeroComprobante, no acá: el número
+    /// de comprobante se pide también en Comprobantes de Pago y en todo lo que registre un
+    /// documento de tercero, y tiene que normalizar igual en los tres lugares.</summary>
+    private async Task NormalizarNumeroComprobante()
+    {
+        if (string.IsNullOrWhiteSpace(_m.NUM_COMPROBANTE_PAGO)) return;
+
+        string? prefijoSunat, prefijo;
+        int? longSerie, longNumero;
+
+        // PRIMERO lo que ya está en memoria: desde el script 29, la lista de comprobantes del
+        // tipo de movimiento trae también el formato. Esa lectura ya se hizo al elegir el tipo
+        // y va con el permiso de LOGISTICA.TIPOS_MOVIMIENTO, que quien graba un movimiento
+        // tiene por definición.
+        if (ComprobanteElegido is { VAL_LONGITUD_SERIE: not null } c)
+        {
+            prefijoSunat = c.COD_PREFIJO_SUNAT; prefijo = c.COD_PREFIJO;
+            longSerie = c.VAL_LONGITUD_SERIE;   longNumero = c.VAL_LONGITUD_NUMERO;
+        }
+        else
+        {
+            // Respaldo: la ficha del tipo de comprobante. ACÁ ESTABA EL PROBLEMA — ese endpoint
+            // exige el permiso ESTANDAR.TIPOS_COMPROBANTES_PAGO, y un usuario de almacén que no
+            // lo tenga recibe un 403 que el lector convierte en null. El número no se
+            // formateaba y no había forma de saber por qué.
+            var tipo = await LeerTipoComprobanteAsync(_m.COD_TIPO_COMPROBANTE_PAGO);
+            if (tipo is null)
+            {
+                Snackbar.Add("No se pudo leer el formato del tipo de comprobante: el número quedó como lo escribiste.", Severity.Warning);
+                return;
+            }
+            prefijoSunat = tipo.COD_PREFIJO_SUNAT; prefijo = tipo.COD_PREFIJO;
+            longSerie = tipo.VAL_LONGITUD_SERIE;   longNumero = tipo.VAL_LONGITUD_NUMERO;
+        }
+
+        // Sin longitudes cargadas no hay formato que aplicar, y conviene decirlo: es la causa
+        // más común de "escribo y no pasa nada".
+        if (longSerie is not > 0 || longNumero is not > 0)
+        {
+            Snackbar.Add($"El tipo de comprobante {_m.COD_TIPO_COMPROBANTE_PAGO} no tiene cargadas las longitudes de serie y número.", Severity.Info);
+            return;
+        }
+
+        var r = NumeroComprobante.Normalizar(
+            _m.NUM_COMPROBANTE_PAGO,
+            NumeroComprobante.PrefijoDe(prefijoSunat, prefijo),
+            longSerie, longNumero);
+        if (r.Valor == _m.NUM_COMPROBANTE_PAGO && r.Error is null && r.Aviso is null) return;
+
+        _m.NUM_COMPROBANTE_PAGO = r.Valor;
+
+        if (r.Error is not null) Snackbar.Add(r.Error, Severity.Warning);
+        else if (r.Aviso is not null) Snackbar.Add(r.Aviso, Severity.Info);
+
+        StateHasChanged();
+    }
+
+    /// <summary>La ficha del tipo de comprobante, cacheada mientras no cambie el elegido: al
+    /// salir del campo no tiene sentido volver a pedir lo mismo.</summary>
+    private TipoComprobanteModel? _tipoComprobante;
+    private async Task<TipoComprobanteModel?> LeerTipoComprobanteAsync(string? cod)
+    {
+        if (string.IsNullOrWhiteSpace(cod)) return null;
+        if (_tipoComprobante?.COD_TIPO_COMPROBANTE_PAGO == cod) return _tipoComprobante;
+
+        _tipoComprobante = await Http.SafeGetAsync<TipoComprobanteModel>(
+            $"{ApiRoutes.Estandar.TiposComprobantesPago}/{Uri.EscapeDataString(cod)}");
+        return _tipoComprobante;
+    }
+
+    private async Task CargarComprobantesDelTipo()
+    {
+        if (string.IsNullOrWhiteSpace(_m.COD_TIPO_MOVIMIENTO)) { _comprobantesDelTipo = new(); return; }
+        _comprobantesDelTipo = await Http.SafeGetAsync<List<ComprobanteDelTipo>>(
+            $"{ApiRoutes.Logistica.TiposMovimientoTiposComprobantePago}" +
+            $"?codClaseMovimiento={Uri.EscapeDataString(ClaseMovimiento)}" +
+            $"&codTipoMovimiento={Uri.EscapeDataString(_m.COD_TIPO_MOVIMIENTO)}") ?? new();
+    }
+
+    /// <summary>Los mismos comprobantes, en forma de combo.</summary>
+    private List<ComboboxItem> _comprobantesCombo => _comprobantesDelTipo
+        .Select(c => new ComboboxItem { Id = c.COD_TIPO_COMPROBANTE_PAGO, Texto = c.DES_TIPO_COMPROBANTE_PAGO ?? "" })
+        .ToList();
+
+    /// <summary>Las diecisiete banderas mandan sobre media cabecera, así que tienen que estar
+    /// ANTES de dibujarla.
+    ///
+    /// Se trae la lista COMPLETA de tipos una sola vez y se busca en memoria, en vez de pedir
+    /// uno por uno al cambiar el combo. Dos razones: el GetById de tipos de movimiento pide
+    /// DOS claves —clase y tipo— y la clase no está en el formulario porque la matriz la
+    /// oculta; y así elegir el tipo no dispara una petición cada vez.</summary>
+    private async Task CargarTipos()
+    {
+        // Filtrada por clase, y no es cosmético: AplicarBanderas busca el tipo por una sola
+        // columna cuando la clave son dos. Si el mismo código existe bajo otra clase, sin
+        // filtrar podría tomar el equivocado y aplicar sus banderas.
+        var todos = await Http.SafeGetAsync<List<TiposMovimiento>>(ApiRoutes.Logistica.TiposMovimiento) ?? new();
+        _tipos = todos.Where(x => x.COD_CLASE_MOVIMIENTO == ClaseMovimiento).ToList();
+    }
+
+    /// <summary>Las banderas del tipo, PEDIDAS POR SU CLAVE en vez de buscadas en una lista.
+    ///
+    /// Antes se buscaban en _tipos, que es el SHOWALL filtrado por la clase de movimiento. Si
+    /// esa clase no coincidía —y desde que se lee de Configuración General puede no
+    /// coincidir— la búsqueda no encontraba nada, _flags quedaba en blanco y la pantalla se
+    /// veía ENTERA en gris: sin entidad, sin tipo de documento, sin centro de costo, sin
+    /// estado. Todo por una lista que no tenía la fila, sin un solo mensaje que lo dijera.
+    ///
+    /// El combo ofrece el tipo dentro de una clase y un almacén, así que la clave existe y se
+    /// puede preguntar directo. Una petición más al elegir el tipo, a cambio de que la
+    /// pantalla no dependa de que dos listas coincidan.</summary>
+    private async Task<TiposMovimiento?> LeerTipoAsync(string? codTipoMovimiento)
+    {
+        if (string.IsNullOrWhiteSpace(codTipoMovimiento)) return null;
+
+        // Primero en memoria: si la lista ya lo tiene, no se pide de nuevo.
+        var t = _tipos.FirstOrDefault(x => x.COD_TIPO_MOVIMIENTO == codTipoMovimiento);
+        if (t is not null) return t;
+
+        return await Http.SafeGetAsync<TiposMovimiento>(
+            $"{ApiRoutes.Logistica.TiposMovimiento}/{Uri.EscapeDataString(ClaseMovimiento)}/{Uri.EscapeDataString(codTipoMovimiento)}");
+    }
+
+    private void AplicarBanderas(TiposMovimiento? t)
+    {
+        _flags = t ?? new TiposMovimiento();
+        // La clase viaja aunque la matriz la oculte: es parte de la clave del tipo y el SP la
+        // recibe. Sin esto se perdería al grabar.
+        if (t is not null) _m.COD_CLASE_MOVIMIENTO = t.COD_CLASE_MOVIMIENTO;
+
+        // El tipo de motivo tambien viaja aunque la matriz lo oculte: es lo que da sentido al
+        // COD_MOTIVO que se graba. Sin el, el motivo quedaria colgado de la nada.
+        if (t is not null) _m.COD_TIPO_MOTIVO = t.COD_TIPO_MOTIVO_DESTINO;
+
+        // Traslado entre ubicaciones: el almacén destino es el mismo, sin elegirlo.
+        if (EsTrasladoUbicaciones) _m.COD_ALMACEN_SINCRONIZADO = _m.COD_ALMACEN;
+    }
+
+    /// <summary>Transferencia entre ubicaciones de un MISMO almacén (de un rack a otro). Se
+    /// carga normalmente desde la pantalla Transferencias entre Ubicaciones; acá se puede ver y,
+    /// en la salida, tocar el detalle como cualquier salida por transferencia.</summary>
+    private bool EsTrasladoUbicaciones
+        => _flags.FLG_TRANSFERENCIA == true && _flags.FLG_TRANSFERENCIA_UBICACIONES_ALMACEN == true;
+
+    /// <summary>Trae los motivos del tipo y, en un documento NUEVO, deja puesto el motivo por
+    /// defecto que el tipo de movimiento define. En uno ya grabado no se toca: lo que eligio el
+    /// usuario manda sobre el valor sugerido.</summary>
+    /// <summary>El motivo grabado, aunque la lista del tipo no lo contenga.
+    ///
+    /// La fila ya trae COD_MOTIVO y DES_MOTIVO del SHOWBYID. Si el combo dependiera sólo del
+    /// maestro, un documento viejo —o uno cuyo tipo de motivo cambió después— abriría con el
+    /// campo en blanco, como si no tuviera motivo. Y sí lo tiene: está grabado.
+    ///
+    /// Es la misma idea que ya se usa con el producto en el detalle de la reserva.</summary>
+    private void AsegurarMotivoDeLaFila()
+    {
+        if (_m.COD_MOTIVO is not { } cod) return;
+        var id = cod.ToString();
+        if (_motivos.Any(x => x.Id == id)) return;
+
+        _motivos.Insert(0, new ComboboxItem { Id = id, Texto = _m.DES_MOTIVO ?? id });
+    }
+
+    private async Task CargarMotivosAsync(TiposMovimiento? t, bool esNuevo)
+    {
+        _motivos = new();
+        if (t?.COD_TIPO_MOTIVO_DESTINO is not { } codTipo) { if (esNuevo) _m.COD_MOTIVO = null; return; }
+
+        try
+        {
+            // El endpoint devuelve Motivo (COD_MOTIVO/DES_MOTIVO), no ComboboxItem: hay que
+            // mapearlo o el combo sale con filas en blanco. Mismo detalle que en
+            // TiposMovimientoDialog e InventariosDialog.
+            var motivos = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.Motivo>>(
+                $"{ApiRoutes.Estandar.MotivosPorTipo}/{codTipo}") ?? new();
+            _motivos = motivos
+                .Where(m => m.COD_MOTIVO is not null)
+                .Select(m => new ComboboxItem { Id = m.COD_MOTIVO!.Value.ToString(), Texto = m.DES_MOTIVO ?? "" })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoAlmacenDocumento), nameof(CargarMotivosAsync));
+        }
+
+        if (esNuevo && t.COD_MOTIVO_DEFECTO is { } defecto
+            && _motivos.Any(x => x.Id == defecto.ToString()))
+            _m.COD_MOTIVO = defecto;
+    }
+
+    private async Task OnTipoMovimientoChanged(string? v)
+    {
+        _m.COD_TIPO_MOVIMIENTO = v;
+        var tipo = await LeerTipoAsync(v);
+        AplicarBanderas(tipo);
+        // El alcance de la transferencia cambió con el tipo: el almacén destino elegido puede no valer.
+        AjustarAlmacenContrario();
+        // El rótulo de Entidad depende del tipo: se borra para que lo resuelva el tipo nuevo.
+        _desTipoEntidad = null;
+        _m.DES_TIPO_ENTIDAD = null;
+
+        // Si el tipo existe en el combo pero no se pudo leer su ficha, la pantalla se vería
+        // toda en gris sin explicación. Mejor decirlo.
+        if (v is not null && tipo is null)
+            Snackbar.Add($"No se pudo leer el tipo de movimiento {v} de la clase {ClaseMovimiento}.", Severity.Warning);
+
+        await CargarMotivosAsync(tipo, esNuevo: true);
+
+        // Entidad y tipo de documento dependen del tipo: cambiar de tipo cambia las dos
+        // listas, y lo elegido antes puede no existir en las nuevas. Se limpia lo que ya no
+        // figura, en vez de dejar grabado un valor que la nueva lista no contiene.
+        await CargarDependientesDelTipo();
+        if (!_entidades.Any(e => e.Id == _m.COD_ENTIDAD?.ToString())) _m.COD_ENTIDAD = null;
+        if (!_comprobantesDelTipo.Any(c => c.COD_TIPO_COMPROBANTE_PAGO == _m.COD_TIPO_COMPROBANTE_PAGO))
+        {
+            _m.COD_TIPO_COMPROBANTE_PAGO = null;
+            _m.NUM_COMPROBANTE_PAGO = null;
+        }
+
+        // La dirección de la entidad sólo existe en los tipos comerciales (y la entidad pudo
+        // haberse limpiado arriba), y entre ingreso y salida cambia de lugar en la fila.
+        // Los puntos se vuelven a armar desde cero en vez de arrastrar una elección que ya no
+        // significa lo mismo. El tipo sólo se elige al CREAR, así que no hay nada grabado que perder.
+        LimpiarPuntosDelTraslado();
+        await CargarDireccionesEntidad(autoElegirUnica: true);
+        StateHasChanged();
+    }
+
+    private void LimpiarPuntosDelTraslado()
+    {
+        _m.NUM_SECUENCIA_DIRECCION = null;
+        _m.DES_DIRECCION_ORIGEN = _m.DES_UBIGEO_ORIGEN = null;
+        _m.DES_DIRECCION_DESTINO = _m.COD_UBIGEO_DESTINO = _m.DES_UBIGEO = null;
+    }
+
+    /// <summary>Vuelve a traer el detalle cuando un panel asignó o quitó líneas.
+    ///
+    /// Asignar escribe en MOVIMIENTOS_ALMACEN_DETALLE, que es justo lo que muestra esta
+    /// grilla; sin esto había que cambiar de pestaña y volver para ver el resultado, y
+    /// mientras tanto la pantalla mostraba un detalle que ya no era el de la base.</summary>
+    private async Task RecargarDetalleDesdePanel()
+    {
+        await CargarDetalle();
+        _huboCambios = true;
+        StateHasChanged();
+    }
+
+    /// <summary>Abre el diálogo de lote y orden en SOLO LECTURA. Acá no se elige nada: el
+    /// lote se define del lado de disponibles, antes de asignar. El diálogo sirve para ver
+    /// los cinco datos con aire, que en una celda no entran.</summary>
+    private async Task VerLoteOrdenAsync(DetalleModel it)
+    {
+        var parametros = new DialogParameters
+        {
+            // Antes iba una lista vacía "porque en sólo lectura no hace falta elegir" — pero
+            // el combo SÍ la necesita para mostrar la DESCRIPCIÓN del lote ya elegido: sin
+            // ningún ítem que coincida con NumLoteControl, el combo no tiene de dónde sacar el
+            // texto y se ve vacío aunque el dato exista. _lotesControl es la misma lista que ya
+            // usa esta pantalla para mostrar la descripción en la celda (ResumenLoteOrden).
+            ["Lotes"]          = _lotesControl,
+            ["NumLoteControl"] = it.NUM_LOTE_CONTROL,
+            ["CodProceso"]     = it.COD_PROCESO,
+            ["DesProceso"]     = it.DES_PROCESO,
+            ["NumOrden"]       = it.NUM_ORDEN_PRODUCCION,
+            ["DesOrden"]       = it.DES_ORDEN_PRODUCCION,
+            ["NumItem"]        = it.NUM_ORDEN_PRODUCCION_ITEM,
+            ["NumUnidad"]      = it.NUM_ORDEN_PRODUCCION_UNIDAD,
+            ["NumSecuencia"]   = it.NUM_SECUENCIA,
+            ["DesProducto"]    = it.DES_PRODUCTO,
+            ["SoloLectura"]    = true
+        };
+
+        await DialogService.ShowAsync<LoteOrdenProduccionDialog>("Lote y orden de producción",
+            parametros, new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false });
+    }
+
+    /// <summary>Lo que se lee en la celda: el lote y, si la línea viene de producción, el
+    /// proceso y la orden. Mismo formato que en los paneles, a propósito: las tres grillas
+    /// se comparan de un vistazo.</summary>
+    private string ResumenLoteOrden(DetalleModel it)
+        => LoteOrdenFormato.Resumen(it.NUM_LOTE_CONTROL, it.COD_PROCESO, it.NUM_ORDEN_PRODUCCION, it.NUM_ORDEN_PRODUCCION_ITEM, it.NUM_ORDEN_PRODUCCION_UNIDAD, _lotesControl);
+
+    private async Task CargarDetalle()
+    {
+        var r = await Http.SafeGetAsync<List<DetalleModel>>(
+            $"{ApiRoutes.Logistica.MovimientosAlmacenDetalle}?NUM_MOVIMIENTO_ALMACEN={_m.NUM_MOVIMIENTO_ALMACEN}");
+        _detalle = r ?? new();
+        await CargarLecturasAsync();
+    }
+
+    // ── Detalle expandido (la cabecera oculta) ───────────────────────────────────────
+
+    private bool _detalleExpandido, _recalcularAlto;
+
+    /// <summary>La cabecera solo se oculta con el documento ya grabado: antes no hay detalle que expandir y los campos
+    /// de la cabecera son lo único que hay que llenar.</summary>
+    private bool CabeceraOculta => _detalleExpandido && _cabeceraGrabada;
+
+    private string ResumenCabecera
+        => string.Join(" · ", new[]
+        {
+            $"N° {_m.NUM_MOVIMIENTO_ALMACEN}",
+            string.Join(" - ", new[] { _m.COD_TIPO_MOVIMIENTO, _m.DES_TIPO_MOVIMIENTO }.Where(x => !string.IsNullOrWhiteSpace(x))),
+            string.Join(" - ", new[] { _m.COD_ALMACEN, _m.DES_ALMACEN }.Where(x => !string.IsNullOrWhiteSpace(x))),
+            _m.DES_ESTADO,
+        }.Where(x => !string.IsNullOrWhiteSpace(x)));
+
+    private void AlternarDetalleExpandido()
+    {
+        _detalleExpandido = !_detalleExpandido;
+        _recalcularAlto = true;
+    }
+
+    /// <summary>Si el guardado no pasa la validación, el mensaje sale en el campo que falla: con la cabecera oculta no
+    /// se vería, así que se muestra.</summary>
+    private void MostrarCabeceraPorError()
+    {
+        if (!_detalleExpandido) return;
+        _detalleExpandido = false;
+        _recalcularAlto = true;
+    }
+
+    /// <summary>La grilla del detalle se estira hasta la barra de estado (gridAutoAlto.js), pero solo vuelve a medir cuando
+    /// el DOM agrega o quita nodos, no cuando se oculta algo con estilo: se le avisa después de dibujar el cambio.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_recalcularAlto) return;
+        _recalcularAlto = false;
+        try { await JS.InvokeVoidAsync("gridAutoAlto.pedirRecalculo"); }
+        catch { /* el alto es comodidad: nunca tumbar la pantalla por esto */ }
+    }
+
+    // ── Lectura de etiquetas (código de barras / RFID) ───────────────────────────────
+    //
+    // El requisito (N / O / R) es del TIPO de movimiento y viene en las banderas. Todo lo de
+    // lectura —panel, columna, aviso— cuelga de él, así que un tipo en N no ve nada nuevo.
+
+    private MovimientoLecturaPanel? _panelLectura;
+    /// <summary>Barras verticales (viewBox 24x24, como los íconos de Material): MudBlazor 7 no trae un ícono de código de barras.</summary>
+    private const string IconoCodigoBarras = "<path d=\"M3 5h2v14H3V5zm4 0h1v14H7V5zm3 0h3v14h-3V5zm5 0h1v14h-1V5zm3 0h3v14h-3V5z\"/>";
+
+    // Por línea: cuántas lecturas, cuánto suman y de qué tipo son (RFID o código de barras: una línea puede tener de los dos).
+    private Dictionary<int, (int N, decimal Total, int Rfid, int Codebar)> _etiquetasPorLinea = new();
+    private List<MovimientosAlmacenLecturaPendiente> _pendientes = new();
+
+    private string RequisitoLectura => string.IsNullOrWhiteSpace(_flags.COD_REQUISITO_LECTURA) ? "N" : _flags.COD_REQUISITO_LECTURA!.Trim().ToUpperInvariant();
+    private bool UsaLectura => RequisitoLectura is "O" or "R";
+
+    /// <summary>El panel de lectura: el tipo usa lectura, la cabecera está grabada, el documento se puede tocar
+    /// y ya se sabe si es ingreso o salida (la lectura necesita saberlo para mover el stock).</summary>
+    private bool MostrarPanelLectura
+        => UsaLectura && !_readonly && _cabeceraGrabada && _motivoEstado is null && _flags.FLG_POSITIVO is not null;
+
+    /// <summary>Ingreso de una transferencia: sus líneas las genera la salida, así que son líneas con origen
+    /// aunque no tengan las secuencias de requerimiento / orden / reserva.</summary>
+    private bool EsIngresoTransferencia => _flags.FLG_TRANSFERENCIA == true && _flags.FLG_POSITIVO == true;
+
+    /// <summary>La línea viene de otro documento: la lectura solo le asigna etiquetas, no cambia la cantidad.
+    /// Es la misma regla que aplica el procedimiento (FNC_LOGISTICA_MOVIMIENTO_LINEA_ORIGEN).</summary>
+    private bool LineaConOrigen(DetalleModel d) => EsLineaDerivada(d) || EsIngresoTransferencia;
+
+    /// <summary>«Leer en esta línea» se ofrece donde la lectura automática no llega: en las líneas con origen, y
+    /// en todas cuando el tipo no admite cargar líneas a mano.</summary>
+    private bool MostrarLeerEnLinea(DetalleModel d)
+        => MostrarPanelLectura && d.NUM_SECUENCIA is not null && (!PuedeAgregarDetalleManual || LineaConOrigen(d));
+
+    private (int N, decimal Total, int Rfid, int Codebar)? EtiquetasDe(DetalleModel d)
+        => d.NUM_SECUENCIA is { } sec && _etiquetasPorLinea.TryGetValue(sec, out var x) ? x : null;
+
+    private bool TieneEtiquetas(DetalleModel d) => EtiquetasDe(d) is { N: > 0 };
+
+    private MovimientosAlmacenLecturaPendiente? PendienteDe(DetalleModel d)
+        => RequisitoLectura == "R" ? _pendientes.FirstOrDefault(p => p.NUM_SECUENCIA == d.NUM_SECUENCIA) : null;
+
+    private const string MotivoLineaConEtiquetas =
+        "La cantidad de esta línea sale de las etiquetas leídas. Cámbialas desde la columna Lecturas, o quita la línea y vuelve a leerla.";
+
+    /// <summary>Las etiquetas del movimiento (una sola petición, agrupadas por línea) y, si el tipo exige leer, lo
+    /// que falta. Si el tipo no usa lectura no se pide nada.</summary>
+    private async Task CargarLecturasAsync()
+    {
+        _etiquetasPorLinea = new();
+        _pendientes = new();
+        if (!UsaLectura || !_cabeceraGrabada) return;
+        var num = _m.NUM_MOVIMIENTO_ALMACEN!.Value;
+        var etiquetas = Http.SafeGetAsync<List<MovimientosAlmacenEtiqueta>>(ApiRoutes.Logistica.MovimientosAlmacenEtiquetas(num));
+        var pendientes = RequisitoLectura == "R"
+            ? Http.SafeGetAsync<List<MovimientosAlmacenLecturaPendiente>>(ApiRoutes.Logistica.MovimientosAlmacenLecturasPendientes(num))
+            : Task.FromResult<List<MovimientosAlmacenLecturaPendiente>?>(null);
+        _etiquetasPorLinea = (await etiquetas ?? new())
+            .Where(e => e.NUM_SECUENCIA is not null)
+            .GroupBy(e => e.NUM_SECUENCIA!.Value)
+            .ToDictionary(g => g.Key, g => (g.Count(), g.Sum(e => e.CAN_PRODUCTO ?? 0), g.Count(e => e.TIPO_ETIQUETA == "RFID"), g.Count(e => e.TIPO_ETIQUETA == "CODEBAR")));
+        _pendientes = await pendientes ?? new();
+    }
+
+    /// <summary>Después de cada lectura: el detalle (la línea pudo crearse o cambiar de cantidad), las etiquetas
+    /// y los pendientes se recargan juntos.</summary>
+    private async Task AlLeerAsync()
+    {
+        await CargarDetalle();
+        _huboCambios = true;
+        StateHasChanged();
+    }
+
+    private async Task VerEtiquetasAsync(DetalleModel d)
+    {
+        var dlg = await DialogService.ShowAsync<MovimientoEtiquetasDialog>("",
+            new DialogParameters
+            {
+                ["NumMovimiento"] = _m.NUM_MOVIMIENTO_ALMACEN!.Value,
+                ["Linea"]         = d,
+                ["Lotes"]         = _lotesControl,
+                ["ConOrigen"]     = LineaConOrigen(d),
+                ["SoloLectura"]   = _readonly
+            },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = true });
+        if ((await dlg.Result) is { Canceled: false, Data: true })
+        {
+            await CargarDetalle();
+            _huboCambios = true;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>El botón que pediste. Una sola llamada por origen: el procedimiento escribe
+    /// el enlace y las líneas en la misma transacción, así que no puede quedar a medias.</summary>
+    private async Task AgregarDesde(string origen, int numero)
+    {
+        if (!_cabeceraGrabada) { Snackbar.Add("Primero hay que grabar la cabecera.", Severity.Warning); return; }
+        if (_motivoEstado is { } motivo) { Snackbar.Add(motivo, Severity.Warning); return; }
+        var num = _m.NUM_MOVIMIENTO_ALMACEN!.Value;
+        var (ruta, dto) = origen switch
+        {
+            "requerimiento" => (ApiRoutes.Logistica.MovimientosAlmacenAgregarDesdeRequerimiento(num),
+                                new MovimientosAlmacenAgregarDto { NUM_REQUERIMIENTO_STOCK = numero }),
+            "pedido"        => (ApiRoutes.Logistica.MovimientosAlmacenAgregarDesdePedidoComercial(num),
+                                new MovimientosAlmacenAgregarDto { NUM_PEDIDO_COMERCIAL = numero }),
+            _               => (ApiRoutes.Logistica.MovimientosAlmacenAgregarDesdeReserva(num),
+                                new MovimientosAlmacenAgregarDto { NUM_RESERVA_STOCK = numero }),
+        };
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(ruta, dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(AgregarDesde));
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<MovimientosAlmacenAgregarResult>>();
+            // Cero líneas NO es un error: ya estaba todo agregado o no queda pendiente.
+            Snackbar.Add(r?.Data?.DES_MENSAJE ?? "Listo.",
+                         (r?.Data?.CAN_LINEAS_AGREGADAS ?? 0) > 0 ? Severity.Success : Severity.Info);
+            await CargarDetalle();
+            _huboCambios = true;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(MovimientoAlmacenDocumento), nameof(AgregarDesde));
+        }
+    }
+
+    // ── Qué se puede tocar a mano en el detalle ──────────────────────────────────────
+    //
+    // Una sola regla, escrita una sola vez, para que no se pueda aplicar en un lugar y
+    // olvidar en otro.
+
+    /// <summary>La línea vino de otro documento y no se toca desde acá.
+    ///
+    /// La prueba son las DOS SECUENCIAS, no los números de documento: el movimiento
+    /// entero puede estar asociado a una orden de compra mientras algunas de sus líneas
+    /// se cargaron a mano. Lo que ata una LÍNEA a su origen es la secuencia, y por eso
+    /// es lo único que se mira. Vale igual para transferencias, que es el caso que
+    /// pediste: ahí el movimiento no "deriva" de nada, pero una línea sí puede.
+    ///
+    /// La reserva va incluida por coherencia: es el mismo mecanismo de atención y
+    /// borrarla dejaría la reserva descuadrada igual que las otras dos.</summary>
+    private static bool EsLineaDerivada(DetalleModel d)
+        => d.NUM_SECUENCIA_REQUERIMIENTO_STOCK is not null
+        || d.NUM_SECUENCIA_PEDIDO_COMERCIAL    is not null
+        || d.NUM_SECUENCIA_RESERVA_STOCK       is not null;
+
+    /// <summary>El tipo de movimiento no admite tocar el detalle a mano.
+    ///
+    /// Comerciales y de requerimiento: las líneas son las de su documento de origen y entran y
+    /// salen por sus pestañas, que además devuelven lo atendido. Ingreso de una transferencia:
+    /// sus líneas las genera la salida (el SP las replica al grabarlas allá); tocarlas acá las
+    /// descuadraría de la salida.
+    ///
+    /// Se mira el TIPO, no las líneas: un movimiento comercial sin líneas todavía tampoco se
+    /// carga a mano.</summary>
+    private bool TipoBloqueaDetalleManual
+        => _flags.FLG_COMERCIAL == true
+        || _flags.FLG_REQUERIMIENTO == true
+        || (_flags.FLG_TRANSFERENCIA == true && _flags.FLG_POSITIVO == true);
+
+    /// <summary>Si se pueden agregar líneas a mano a ESTE movimiento: la cabecera grabada, un
+    /// tipo que lo admita y ya clasificado como ingreso o salida, y ninguna línea traída de otro
+    /// documento (mezclarle una línea suelta a un documento de atención rompe la
+    /// correspondencia con lo pedido).</summary>
+    private bool PuedeAgregarDetalleManual
+        => !_readonly && _cabeceraGrabada && _motivoEstado is null && !TipoBloqueaDetalleManual
+        && _flags.FLG_POSITIVO is not null && !_detalle.Any(EsLineaDerivada);
+
+    /// <summary>Si ESTA línea se puede modificar o quitar a mano.</summary>
+    private bool PuedeTocarLinea(DetalleModel d)
+        => !_readonly && _motivoEstado is null && !TipoBloqueaDetalleManual && !EsLineaDerivada(d);
+
+    /// <summary>Salida por transferencia que el SP replica en el ingreso destino: al cargar o
+    /// modificar una línea hay que elegir la ubicación del almacén destino. Con confirmación de
+    /// recepción no se replica (el destino se arma al recibir) y no se pide.</summary>
+    private bool SalidaConDestino
+        => _flags.FLG_TRANSFERENCIA == true && _flags.FLG_POSITIVO == false
+        && _flags.FLG_REQUIERE_CONFIRMACION_RECEPCION == false && _m.NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO is not null;
+
+    /// <summary>Por qué el tipo no admite el detalle a mano, o null si lo admite.</summary>
+    private string? MotivoTipoBloqueado
+        => MuestraDevolucionCompra
+             ? "Es una devolución de compra: las líneas se arman desde la pestaña Devolución de compra (guías del proveedor) y se quitan desde ahí."
+         : _flags.FLG_COMERCIAL == true
+             ? "Es un movimiento comercial: las líneas se traen desde la pestaña Órdenes de Compra y se quitan desde ahí."
+         : _flags.FLG_REQUERIMIENTO == true
+             ? "Es un movimiento de requerimiento: las líneas se traen desde la pestaña Requerimientos y se quitan desde ahí."
+         : _flags.FLG_TRANSFERENCIA == true && _flags.FLG_POSITIVO == true
+             ? $"Es el ingreso de una transferencia: sus líneas las genera la salida{(_m.NUM_MOVIMIENTO_ALMACEN_SINCRONIZADO is { } s ? $" (movimiento N° {s})" : "")}. Se agregan, modifican o quitan desde la salida."
+         : null;
+
+    /// <summary>El motivo exacto, no un "no se puede" a secas: cada caso se resuelve en un lugar
+    /// distinto, y decir cuál ahorra la vuelta.</summary>
+    private string MotivoLineaBloqueada(DetalleModel d)
+        => _motivoEstado
+        ?? (EsLineaDerivada(d) ? MotivoLineaDerivada(d) : MotivoTipoBloqueado ?? "Esta línea no se puede modificar.");
+
+    private static string MotivoLineaDerivada(DetalleModel d)
+        => d.NUM_SECUENCIA_PEDIDO_COMERCIAL is not null
+             ? "Viene de una orden de compra. Se quita desde la pestaña Órdenes de Compra."
+         : d.NUM_SECUENCIA_REQUERIMIENTO_STOCK is not null
+             ? "Viene de un requerimiento. Se quita desde la pestaña Requerimientos."
+             : "Viene de una reserva. Se quita desde el documento que la generó.";
+
+    /// <summary>Por qué no se puede agregar a mano (null si no hay nada que explicar). Se muestra
+    /// en la pantalla en vez de esconder el botón sin explicación.</summary>
+    private string? MotivoSinAltaManual
+        => MotivoTipoBloqueado
+        ?? _motivoEstado
+        ?? (!_cabeceraGrabada ? "Graba la cabecera para poder cargar las líneas."
+          : _detalle.Any(EsLineaDerivada) ? "Este movimiento ya atiende un requerimiento, una reserva o una orden de compra: no se le agregan líneas sueltas."
+          : _flags.FLG_POSITIVO is null ? "El tipo de movimiento no dice si es ingreso o salida (FLG_POSITIVO sin definir): revisa su configuración."
+          : null);
+
+    /// <summary>Abre el alta manual: en una salida, desde el stock con disponible; en un ingreso,
+    /// con producto, ubicación y lote.</summary>
+    private async Task AgregarLineas()
+    {
+        if (!PuedeAgregarDetalleManual) { Snackbar.Add(MotivoSinAltaManual ?? "No se pueden agregar líneas.", Severity.Warning); return; }
+        await AbrirLinea(_flags.FLG_POSITIVO == false ? MovimientoDetalleLineaDialog.FormaSalida : MovimientoDetalleLineaDialog.FormaIngreso, null);
+    }
+
+    private async Task ModificarLinea(DetalleModel d)
+    {
+        if (!PuedeTocarLinea(d)) { Snackbar.Add(MotivoLineaBloqueada(d), Severity.Warning); return; }
+        if (TieneEtiquetas(d)) { Snackbar.Add(MotivoLineaConEtiquetas, Severity.Warning); return; }
+        await AbrirLinea(MovimientoDetalleLineaDialog.FormaModificar, d);
+    }
+
+    private async Task AbrirLinea(string forma, DetalleModel? linea)
+    {
+        var dlg = await DialogService.ShowAsync<MovimientoDetalleLineaDialog>("",
+            new DialogParameters
+            {
+                ["Forma"]      = forma,
+                ["Cabecera"]   = _m,
+                ["ConDestino"] = SalidaConDestino,
+                ["EsSalida"]   = _flags.FLG_POSITIVO == false,
+                ["Lotes"]      = _combos.LotesControl,
+                ["Linea"]      = linea
+            },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false, Data: true })
+        {
+            await CargarDetalle();
+            _huboCambios = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task QuitarLinea(DetalleModel d)
+    {
+        // La misma regla que esconde el botón, también acá. Esconder un control no impide
+        // que se llegue al método por otro camino, y lo que hay del otro lado es un DELETE.
+        if (!PuedeTocarLinea(d))
+        {
+            Snackbar.Add(MotivoLineaBloqueada(d), Severity.Warning);
+            return;
+        }
+
+        var resp = await Http.DeleteAsync($"{ApiRoutes.Logistica.MovimientosAlmacenDetalle}/{_m.NUM_MOVIMIENTO_ALMACEN}/{d.NUM_SECUENCIA}");
+        if (resp.IsSuccessStatusCode) { await CargarDetalle(); _huboCambios = true; }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(QuitarLinea));
+    }
+
+    private async Task Guardar()
+    {
+        // GUARDAR CAMBIOS no se muestra en este caso; esto cubre un Enter en un campo.
+        if (_bloqueadoPorEstado) { Snackbar.Add(_motivoEstado!, Severity.Warning); return; }
+        _saving = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var rd = await Http.DeleteAsync($"{ApiRoutes.Logistica.MovimientosAlmacen}/{_m.NUM_MOVIMIENTO_ALMACEN}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(Guardar), "No se pudo eliminar el registro");
+                return;
+            }
+
+            // Almacén destino/origen: obligatorio en transferencias y distinto del almacén.
+            if (ValidarTransferencia() is { } aviso)
+            {
+                await ErrorDialogHelper.MostrarAvisoAsync(aviso, DialogService, nameof(MovimientoAlmacenDocumento));
+                return;
+            }
+
+            // Sin dirección de entidad que elegir (transferencia, o un tipo que no es comercial)
+            // no se graba ninguna: una elección vieja quedaría colgada de un movimiento al que
+            // ya no le corresponde.
+            if (!UsaDireccionDeLaEntidad) _m.NUM_SECUENCIA_DIRECCION = null;
+
+            // GuardarAsync elige el verbo: POST al crear, PUT al modificar. El SP de alta
+            // rechaza una clave que ya existe, así que el verbo no es un detalle.
+            var esAlta = !_cabeceraGrabada;
+            var resp = await Http.GuardarAsync(ApiRoutes.Logistica.MovimientosAlmacen, _m.ParaGrabar(), esAlta);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(MovimientoAlmacenDocumento), nameof(Guardar));
+                return;
+            }
+
+            _huboCambios = true;
+
+            // GRABAR NO CIERRA. El documento queda abierto para seguir: cargar el detalle,
+            // corregir la cabecera, imprimir. Cerrarlo obligaba a volver a buscarlo en la
+            // lista y reabrirlo para hacer lo que sigue.
+            //
+            // Del documento se sale con Cerrar, que avisa al listado si hubo cambios.
+            if (esAlta)
+            {
+                // El número lo genera la base y vuelve en Codigo. Sin él la cabecera quedó
+                // grabada pero el detalle no tiene de dónde colgarse: se avisa, en vez de
+                // habilitar una grilla que fallaría en cada fila.
+                var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+                if (decimal.TryParse(cuerpo?.Data?.Codigo, out var generado))
+                {
+                    _m.NUM_MOVIMIENTO_ALMACEN = generado;
+                    Snackbar.Add($"Movimiento N° {generado} creado. Ya puedes cargar el detalle.", Severity.Success);
+                }
+                else
+                {
+                    await ErrorDialogHelper.MostrarAvisoAsync(
+                        "El movimiento se creó, pero la base no devolvió su número: cierra y vuelve a abrirlo para cargarle el detalle.",
+                        DialogService, nameof(MovimientoAlmacenDocumento));
+                    return;
+                }
+            }
+            else Snackbar.Add("Modificado.", Severity.Success);
+
+            await RecargarCabeceraAsync();
+        }
+        finally { _saving = false; }
+    }
+
+    /// <summary>Relee la cabecera desde el SHOWBYID después de grabar.
+    ///
+    /// No alcanza con quedarse con lo que había en pantalla: hay campos que los pone la BASE y
+    /// que la pantalla no puede adivinar —las direcciones de origen y destino, que resuelve el
+    /// SP; el estado inicial; el número de comprobante si el tipo lo controla; la auditoría—.
+    /// Sin releer, el documento seguiría mostrando el borrador en vez de lo que quedó grabado,
+    /// y esa diferencia recién se vería al reabrirlo.
+    ///
+    /// Se recarga también el detalle: recién ahora hay número de movimiento del cual cuelga.</summary>
+    private async Task RecargarCabeceraAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Modelo>(
+            $"{ApiRoutes.Logistica.MovimientosAlmacen}/{_m.NUM_MOVIMIENTO_ALMACEN}");
+        if (fresco is not null) _m = fresco;
+
+        // Las banderas se releen por si cambió el tipo de movimiento en esta misma edición: de
+        // ellas dependen la mitad de los campos.
+        var tipo = await LeerTipoAsync(_m.COD_TIPO_MOVIMIENTO);
+        AplicarBanderas(tipo);
+        _desTipoEntidad = _m.DES_TIPO_ENTIDAD;
+        await CargarDependientesDelTipo();
+
+        // Los motivos también: sin esto, después de grabar el combo se quedaba con la lista
+        // vieja y el motivo recién guardado no aparecía.
+        await CargarMotivosAsync(tipo, esNuevo: false);
+        AsegurarMotivoDeLaFila();
+
+        await CargarDetalle();
+        await CargarBrevete();
+        await CargarDireccionesEntidad();
+        await CargarTransportes();
+        await ValidarEstadoDetalleAsync();
+        await ValidarGuiaAsync();
+        StateHasChanged();
+    }
+
+    private Task Cerrar() => OnCerrar.InvokeAsync(_huboCambios);
+}

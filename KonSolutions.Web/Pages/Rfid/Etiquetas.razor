@@ -1,0 +1,219 @@
+@page "/rfid/etiquetas"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Rfid
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ControlCambiosClientService Cambios
+@implements IDisposable
+@inject ErrorLogService ErrorLog
+
+<PageTitle>Etiquetas RFID · @ConfigSvc.Current.NombreApp</PageTitle>
+
+@* ETIQUETAS RFID — consulta de las etiquetas de todas las emisiones.
+
+   Se busca por código, TID, EPC, producto, lote, número de emisión o de ingreso. Es solo consulta: las etiquetas se crean y se enrolan en
+   «Emisión de TAG RFID». La búsqueda la hace la base y trae como máximo @Maximo etiquetas (las más recientes primero): para ver
+   las de una emisión concreta, escribe su número en «Emisión». «Leída» quiere decir que la etiqueta ya tiene lecturas en un movimiento
+   o en un inventario (por eso ya no se puede anular). *@
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Etiquetas RFID" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);" data-resumen="etiquetas">
+            Schema RFID · @_items.Count etiquetas@(_items.Count >= Maximo ? $" (tope de {Maximo}: afina la búsqueda)" : "") · @_items.Count(x => x.COD_ESTADO_ETIQUETA == "E") enroladas · @_items.Count(x => x.FLG_LEIDA) leídas
+        </MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Buscar" Placeholder="Buscar código, TID, EPC, producto, lote, emisión..." DebounceInterval="400" MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Buscar" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
+    <div class="d-flex align-center gap-3" style="flex-wrap:wrap;">
+        <div style="flex:0 1 220px;min-width:170px;">
+            <MudSelect T="string" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_estado" ValueChanged="OnEstadoChanged" data-filtro="estado">
+                <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+                <MudSelectItem T="string" Value="@("P")">Pendientes</MudSelectItem>
+                <MudSelectItem T="string" Value="@("E")">Enroladas</MudSelectItem>
+                <MudSelectItem T="string" Value="@("N")">Anuladas</MudSelectItem>
+            </MudSelect>
+        </div>
+        <div style="flex:0 1 160px;min-width:130px;">
+            <MudNumericField T="int?" Label="Emisión" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_emision" ValueChanged="OnEmisionChanged" HideSpinButtons="true" Min="1" data-filtro="emision" />
+        </div>
+    </div>
+</MudPaper>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="rfid-etiquetas" style="position:relative;">
+    <MudDataGrid T="RfidEtiqueta" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica"
+                 RowStyleFunc="@RowStyle">
+        <Columns>
+            @foreach (var (c, idx) in _cols.Select((c, i) => (c, i)))
+            {
+                <TemplateColumn Sortable="false" Title="@c.Titulo" CellStyle="@c.Estilo">
+                    <HeaderTemplate>
+                        <div class="d-flex align-center gap-1">
+                            <EncabezadoOrdenable Texto="@c.Titulo" Activo="@(_ordenColumna == idx)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(idx))" />
+                            <FiltroExcelColumna T="RfidEtiqueta" ItemsBase="@Base(idx)" ValorDe="@c.Valor"
+                                                ValoresActivos="_filtros.GetValueOrDefault(idx)" ValoresActivosChanged="@(v => Filtro(idx, v))" />
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (idx == ColEstado)
+                        {
+                            <EstadoChip Estado="@context.Item.DES_ESTADO_ETIQUETA" BackColor="@ColorFondo(context.Item)" ForeColor="@ColorTexto(context.Item)" />
+                        }
+                        else if (idx == ColProducto)
+                        {
+                            <div style="display:flex;flex-direction:column;line-height:1.25;">
+                                <span class="mono" style="font-size:.72rem;opacity:.6;">@context.Item.COD_PRODUCTO</span>
+                                <span>@context.Item.DES_PRODUCTO</span>
+                            </div>
+                        }
+                        else if (idx == ColCodigo || idx == ColTid || idx == ColEpc)
+                        {
+                            <span class="mono" style="font-size:.76rem;word-break:break-all;">@c.Valor(context.Item)</span>
+                        }
+                        else
+                        {
+                            @c.Valor(context.Item)
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">@(_cargando ? "Buscando..." : "Sin etiquetas.")</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="RfidEtiqueta" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private const int Maximo = 2000;
+    private const int ColEstado = 0, ColProducto = 2, ColCodigo = 4, ColTid = 5, ColEpc = 6;
+
+    private sealed record Col(string Titulo, Func<RfidEtiqueta, string?> Valor, Func<RfidEtiqueta, IComparable?>? Clave = null, string? Estilo = null);
+
+    private static string? Fecha(DateTime? f) => f?.ToString("dd/MM/yyyy HH:mm");
+
+    private readonly Col[] _cols =
+    {
+        new("Estado",     x => x.DES_ESTADO_ETIQUETA),
+        new("Emisión",    x => x.NUM_EMISION.ToString(), x => x.NUM_EMISION, "text-align:right;"),
+        new("Producto",   x => string.IsNullOrWhiteSpace(x.DES_PRODUCTO) ? x.COD_PRODUCTO : $"{x.COD_PRODUCTO} - {x.DES_PRODUCTO}", x => x.COD_PRODUCTO),
+        new("Lote",       x => x.NUM_LOTE_CONTROL),
+        new("Código",     x => x.COD_STICKER_RFID),
+        new("TID",        x => x.COD_TID),
+        new("EPC",        x => x.COD_EPC),
+        new("Cantidad",   x => $"{x.CAN_PRODUCTO:0.######} {x.COD_UNIDAD_MEDIDA}".Trim(), x => x.CAN_PRODUCTO, "text-align:right;white-space:nowrap;"),
+        new("Ingreso",    x => x.NUM_MOVIMIENTO_ALMACEN?.ToString("0"), x => x.NUM_MOVIMIENTO_ALMACEN),
+        new("Enrolada",   x => x.FEC_ENROLAMIENTO is null ? null : $"{Fecha(x.FEC_ENROLAMIENTO)} · {x.COD_USUARIO_ENROLAMIENTO}", x => x.FEC_ENROLAMIENTO, "white-space:nowrap;"),
+        new("Grabada",    x => x.COD_ESTADO_ETIQUETA != "E" ? null : x.FLG_GRABADA ? "Sí" : "No"),
+        new("Leída",      x => x.FLG_LEIDA ? "Sí" : null),
+    };
+
+    private List<RfidEtiqueta> _items = new();
+    private string _search = "";
+    private string _estado = "";
+    private int? _emision;
+    private bool _cargando;
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+
+    private bool HayFiltros => _filtros.Any(f => f.Value is not null) || !string.IsNullOrWhiteSpace(_search) || _estado != "" || _emision is not null;
+
+    // La búsqueda de texto, el estado y la emisión los resuelve la base; el filtro de cada columna es en memoria sobre lo que trajo.
+    private List<RfidEtiqueta> Aplicar(int ex)
+    {
+        IEnumerable<RfidEtiqueta> q = _items;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(_cols[c].Valor(x) ?? ""));
+        }
+        return q.ToList();
+    }
+
+    private List<RfidEtiqueta> Base(int col) => Aplicar(col);
+    private List<RfidEtiqueta> _visibles => Ordenar(Aplicar(-1));
+
+    private List<RfidEtiqueta> Ordenar(List<RfidEtiqueta> items)
+    {
+        if (_ordenColumna is not { } col) return items;
+        var c = _cols[col];
+        Func<RfidEtiqueta, object?> clave = x => c.Clave is not null ? c.Clave(x) : c.Valor(x);
+        return _ordenAscendente ? items.OrderBy(clave).ToList() : items.OrderByDescending(clave).ToList();
+    }
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+
+    private async Task LimpiarFiltros()
+    {
+        foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null;
+        _search = ""; _estado = ""; _emision = null;
+        await Buscar();
+    }
+
+    private async Task OnEstadoChanged(string? v) { _estado = v ?? ""; await Buscar(); }
+    private async Task OnEmisionChanged(int? v) { _emision = v; await Buscar(); }
+
+    private static string ColorFondo(RfidEtiqueta x) => x.COD_ESTADO_ETIQUETA switch { "P" => "#fff3cd", "E" => "#c8e6c9", _ => "#e0e0e0" };
+    private static string ColorTexto(RfidEtiqueta x) => x.COD_ESTADO_ETIQUETA switch { "P" => "#7a5a00", "E" => "#1b5e20", _ => "#616161" };
+
+    /// <summary>Una etiqueta anulada se ve atenuada.</summary>
+    private string RowStyle(RfidEtiqueta x, int i) => x.COD_ESTADO_ETIQUETA == "N" ? "opacity:.55;" : string.Empty;
+
+    // ── Carga ────────────────────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("RFID", "Etiquetas");
+        await Buscar();
+        _onCambio = async () => await InvokeAsync(async () => { await Buscar(); StateHasChanged(); });
+        Cambios.Suscribir("RFID.EMISIONES_ETIQUETAS", _onCambio);
+    }
+
+    private async Task Buscar()
+    {
+        _cargando = true;
+        try
+        {
+            var q = $"{ApiRoutes.Rfid.EtiquetasSearch}?TOP={Maximo}"
+                  + (string.IsNullOrWhiteSpace(_search) ? "" : $"&SEARCH={Uri.EscapeDataString(_search.Trim())}")
+                  + (_estado == "" ? "" : $"&COD_ESTADO_ETIQUETA={_estado}")
+                  + (_emision is { } e ? $"&NUM_EMISION={e}" : "");
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RfidEtiqueta>>>(q);
+            _items = r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(Etiquetas), nameof(Buscar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(Etiquetas));
+            _items = new();
+        }
+        finally { _cargando = false; }
+    }
+
+    public void Dispose() => Cambios.Desuscribir("RFID.EMISIONES_ETIQUETAS", _onCambio ?? (() => Task.CompletedTask));
+}

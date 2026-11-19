@@ -1,0 +1,502 @@
+@using Modelo = KONSolutions.Shared.Models.Logistica.Transportes
+@using Item = KONSolutions.Shared.Models.Logistica.TransportesEspecificacionesTecnicas
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="documento-logistica">
+    <EditForm Context="formulario" Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+        <DataAnnotationsValidator />
+
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="4">
+                @* El código lo escribe el usuario y es la clave primaria: solo se fija al crear. *@
+                <CampoTexto Tabla="LOGISTICA.TRANSPORTES" Columna="COD_TRANSPORTE"
+                            @bind-Value="_model.COD_TRANSPORTE"
+                            Disabled="@(!_esNuevo || _bloqueado)" Obligatorio="@_esNuevo" />
+            </MudItem>
+            <MudItem xs="12" sm="8">
+                <CampoTexto Tabla="LOGISTICA.TRANSPORTES" Columna="DES_TRANSPORTE"
+                            @bind-Value="_model.DES_TRANSPORTE"
+                            Disabled="_bloqueado" />
+            </MudItem>
+
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="_tiposTransporte"
+                           TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                           @bind-Value="_model.COD_TIPO_TRANSPORTE"
+                           Label="Tipo de transporte" Disabled="_bloqueado" Class="mb-2" />
+            </MudItem>
+
+            @* Producto: se busca en el servidor (SP _SEARCH) en vez de precargar todo el
+               catálogo, igual criterio que Ubigeo/Entidad en otras pantallas del sistema. *@
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                           TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                           @bind-Value="_model.COD_PRODUCTO_TRANSPORTE"
+                           SearchFunc="BuscarProducto" MinCharacters="2"
+                           TextoInicial="@(Item?.DES_PRODUCTO)"
+                           Label="Producto de transporte" Disabled="_bloqueado" Class="mb-2" />
+            </MudItem>
+
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                           TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                           Value="@(_model.COD_ENTIDAD_PROPIETARIO?.ToString())"
+                           ValueChanged="@(v => _model.COD_ENTIDAD_PROPIETARIO = decimal.TryParse(v, out var d) ? d : null)"
+                           SearchFunc="BuscarEntidad" MinCharacters="2"
+                           TextoInicial="@(Item?.DES_NOMBRE_COMPLETO)"
+                           Label="Entidad propietaria" Disabled="_bloqueado" Class="mb-2" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                           TextFunc="@(x => x.Texto)" ValueFunc="@(x => x.Id)"
+                           Value="@(_model.COD_ENTIDAD_CONDUCTOR?.ToString())"
+                           ValueChanged="@(v => _model.COD_ENTIDAD_CONDUCTOR = decimal.TryParse(v, out var d) ? d : null)"
+                           SearchFunc="BuscarEntidad" MinCharacters="2"
+                           Label="Entidad conductora" Disabled="_bloqueado" Class="mb-2" />
+            </MudItem>
+
+            <MudItem xs="12" sm="3">
+                <div class="d-flex align-center gap-2" style="height:40px;">
+                    <MudIcon Icon="@Icons.Material.Filled.Home"
+                             Color="@(_model.FLG_PROPIO == true ? Color.Primary : Color.Default)"
+                             Style="@(_model.FLG_PROPIO == true ? "" : "opacity:.35;")" />
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_PROPIO" Disabled="_bloqueado"
+                               Color="Color.Primary" Label="Propio" />
+                </div>
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <div class="d-flex align-center gap-2" style="height:40px;">
+                    <MudIcon Icon="@Icons.Material.Filled.LocalShipping"
+                             Color="@(_model.FLG_ACARREO == true ? Color.Primary : Color.Default)"
+                             Style="@(_model.FLG_ACARREO == true ? "" : "opacity:.35;")" />
+                    <MudSwitch T="bool?" @bind-Value="_model.FLG_ACARREO" Disabled="_bloqueado"
+                               Color="Color.Primary" Label="Acarreo" />
+                </div>
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <EstadoCombo DesTabla="LOGISTICA.TRANSPORTES" @bind-Value="_model.COD_ESTADO"
+                             CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                             Disabled="_bloqueado" Class="" />
+            </MudItem>
+        </MudGrid>
+
+        @* ── Detalle: especificaciones técnicas ──────────────────────────────────
+           No se habilita hasta que la cabecera esté grabada: el detalle cuelga del
+           código de transporte, que el usuario recién termina de confirmar al grabar. *@
+        <MudPaper Elevation="0" Class="mt-4 pa-3" Style="border:1px solid var(--line);">
+            <div class="d-flex align-center gap-2 mb-2">
+                <MudText Typo="Typo.subtitle2">Especificaciones técnicas</MudText>
+                @if (!_cabeceraGrabada)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text"
+                             Icon="@Icons.Material.Filled.Lock">Graba la cabecera para cargar especificaciones</MudChip>
+                }
+                <MudSpacer />
+                <GridClearFiltersButton OnClear="LimpiarFiltrosDetalle" HasFilters="@(_filtrosDetalle.Any(f => f.Value is not null))" />
+                @if (!_bloqueado && _cabeceraGrabada)
+                {
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarItem">Agregar especificación</MudButton>
+                }
+            </div>
+
+            <div class="@(_cabeceraGrabada ? "" : "detalle-bloqueado")" data-resizable-grid="transporte-especificaciones" style="position:relative;">
+                <MudDataGrid T="Item" Items="@OrdenarDetalle(BaseDetalle(-1))" Dense="true" Hover="true" Striped="true"
+                             ReadOnly="_bloqueado" EditMode="DataGridEditMode.Cell"
+                             CommittedItemChanges="@(async (Item it) => await GuardarItem(it))"
+                             Height="380px" FixedHeader="true">
+                    <Columns>
+                        <TemplateColumn Sortable="false" Width="200px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Especificación" Activo="@(_ordenColDetalle == 0)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(0))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(0)" ValorDe="@(x => ValorDetalle(x, 0))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(0)" ValoresActivosChanged="@(v => FiltroDetalle(0, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.COD_ESPECIFICACION_TECNICA</span></CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <MudTextField T="string" Value="@it.COD_ESPECIFICACION_TECNICA"
+                                              ValueChanged="@(v => it.COD_ESPECIFICACION_TECNICA = v ?? "")"
+                                              Disabled="@(_bloqueado || !_esNuevoItem.Contains(it))" Variant="Variant.Outlined" Dense="true" />
+                            </EditTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Width="260px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Ítem técnico" Activo="@(_ordenColDetalle == 1)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(1))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(1)" ValorDe="@(x => ValorDetalle(x, 1))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(1)" ValoresActivosChanged="@(v => FiltroDetalle(1, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                @{ var it = context.Item; }
+                                <span class="mono" style="opacity:.65;">@it.COD_ITEM_TECNICO</span>
+                                <span class="ml-1">@it.DES_ITEM_TECNICO</span>
+                            </CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <MudNumericField T="int?" Value="it.COD_ITEM_TECNICO" ValueChanged="@(v => it.COD_ITEM_TECNICO = v)"
+                                                  Disabled="_bloqueado" Variant="Variant.Outlined" Dense="true" />
+                            </EditTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Sortable="false" Width="180px">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center gap-1">
+                                    <EncabezadoOrdenable Texto="Valor" Activo="@(_ordenColDetalle == 2)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(2))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(2)" ValorDe="@(x => ValorDetalle(x, 2))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(2)" ValoresActivosChanged="@(v => FiltroDetalle(2, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.VAL_ESPECIFICACION_TENICA</span></CellTemplate>
+                            <EditTemplate>
+                                @{ var it = context.Item; }
+                                <MudTextField T="string" Value="@it.VAL_ESPECIFICACION_TENICA"
+                                              ValueChanged="@(v => it.VAL_ESPECIFICACION_TENICA = v)"
+                                              Disabled="_bloqueado" Variant="Variant.Outlined" Dense="true" />
+                            </EditTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.VAL_MINIMO" Sortable="false" Width="100px"
+                                        CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Mínimo" Activo="@(_ordenColDetalle == 3)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(3))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(3)" ValorDe="@(x => ValorDetalle(x, 3))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(3)" ValoresActivosChanged="@(v => FiltroDetalle(3, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.VAL_MAXIMO" Sortable="false" Width="100px"
+                                        CellStyle="text-align:right;" HeaderStyle="text-align:right;" Format="@Decimales.FormatoCantidad">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-end gap-1">
+                                    <EncabezadoOrdenable Texto="Máximo" Activo="@(_ordenColDetalle == 4)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(4))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(4)" ValorDe="@(x => ValorDetalle(x, 4))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(4)" ValoresActivosChanged="@(v => FiltroDetalle(4, v))" />
+                                </div>
+                            </HeaderTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Sortable="false" Editable="false" Width="120px" CellStyle="text-align:center;">
+                            <HeaderTemplate>
+                                <div class="d-flex align-center justify-center gap-1">
+                                    <EncabezadoOrdenable Texto="Estado" Activo="@(_ordenColDetalle == 5)" Ascendente="_ordenAscDetalle" OnClick="@(() => ToggleOrdenDetalle(5))" />
+                                    <FiltroExcelColumna T="Item" ItemsBase="@BaseDetalle(5)" ValorDe="@(x => ValorDetalle(x, 5))"
+                                                        ValoresActivos="_filtrosDetalle.GetValueOrDefault(5)" ValoresActivosChanged="@(v => FiltroDetalle(5, v))" />
+                                </div>
+                            </HeaderTemplate>
+                            <CellTemplate>
+                                <EstadoChip Estado="@context.Item.DES_ESTADO"
+                                            BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Acciones" Sortable="false" Editable="false" Width="90px" CellStyle="text-align:center;">
+                            <CellTemplate>
+                                @if (!_bloqueado)
+                                {
+                                    var it = context.Item;
+                                    <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small"
+                                                   Color="Color.Primary" OnClick="@(() => GuardarItemConAviso(it))" Title="Grabar" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                   Color="Color.Error" OnClick="@(() => QuitarItem(it))" Title="Quitar" />
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-4 mono" Style="opacity:.5;">Sin especificaciones.</MudText></NoRecordsContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+
+        <div class="d-flex align-center gap-2 mt-4">
+            <MudSpacer />
+            <MudButton StartIcon="@Icons.Material.Filled.Close"
+                       OnClick="Cerrar" Disabled="_saving" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cerrar</MudButton>
+            @if (!_readonly)
+            {
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Save" Disabled="_saving">
+                    @(Modo == CrudModo.Delete ? "Eliminar" : _cabeceraGrabada ? "Guardar cambios" : "Grabar cabecera")
+                </MudButton>
+            }
+        </div>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public EventCallback<bool> OnCerrar { get; set; }
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    private Modelo _model = new();
+    private List<Item> _items = new();
+
+    // ── Filtro de columna, estilo Excel, para la grilla de especificaciones ───────────────
+    private readonly Dictionary<int, HashSet<string>?> _filtrosDetalle = new();
+
+    private List<Item> BaseDetalle(int col) => AplicarFiltrosDetalle(_items, col);
+
+    /// <summary>El mismo valor que cada columna ya usaba para filtrar, extraído una sola vez
+    /// para reutilizarlo también al ordenar.</summary>
+    private string ValorDetalle(Item x, int col) => col switch
+    {
+        0 => x.COD_ESPECIFICACION_TECNICA ?? "",
+        1 => x.COD_ITEM_TECNICO?.ToString() ?? "",
+        2 => x.VAL_ESPECIFICACION_TENICA ?? "",
+        3 => x.VAL_MINIMO?.ToString(Decimales.FormatoCantidad) ?? "",
+        4 => x.VAL_MAXIMO?.ToString(Decimales.FormatoCantidad) ?? "",
+        5 => x.DES_ESTADO ?? "",
+        _ => ""
+    };
+
+    private List<Item> AplicarFiltrosDetalle(List<Item> src, int ex)
+    {
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtrosDetalle) if (kc != ex && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return src;
+
+        IEnumerable<Item> q = src;
+        foreach (var (c, v) in _filtrosDetalle)
+        {
+            if (c == ex || v is null) continue;
+            q = q.Where(x => v.Contains(ValorDetalle(x, c)));
+        }
+        return q.ToList();
+    }
+
+    // ── Orden de columna, estilo Excel ──────────────────────────────────────────────────────
+    private int? _ordenColDetalle;
+    private bool _ordenAscDetalle = true;
+    private void ToggleOrdenDetalle(int col)
+    {
+        if (_ordenColDetalle == col) _ordenAscDetalle = !_ordenAscDetalle;
+        else { _ordenColDetalle = col; _ordenAscDetalle = true; }
+    }
+    private List<Item> OrdenarDetalle(List<Item> items)
+        => _ordenColDetalle is not { } col ? items
+         : _ordenAscDetalle ? items.OrderBy(x => ValorDetalle(x, col)).ToList()
+                             : items.OrderByDescending(x => ValorDetalle(x, col)).ToList();
+
+    private void FiltroDetalle(int c, HashSet<string>? v) { _filtrosDetalle[c] = v; StateHasChanged(); }
+    private void LimpiarFiltrosDetalle() { foreach (var k in _filtrosDetalle.Keys.ToList()) _filtrosDetalle[k] = null; StateHasChanged(); }
+    private List<ComboboxItem> _tiposTransporte = new();
+
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private bool _bloqueado => _readonly;
+    private bool _cabeceraGrabada => !_esNuevo && !string.IsNullOrWhiteSpace(_model.COD_TRANSPORTE);
+    private bool _huboCambios;
+    private readonly HashSet<Item> _esNuevoItem = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+
+        // El COD_TIPO_TRANSPORTE de la cabecera de TRANSPORTES referencia LOGISTICA.TIPOS_TRANSPORTE
+        // (no COMERCIAL.TIPOS_TRANSPORTE, que es a lo que apunta el JOIN del SP — ver nota en el
+        // combobox de LogisticaTiposTransporteController).
+        _tiposTransporte = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.TiposTransporteCombobox)) ?? new();
+
+        if (_esNuevo)
+        {
+            _model = new Modelo();
+            return;
+        }
+
+        if (Item is not null)
+        {
+            _model = Item;
+            await RecargarCabeceraAsync();
+            await CargarDetalleAsync(Item.COD_TRANSPORTE);
+        }
+    }
+
+    /// <summary>Relee la cabecera del SHOWBYID y refresca lo que depende de ella.
+    ///
+    /// Se llama al ABRIR (la fila que trae la grilla es el snapshot de la última carga del
+    /// listado) y al GRABAR (el procedimiento puede cambiar datos que la pantalla no escribió
+    /// —el Estado es el caso típico—, y el documento se quedaba mostrando el valor viejo hasta
+    /// cerrarlo y volver a abrirlo).
+    ///
+    /// Si la lectura falla se deja lo que ya estaba, para no vaciar la pantalla.</summary>
+    private async Task RecargarCabeceraAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_model.COD_TRANSPORTE)) return;
+        var fresco = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Logistica.Transportes}/{Uri.EscapeDataString(_model.COD_TRANSPORTE)}");
+        if (fresco is not null) _model = fresco;
+    }
+
+    private async Task CargarDetalleAsync(string cod)
+    {
+        if (string.IsNullOrWhiteSpace(cod)) return;
+        var r = await Http.SafeGetAsync<List<Item>>(ApiRoutes.Logistica.TransportesEspecificacionesTecnicasPorTransporte(cod));
+        _items = r ?? new();
+    }
+
+    /// <summary>Busca en el servidor (PROC_ESTANDAR_PRODUCTOS_SEARCH), igual criterio que
+    /// Ubigeo/Entidad en otras pantallas: no precarga todo el catálogo.</summary>
+    private async Task<IEnumerable<ComboboxItem>> BuscarProducto(string? texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Trim().Length < 2) return Enumerable.Empty<ComboboxItem>();
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Productos>>>(
+                $"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto.Trim())}", ct);
+            return (r?.Data ?? new())
+                .Select(p => new ComboboxItem { Id = p.COD_PRODUCTO, Texto = $"{p.COD_PRODUCTO} — {p.DES_PRODUCTO}" })
+                .Take(30).ToList();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumento), nameof(BuscarProducto));
+            return Enumerable.Empty<ComboboxItem>();
+        }
+    }
+
+    /// <summary>Busca en el servidor (PROC_ESTANDAR_ENTIDADES_SEARCH) — la SP no filtra bien
+    /// por el texto, así que se refuerza el filtro aquí mismo sobre lo que devuelva.</summary>
+    private async Task<IEnumerable<ComboboxItem>> BuscarEntidad(string? texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Trim().Length < 2) return Enumerable.Empty<ComboboxItem>();
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<KONSolutions.Shared.Models.Estandar.Entidad>>>(
+                $"{ApiRoutes.Estandar.Entidades}/search?search={Uri.EscapeDataString(texto.Trim())}", ct);
+            var filtro = texto.Trim();
+            return (r?.Data ?? new())
+                .Where(e => e.DES_NOMBRE_COMPLETO.Contains(filtro, StringComparison.OrdinalIgnoreCase))
+                .Take(30)
+                .Select(e => new ComboboxItem { Id = e.COD_ENTIDAD?.ToString() ?? "", Texto = e.DES_NOMBRE_COMPLETO });
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumento), nameof(BuscarEntidad));
+            return Enumerable.Empty<ComboboxItem>();
+        }
+    }
+
+    /// <summary>El código de la especificación y el ítem técnico los elige/escribe el usuario:
+    /// sin los dos no se manda nada, el SP lo rechazaría.</summary>
+    private void AgregarItem()
+    {
+        var nuevo = new Item { COD_TRANSPORTE = _model.COD_TRANSPORTE };
+        _items.Add(nuevo);
+        _esNuevoItem.Add(nuevo);
+    }
+
+    private async Task QuitarItem(Item it)
+    {
+        if (!_esNuevoItem.Contains(it))
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Logistica.TransportesEspecificacionesTecnicas}/{Uri.EscapeDataString(_model.COD_TRANSPORTE)}/{Uri.EscapeDataString(it.COD_ESPECIFICACION_TECNICA)}");
+            if (!rd.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService,
+                    nameof(TransporteDocumento), nameof(QuitarItem), "No se pudo eliminar la especificación");
+                return;
+            }
+            _huboCambios = true;
+        }
+        _esNuevoItem.Remove(it);
+        _items.Remove(it);
+    }
+
+    private async Task GuardarItemConAviso(Item it)
+    {
+        if (string.IsNullOrWhiteSpace(it.COD_ESPECIFICACION_TECNICA) || it.COD_ITEM_TECNICO is null)
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("Completa la especificación y el ítem técnico antes de grabar.", DialogService, nameof(TransporteDocumento));
+            return;
+        }
+        if (await GuardarItem(it)) Snackbar.Add("Especificación grabada.", Severity.Success);
+    }
+
+    private async Task<bool> GuardarItem(Item it)
+    {
+        if (_bloqueado || string.IsNullOrWhiteSpace(it.COD_ESPECIFICACION_TECNICA) || it.COD_ITEM_TECNICO is null) return false;
+
+        it.COD_TRANSPORTE = _model.COD_TRANSPORTE;
+        var esNuevo = _esNuevoItem.Contains(it);
+
+        var r = await Http.GuardarAsync(ApiRoutes.Logistica.TransportesEspecificacionesTecnicas, it, esNuevo);
+        if (!r.IsSuccessStatusCode)
+        {
+            await ErrorDialogHelper.MostrarAsync(r, ErrorLog, DialogService,
+                nameof(TransporteDocumento), nameof(GuardarItem), "No se pudo grabar la especificación");
+            return false;
+        }
+        _esNuevoItem.Remove(it);
+        _huboCambios = true;
+        return true;
+    }
+
+    private async Task Cerrar() => await OnCerrar.InvokeAsync(_huboCambios);
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta    = ApiRoutes.Logistica.Transportes;
+        var rutaDet = ApiRoutes.Logistica.TransportesEspecificacionesTecnicas;
+
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                foreach (var it in _items.ToList())
+                    await Http.DeleteAsync($"{rutaDet}/{Uri.EscapeDataString(_model.COD_TRANSPORTE)}/{Uri.EscapeDataString(it.COD_ESPECIFICACION_TECNICA)}");
+
+                var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TRANSPORTE)}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Transporte eliminado.", Severity.Success); await OnCerrar.InvokeAsync(true); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TransporteDocumento), nameof(Submit), "No se pudo eliminar el transporte");
+                return;
+            }
+
+            var esAlta = !_cabeceraGrabada;
+            var resp = await Http.GuardarAsync(ruta, _model, esAlta);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TransporteDocumento), nameof(Submit));
+                return;
+            }
+
+            _huboCambios = true;
+
+            if (esAlta)
+            {
+                _esNuevo = false;
+                Snackbar.Add($"Transporte {_model.COD_TRANSPORTE} creado. Ya puedes cargar las especificaciones técnicas.", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add("Transporte actualizado.", Severity.Success);
+            }
+
+            // El SP puede haber movido el Estado (y cualquier otro campo que la pantalla no
+            // escribe): se relee para que lo que se ve sea lo que quedó en la base.
+            await RecargarCabeceraAsync();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(TransporteDocumento), nameof(Submit));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo grabar. Ver detalle en el log de errores.", DialogService, nameof(TransporteDocumento));
+        }
+        finally { _saving = false; }
+    }
+}

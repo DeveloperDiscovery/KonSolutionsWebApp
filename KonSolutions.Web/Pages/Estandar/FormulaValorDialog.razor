@@ -1,0 +1,130 @@
+@* FormulaValorDialog.razor
+   -----------------------------------------------------------------------
+   Formula de UN valor de calculo dentro de UN tipo de operacion: que valores suma o resta (TIPOS_OPERACION_CALCULO_AFECTADOS) y, si se quiere,
+   su orden de calculo y sus flags. Asi lo usa el calculo del comprobante: recorre los valores por orden de presentacion; cada uno suma los valores marcados
+   (signo + si el valor sumado es "positivo", - si no) y, si es un impuesto, aplica su tasa. Un valor que se calcula DESPUES del que lo suma aun vale 0:
+   se marca como aviso. Guardar reemplaza la formula completa en una transaccion (API / script SQL 105). *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Estandar
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog Style="width:min(760px,95vw);">
+    <TitleContent><MudText Typo="Typo.h6">Fórmula · @CodValor — @DesValor</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Style="opacity:.75;" Class="mb-2">Tipo de operación: <b>@CodTipo</b> — @DesTipo</MudText>
+
+        <div class="formula-previa mono" data-formula-previa style="padding:8px 10px;border:1px solid var(--line);border-radius:4px;background:rgba(127,127,127,.08);margin-bottom:12px;">
+            @Previa()
+        </div>
+
+        <MudText Typo="Typo.subtitle2">Valores que suma (de este tipo de operación)</MudText>
+        @if (Candidatos.Count == 0)
+        {
+            <MudText Class="pa-2" Style="opacity:.6;">Este tipo de operación no tiene otros valores de cálculo. Márcalos primero en la matriz.</MudText>
+        }
+        <div style="max-height:34vh;overflow:auto;">
+            @foreach (var c in Candidatos)
+            {
+                var cand = c;
+                var despues = cand.Orden is not null && _orden is not null && cand.Orden >= _orden;
+                <div class="d-flex align-center gap-2" data-candidato="@cand.Cod">
+                    <input type="checkbox" checked="@_sel.Contains(cand.Cod)" @onchange="@(e => Alternar(cand.Cod, (bool)(e.Value ?? false)))" aria-label="@cand.Cod" />
+                    <span class="mono" style="min-width:2.2rem;">@(cand.Positivo == true ? "+" : "−")</span>
+                    <span><b>@cand.Cod</b> · @cand.Texto</span>
+                    <span class="mono" style="opacity:.55;font-size:.75rem;">orden @cand.Orden</span>
+                    @if (despues && _sel.Contains(cand.Cod))
+                    {
+                        <MudTooltip Text="Se calcula después (o a la vez) que este valor: cuando este se calcula, aún vale 0. Súbele el orden a este valor o bájale el orden a ese.">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="aviso-orden">se calcula después</MudChip>
+                        </MudTooltip>
+                    }
+                </div>
+            }
+        </div>
+
+        <MudDivider Class="my-3" />
+        <MudText Typo="Typo.subtitle2" Class="mb-1">Propiedades del valor en este tipo de operación</MudText>
+        <div class="d-flex align-center gap-4 flex-wrap">
+            <MudNumericField T="int?" @bind-Value="_orden" Label="Orden de cálculo" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" />
+            <MudCheckBox T="bool" @bind-Value="_inverso" Label="Cálculo inverso" />
+            <MudCheckBox T="bool" @bind-Value="_mostrarComprobante" Label="Mostrar en comprobante" />
+            <MudCheckBox T="bool" @bind-Value="_valorMostrar" Label="Mostrar valor" />
+            <MudCheckBox T="bool?" @bind-Value="_positivo" TriState="true" Label="Positivo (en este tipo de operación)" />
+        </div>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_error</MudAlert> }
+
+        <div class="d-flex justify-end gap-2 mt-4">
+            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" Disabled="@_guardando" OnClick="GuardarAsync">
+                @(_guardando ? "Guardando..." : "Guardar fórmula")
+            </MudButton>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    public record Candidato(string Cod, string Texto, int? Orden, bool? Positivo);
+
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodClase { get; set; } = "";
+    [Parameter] public string CodTipo { get; set; } = "";
+    [Parameter] public string DesTipo { get; set; } = "";
+    [Parameter] public string CodValor { get; set; } = "";
+    [Parameter] public string DesValor { get; set; } = "";
+    /// <summary>El valor es un impuesto (aplica su tasa a lo que suma).</summary>
+    [Parameter] public bool EsImpuesto { get; set; }
+    /// <summary>Los demas valores del tipo de operacion, que son los que se pueden sumar.</summary>
+    [Parameter] public List<Candidato> Candidatos { get; set; } = new();
+    [Parameter] public List<string> Afectados { get; set; } = new();
+    [Parameter] public int? Orden { get; set; }
+    [Parameter] public bool? FlgInverso { get; set; }
+    [Parameter] public bool? FlgMostrarComprobante { get; set; }
+    [Parameter] public bool? FlgValorMostrar { get; set; }
+    [Parameter] public bool? FlgPositivo { get; set; }
+
+    private HashSet<string> _sel = new();
+    private int? _orden;
+    private bool _inverso, _mostrarComprobante, _valorMostrar, _guardando;
+    private bool? _positivo;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _sel = new HashSet<string>(Afectados);
+        _orden = Orden; _inverso = FlgInverso == true; _mostrarComprobante = FlgMostrarComprobante == true; _valorMostrar = FlgValorMostrar == true; _positivo = FlgPositivo;
+    }
+
+    private void Alternar(string cod, bool on) { if (on) _sel.Add(cod); else _sel.Remove(cod); }
+
+    private string Previa()
+    {
+        var terminos = Candidatos.Where(c => _sel.Contains(c.Cod)).OrderBy(c => c.Orden ?? int.MaxValue).ThenBy(c => c.Cod).ToList();
+        if (terminos.Count == 0) return $"{CodValor} = valor base (lo suman las líneas según el tipo de valor de cada producto)";
+        var cuerpo = string.Concat(terminos.Select((c, i) => (i == 0 ? (c.Positivo == true ? "" : "− ") : (c.Positivo == true ? " + " : " − ")) + c.Cod));
+        return EsImpuesto ? $"{CodValor} = ({cuerpo}) × tasa del impuesto %" : $"{CodValor} = {cuerpo}";
+    }
+
+    private async Task GuardarAsync()
+    {
+        _guardando = true; _error = null;
+        try
+        {
+            var dto = new FormulaSetDto
+            {
+                COD_CLASE_OPERACION = CodClase, COD_TIPO_OPERACION = CodTipo, COD_TIPO_VALOR_CALCULO = CodValor,
+                AFECTADOS = _sel.OrderBy(x => x).ToList(), ACTUALIZAR_PROPIEDADES = true,
+                NUM_ORDEN_PRESENTACION = _orden, FLG_CALCULO_INVERSO = _inverso, FLG_MOSTRAR_COMPROBANTE = _mostrarComprobante, FLG_VALOR_MOSTRAR = _valorMostrar, FLG_POSITIVO = _positivo
+            };
+            var resp = await Http.PostAsJsonAsync(EstandarRoute.MatrizTiposOperacionFormulas, dto);
+            var body = await resp.Content.ReadFromJsonAsync<ApiResponse<FormulaSetResultado>>();
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success) { _error = body?.Message ?? $"Error {(int)resp.StatusCode}"; return; }
+            Snackbar.Add($"Fórmula guardada: {body.Data?.N_AGREGADOS} agregado(s), {body.Data?.N_QUITADOS} quitado(s).", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _guardando = false; }
+    }
+}

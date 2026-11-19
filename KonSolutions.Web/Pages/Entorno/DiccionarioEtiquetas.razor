@@ -1,0 +1,239 @@
+@page "/entorno/diccionario-etiquetas"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Entorno
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject LimitesService Limites
+@inject ShortcutService ShortcutSvc
+@inject ConfigService ConfigSvc
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+<PageTitle>Diccionario de Etiquetas · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Diccionario de Etiquetas" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema ENTORNO · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+    @* Sin SP _SEARCH — el filtro de texto es local sobre lo ya cargado. *@
+    <BarraBusqueda @bind-Value="_searchTerm" OnSearch="Filtrar" Placeholder="Buscar código o etiqueta..." MaxWidth="719px" Class="grid-header-search" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f => f.Value is not null))" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <GridPrintButton Titulo="Diccionario de Etiquetas" Headers="@_printHeaders" Rows="@PrintRows()" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" />
+    </div>
+</div>
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div data-resizable-grid="diccionario-etiquetas" style="position:relative;">
+    <MudDataGrid T="DiccionarioEtiqueta" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 ReadOnly="false" EditMode="DataGridEditMode.Cell" CommittedItemChanges="@(async (DiccionarioEtiqueta it) => await GuardarEtiquetaAsync(it))"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Editable="false" Title="Código" Width="@Limites.ColWidth("ENTORNO.DICCIONARIO_ETIQUETAS","COD_ETIQUETA",100,220)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1">
+                        <EncabezadoOrdenable Texto="Código" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="DiccionarioEtiqueta" ItemsBase="@BaseSinEstaColumna(0)"
+                                            ValorDe="@(x => x.COD_ETIQUETA)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)"
+                                            ValoresActivosChanged="@(v => AplicarFiltro(0, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate><span class="mono">@context.Item.COD_ETIQUETA</span></CellTemplate>
+            </TemplateColumn>
+            @* Editable desde la grilla: doble clic sobre la celda abre el editor y graba solo,
+               sin pasar por el diálogo — mismo mecanismo (EditMode.Cell) que usan las grillas
+               de detalle de documentos (ej. RequerimientoDocumento.razor). *@
+            <TemplateColumn Sortable="false" Title="Etiqueta" Width="@Limites.ColWidth("ENTORNO.DICCIONARIO_ETIQUETAS","DES_ETIQUETA",150,420)">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1">
+                        <EncabezadoOrdenable Texto="Etiqueta" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="DiccionarioEtiqueta" ItemsBase="@BaseSinEstaColumna(1)"
+                                            ValorDe="@(x => x.DES_ETIQUETA ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)"
+                                            ValoresActivosChanged="@(v => AplicarFiltro(1, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_ETIQUETA</CellTemplate>
+                <EditTemplate>
+                    @* Enter no dispara CommittedItemChanges de forma confiable en modo Cell —
+                       se agrega un botón explícito de grabado, mismo criterio que las grillas
+                       de detalle con ítems (ej. RequerimientoDocumento.razor). *@
+                    <div class="d-flex align-center gap-1">
+                        <div class="grilla-campo-texto" style="flex:1;">
+                            @* IgnorarModoTexto: una etiqueta puede necesitar minúsculas aunque el
+                               resto de la app esté en modo MAYÚSCULAS. *@
+                            <CampoTexto Tabla="ENTORNO.DICCIONARIO_ETIQUETAS" Columna="DES_ETIQUETA"
+                                        @bind-Value="context.Item.DES_ETIQUETA" MostrarLabel="false"
+                                        IgnorarModoTexto="true" Margin="Margin.None" Class="mb-0" />
+                        </div>
+                        <MudIconButton Icon="@Icons.Material.Filled.Save" Size="Size.Small" Color="Color.Primary"
+                                       OnClick="@(() => GuardarEtiquetaAsync(context.Item))" Title="Grabar" />
+                    </div>
+                </EditTemplate>
+            </TemplateColumn>
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;">Sin etiquetas registradas.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="DiccionarioEtiqueta" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<DiccionarioEtiqueta> _items = new();
+    private string _searchTerm = string.Empty;
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+    private List<DiccionarioEtiqueta> Ordenar(List<DiccionarioEtiqueta> items) => _ordenColumna switch
+    {
+        0 => _ordenAscendente ? items.OrderBy(x => x.COD_ETIQUETA).ToList() : items.OrderByDescending(x => x.COD_ETIQUETA).ToList(),
+        1 => _ordenAscendente ? items.OrderBy(x => x.DES_ETIQUETA).ToList() : items.OrderByDescending(x => x.DES_ETIQUETA).ToList(),
+        _ => items
+    };
+
+    private List<DiccionarioEtiqueta> _visibles => Ordenar(AplicarTodos(Filtrados(), -1));
+    private List<DiccionarioEtiqueta> BaseSinEstaColumna(int col) => AplicarTodos(Filtrados(), col);
+
+    private List<DiccionarioEtiqueta> Filtrados() => string.IsNullOrWhiteSpace(_searchTerm)
+        ? _items
+        : _items.Where(x => (x.DES_ETIQUETA ?? "").Contains(_searchTerm, StringComparison.OrdinalIgnoreCase)
+                          || x.COD_ETIQUETA.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private List<DiccionarioEtiqueta> AplicarTodos(List<DiccionarioEtiqueta> origen, int excluir)
+    {
+        // Sin filtros activos no hay nada que recorrer, y ese es el caso normal: la
+        // grilla arranca sin filtros. Cada encabezado llama a este método en CADA
+        // redibujado, así que sin esta salida un solo clic recorría la lista entera
+        // una vez por columna.
+        var hayFiltroKon = false;
+        foreach (var (kc, kv) in _filtros) if (kc != excluir && kv is not null) { hayFiltroKon = true; break; }
+        if (!hayFiltroKon) return origen;
+
+        IEnumerable<DiccionarioEtiqueta> q = origen;
+        foreach (var (col, vals) in _filtros)
+        {
+            if (col == excluir || vals is null) continue;
+            q = col switch
+            {
+                0 => q.Where(x => vals.Contains(x.COD_ETIQUETA)),
+                1 => q.Where(x => vals.Contains(x.DES_ETIQUETA ?? "")),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void AplicarFiltro(int col, HashSet<string>? vals) { _filtros[col] = vals; StateHasChanged(); }
+    private void LimpiarFiltros() { foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null; StateHasChanged(); }
+    private void Filtrar() => StateHasChanged();
+
+    private readonly List<string> _printHeaders = new() { "Código", "Etiqueta" };
+    private List<List<string>> PrintRows() => _items.Select(x => new List<string> { x.COD_ETIQUETA, x.DES_ETIQUETA ?? "" }).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("ENTORNO", "DiccionarioEtiquetas");
+        await Load();
+        Cambios.Suscribir("ENTORNO.DICCIONARIO_ETIQUETAS", RefrescarPorCambio);
+        ShortcutSvc.NuevoRequested += OnAtajoNuevo;
+    }
+
+    private async void OnAtajoNuevo() => await InvokeAsync(() => Open(null));
+
+    private async Task Load()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DiccionarioEtiqueta>>>(ApiRoutes.Entorno.DiccionarioEtiquetas);
+            _items = r?.Data ?? new();
+        }
+        catch { _items = new(); }
+    }
+
+    private Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return Open(null);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrilla(DiccionarioEtiqueta item, BotonTreeviewItem b)
+    {
+        // Del más específico al más genérico. Un botón de Modificar suele traer
+        // marcados GET y PUT a la vez (para editar primero hay que leer), y un
+        // Eliminar suele traer GET y DELETE: preguntando por GET primero, esos dos
+        // entraban por la rama de consulta y el lápiz y el tacho abrean en sólo
+        // lectura. Con DELETE y PUT antes, cada botón hace lo que dice su nombre.
+        if (b.FLG_ACCION_DELETE == true) return Delete(item);
+        if (b.FLG_ACCION_PUT    == true) return Open(item);
+        if (b.FLG_ACCION_GET    == true) return Ver(item);
+        return Task.CompletedTask;
+    }
+
+    private async Task Ver(DiccionarioEtiqueta item)  => await AbrirDialog(item, CrudModo.Read);
+    private async Task Open(DiccionarioEtiqueta? item) => await AbrirDialog(item, item is null ? CrudModo.Create : CrudModo.Update);
+    private async Task Delete(DiccionarioEtiqueta item) => await AbrirDialog(item, CrudModo.Delete);
+
+    private async Task AbrirDialog(DiccionarioEtiqueta? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nueva etiqueta",
+            CrudModo.Read   => $"Ver · {item?.COD_ETIQUETA}",
+            CrudModo.Update => $"Editar · {item?.COD_ETIQUETA}",
+            CrudModo.Delete => $"Eliminar · {item?.COD_ETIQUETA}",
+            _ => "Etiqueta"
+        };
+        var parameters = new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = CodAplicacion, ["CodOpcionAplicacion"] = CodOpcionAplicacion };
+        var dlg = await DialogService.ShowAsync<DiccionarioEtiquetasDialog>(titulo, parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Load();
+    }
+
+    /// <summary>Grabado directo desde la celda editada — mismo SP upsert que usa el diálogo
+    /// (PROC..._INSERT hace upsert, por eso siempre POST, nunca PUT).</summary>
+    private async Task GuardarEtiquetaAsync(DiccionarioEtiqueta item)
+    {
+        var resp = await Http.PostAsJsonAsync(ApiRoutes.Entorno.DiccionarioEtiquetas, item);
+        if (resp.IsSuccessStatusCode) Snackbar.Add("Etiqueta actualizada.", Severity.Success);
+        else
+        {
+            await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(DiccionarioEtiquetas), nameof(GuardarEtiquetaAsync));
+            await Load();
+        }
+    }
+
+    private async Task RefrescarPorCambio() => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("ENTORNO.DICCIONARIO_ETIQUETAS", RefrescarPorCambio);
+        ShortcutSvc.NuevoRequested -= OnAtajoNuevo;
+    }
+}

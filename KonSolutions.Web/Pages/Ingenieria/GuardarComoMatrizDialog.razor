@@ -1,0 +1,41 @@
+@* Guarda la ruta de operaciones de una version como una matriz nueva (script SQL 130): una copia exacta que queda disponible para otros disenos. Por defecto toma la sub familia del diseno. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.75;">Se guarda una copia de la ruta de <b>@CodDiseno v@(NumVersion)</b> como matriz; la ruta de la versión no cambia.</MudText>
+        <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="nombre" />
+        <MudSwitch T="bool" @bind-Value="_sinSubFamilia" Label="Sin sub familia (sirve para cualquier producto)" Color="Color.Primary" Class="mt-1" data-campo="sin-sub-familia" />
+        <MudText Typo="Typo.caption" Style="opacity:.65;">@(_sinSubFamilia ? "La matriz no quedará ligada a ninguna sub familia." : "La matriz quedará ligada a la sub familia del diseño.")</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_guardando" OnClick="Guardar" data-accion="guardar">Guardar como matriz</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodDiseno { get; set; } = "";
+    [Parameter] public int NumVersion { get; set; }
+
+    private string _nombre = "", _error = "";
+    private bool _sinSubFamilia, _guardando;
+
+    private async Task Guardar()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_nombre)) { _error = "Escribe el nombre de la matriz."; return; }
+        _guardando = true;
+        var r = await OperacionesApi.EnviarAsync<MatrizAsignarResultado>(Http, HttpMethod.Post, IngRoute.DisenosGuardarComoMatriz,
+            new GuardarComoMatrizDto { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, DES_MATRIZ = _nombre.Trim(), SIN_SUB_FAMILIA = _sinSubFamilia });
+        _guardando = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar la matriz."; return; }
+        Snackbar.Add($"Matriz guardada ({r.Data?.ELEMENTOS_COPIADOS} elementos).", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(r.Data?.COD_RUTA_PRODUCCION ?? ""));
+    }
+}

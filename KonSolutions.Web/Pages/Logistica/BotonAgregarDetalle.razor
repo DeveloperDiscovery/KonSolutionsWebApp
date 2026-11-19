@@ -1,0 +1,45 @@
+@* Selector de documento de origen + el botón que baja sus líneas al detalle.
+
+   Vive aparte porque las tres pestañas —Reservas, Requerimientos y Órdenes de Compra—
+   hacen exactamente lo mismo y sólo cambia el nombre del origen. Repetirlo tres veces
+   en el documento era garantizar que las tres se fueran separando con el tiempo.
+
+   El número del documento se escribe a mano por ahora; la grilla de selección con
+   marcado por línea va en la próxima entrega, y cuando llegue sólo cambia este
+   componente. *@
+
+<div class="d-flex align-end gap-2 flex-wrap">
+    <MudNumericField T="int?" @bind-Value="_numero" Label="@($"N.° de {Titulo}")"
+                     Margin="Margin.Dense" Variant="Variant.Outlined" HideSpinButtons="true"
+                     Disabled="Disabled" Style="max-width:180px;" />
+    <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar"
+               StartIcon="@Icons.Material.Filled.PlaylistAdd"
+               Disabled="@(Disabled || _numero is null or 0 || _ocupado)"
+               OnClick="Agregar">
+        @(_ocupado ? "Agregando..." : "Agregar al detalle")
+    </MudButton>
+</div>
+
+@if (Disabled)
+{
+    <MudText Typo="Typo.caption" Class="mt-2" Style="opacity:.6;">
+        Hay que grabar la cabecera antes de poder agregar líneas.
+    </MudText>
+}
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "documento";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<int> OnAgregar { get; set; }
+
+    private int? _numero;
+    private bool _ocupado;
+
+    private async Task Agregar()
+    {
+        if (_numero is null or 0) return;
+        _ocupado = true;
+        try { await OnAgregar.InvokeAsync(_numero.Value); }
+        finally { _ocupado = false; }
+    }
+}

@@ -1,0 +1,49 @@
+@using KONSolutions.Shared.Models.Proyectos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Item is null ? "Nuevo plan de mitigación" : $"Plan {Item.COD_PLAN_MITIGACION}")</MudText></TitleContent>
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="4"><MudTextField T="string" @bind-Value="_cod" Label="Código" Variant="Variant.Outlined" MaxLength="3" Disabled="@(Item is not null)" Required="true" /></MudItem>
+            <MudItem xs="12" sm="8"><MudTextField T="string" @bind-Value="_des" Label="Descripción" Variant="Variant.Outlined" MaxLength="100" Required="true" /></MudItem>
+            <MudItem xs="12"><EstadoCombo DesTabla="PROYECTOS.PROYECTOS_PLANES_MITIGACION_RIESGOS" Value="@_estado" ValueChanged="@(v => _estado = v)" CodTipoEstadoChanged="@(v => _tipoEstado = v)" Class="mb-1" /></MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+        <MudButton OnClick="Guardar" Disabled="_guardando" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save">Grabar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int NumProyecto { get; set; }
+    [Parameter] public ExpedientePlan? Item { get; set; }
+    [Parameter] public List<ExpedientePlan> Planes { get; set; } = new();
+
+    private string _cod = "", _des = "";
+    private int? _estado, _tipoEstado;
+    private bool _guardando;
+
+    protected override void OnInitialized()
+    {
+        if (Item is null) { _cod = $"P{Planes.Count + 1:00}"; return; }
+        _cod = Item.COD_PLAN_MITIGACION; _des = Item.DES_PLAN_MITIGACION ?? ""; _estado = Item.COD_ESTADO; _tipoEstado = Item.COD_TIPO_ESTADO;
+    }
+
+    private async Task Guardar()
+    {
+        if (string.IsNullOrWhiteSpace(_cod) || string.IsNullOrWhiteSpace(_des)) { Snackbar.Add("Faltan el código y la descripción.", Severity.Warning); return; }
+        var esNuevo = Item is null;
+        if (esNuevo && Planes.Any(p => string.Equals(p.COD_PLAN_MITIGACION, _cod.Trim(), StringComparison.OrdinalIgnoreCase))) { Snackbar.Add("Ya existe un plan con ese código.", Severity.Warning); return; }
+        var cuerpo = new { NUM_PROYECTO = NumProyecto, COD_PLAN_MITIGACION = _cod.Trim().ToUpperInvariant(), DES_PLAN_MITIGACION = _des.Trim(), COD_TIPO_ESTADO = _tipoEstado, COD_ESTADO = _estado };
+        _guardando = true;
+        var (ok, msg) = await ProyectoApi.GuardarAsync(Http, ApiRoutes.Proyectos.Planes, cuerpo, esNuevo);
+        if (ok) await ProyectoApi.RecalcularAsync(Http, NumProyecto);
+        _guardando = false;
+        if (!ok) { Snackbar.Add(msg ?? "No se pudo grabar el plan.", Severity.Warning); return; }
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

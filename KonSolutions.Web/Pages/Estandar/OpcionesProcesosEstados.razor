@@ -1,0 +1,1129 @@
+@* OpcionesProcesosEstados.razor
+   -----------------------------------------------------------------------
+   Asignación de Tipos de Estado a Opciones de Aplicación (ESTANDAR.OPCIONES_
+   PROCESOS_ESTADOS, clave compuesta COD_APLICACION + COD_OPCION_APLICACION +
+   COD_TIPO_ESTADO). Treelist Aplicación/Opción a la izquierda — mismo patrón
+   visual y de comportamiento que AsignacionOpcionesRoles.razor (Seguridad) —
+   y al seleccionar una Opción, panel a la derecha con los Tipos de Estado ya
+   asignados + alta/baja.
+
+   Árbol: se reusa el endpoint general del treeview de Aplicaciones/Opciones
+   (Seguridad.AplicacionesOpcionesTreeview, el mismo NodoOpcion que arma
+   AsignacionOpcionesRoles.razor) en vez del "treeview-asignadas/disponibles"
+   por rol, porque aquí no hay Rol: se necesita el árbol completo del sistema
+   para poder pararse en cualquier Aplicación+Opción y asignarle Tipos de
+   Estado. Solo los nodos con COD_OPCION_ORIGINAL (hojas de opción) son
+   seleccionables — los de Aplicación/carpeta son encabezados expandibles.
+
+   Tabla de asignación pura: el SP _INSERT hace upsert, no hay _UPDATE. Sin
+   control de cambios (Cambios.Suscribir) — mismo criterio ya aplicado en los
+   sub-módulos de asignación admin de Inventarios/Almacenes de esta sesión.
+
+   Tercer panel (Flujos): al hacer clic en un chip de Tipo de Estado del panel
+   2 (ahora seleccionable, con el mismo estilo "activo" del árbol) se muestra
+   ESTANDAR.OPCIONES_PROCESOS_ESTADOS_FLUJOS para ese Tipo de Estado — a
+   diferencia de las dos tablas anteriores, esta SÍ tiene UPDATE separado del
+   INSERT (ver OpcionesProcesosEstadosFlujosDialog.razor), así que la grilla
+   tiene edición además de alta/baja. El nombre del Estado destino de cada
+   flujo se resuelve vía ESTANDAR.ESTADOS por Tipo de Estado (EstadoService.
+   GetByTipoAsync) — el SP _SHOWALL de Flujos no trae ese nombre por JOIN,
+   solo el código numérico. *@
+@page "/estandar/opciones-procesos-estados"
+@attribute [Authorize]
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ConfigService ConfigSvc
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject KONSolutions.Web.Services.EstadoService EstadoSvc
+@inject KONSolutions.Web.Services.AplicacionesOpcionesBotonesService BotonesSvc
+@using KONSolutions.Shared.Models.Seguridad
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using SeguridadRoute = KONSolutions.Web.Services.ApiRoutes.Seguridad
+@using Modelo = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstados
+@using ModeloFlujo = KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujos
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+
+<PageTitle>Tipos de Estado por Opción · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<style>
+    .ope-panel {
+        display:flex; flex-direction:column; overflow:hidden; border-radius:6px;
+        background: var(--paper, #efe9df); color: var(--ink, #16130f);
+    }
+    .ope-header {
+        font-size:.81rem; font-weight:600; letter-spacing:.02em;
+        padding:8px 12px;
+        display:flex; align-items:center; gap:6px; flex-shrink:0;
+        background: var(--grilla-cab-fondo, #2b2622); color: var(--grilla-cab-texto, #fff);
+    }
+    .ope-scroll { flex:1; overflow-y:auto; padding:4px 0; min-height:0; }
+    .nodo-row {
+        padding:4px 8px; cursor:pointer;
+        font-size:.81rem; display:flex; align-items:center; gap:6px;
+        transition:background .12s; user-select:none;
+        color: var(--grilla-texto, #efe9df);
+    }
+    .nodo-row:nth-of-type(even) { background: var(--grilla-fila-par, #1a1714); }
+    .nodo-row:nth-of-type(odd)  { background: var(--grilla-fila-impar, #201b17); }
+    .nodo-row:hover:not(.activo) { filter: brightness(1.2); }
+    .nodo-row.activo { background: var(--foco-fondo, #b8472d) !important; color: var(--foco-texto, #fff) !important; font-weight:600; }
+    .nodo-header {
+        padding:3px 8px; font-size:.75rem; font-weight:600;
+        opacity:.5; letter-spacing:.04em; text-transform:uppercase;
+        display:flex; align-items:center; gap:5px; cursor:pointer;
+    }
+    .empty-hint { padding:28px 12px; text-align:center; opacity:.4; font-size:.8rem; font-style:italic; }
+    .te-chip {
+        display:inline-flex; align-items:center; gap:6px;
+        padding:5px 12px; border-radius:14px; font-size:.8rem; font-weight:600;
+        cursor:pointer; border:2px solid transparent; transition:filter .12s, border-color .12s;
+    }
+    .te-chip:hover:not(.te-chip-activo) { filter:brightness(1.12); }
+    .te-chip-activo { border-color: var(--foco-fondo, #b8472d); box-shadow: 0 0 0 1px var(--foco-fondo, #b8472d); }
+    .flujo-pill {
+        display:inline-flex; align-items:center; gap:4px;
+        padding:3px 10px; border-radius:12px; font-size:.78rem; font-weight:600;
+    }
+    .flujo-tabla { width:100%; border-collapse:collapse; font-size:.83rem; }
+    .flujo-tabla th {
+        text-align:left; padding:7px 10px; font-size:.72rem; font-weight:600;
+        letter-spacing:.03em; text-transform:uppercase; opacity:.55;
+        border-bottom:1px solid var(--divisor, rgba(128,128,128,.25));
+    }
+    .flujo-tabla td { padding:7px 10px; border-bottom:1px solid var(--divisor, rgba(128,128,128,.12)); }
+    .flujo-tabla tbody tr:hover { background: rgba(128,128,128,.06); }
+    .flujo-dep-row td { padding-top:3px; padding-bottom:3px; border-bottom:1px solid var(--divisor, rgba(128,128,128,.12)); background: rgba(226,185,60,.05); }
+    .flujo-dep-col { position:relative; width:30px; padding:0 !important; }
+    .flujo-dep-col .seg-v {
+        position:absolute; left:13px; top:0; bottom:0; width:2.5px;
+        background:var(--pill-azul,#2f6fb0); opacity:.9;
+    }
+    .flujo-dep-col .seg-v-start { top:50%; bottom:0; }
+    .flujo-dep-col .seg-v-last { bottom:50%; }
+    .flujo-dep-col .seg-h {
+        position:absolute; left:13px; top:50%; width:15px; height:2.5px;
+        background:var(--pill-azul,#2f6fb0); opacity:.9;
+    }
+    .flujo-dep-col .seg-h::after {
+        content:''; position:absolute; right:-2px; top:-4px;
+        border:5px solid transparent; border-left-color:var(--pill-azul,#2f6fb0); opacity:1;
+    }
+</style>
+
+<div class="d-flex align-center justify-space-between mb-3" style="flex-shrink:0;">
+    <div>
+        <TituloPagina Fallback="Tipos de Estado por Opción" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+            Schema ESTANDAR · asignar los Tipos de Estado disponibles para cada opción del sistema
+        </MudText>
+    </div>
+    <div class="d-flex gap-2 align-center">
+        <MudButton Variant="Variant.Outlined" Color="Color.Default" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.Refresh" OnClick="Recargar">
+            Actualizar
+        </MudButton>
+    </div>
+</div>
+
+<div style="display:grid;grid-template-columns:280px 340px 1fr 260px;gap:12px;flex:1 1 auto;min-height:0;margin-bottom:12px;">
+
+    @* ══ Panel izquierdo: árbol Aplicación / Opción ══════════════════════ *@
+    <MudPaper Elevation="1" Class="ope-panel">
+        <div class="ope-header">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" />
+            Aplicación / Opción
+            @if (_cargandoArbol)
+            {
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Style="margin-left:auto;" />
+            }
+        </div>
+        <div class="pa-2" style="flex-shrink:0;">
+            <MudTextField T="string" @bind-Value="_busqueda" @bind-Value:after="OnBuscar" Immediate="true"
+                          Placeholder="Buscar opción..." Variant="Variant.Outlined" Margin="Margin.Dense"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
+        </div>
+        <div class="ope-scroll">
+            @if (_cargandoArbol)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" Size="Size.Small" />
+            }
+            else if (!_flatVisible.Any())
+            {
+                <div class="empty-hint">@(string.IsNullOrWhiteSpace(_busqueda) ? "Sin opciones registradas" : "Sin resultados para la búsqueda")</div>
+            }
+            else
+            {
+                @foreach (var item in _flatVisible)
+                {
+                    @if (item.esHoja)
+                    {
+                        <div class="nodo-row @(_nodoSel == item.nodo ? "activo" : "")"
+                             style="padding-left:@(10 + item.depth * 16)px"
+                             @onclick="() => SeleccionarNodo(item.nodo)">
+                            <MudIcon Icon="@IconoPorTipo(item.nodo.COD_TIPO)"
+                                     Size="Size.Small" Style="font-size:.85rem;color:#2b6cb0;flex-shrink:0" />
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">
+                                @item.nodo.DES_OPCION
+                            </span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="nodo-header" style="padding-left:@(8 + item.depth * 16)px;"
+                             @onclick="() => ToggleColapso(item.nodo)">
+                            <MudIcon Icon="@(_colapsadas.Contains(item.nodo.COD_CHILDREN) ? Icons.Material.Filled.ChevronRight : Icons.Material.Filled.ExpandMore)"
+                                     Size="Size.Small" Style="font-size:.9rem;flex-shrink:0;opacity:.6" />
+                            <MudIcon Icon="@IconoPorTipo(item.nodo.COD_TIPO)"
+                                     Size="Size.Small" Style="font-size:.8rem;flex-shrink:0" />
+                            @item.nodo.DES_OPCION
+                        </div>
+                    }
+                }
+            }
+        </div>
+    </MudPaper>
+
+    @* ══ Panel derecho: Tipos de Estado asignados a la opción seleccionada ══ *@
+    <MudPaper Elevation="1" Class="ope-panel">
+        <div class="ope-header">
+            <MudIcon Icon="@Icons.Material.Filled.Label" Size="Size.Small" Style="color:var(--gold-accent,#e2b93c)" />
+            Tipos de Estado asignados
+            @if (_nodoSel is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                         Label="true" Style="margin-left:8px;color:var(--ink);border-color:var(--ink);">
+                    @_asignados.Count
+                </MudChip>
+            }
+            <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Add" Style="margin-left:auto;"
+                       Disabled="@(_nodoSel is null)" OnClick="AbrirAgregar">
+                Agregar
+            </MudButton>
+        </div>
+
+        @if (_cargandoAsignados)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Size="Size.Small" />
+        }
+
+        <div class="pa-4" style="flex:1;overflow-y:auto;min-height:0;">
+            @if (_nodoSel is null)
+            {
+                <div class="empty-hint">← Selecciona una opción del árbol</div>
+            }
+            else if (!_cargandoAsignados)
+            {
+                <MudText Class="mb-3" Style="opacity:.7;font-size:.85rem;">
+                    <b>@_nodoSel.DES_OPCION</b>
+                    <span class="mono" style="opacity:.6;"> (@_nodoSel.COD_APLICACION_ORIGINAL / @_nodoSel.COD_OPCION_ORIGINAL)</span>
+                </MudText>
+
+                @if (!_asignados.Any())
+                {
+                    <div class="empty-hint">Sin Tipos de Estado asignados a esta opción</div>
+                }
+                else
+                {
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var a in _asignados)
+                        {
+                            <div class="te-chip @(_tipoEstadoSel?.COD_TIPO_ESTADO == a.COD_TIPO_ESTADO ? "te-chip-activo" : "")"
+                                 style="background:@(a.DES_BACKCOLOR ?? "#2b6cb0");color:@(a.DES_FORECOLOR ?? "#fff");"
+                                 @onclick="() => SeleccionarTipoEstado(a)">
+                                <span class="mono" style="opacity:.7;">@a.COD_TIPO_ESTADO</span>
+                                <span>@a.DES_TIPO_ESTADO</span>
+                                <span @onclick:stopPropagation="true">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                   Style="color:inherit;padding:2px;"
+                                                   OnClick="() => Eliminar(a)" />
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    </MudPaper>
+
+    @* ══ Panel 3: Flujos del Tipo de Estado seleccionado ══════════════════ *@
+    <MudPaper Elevation="1" Class="ope-panel">
+        <div class="ope-header">
+            <MudIcon Icon="@Icons.Material.Filled.AltRoute" Size="Size.Small" Style="color:var(--gold-accent,#e2b93c)" />
+            @if (_tipoEstadoSel is null)
+            {
+                <span>Flujos</span>
+            }
+            else
+            {
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    Flujos de @_tipoEstadoSel.DES_TIPO_ESTADO
+                    <span class="mono" style="opacity:.6;font-weight:400;">(@_tipoEstadoSel.COD_TIPO_ESTADO)</span>
+                </span>
+            }
+            @* Copia la configuracion (flujos + dependencias) de este tipo de estado a otra opcion / tipo de estado, validando antes *@
+            @* Mismo estilo que "Agregar flujo" (Filled/Primary): el outlined/default quedaba oscuro sobre el encabezado oscuro y no se veia. *@
+            <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.ContentCopy" Style="margin-left:auto;margin-right:8px;flex-shrink:0;"
+                       Disabled="@(_tipoEstadoSel is null)" OnClick="AbrirCopiarConfiguracion">
+                Copiar a otra opción
+            </MudButton>
+            <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Add" Style="flex-shrink:0;"
+                       Disabled="@(_tipoEstadoSel is null)" OnClick="AbrirAgregarFlujo">
+                Agregar flujo
+            </MudButton>
+        </div>
+
+        @if (_cargandoFlujos)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Size="Size.Small" />
+        }
+
+        <div class="pa-3" style="flex:1;overflow:auto;min-height:0;">
+            @if (_tipoEstadoSel is null)
+            {
+                <div class="empty-hint">← Selecciona un Tipo de Estado</div>
+            }
+            else if (!_cargandoFlujos)
+            {
+                @if (!_flujos.Any())
+                {
+                    <div class="empty-hint">Sin flujos definidos para este Tipo de Estado</div>
+                }
+                else
+                {
+                    <table class="flujo-tabla">
+                        <thead>
+                            <tr>
+                                <th style="width:22px;"></th>
+                                <th>Botón</th>
+                                <th>Estado destino</th>
+                                <th style="text-align:center;">Orden</th>
+                                <th style="text-align:right;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var f in _flujos)
+                            {
+                                var estado = f.COD_ESTADO.HasValue ? _estadosDelTipo.FirstOrDefault(e => e.COD_ESTADO == f.COD_ESTADO) : null;
+                                var deps = _dependenciasPorBoton.TryGetValue(f.COD_BOTON_OPCION, out var dl) ? dl : null;
+                                var expandido = !_colapsadosDependencia.Contains(f.COD_BOTON_OPCION);
+                                <tr>
+                                    <td class="flujo-dep-col">
+                                        @if (deps is { Count: > 0 } && expandido)
+                                        {
+                                            <span class="seg-v seg-v-start"></span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <div class="d-flex align-center gap-1">
+                                            @if (deps is { Count: > 0 })
+                                            {
+                                                <MudIconButton Icon="@(expandido ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)"
+                                                               Size="Size.Small" Style="opacity:.6;padding:2px;"
+                                                               OnClick="() => ToggleDependencia(f.COD_BOTON_OPCION)" />
+                                            }
+                                            else
+                                            {
+                                                <span style="width:26px;flex-shrink:0;"></span>
+                                            }
+                                            <span class="flujo-pill" style="background:var(--foco-fondo,#b8472d);color:#fff;">
+                                                @{ var iconoReal = _iconosBotones.TryGetValue(f.COD_BOTON_OPCION, out var b64) ? b64 : null; }
+                                                @if (iconoReal is not null)
+                                                {
+                                                    <img src="data:image/png;base64,@iconoReal" style="width:1rem;height:1rem;object-fit:contain;" alt="" />
+                                                }
+                                                else
+                                                {
+                                                    <MudIcon Icon="@IconoBoton(f.DES_ALIAS ?? f.DES_BOTON_OPCION)" Size="Size.Small" Style="font-size:1rem;" />
+                                                }
+                                                @(string.IsNullOrWhiteSpace(f.DES_ALIAS) ? f.DES_BOTON_OPCION : f.DES_ALIAS)
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        @if (f.COD_ESTADO.HasValue)
+                                        {
+                                            <span class="flujo-pill" style="background:@(estado?.DES_BACKCOLOR ?? "#6b6358");color:@(estado?.DES_FORECOLOR ?? "#fff");">
+                                                @(estado?.DES_ESTADO ?? f.COD_ESTADO?.ToString())
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span style="opacity:.4;">—</span>
+                                        }
+                                    </td>
+                                    <td style="text-align:center;">@(f.NUM_ORDEN_FLUJO?.ToString() ?? "—")</td>
+                                    <td style="text-align:right;">
+                                        <MudTooltip Text="@(deps is { Count: > 0 } ? "Tiene estados previos requeridos" : "Sin estados previos — se ejecuta desde cualquier estado")">
+                                            <MudIconButton Icon="@Icons.Material.Filled.AltRoute" Size="Size.Small"
+                                                           Style="@(deps is { Count: > 0 } ? "background:var(--gold-accent,#e2b93c);color:#1a1714;" : "opacity:.4;")"
+                                                           OnClick="() => AbrirDependencias(f)" />
+                                        </MudTooltip>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => AbrirEditarFlujo(f)" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="() => EliminarFlujo(f)" />
+                                    </td>
+                                </tr>
+                                @if (deps is { Count: > 0 } && expandido)
+                                {
+                                    for (var i = 0; i < deps.Count; i++)
+                                    {
+                                        var d = deps[i];
+                                        var esUltimo = i == deps.Count - 1;
+                                        <tr class="flujo-dep-row">
+                                            <td class="flujo-dep-col">
+                                                <span class="seg-v @(esUltimo ? "seg-v-last" : "")"></span>
+                                                <span class="seg-h"></span>
+                                            </td>
+                                            <td></td>
+                                            <td colspan="3">
+                                                <span style="font-size:.72rem;opacity:.6;text-transform:uppercase;letter-spacing:.03em;margin-right:6px;">requiere</span>
+                                                <span class="flujo-pill" style="background:@(d.DES_BACKCOLOR_DEPENDENCIA ?? "#6b6358");color:@(d.DES_FORECOLOR_DEPENDENCIA ?? "#fff");">
+                                                    @d.DES_ESTADO_DEPENDENCIA
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                                else if (deps is null)
+                                {
+                                    <tr class="flujo-dep-row">
+                                        <td></td>
+                                        <td></td>
+                                        <td colspan="3" style="font-size:.72rem;opacity:.45;font-style:italic;">
+                                            sin dependencias — ejecuta desde cualquier estado
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                }
+            }
+        </div>
+    </MudPaper>
+
+    @* ══ Panel 4: Estados del Tipo de Estado activo que NINGÚN botón usa como Estado destino
+         (no confundir con "estados de dependencia" — esto es sobre a dónde LLEGA cada flujo,
+         no desde dónde puede dispararse). Ayuda a detectar estados "huérfanos" sin flujo que
+         los produzca. ══ *@
+    <MudPaper Elevation="1" Class="ope-panel">
+        <div class="ope-header">
+            <MudIcon Icon="@Icons.Material.Filled.ReportProblem" Size="Size.Small" Style="color:var(--gold-accent,#e2b93c)" />
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Estados sin vincular</span>
+            @if (_tipoEstadoSel is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Label="true"
+                         Style="margin-left:8px;color:var(--ink);border-color:var(--ink);">
+                    @_estadosSinVincular.Count
+                </MudChip>
+            }
+        </div>
+        <div class="pa-3" style="flex:1;overflow-y:auto;min-height:0;">
+            @if (_tipoEstadoSel is null)
+            {
+                <div class="empty-hint">← Selecciona un Tipo de Estado</div>
+            }
+            else if (!_cargandoFlujos)
+            {
+                @if (!_estadosSinVincular.Any())
+                {
+                    <div class="empty-hint">Todos los estados de este tipo son Estado destino de algún flujo</div>
+                }
+                else
+                {
+                    <MudText Class="mb-3" Style="opacity:.7;font-size:.78rem;">
+                        Ningún botón los deja como Estado destino todavía.
+                    </MudText>
+                    <div class="d-flex flex-column gap-2">
+                        @foreach (var est in _estadosSinVincular)
+                        {
+                            <span class="flujo-pill" style="background:@(est.DES_BACKCOLOR ?? "#6b6358");color:@(est.DES_FORECOLOR ?? "#fff");width:fit-content;">
+                                @est.DES_ESTADO
+                            </span>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    </MudPaper>
+
+</div>
+
+@* ══ Diagrama de flujo de estados (horizontal) — carril de proceso + "bus" de anulación
+     para los estados con 3+ orígenes distintos. Se calcula en C# a partir de _flujos +
+     _dependenciasPorBoton, no está hardcodeado. ══ *@
+@if (_tipoEstadoSel is not null && _diagNodos.Any())
+{
+    <MudPaper Elevation="1" Class="ope-panel mt-3" Style="min-height:0;">
+        <div class="ope-header d-flex align-center">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" Style="color:var(--gold-accent,#e2b93c)" />
+            <span class="flex-grow-1">Diagrama de flujo — @_tipoEstadoSel.DES_TIPO_ESTADO</span>
+            <MudTooltip Text="Ampliar a pantalla completa">
+                <MudIconButton Icon="@Icons.Material.Filled.Fullscreen" Size="Size.Small" Class="diag-btn-config" OnClick="@(() => _diagExpandido = true)" />
+            </MudTooltip>
+        </div>
+        <div class="pa-3" style="overflow-x:auto;display:flex;justify-content:center;">
+            @DiagramaSvg(1.0)
+        </div>
+    </MudPaper>
+}
+
+@* ── Diagrama expandido: overlay a pantalla completa con zoom, mismo SVG que arriba (via
+   DiagramaSvg(escala)) — no se duplica el markup del diagrama, solo cambia la escala visual
+   y el contenedor que lo envuelve. *@
+@if (_diagExpandido)
+{
+    <div class="diag-overlay" @onkeydown="OnDiagOverlayKeyDown" tabindex="-1" @ref="_diagOverlayRef">
+        <div class="diag-overlay-toolbar">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" Style="color:var(--gold-accent,#e2b93c)" />
+            <span class="diag-overlay-titulo">Diagrama de flujo — @_tipoEstadoSel?.DES_TIPO_ESTADO</span>
+            <MudTooltip Text="Alejar">
+                <MudIconButton Icon="@Icons.Material.Filled.ZoomOut" Class="diag-btn-config" OnClick="@(() => AjustarZoom(-0.15))" Disabled="@(_diagZoom <= 0.4)" />
+            </MudTooltip>
+            <span class="diag-overlay-zoom-pct">@((_diagZoom * 100).ToString("0"))%</span>
+            <MudTooltip Text="Acercar">
+                <MudIconButton Icon="@Icons.Material.Filled.ZoomIn" Class="diag-btn-config" OnClick="@(() => AjustarZoom(0.15))" Disabled="@(_diagZoom >= 3)" />
+            </MudTooltip>
+            <MudTooltip Text="Restablecer zoom (100%)">
+                <MudIconButton Icon="@Icons.Material.Filled.RestartAlt" Class="diag-btn-config" OnClick="@(() => _diagZoom = 1.0)" />
+            </MudTooltip>
+            <MudSpacer />
+            <MudTooltip Text="Cerrar (Esc)">
+                <MudIconButton Icon="@Icons.Material.Filled.Close" Class="diag-btn-config" OnClick="@(() => _diagExpandido = false)" />
+            </MudTooltip>
+        </div>
+        <div class="diag-overlay-body">
+            @DiagramaSvg(_diagZoom)
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private class ApiResp<T>
+    {
+        public bool   Success { get; set; }
+        public T?     Data    { get; set; }
+        public string Message { get; set; } = "";
+    }
+
+    private record NodoFila(NodoOpcion nodo, int depth, bool esHoja);
+
+    private List<NodoOpcion> _arbol = new();
+    private readonly HashSet<string> _colapsadas = new();
+    private List<NodoFila> _flat = new();
+    private bool _cargandoArbol = true;
+
+    // Búsqueda: filtro client-side sobre el árbol ya cargado, sin llamada nueva a la API.
+    // Con texto, muestra SOLO las hojas cuyo nombre matchea (ignora el colapso, sin
+    // encabezados de carpeta) — más simple de leer que reconstruir la jerarquía parcial.
+    private string _busqueda = "";
+    private List<NodoFila> _flatVisible => string.IsNullOrWhiteSpace(_busqueda)
+        ? _flat
+        : _flat.Where(f => f.esHoja && f.nodo.DES_OPCION.Contains(_busqueda, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private void OnBuscar() { }
+
+    private NodoOpcion? _nodoSel;
+    private List<Modelo> _asignados = new();
+    private bool _cargandoAsignados;
+
+    // ── Panel 3: Flujos del Tipo de Estado seleccionado en el panel 2 ──
+    private Modelo? _tipoEstadoSel;
+    private List<ModeloFlujo> _flujos = new();
+    private bool _cargandoFlujos;
+    /// <summary>Estados del Tipo de Estado activo, para resolver nombre+color de COD_ESTADO en
+    /// la grilla de Flujos — el SP _SHOWALL de Flujos no trae ese nombre por JOIN.</summary>
+    private List<KONSolutions.Shared.Models.Estandar.Estado> _estadosDelTipo = new();
+    /// <summary>Estados del Tipo de Estado activo que NINGÚN flujo usa como Estado destino
+    /// (COD_ESTADO de _flujos) — no confundir con los estados de dependencia del panel de
+    /// abajo, que son "desde dónde", no "hacia dónde".</summary>
+    private List<KONSolutions.Shared.Models.Estandar.Estado> _estadosSinVincular = new();
+    /// <summary>COD_BOTON_OPCION → IMG_ICONO en base64, para mostrar el ícono real del botón
+    /// (SEGURIDAD.APLICACIONES_OPCIONES_BOTONES) en vez del heurístico por nombre.</summary>
+    private Dictionary<string, string> _iconosBotones = new();
+    /// <summary>COD_BOTON_OPCION → sus estados previos requeridos, resueltos vía el Treelist
+    /// (OPCIONES_PROCESOS_ESTADOS_FLUJOS_DEPENDENCIA), para mostrarlos anidados debajo de cada
+    /// fila sin abrir el diálogo.</summary>
+    private Dictionary<string, List<KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosTreeList>> _dependenciasPorBoton = new();
+    private readonly HashSet<string> _colapsadosDependencia = new();
+
+    private void ToggleDependencia(string codBotonOpcion)
+    {
+        if (!_colapsadosDependencia.Add(codBotonOpcion)) _colapsadosDependencia.Remove(codBotonOpcion);
+    }
+
+    // ══════════════════ Diagrama de flujo (horizontal) — calculado, no hardcodeado ══════════════════
+    // Carril principal con los estados en orden de aparición (por NUM_ORDEN_FLUJO). Un estado
+    // "destino" con 3 o más orígenes distintos (ej. Anular) se saca a un carril inferior y se
+    // conecta por un "bus" horizontal compartido, para que las flechas no se crucen (alternativa
+    // B del mockup que se aprobó).
+    private record DiagNodo(short Cod, string Des, string? Back, string? Fore, double X, double Y, double W);
+    private record DiagEdgeDirecta(string PathD, string Label, double LabelX, double LabelY);
+    private record DiagBusTick(double X, double YFrom);
+    private record DiagBus(double BusY, double BusX1, double BusX2, List<DiagBusTick> Ticks, double TargetX, double TargetY, string Label);
+    private record DiagEntrada(double X, double Y, string Label);
+
+    private const double DiagLaneY = 70, DiagNodeH = 36, DiagGapX = 46, DiagStartX = 70;
+    private const double DiagBusYOffset = 90, DiagEscapeYOffset = 160;
+    private const int DiagEscapeMinOrigenes = 2;
+
+    private List<DiagNodo> _diagNodos = new();
+    private List<DiagEdgeDirecta> _diagEdgesDirectas = new();
+    private List<DiagBus> _diagBuses = new();
+    private List<DiagEntrada> _diagEntradas = new();
+    private double _diagW = 800, _diagH = 140;
+
+    // ── Expandir a pantalla completa + zoom ──
+    private bool _diagExpandido;
+    private double _diagZoom = 1.0;
+    private ElementReference _diagOverlayRef;
+
+    private void AjustarZoom(double delta)
+    {
+        _diagZoom = Math.Clamp(Math.Round(_diagZoom + delta, 2), 0.4, 3.0);
+    }
+
+    private void OnDiagOverlayKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") _diagExpandido = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Foco en el overlay apenas se abre, para que Esc lo cierre sin necesidad de
+        // clickear adentro primero.
+        if (_diagExpandido)
+        {
+            try { await _diagOverlayRef.FocusAsync(); } catch { }
+        }
+    }
+
+    /// <summary>Mismo SVG del diagrama (nodos/aristas/buses ya calculados por ConstruirDiagrama),
+    /// factorizado en un método que devuelve el RenderFragment para reusarlo tal cual en la
+    /// vista compacta (escala 1.0, ancho acotado) y en el overlay expandido (escala variable
+    /// por zoom, sin límite de ancho) — así no hay que duplicar el markup del diagrama.</summary>
+    private RenderFragment DiagramaSvg(double escala) =>
+        @<svg viewBox="@($"0 0 {F(_diagW)} {F(_diagH)}")"
+              role="img" aria-label="Diagrama de flujo de estados calculado a partir de los flujos configurados"
+              style="@($"width:{F(_diagW * escala)}px;height:{F(_diagH * escala)}px;display:block;flex-shrink:0;")">
+            <defs>
+                <marker id="diagArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="currentColor" opacity=".7"></path>
+                </marker>
+            </defs>
+
+            @* Cada foreach queda envuelto en <g> a propósito: dentro de un bloque de código
+               (@foreach { ... }), Razor reserva el nombre "text" para su propia sintaxis de
+               transición a markup y no deja ponerle atributos (RZ1023). Un <g> es un tag SVG
+               normal — al abrirlo, Razor pasa a modo markup y el <text> de adentro ya se
+               interpreta como el elemento SVG real, con atributos. *@
+            @foreach (var en in _diagEntradas)
+            {
+                <g>
+                    <circle cx="@F(en.X)" cy="@F(en.Y)" r="4" fill="currentColor" opacity=".5"></circle>
+                    <line x1="@F(en.X + 4)" y1="@F(en.Y)" x2="@F(en.X + 26)" y2="@F(en.Y)" stroke="currentColor" stroke-width="1.6" opacity=".55" marker-end="url(#diagArr)"></line>
+                    <text x="@F(en.X + 15)" y="@F(en.Y - 8)" text-anchor="middle" font-size="10.5" opacity=".6">@en.Label</text>
+                </g>
+            }
+
+            @foreach (var e in _diagEdgesDirectas)
+            {
+                <g>
+                    <path d="@e.PathD" stroke="currentColor" stroke-width="1.6" fill="none" opacity=".55" marker-end="url(#diagArr)"></path>
+                    <text x="@F(e.LabelX)" y="@F(e.LabelY)" text-anchor="middle" font-size="10.5" opacity=".6">@e.Label</text>
+                </g>
+            }
+
+            @foreach (var b in _diagBuses)
+            {
+                <g>
+                    @foreach (var tick in b.Ticks)
+                    {
+                        <line x1="@F(tick.X)" y1="@F(tick.YFrom)" x2="@F(tick.X)" y2="@F(b.BusY)" stroke="currentColor" stroke-width="1.4" opacity=".4" stroke-dasharray="4 4"></line>
+                    }
+                    <line x1="@F(b.BusX1)" y1="@F(b.BusY)" x2="@F(b.BusX2)" y2="@F(b.BusY)" stroke="currentColor" stroke-width="1.4" opacity=".4" stroke-dasharray="4 4"></line>
+                    <line x1="@F(b.TargetX)" y1="@F(b.BusY)" x2="@F(b.TargetX)" y2="@F(b.TargetY - 18)" stroke="currentColor" stroke-width="1.4" opacity=".4" stroke-dasharray="4 4" marker-end="url(#diagArr)"></line>
+                    <text x="@F(b.TargetX)" y="@F(b.BusY - 8)" text-anchor="middle" font-size="10.5" opacity=".55">@b.Label</text>
+                </g>
+            }
+
+            @foreach (var n in _diagNodos)
+            {
+                <g>
+                    <rect x="@F(n.X - n.W / 2)" y="@F(n.Y - 18)" width="@F(n.W)" height="36" rx="18" fill="@(string.IsNullOrWhiteSpace(n.Back) ? "#6b6358" : n.Back)"></rect>
+                    <text x="@F(n.X)" y="@F(n.Y + 5)" text-anchor="middle" font-size="11.5" font-weight="700" fill="@(string.IsNullOrWhiteSpace(n.Fore) ? "#fff" : n.Fore)">@n.Des</text>
+                </g>
+            }
+        </svg>;
+
+    private static double DiagAnchoTexto(string des) => Math.Max(70, des.Length * 7.4 + 30);
+    /// <summary>Formato invariante para coordenadas SVG — con cultura es-AR (coma decimal) un
+    /// simple @valor en el markup rompería el atributo (ej. "150,5" en vez de "150.5").</summary>
+    private static string F(double d) => d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private void ConstruirDiagrama()
+    {
+        _diagNodos = new(); _diagEdgesDirectas = new(); _diagBuses = new(); _diagEntradas = new();
+        if (!_flujos.Any()) return;
+
+        // 2) Aristas crudas (origen → destino, etiqueta = botón), agrupadas por par. Se calculan
+        //    ANTES que el orden de cada estado, porque los estados "solo dependencia" (que ningún
+        //    botón deja como destino, ej. Atendido Parcialmente) se ubican por el orden del primer
+        //    flujo que los REQUIERE, no por su propio NUM_ORDEN_FLUJO (no tienen).
+        var aristas = new List<(short Origen, short Destino, string Label, int OrdenBoton)>();
+        foreach (var (botonCod, deps) in _dependenciasPorBoton)
+        {
+            var f = _flujos.FirstOrDefault(x => x.COD_BOTON_OPCION == botonCod);
+            if (f?.COD_ESTADO is null) continue;
+            var label = (string.IsNullOrWhiteSpace(f.DES_ALIAS) ? f.DES_BOTON_OPCION : f.DES_ALIAS) ?? "";
+            var orden = f.NUM_ORDEN_FLUJO ?? int.MaxValue;
+            foreach (var d in deps)
+                aristas.Add((d.COD_ESTADO_DEPENDENCIA!.Value, f.COD_ESTADO.Value, label, orden));
+        }
+        var aristasAgrupadas = aristas
+            .GroupBy(a => (a.Origen, a.Destino))
+            .Select(g =>
+            {
+                var ordenes = g.Select(x => x.OrdenBoton).Where(o => o != int.MaxValue).Distinct().OrderBy(o => o).ToList();
+                var prefijo = ordenes.Any() ? $"[{string.Join(",", ordenes)}] " : "";
+                return (g.Key.Origen, g.Key.Destino, Label: prefijo + string.Join(" / ", g.Select(x => x.Label).Distinct()));
+            })
+            .ToList();
+
+        // 1) Info de cada estado que aparece (como destino y/o como dependencia). El orden para
+        //    ubicarlo en el carril es: NUM_ORDEN_FLUJO del primer botón que lo deja como destino,
+        //    o —si nunca es destino— el orden del primer botón que lo REQUIERE.
+        var ordenMinPorDependencia = aristas.GroupBy(a => a.Origen).ToDictionary(g => g.Key, g => g.Min(a => a.OrdenBoton));
+        var info = new Dictionary<short, (string Des, string? Back, string? Fore, int Orden)>();
+        foreach (var f in _flujos.Where(x => x.COD_ESTADO.HasValue).OrderBy(x => x.NUM_ORDEN_FLUJO ?? int.MaxValue))
+        {
+            var cod = f.COD_ESTADO!.Value;
+            if (info.ContainsKey(cod)) continue;
+            var est = _estadosDelTipo.FirstOrDefault(e => e.COD_ESTADO == cod);
+            info[cod] = (est?.DES_ESTADO ?? cod.ToString(), est?.DES_BACKCOLOR, est?.DES_FORECOLOR, f.NUM_ORDEN_FLUJO ?? int.MaxValue);
+        }
+        foreach (var d in _dependenciasPorBoton.Values.SelectMany(x => x))
+        {
+            var cod = d.COD_ESTADO_DEPENDENCIA!.Value;
+            if (info.ContainsKey(cod)) continue;
+            var orden = ordenMinPorDependencia.TryGetValue(cod, out var o) ? o : int.MaxValue;
+            info[cod] = (d.DES_ESTADO_DEPENDENCIA ?? cod.ToString(), d.DES_BACKCOLOR_DEPENDENCIA, d.DES_FORECOLOR_DEPENDENCIA, orden);
+        }
+        if (!info.Any()) return;
+
+        // 3) Estados "escape" (van al carril inferior, conectados por un bus): un estado es
+        //    terminal cuando NINGÚN botón lo requiere para llegar a otro estado (nunca es
+        //    origen de otro flujo) — ej. Anulado. Un estado "hub" como Registrado sí es origen
+        //    de otros flujos (Genera Reservas, Anular) y se queda siempre en el carril principal,
+        //    aunque tenga muchos orígenes propios.
+        var origenesPorDestino = aristasAgrupadas.GroupBy(a => a.Destino)
+            .ToDictionary(g => g.Key, g => g.Select(a => a.Origen).Distinct().ToList());
+        var codsQueSonOrigen = aristasAgrupadas.Select(a => a.Origen).ToHashSet();
+        var escapeCods = origenesPorDestino
+            .Where(kv => !codsQueSonOrigen.Contains(kv.Key) && kv.Value.Count >= DiagEscapeMinOrigenes)
+            .Select(kv => kv.Key).ToHashSet();
+
+        // 4) Carril principal: todos los estados que no son "escape", en orden de aparición
+        //    (los que solo son dependencia, sin destino propio, quedan al final).
+        var nodosPorCod = new Dictionary<short, DiagNodo>();
+        var x = DiagStartX;
+        foreach (var cod in info.Keys.Where(c => !escapeCods.Contains(c)).OrderBy(c => info[c].Orden))
+        {
+            var (des, back, fore, _) = info[cod];
+            var w = DiagAnchoTexto(des);
+            nodosPorCod[cod] = new DiagNodo(cod, des, back, fore, x + w / 2, DiagLaneY, w);
+            x += w + DiagGapX;
+        }
+
+        // 5) Carril de escape: centrado sobre el promedio de X de sus orígenes en el carril principal.
+        var busY = DiagLaneY + DiagBusYOffset;
+        var escapeY = DiagLaneY + DiagEscapeYOffset;
+        foreach (var cod in escapeCods)
+        {
+            var origenesX = origenesPorDestino[cod].Where(nodosPorCod.ContainsKey).Select(o => nodosPorCod[o].X).ToList();
+            var (des, back, fore, _) = info[cod];
+            var w = DiagAnchoTexto(des);
+            var cx = origenesX.Any() ? origenesX.Average() : x + w / 2;
+            nodosPorCod[cod] = new DiagNodo(cod, des, back, fore, cx, escapeY, w);
+        }
+
+        _diagNodos = nodosPorCod.Values.ToList();
+
+        // 6) Aristas directas (ambos extremos en el carril principal): arco arriba si va hacia
+        //    adelante, arco abajo (como Revierte/Abrir → Registrado) si va hacia atrás.
+        foreach (var a in aristasAgrupadas.Where(a => !escapeCods.Contains(a.Destino)))
+        {
+            if (!nodosPorCod.TryGetValue(a.Origen, out var n1) || !nodosPorCod.TryGetValue(a.Destino, out var n2)) continue;
+            var adelante = n1.X <= n2.X;
+            var midX = (n1.X + n2.X) / 2;
+            var ctrlY = adelante ? DiagLaneY - 40 : DiagLaneY + 40;
+            var y1 = adelante ? DiagLaneY - 18 : DiagLaneY + 18;
+            var pathD = $"M{n1.X.ToString(System.Globalization.CultureInfo.InvariantCulture)},{y1.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
+                        $"C{midX.ToString(System.Globalization.CultureInfo.InvariantCulture)},{ctrlY.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
+                        $"{midX.ToString(System.Globalization.CultureInfo.InvariantCulture)},{ctrlY.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
+                        $"{n2.X.ToString(System.Globalization.CultureInfo.InvariantCulture)},{y1.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            var labelY = adelante ? DiagLaneY - 46 : DiagLaneY + 58;
+            _diagEdgesDirectas.Add(new DiagEdgeDirecta(pathD, a.Label, midX, labelY));
+        }
+
+        // 7) Aristas de escape: ticks verticales desde cada origen hasta un bus horizontal
+        //    compartido, y una única flecha del bus hacia el nodo de escape.
+        foreach (var cod in escapeCods)
+        {
+            if (!nodosPorCod.TryGetValue(cod, out var destino)) continue;
+            var origenesX = origenesPorDestino[cod].Where(nodosPorCod.ContainsKey).Select(o => nodosPorCod[o].X).ToList();
+            if (!origenesX.Any()) continue;
+            var ticks = origenesX.Select(ox => new DiagBusTick(ox, DiagLaneY + 18)).ToList();
+            var busX1 = Math.Min(origenesX.Min(), destino.X);
+            var busX2 = Math.Max(origenesX.Max(), destino.X);
+            var labelBoton = aristasAgrupadas.Where(a => a.Destino == cod).Select(a => a.Label).Distinct().FirstOrDefault() ?? "";
+            _diagBuses.Add(new DiagBus(busY, busX1, busX2, ticks, destino.X, destino.Y, labelBoton));
+        }
+
+        // 8) Entradas "de la nada" (botones sin dependencias que producen un estado, ej. Nuevo).
+        var entradaCods = _flujos.Where(f => f.COD_ESTADO.HasValue && !_dependenciasPorBoton.ContainsKey(f.COD_BOTON_OPCION))
+            .GroupBy(f => f.COD_ESTADO!.Value)
+            .Select(g =>
+            {
+                var ordenes = g.Select(f => f.NUM_ORDEN_FLUJO).Where(o => o.HasValue).Select(o => o!.Value).Distinct().OrderBy(o => o).ToList();
+                var prefijo = ordenes.Any() ? $"[{string.Join(",", ordenes)}] " : "";
+                var nombres = string.Join(" / ", g.Select(f => string.IsNullOrWhiteSpace(f.DES_ALIAS) ? f.DES_BOTON_OPCION : f.DES_ALIAS).Distinct());
+                return (Cod: g.Key, Label: prefijo + nombres);
+            });
+        foreach (var (cod, label) in entradaCods)
+        {
+            if (!nodosPorCod.TryGetValue(cod, out var n)) continue;
+            _diagEntradas.Add(new DiagEntrada(n.X - n.W / 2 - 30, n.Y, label));
+        }
+
+        _diagW = Math.Max(600, x + 20);
+        _diagH = escapeCods.Any() ? escapeY + 60 : DiagLaneY + 70;
+    }
+
+    protected override async Task OnInitializedAsync() => await CargarArbol();
+
+    private async Task Recargar()
+    {
+        var sel = _nodoSel;
+        _nodoSel = null;
+        _asignados.Clear();
+        _tipoEstadoSel = null;
+        _flujos.Clear();
+        await CargarArbol();
+        if (sel is not null)
+        {
+            var match = FindNode(_arbol, sel.COD_CHILDREN);
+            if (match is not null) await SeleccionarNodo(match);
+        }
+    }
+
+    private static NodoOpcion? FindNode(List<NodoOpcion> raices, string codChildren)
+    {
+        foreach (var n in raices)
+        {
+            if (n.COD_CHILDREN == codChildren) return n;
+            var enHijos = FindNode(n.Hijos, codChildren);
+            if (enHijos is not null) return enHijos;
+        }
+        return null;
+    }
+
+    private async Task CargarArbol()
+    {
+        _cargandoArbol = true;
+        StateHasChanged();
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResp<List<NodoOpcion>>>(SeguridadRoute.AplicacionesOpcionesTreeview);
+            _colapsadas.Clear();
+            _arbol = ArmarArbol(r?.Data ?? new());
+            _flat  = BuildFlat(_arbol, _colapsadas);
+        }
+        catch (Exception ex) { await ErrorDialogHelper.MostrarMensajeAsync(ex.Message, DialogService, nameof(OpcionesProcesosEstados)); }
+        finally { _cargandoArbol = false; StateHasChanged(); }
+    }
+
+    private static List<NodoOpcion> ArmarArbol(List<NodoOpcion> flat)
+    {
+        var sinDup = flat.GroupBy(n => n.COD_CHILDREN).Select(g => g.First()).ToList();
+        sinDup.ForEach(n => n.Hijos = new());
+        var mapa   = sinDup.ToDictionary(n => n.COD_CHILDREN);
+        var raices = new List<NodoOpcion>();
+        foreach (var nodo in sinDup)
+        {
+            if (!string.IsNullOrWhiteSpace(nodo.COD_PARENT) && mapa.TryGetValue(nodo.COD_PARENT, out var padre))
+                padre.Hijos.Add(nodo);
+            else
+                raices.Add(nodo);
+        }
+        return raices;
+    }
+
+    private static List<NodoFila> BuildFlat(List<NodoOpcion> raices, HashSet<string> colapsadas)
+    {
+        var result = new List<NodoFila>();
+        void Walk(NodoOpcion n, int d)
+        {
+            bool esHoja = !string.IsNullOrWhiteSpace(n.COD_OPCION_ORIGINAL) && n.COD_TIPO != "BTN";
+            result.Add(new NodoFila(n, d, esHoja));
+            if (colapsadas.Contains(n.COD_CHILDREN)) return;
+            foreach (var h in n.Hijos) Walk(h, d + 1);
+        }
+        foreach (var r in raices) Walk(r, 0);
+        return result;
+    }
+
+    private void ToggleColapso(NodoOpcion nodo)
+    {
+        if (!_colapsadas.Add(nodo.COD_CHILDREN)) _colapsadas.Remove(nodo.COD_CHILDREN);
+        _flat = BuildFlat(_arbol, _colapsadas);
+    }
+
+    private async Task SeleccionarNodo(NodoOpcion nodo)
+    {
+        _nodoSel = nodo;
+        _tipoEstadoSel = null;
+        _flujos.Clear();
+        await CargarAsignados();
+    }
+
+    private async Task CargarAsignados()
+    {
+        if (_nodoSel is null) return;
+        _cargandoAsignados = true;
+        _asignados.Clear();
+        StateHasChanged();
+        try
+        {
+            var url = $"{EstandarRoute.OpcionesProcesosEstados}" +
+                      $"?codAplicacion={Uri.EscapeDataString(_nodoSel.COD_APLICACION_ORIGINAL)}" +
+                      $"&codOpcionAplicacion={Uri.EscapeDataString(_nodoSel.COD_OPCION_ORIGINAL)}";
+            var r = await Http.GetFromJsonAsync<ApiResp<List<Modelo>>>(url);
+            _asignados = (r?.Data ?? new()).OrderBy(x => x.DES_TIPO_ESTADO).ToList();
+        }
+        catch (Exception ex) { await ErrorDialogHelper.MostrarMensajeAsync(ex.Message, DialogService, nameof(OpcionesProcesosEstados)); }
+        finally { _cargandoAsignados = false; StateHasChanged(); }
+    }
+
+    private async Task AbrirAgregar()
+    {
+        if (_nodoSel is null) return;
+        var parametros = new DialogParameters
+        {
+            ["CodAplicacion"] = _nodoSel.COD_APLICACION_ORIGINAL,
+            ["CodOpcionAplicacion"] = _nodoSel.COD_OPCION_ORIGINAL,
+            ["YaAsignados"] = _asignados.Select(x => x.COD_TIPO_ESTADO).ToList()
+        };
+        var dlg = await DialogService.ShowAsync<OpcionesProcesosEstadosAgregarDialog>("Agregar Tipos de Estado", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsignados();
+    }
+
+    private async Task AbrirCopiarConfiguracion()
+    {
+        if (_nodoSel is null || _tipoEstadoSel is null) return;
+        // opciones elegibles como destino: todas las hojas del arbol (la propia tambien, para copiar a otro tipo de estado)
+        var opciones = _flat.Where(f => f.esHoja)
+            .Select(f => new ComboboxItem { Id = $"{f.nodo.COD_APLICACION_ORIGINAL}|{f.nodo.COD_OPCION_ORIGINAL}", Texto = $"{f.nodo.COD_APLICACION_ORIGINAL} · {f.nodo.DES_OPCION} ({f.nodo.COD_OPCION_ORIGINAL})" })
+            .ToList();
+        var dlg = await DialogService.ShowAsync<CopiarConfiguracionEstadosDialog>("Copiar configuración de estados",
+            new DialogParameters
+            {
+                ["CodAplicacionOrigen"] = _nodoSel.COD_APLICACION_ORIGINAL,
+                ["CodOpcionOrigen"] = _nodoSel.COD_OPCION_ORIGINAL,
+                ["DesOpcionOrigen"] = _nodoSel.DES_OPCION,
+                ["CodTipoEstadoOrigen"] = (short)_tipoEstadoSel.COD_TIPO_ESTADO,
+                ["DesTipoEstadoOrigen"] = _tipoEstadoSel.DES_TIPO_ESTADO ?? "",
+                ["Opciones"] = opciones
+            },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = false, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarAsignados(); }
+    }
+
+    private async Task Eliminar(Modelo item)
+    {
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar tipo de estado",
+            new DialogParameters
+            {
+                ["Titulo"] = "Quitar tipo de estado",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Quitar el tipo de estado '{item.DES_TIPO_ESTADO}' de esta opción?",
+                ["TextoConfirmar"] = "Quitar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{EstandarRoute.OpcionesProcesosEstados}/{Uri.EscapeDataString(item.COD_APLICACION)}/{Uri.EscapeDataString(item.COD_OPCION_APLICACION)}/{item.COD_TIPO_ESTADO}");
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Tipo de estado quitado.", Severity.Success);
+            if (_tipoEstadoSel?.COD_TIPO_ESTADO == item.COD_TIPO_ESTADO) { _tipoEstadoSel = null; _flujos.Clear(); }
+            await CargarAsignados();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstados), nameof(Eliminar));
+    }
+
+    // ══════════════════════ Panel 3: Flujos ══════════════════════
+
+    private async Task SeleccionarTipoEstado(Modelo tipoEstado)
+    {
+        _tipoEstadoSel = tipoEstado;
+        await CargarFlujos();
+    }
+
+    private async Task CargarFlujos()
+    {
+        if (_nodoSel is null || _tipoEstadoSel is null) return;
+        _cargandoFlujos = true;
+        _flujos.Clear();
+        StateHasChanged();
+        try
+        {
+            var url = $"{EstandarRoute.OpcionesProcesosEstadosFlujos}" +
+                      $"?codAplicacion={Uri.EscapeDataString(_nodoSel.COD_APLICACION_ORIGINAL)}" +
+                      $"&codOpcionAplicacion={Uri.EscapeDataString(_nodoSel.COD_OPCION_ORIGINAL)}" +
+                      $"&codTipoEstado={_tipoEstadoSel.COD_TIPO_ESTADO}";
+            var r = await Http.GetFromJsonAsync<ApiResp<List<ModeloFlujo>>>(url);
+            _flujos = (r?.Data ?? new()).OrderBy(x => x.NUM_ORDEN_FLUJO).ToList();
+
+            _estadosDelTipo = await EstadoSvc.GetByTipoAsync(_tipoEstadoSel.COD_TIPO_ESTADO);
+
+            var destinoCods = _flujos.Where(f => f.COD_ESTADO.HasValue).Select(f => f.COD_ESTADO!.Value).ToHashSet();
+            _estadosSinVincular = _estadosDelTipo.Where(e => e.COD_ESTADO.HasValue && !destinoCods.Contains((short)e.COD_ESTADO.Value)).ToList();
+
+            var botones = await BotonesSvc.GetByOpcionAsync(_nodoSel.COD_APLICACION_ORIGINAL, _nodoSel.COD_OPCION_ORIGINAL);
+            _iconosBotones = botones
+                .Where(b => b.IMG_ICONO is { Length: > 0 })
+                .ToDictionary(b => b.COD_BOTON_OPCION, b => Convert.ToBase64String(b.IMG_ICONO!));
+
+            await CargarDependencias();
+        }
+        catch (Exception ex) { await ErrorDialogHelper.MostrarMensajeAsync(ex.Message, DialogService, nameof(OpcionesProcesosEstados)); }
+        finally { _cargandoFlujos = false; StateHasChanged(); }
+    }
+
+    private async Task AbrirAgregarFlujo()
+    {
+        if (_nodoSel is null || _tipoEstadoSel is null) return;
+        var parametros = new DialogParameters
+        {
+            ["Modo"] = CrudModo.Create,
+            ["CodAplicacion"] = _nodoSel.COD_APLICACION_ORIGINAL,
+            ["CodOpcionAplicacion"] = _nodoSel.COD_OPCION_ORIGINAL,
+            ["CodTipoEstado"] = _tipoEstadoSel.COD_TIPO_ESTADO,
+            ["BotonesYaAgregados"] = _flujos.Select(f => f.COD_BOTON_OPCION).ToList()
+        };
+        var dlg = await DialogService.ShowAsync<OpcionesProcesosEstadosFlujosDialog>("Agregar flujo", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarFlujos();
+    }
+
+    private async Task AbrirEditarFlujo(ModeloFlujo item)
+    {
+        if (_nodoSel is null || _tipoEstadoSel is null) return;
+        var parametros = new DialogParameters
+        {
+            ["Modo"] = CrudModo.Update,
+            ["Item"] = item,
+            ["CodAplicacion"] = _nodoSel.COD_APLICACION_ORIGINAL,
+            ["CodOpcionAplicacion"] = _nodoSel.COD_OPCION_ORIGINAL,
+            ["CodTipoEstado"] = _tipoEstadoSel.COD_TIPO_ESTADO
+        };
+        var dlg = await DialogService.ShowAsync<OpcionesProcesosEstadosFlujosDialog>("Editar flujo", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarFlujos();
+    }
+
+    /// <summary>Resuelve qué botones ya tienen estados previos requeridos, vía el Treelist
+    /// (una fila por Botón × Dependencia; COD_ESTADO_DEPENDENCIA no nulo = tiene al menos uno).</summary>
+    private async Task CargarDependencias()
+    {
+        if (_nodoSel is null || _tipoEstadoSel is null) return;
+        try
+        {
+            var url = $"{EstandarRoute.OpcionesProcesosEstadosFlujosTreelist}" +
+                      $"?codAplicacion={Uri.EscapeDataString(_nodoSel.COD_APLICACION_ORIGINAL)}" +
+                      $"&codOpcionAplicacion={Uri.EscapeDataString(_nodoSel.COD_OPCION_ORIGINAL)}" +
+                      $"&codTipoEstado={_tipoEstadoSel.COD_TIPO_ESTADO}";
+            var r = await Http.GetFromJsonAsync<ApiResp<List<KONSolutions.Shared.Models.Estandar.OpcionesProcesosEstadosFlujosTreeList>>>(url);
+            _dependenciasPorBoton = (r?.Data ?? new())
+                .Where(x => x.COD_ESTADO_DEPENDENCIA.HasValue)
+                .GroupBy(x => x.COD_BOTON_OPCION)
+                .ToDictionary(g => g.Key, g => g.ToList());
+        }
+        catch { _dependenciasPorBoton = new(); }
+        ConstruirDiagrama();
+    }
+
+    private async Task AbrirDependencias(ModeloFlujo item)
+    {
+        var parametros = new DialogParameters
+        {
+            ["CodAplicacion"] = item.COD_APLICACION,
+            ["CodOpcionAplicacion"] = item.COD_OPCION_APLICACION,
+            ["CodTipoEstado"] = item.COD_TIPO_ESTADO,
+            ["CodBotonOpcion"] = item.COD_BOTON_OPCION,
+            ["DesBotonOpcion"] = string.IsNullOrWhiteSpace(item.DES_ALIAS) ? item.DES_BOTON_OPCION : item.DES_ALIAS
+        };
+        var dlg = await DialogService.ShowAsync<OpcionesProcesosEstadosFlujosDependenciaDialog>("Estados previos requeridos", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false, Data: true }) await CargarDependencias();
+    }
+
+    private async Task EliminarFlujo(ModeloFlujo item)
+    {
+        var nombreBoton = string.IsNullOrWhiteSpace(item.DES_ALIAS) ? item.DES_BOTON_OPCION : item.DES_ALIAS;
+        var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Eliminar flujo",
+            new DialogParameters
+            {
+                ["Titulo"] = "Eliminar flujo",
+                ["IconoTitulo"] = Icons.Material.Filled.Delete,
+                ["Mensaje"] = $"¿Eliminar el flujo del botón '{nombreBoton}'?",
+                ["TextoConfirmar"] = "Eliminar",
+                ["IconoConfirmar"] = Icons.Material.Filled.Delete
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is not { Canceled: false }) return;
+
+        var resp = await Http.DeleteAsync($"{EstandarRoute.OpcionesProcesosEstadosFlujos}/{Uri.EscapeDataString(item.COD_APLICACION)}/{Uri.EscapeDataString(item.COD_OPCION_APLICACION)}/{item.COD_TIPO_ESTADO}/{Uri.EscapeDataString(item.COD_BOTON_OPCION)}");
+        if (resp.IsSuccessStatusCode) { Snackbar.Add("Flujo eliminado.", Severity.Success); await CargarFlujos(); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(OpcionesProcesosEstados), nameof(EliminarFlujo));
+    }
+
+    /// <summary>El SP _SHOWALL de Flujos no trae el ícono real del botón (solo texto) — se
+    /// resuelve por nombre con el mismo heurístico que AccionesBotones.razor.IconoEstandar,
+    /// para que la píldora del panel 3 muestre un ícono coherente con el resto de la app.</summary>
+    private static string IconoBoton(string? nombre)
+    {
+        var n = (nombre ?? "").ToUpperInvariant();
+        if (n.Contains("NUEVO") || n.Contains("CREAR") || n.Contains("AGREG")) return Icons.Material.Filled.NoteAdd;
+        if (n.Contains("MODIF") || n.Contains("EDIT") || n.Contains("ACTUALIZ")) return Icons.Material.Filled.Edit;
+        if (n.Contains("ELIM") || n.Contains("BORR") || n.Contains("DELETE")) return Icons.Material.Filled.Delete;
+        if (n.Contains("CERRAR")) return Icons.Material.Filled.Lock;
+        if (n.Contains("ABRIR")) return Icons.Material.Filled.LockOpen;
+        if (n.Contains("APROB") || n.Contains("CONFIRM") || n.Contains("VALID")) return Icons.Material.Filled.CheckCircle;
+        if (n.Contains("RECHAZ") || n.Contains("ANULAR") || n.Contains("REJECT")) return Icons.Material.Filled.Block;
+        if (n.Contains("ENVIO") || n.Contains("ENVIAR")) return Icons.Material.Filled.Send;
+        if (n.Contains("VER") || n.Contains("DETALL") || n.Contains("CONSULT")) return Icons.Material.Filled.Visibility;
+        return Icons.Material.Filled.SmartButton;
+    }
+
+    private static string IconoPorTipo(string? tipo) => tipo switch
+    {
+        "ROT" => Icons.Material.Filled.AccountTree,
+        "APP" => Icons.Material.Filled.AppsOutage,
+        "CRP" => Icons.Material.Filled.Folder,
+        "MDL" => Icons.Material.Filled.ViewModule,
+        "SMD" => Icons.Material.Filled.ViewQuilt,
+        "BTN" => Icons.Material.Filled.SmartButton,
+        _     => Icons.Material.Filled.Circle
+    };
+}

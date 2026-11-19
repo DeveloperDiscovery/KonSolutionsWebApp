@@ -1,0 +1,174 @@
+@* Alta rápida de un lote de control, desde el detalle del pedido comercial.
+
+   NO reemplaza a la pantalla de Lotes: crea sólo la CABECERA, que es lo que hace falta para
+   poder elegirlo en la línea. El detalle de productos del lote se carga después desde su
+   propia pantalla, cuando corresponda.
+
+   La ENTIDAD no se elige acá: viene del pedido y se muestra bloqueada. Es el punto entero
+   del cambio anterior —el combo de la línea sólo ofrece lotes de la entidad del pedido—, así
+   que dejar elegir otra entidad permitiría crear un lote que el propio combo que lo pidió no
+   va a mostrar. *@
+
+@using KONSolutions.Shared.Common
+@using Modelo = KONSolutions.Shared.Models.Logistica.LotesControl
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ErrorLogService ErrorLog
+
+<MudDialog Style="width:min(620px,96vw);">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Nuevo lote de control</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudGrid Spacing="2">
+            <MudItem xs="12">
+                @* Bloqueada y visible, no oculta: el usuario tiene que ver a nombre de quién
+                   queda el lote ANTES de crearlo, no descubrirlo después. *@
+                <MudTextField T="string" Value="@DesEntidad" Label="Entidad"
+                              Variant="Variant.Outlined" Disabled="true" Class="mb-3" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                           TextFunc="@(t => $"{t.Id} — {t.Texto}")" ValueFunc="@(t => t.Id)"
+                           @bind-Value="_model.COD_TIPO_LOTE_CONTROL"
+                           Label="Tipo de lote" Class="mb-3" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <EstadoCombo DesTabla="LOGISTICA.LOTES_CONTROL"
+                             @bind-Value="_model.COD_ESTADO"
+                             CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)" />
+            </MudItem>
+
+            <MudItem xs="12">
+                <CampoTexto Tabla="LOGISTICA.LOTES_CONTROL" Columna="DES_LOTE_CONTROL"
+                            @bind-Value="_model.DES_LOTE_CONTROL" Obligatorio="true" />
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <MudDatePicker @bind-Date="_model.FEC_LOTE_CONTROL" Label="Fecha"
+                               Variant="Variant.Outlined" DateFormat="dd/MM/yyyy"
+                               Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudDatePicker @bind-Date="_model.FEC_VENCIMIENTO" Label="Vencimiento"
+                               Variant="Variant.Outlined" DateFormat="dd/MM/yyyy"
+                               Class="mb-3" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                @* El número con que el tercero identifica el mismo lote, para casarlo contra
+                   su documentación cuando no coincide con el nuestro. *@
+                <CampoTexto Tabla="LOGISTICA.LOTES_CONTROL" Columna="NUM_LOTE_CONTROL_ENTIDAD"
+                            @bind-Value="_model.NUM_LOTE_CONTROL_ENTIDAD" />
+            </MudItem>
+        </MudGrid>
+
+        <MudText Typo="Typo.caption" Style="opacity:.6;">
+            El número de lote lo asigna el sistema al grabar. Se crea sólo la cabecera: los
+            productos del lote se cargan desde la pantalla de Lotes de Importación y Locales.
+        </MudText>
+
+        @if (!string.IsNullOrWhiteSpace(_falta))
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">@_falta</MudAlert>
+        }
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled"
+                   Style="@EstilosBoton.Cancelar" Disabled="_grabando">Cancelar</MudButton>
+        <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar"
+                   OnClick="Grabar" Disabled="_grabando">Crear lote</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    /// <summary>La entidad del pedido. El lote nace a su nombre, sin opción.</summary>
+    [Parameter] public decimal CodEntidad { get; set; }
+
+    /// <summary>Sólo para mostrar de quién es. Si no llega, se muestra el código.</summary>
+    [Parameter] public string? DesEntidad { get; set; }
+
+    private Modelo _model = new();
+    private List<ComboboxItem> _tipos = new();
+    private bool _grabando;
+    private string? _falta;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _model.COD_ENTIDAD = CodEntidad;
+        // La fecha del lote arranca en hoy, que es lo que se pone el 99% de las veces. El
+        // vencimiento NO se propone: inventar una fecha de vencimiento sería peor que dejarla
+        // vacía, porque nadie la revisaría.
+        _model.FEC_LOTE_CONTROL = DateTime.Today;
+
+        if (string.IsNullOrWhiteSpace(DesEntidad)) DesEntidad = CodEntidad.ToString();
+
+        _tipos = (await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.TiposLoteControlCombobox)) ?? new();
+    }
+
+    private async Task Grabar()
+    {
+        // Se valida ACÁ y con nombre propio, en vez de dejar que el SP devuelva un 547 o un
+        // mensaje de restricción que no dice qué campo fue.
+        var faltan = new List<string>();
+        if (string.IsNullOrWhiteSpace(_model.COD_TIPO_LOTE_CONTROL)) faltan.Add("tipo de lote");
+        if (string.IsNullOrWhiteSpace(_model.DES_LOTE_CONTROL))      faltan.Add("descripción");
+        if (faltan.Count > 0)
+        {
+            _falta = $"Falta completar: {string.Join(", ", faltan)}.";
+            return;
+        }
+        _falta = null;
+
+        _grabando = true;
+        try
+        {
+            var resp = await Http.GuardarAsync(ApiRoutes.Logistica.LotesControl, _model, esNuevo: true);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(LoteRapidoDialog), nameof(Grabar));
+                return;
+            }
+
+            // El número lo asigna el servidor y vuelve en Codigo. Sin él el diálogo no puede
+            // decirle al pedido qué lote acaba de crear, y la línea se quedaría sin poder
+            // seleccionarlo: se avisa en vez de cerrar como si todo hubiera salido bien.
+            var cuerpo = await resp.Content.ReadFromJsonAsync<ApiResponse<WriteResult>>();
+            var generado = cuerpo?.Data?.Codigo;
+            if (string.IsNullOrWhiteSpace(generado))
+            {
+                await ErrorDialogHelper.MostrarAvisoAsync(
+                    "El lote se creó, pero el servidor no devolvió su número. Búscalo en la pantalla de Lotes y elígelo a mano.",
+                    DialogService, nameof(LoteRapidoDialog));
+                MudDialog.Cancel();
+                return;
+            }
+
+            Snackbar.Add($"Lote {generado} creado.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(new Creado
+            {
+                NUM_LOTE_CONTROL = generado,
+                DES_LOTE_CONTROL = _model.DES_LOTE_CONTROL
+            }));
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(LoteRapidoDialog), nameof(Grabar));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo crear el lote.", DialogService, nameof(LoteRapidoDialog));
+        }
+        finally { _grabando = false; }
+    }
+
+    /// <summary>Lo que el diálogo devuelve: el número que asignó el servidor y su
+    /// descripción, que es lo justo para agregarlo al combo y dejarlo seleccionado.</summary>
+    public class Creado
+    {
+        public string  NUM_LOTE_CONTROL { get; set; } = "";
+        public string? DES_LOTE_CONTROL { get; set; }
+    }
+}

@@ -1,0 +1,19 @@
+@* El estilo dashboard (css/dashboard.css) se carga solo, desde aquí: no hace falta tocar index.html. *@
+<HeadContent><link rel="stylesheet" href="css/dashboard.css?v=20261110a" /></HeadContent>
+@* Indicador del estilo dashboard: título pequeño, cifra grande y, si se pide, una barra de progreso. Tono: "", "ok", "warn" o "bad". Usar dentro de un contenedor con la clase "dash". *@
+<div class="dash-kpi @Tono" title="@Ayuda">
+    <div class="k-tit">@if (!string.IsNullOrEmpty(Icono)) { <MudIcon Icon="@Icono" Size="Size.Small" /> }@Titulo</div>
+    <div class="k-val">@Valor</div>
+    @if (!string.IsNullOrEmpty(Sub)) { <div class="k-sub">@Sub</div> }
+    @if (Progreso is { } p) { <div class="k-bar"><i style="width:@(Math.Max(0m, Math.Min(100m, p)).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></i></div> }
+</div>
+
+@code {
+    [Parameter] public string Titulo { get; set; } = "";
+    [Parameter] public string Valor { get; set; } = "";
+    [Parameter] public string? Sub { get; set; }
+    [Parameter] public string? Icono { get; set; }
+    [Parameter] public string Tono { get; set; } = "";
+    [Parameter] public decimal? Progreso { get; set; }
+    [Parameter] public string? Ayuda { get; set; }
+}

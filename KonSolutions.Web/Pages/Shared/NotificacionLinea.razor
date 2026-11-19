@@ -1,0 +1,52 @@
+﻿@* Línea de la notificación en curso de un documento.
+   ────────────────────────────────────────────────────────────────────────────
+   La usan Inventarios, Solicitudes Comerciales y Pedidos Comerciales: las tres
+   guardan un NUM_NOTIFICACION y traen por JOIN la descripción, la fecha y el
+   estado con sus colores. Está como componente y no copiada en cada pantalla
+   porque es el mismo dato y tiene que leerse igual en las tres; si mañana se
+   agrega, por ejemplo, el usuario que la generó, se agrega una sola vez.
+
+   Si el documento no tiene notificación, NO SE DIBUJA NADA — ni el rótulo. Una
+   etiqueta "Notificación:" seguida de vacío hace pensar que algo falló. *@
+
+@if (Numero is not null)
+{
+    @* Va dentro de un MudField y no como texto suelto: es un dato de sólo lectura del
+       documento, así que se lee mejor encuadrado como los demás campos, con su etiqueta
+       en el borde. MudField es el control de MudBlazor pensado justo para esto —un marco
+       de campo con contenido libre adentro—, así que el marco, el radio y la muesca de la
+       etiqueta salen idénticos a los de los inputs de al lado sin replicarlos a mano. *@
+    <MudField Label="Notificación" Variant="Variant.Outlined" Disabled="true"
+              Class="notificacion-campo">
+        <div class="notificacion-linea">
+            <span>@Numero</span>
+            @if (!string.IsNullOrWhiteSpace(Descripcion))
+            {
+                <span>@Descripcion</span>
+            }
+            @if (Fecha is not null)
+            {
+                <span>· @Fecha.Value.ToString("dd/MM/yyyy")</span>
+            }
+            @if (!string.IsNullOrWhiteSpace(Estado))
+            {
+                @* Los colores salen de ESTANDAR.ESTADOS, igual que los del estado del
+                   documento: el mismo estado se ve del mismo color en toda la aplicación.
+                   Si el estado no tiene colores cargados, cae a los del tema. *@
+                <span class="notificacion-estado"
+                      style="@($"background:{(string.IsNullOrWhiteSpace(BackColor) ? "var(--line)" : BackColor)};color:{(string.IsNullOrWhiteSpace(ForeColor) ? "var(--ink)" : ForeColor)};")">
+                    @Estado
+                </span>
+            }
+        </div>
+    </MudField>
+}
+
+@code {
+    [Parameter] public long?     Numero      { get; set; }
+    [Parameter] public string?   Descripcion { get; set; }
+    [Parameter] public DateTime? Fecha       { get; set; }
+    [Parameter] public string?   Estado      { get; set; }
+    [Parameter] public string?   BackColor   { get; set; }
+    [Parameter] public string?   ForeColor   { get; set; }
+}

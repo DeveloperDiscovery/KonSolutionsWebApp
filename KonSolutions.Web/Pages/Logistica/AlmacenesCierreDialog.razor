@@ -1,0 +1,205 @@
+@using CierreModel = KONSolutions.Shared.Models.Logistica.AlmacenesCierre
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Cerrar un almacén (alta), modificar su periodo, consultarlo o eliminarlo (solo si ya fue reabierto).
+
+   Alta: se eligen UNO O VARIOS almacenes y un periodo; es todo o nada (un cierre por almacén, en una sola transacción). Por omisión
+   propone el MES ANTERIOR, que es el cierre de siempre. Modificar: el almacén no se cambia (se reabre y se cierra otro); sí el
+   periodo y la observación, y solo mientras el cierre esté vigente. *@
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@(_esNuevo ? "Cierre de almacén" : $"{Item?.COD_ALMACEN} {Item?.DES_ALMACEN}")" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_forma" OnValidSubmit="Submit">
+            @if (_esNuevo)
+            {
+                <MudSelect T="string" Label="Almacenes a cerrar" Variant="Variant.Outlined" MultiSelection="true" SelectAll="true" SelectAllText="Todos los almacenes"
+                           SelectedValues="_seleccion" SelectedValuesChanged="@(v => _seleccion = v.ToHashSet())" Class="mb-3" data-campo="almacenes"
+                           MultiSelectionTextFunc="@TextoSeleccion">
+                    @foreach (var a in _almacenes)
+                    {
+                        <MudSelectItem T="string" Value="@a.Id">@a.Id - @a.Texto</MudSelectItem>
+                    }
+                </MudSelect>
+            }
+            else
+            {
+                <MudTextField T="string" Label="Almacén" Variant="Variant.Outlined" ReadOnly="true" Value="@($"{Item?.COD_ALMACEN} - {Item?.DES_ALMACEN}")" Class="mb-3" />
+            }
+
+            <MudGrid Class="align-end">
+                <MudItem xs="12" sm="6">
+                    <MudDatePicker Label="Desde (inclusive)" Variant="Variant.Outlined" @bind-Date="_desde" ReadOnly="_readonly" Class="mb-3" data-campo="desde"
+                                   DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudDatePicker Label="Hasta (inclusive)" Variant="Variant.Outlined" @bind-Date="_hasta" ReadOnly="_readonly" Class="mb-3" data-campo="hasta"
+                                   DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                </MudItem>
+            </MudGrid>
+
+            @if (!_readonly)
+            {
+                <div class="d-flex gap-2 mb-3" style="flex-wrap:wrap;">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Periodo(-1))" data-atajo="mes-anterior">Mes anterior</MudChip>
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Periodo(0))" data-atajo="mes-actual">Mes actual</MudChip>
+                </div>
+            }
+
+            <MudTextField T="string" Label="Observación" Variant="Variant.Outlined" Lines="3" MaxLength="1000" @bind-Value="_observacion" Immediate="true" ReadOnly="_readonly" Class="mb-3" data-campo="observacion" />
+
+            @if (_dias is { } dias)
+            {
+                <MudText Typo="Typo.body2" Class="mb-2" data-resumen="periodo">
+                    @dias día(s)@(_esNuevo && _seleccion.Count > 0 ? $" · {_seleccion.Count} almacén(es)" : "").
+                </MudText>
+            }
+
+            @if (!_readonly)
+            {
+                @if (IncluyeHoy)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="hoy">
+                        Este periodo incluye HOY: desde que lo guardes, @(_esNuevo && _seleccion.Count != 1 ? "los almacenes no admitirán" : "el almacén no admitirá") movimientos, ajustes ni transferencias.
+                    </MudAlert>
+                }
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                    Mientras el cierre esté vigente, el almacén no admite movimientos, ajustes ni transferencias con fecha dentro del periodo
+                    (ni operaciones hechas hoy, si hoy cae dentro). Si hace falta operar, el cierre se reabre dejando el motivo.
+                </MudAlert>
+            }
+
+            @if (!_esNuevo && Item is not null)
+            {
+                <div class="mb-2" style="font-size:.8rem;opacity:.75;line-height:1.5;" data-auditoria="true">
+                    <div>Estado: <strong>@Item.DES_ESTADO</strong> · cerrado por <span class="mono">@Item.COD_USUARIO_REGISTRO</span> el @Item.FEC_REGISTRO?.ToString("dd/MM/yyyy HH:mm")</div>
+                    @if (Item.FEC_ACTUALIZACION is not null && Item.FLG_CERRADO)
+                    {
+                        <div>Modificado por <span class="mono">@Item.COD_USUARIO_ACTUALIZACION</span> el @Item.FEC_ACTUALIZACION?.ToString("dd/MM/yyyy HH:mm")</div>
+                    }
+                    @if (!Item.FLG_CERRADO)
+                    {
+                        <div>Reabierto por <span class="mono">@Item.COD_USUARIO_REAPERTURA</span> el @Item.FEC_REAPERTURA?.ToString("dd/MM/yyyy HH:mm"): @Item.DES_MOTIVO_REAPERTURA</div>
+                    }
+                </div>
+            }
+
+            @if (Modo == CrudModo.Delete)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">Se elimina el registro de este cierre (ya reabierto). No se puede deshacer.</MudAlert>
+            }
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public CierreModel? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre). Con ella el pie muestra los botones marcados como Diálogo.
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private readonly object _forma = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+    private List<ComboboxItem> _almacenes = new();
+    private HashSet<string> _seleccion = new();
+    private DateTime? _desde, _hasta;
+    private string? _observacion;
+
+    private int? _dias => _desde is { } d && _hasta is { } h && h >= d ? (int)(h.Date - d.Date).TotalDays + 1 : null;
+    private bool IncluyeHoy => _desde is { } d && _hasta is { } h && d.Date <= DateTime.Today && DateTime.Today <= h.Date;
+
+    private string TextoSeleccion(List<string?> v)
+        => v.Count == 0 ? "" : v.Count == _almacenes.Count && _almacenes.Count > 1 ? "Todos los almacenes" : string.Join(", ", v);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (_esNuevo)
+        {
+            _almacenes = await Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.AlmacenesCombobox) ?? new();
+            Periodo(-1);   // lo habitual: cerrar el mes que terminó
+            return;
+        }
+        if (Item is null) return;
+        // Trae el registro fresco: evita mostrar datos viejos de la grilla al modificar, eliminar o consultar.
+        var fresco = await Http.SafeGetAsync<CierreModel>($"{ApiRoutes.Logistica.AlmacenesCierre}/{Item.NUM_CIERRE_ALMACEN}");
+        if (fresco is not null) Item = fresco;
+        _desde = Item.FEC_DESDE; _hasta = Item.FEC_HASTA; _observacion = Item.DES_OBSERVACION;
+    }
+
+    /// <summary>Atajo: el mes (0 = el actual, -1 = el anterior) completo, del primero al último día.</summary>
+    private void Periodo(int mesesAtras)
+    {
+        var primero = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).AddMonths(mesesAtras);
+        _desde = primero;
+        _hasta = primero.AddMonths(1).AddDays(-1);
+    }
+
+    private async Task Submit()
+    {
+        if (Modo == CrudModo.Read) { MudDialog.Cancel(); return; }
+        _saving = true;
+        try
+        {
+            if (Modo == CrudModo.Delete)
+            {
+                var rd = await Http.DeleteAsync($"{ApiRoutes.Logistica.AlmacenesCierre}/{Item!.NUM_CIERRE_ALMACEN}");
+                if (rd.IsSuccessStatusCode) { Snackbar.Add("Cierre eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+                else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(AlmacenesCierreDialog), nameof(Submit), "No se pudo eliminar el cierre");
+                return;
+            }
+
+            if (_desde is null || _hasta is null) { Snackbar.Add("Indica el periodo del cierre: desde y hasta.", Severity.Warning); return; }
+            if (_desde > _hasta) { Snackbar.Add("La fecha desde no puede ser posterior a la fecha hasta.", Severity.Warning); return; }
+            if (_esNuevo && _seleccion.Count == 0) { Snackbar.Add("Elige al menos un almacén para cerrar.", Severity.Warning); return; }
+
+            HttpResponseMessage resp;
+            if (_esNuevo)
+            {
+                var dto = new AlmacenesCierreInsertDto
+                {
+                    COD_ALMACENES = _almacenes.Select(a => a.Id).Where(_seleccion.Contains).ToList(),   // en el orden de la lista
+                    FEC_DESDE = _desde, FEC_HASTA = _hasta, DES_OBSERVACION = _observacion
+                };
+                resp = await Http.GuardarAsync(ApiRoutes.Logistica.AlmacenesCierre, dto, true);
+            }
+            else
+            {
+                var dto = new AlmacenesCierreUpdateDto
+                {
+                    NUM_CIERRE_ALMACEN = Item!.NUM_CIERRE_ALMACEN, FEC_DESDE = _desde, FEC_HASTA = _hasta, DES_OBSERVACION = _observacion
+                };
+                resp = await Http.GuardarAsync(ApiRoutes.Logistica.AlmacenesCierre, dto, false);
+            }
+
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add(_esNuevo ? (_seleccion.Count > 1 ? $"{_seleccion.Count} almacenes cerrados." : "Almacén cerrado.") : "Cierre modificado.", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(true));
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(AlmacenesCierreDialog), nameof(Submit));
+        }
+        finally { _saving = false; }
+    }
+}

@@ -1,0 +1,137 @@
+@using Modelo = KONSolutions.Shared.Models.Proyectos.TiposProyecto
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_TIPO_PROYECTO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="4">
+                    <CampoTexto Tabla="PROYECTOS.TIPOS_PROYECTO" Columna="COD_TIPO_PROYECTO"
+                                @bind-Value="_model.COD_TIPO_PROYECTO"
+                                Disabled="@(!_esNuevo || _readonly)" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" sm="8">
+                    <CampoTexto Tabla="PROYECTOS.TIPOS_PROYECTO" Columna="DES_TIPO_PROYECTO"
+                                @bind-Value="_model.DES_TIPO_PROYECTO" Disabled="_readonly" Obligatorio="true" />
+                </MudItem>
+            </MudGrid>
+
+            <MudGrid Spacing="2" Class="mt-1">
+                <MudItem xs="6" sm="3">
+                    <MudCheckBox T="bool" Value="@(_model.FLG_PRODUCCION ?? false)"
+                                 ValueChanged="@(v => _model.FLG_PRODUCCION = v)"
+                                 Disabled="_readonly" Color="Color.Primary">
+                        <div class="d-flex align-center gap-2">
+                            <MudIcon Icon="@Icons.Material.Filled.PrecisionManufacturing" Size="Size.Small" Style="opacity:.7;" />
+                            <MudText Typo="Typo.body2">Producción</MudText>
+                        </div>
+                    </MudCheckBox>
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <MudCheckBox T="bool" Value="@(_model.FLG_PRESUPUESTO ?? false)"
+                                 ValueChanged="@(v => _model.FLG_PRESUPUESTO = v)"
+                                 Disabled="_readonly" Color="Color.Primary">
+                        <div class="d-flex align-center gap-2">
+                            <MudIcon Icon="@Icons.Material.Filled.RequestQuote" Size="Size.Small" Style="opacity:.7;" />
+                            <MudText Typo="Typo.body2">Presupuesto</MudText>
+                        </div>
+                    </MudCheckBox>
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <MudCheckBox T="bool" Value="@(_model.FLG_VALORADO ?? false)"
+                                 ValueChanged="@(v => _model.FLG_VALORADO = v)"
+                                 Disabled="_readonly" Color="Color.Primary">
+                        <div class="d-flex align-center gap-2">
+                            <MudIcon Icon="@Icons.Material.Filled.MonetizationOn" Size="Size.Small" Style="opacity:.7;" />
+                            <MudText Typo="Typo.body2">Valorado</MudText>
+                        </div>
+                    </MudCheckBox>
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <MudCheckBox T="bool" Value="@(_model.FLG_SERVICIO ?? false)"
+                                 ValueChanged="@(v => _model.FLG_SERVICIO = v)"
+                                 Disabled="_readonly" Color="Color.Primary">
+                        <div class="d-flex align-center gap-2">
+                            <MudIcon Icon="@Icons.Material.Filled.MiscellaneousServices" Size="Size.Small" Style="opacity:.7;" />
+                            <MudText Typo="Typo.body2">Servicio</MudText>
+                        </div>
+                    </MudCheckBox>
+                </MudItem>
+            </MudGrid>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Modelo? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    // Opción de menú del diálogo (la pasa quien lo abre: la de la grilla de esta entidad).
+    // Con ella el pie muestra los botones marcados como Diálogo (ver CrudDialogActions).
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private Modelo _model = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        // Se relee del SHOWBYID en vez de usar la fila que trajo la grilla: esa fila es el
+        // snapshot de la última carga del listado y puede estar vieja. Si la lectura falla,
+        // se cae a la fila de la grilla para no dejar la pantalla en blanco.
+        if (Item is not null)
+            _model = await Http.SafeGetAsync<Modelo>($"{ApiRoutes.Proyectos.TiposProyecto}/{Uri.EscapeDataString(Item.COD_TIPO_PROYECTO)}") ?? Item;
+    }
+
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        var errores = string.Join(" · ", ctx.GetValidationMessages());
+        await DialogService.ShowAsync<KONSolutions.Web.Pages.Shared.ErrorSqlDialog>("",
+            new DialogParameters
+            {
+                ["Titulo"]  = "Faltan datos obligatorios",
+                ["Mensaje"] = string.IsNullOrWhiteSpace(errores) ? "Hay campos obligatorios sin completar." : errores
+            },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = false, BackdropClick = false, CloseOnEscapeKey = false });
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var ruta = ApiRoutes.Proyectos.TiposProyecto;
+
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ruta}/{Uri.EscapeDataString(_model.COD_TIPO_PROYECTO)}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(TiposProyectoDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+
+        var resp = await Http.GuardarAsync(ruta, _model, _esNuevo);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(_esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(TiposProyectoDialog), nameof(Submit));
+    }
+}

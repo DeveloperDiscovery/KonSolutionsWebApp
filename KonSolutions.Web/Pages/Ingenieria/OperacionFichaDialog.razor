@@ -1,0 +1,261 @@
+@* Ficha de una operacion (scripts SQL 120 y 121): su ARBOL de componentes con los minutos estandar, las VERSIONES de tiempo y los estudios de tiempos,
+   el resumen por categoria y por clase y en que operaciones y rutas se usa. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" />
+            <MudText Typo="Typo.h6">@Operacion.COD_OPERACION · @Operacion.DES_OPERACION</MudText>
+            @if (_compuesta) { <MudChip T="string" Size="Size.Small" Color="Color.Info" data-chip="compuesta">Compuesta</MudChip> } else { <MudChip T="string" Size="Size.Small" data-chip="hoja">Hoja</MudChip> }
+            @if (!string.IsNullOrEmpty(Operacion.COD_CATEGORIA_OCUPACIONAL)) { <MudChip T="string" Size="Size.Small" data-chip="categoria">Cat. @Operacion.COD_CATEGORIA_OCUPACIONAL</MudChip> }
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <MudTabs Elevation="0" Rounded="true" @bind-ActivePanelIndex="_tab" data-zona="pestanas">
+            <MudTabPanel Text="Árbol y minutos">
+                <div class="d-flex align-center gap-2 mb-2">
+                    <MudText Typo="Typo.caption" Style="opacity:.7;">SAM = minutos estándar de una unidad; por unidad = SAM × veces que ocurre.</MudText>
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Edit" OnClick="EditarComponentes" data-accion="componentes">Componentes...</MudButton>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table class="of-tabla" data-tabla="arbol">
+                        <thead><tr><th>Operación</th><th>Cat.</th><th>Máquina</th><th class="n">Veces</th><th class="n">SAM propio</th><th class="n">SAM del nodo</th><th class="n">SAM por unidad</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var n in _arbol)
+                            {
+                                <tr data-nodo="@n.COD_OPERACION" class="@(n.FLG_HOJA ? "" : "of-compuesta")">
+                                    <td style="padding-left:@(8 + n.NIVEL * 20)px;">
+                                        @if (!n.FLG_HOJA) { <MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" /> }
+                                        @n.DES_OPERACION <span class="mono" style="opacity:.5;">@n.COD_OPERACION</span>
+                                        @if (n.FLG_PARALELO) { <MudChip T="string" Size="Size.Small" Class="ml-1">en paralelo</MudChip> }
+                                    </td>
+                                    <td>@n.COD_CATEGORIA_OCUPACIONAL</td>
+                                    <td>@n.COD_TIPO_MAQUINA</td>
+                                    <td class="n mono">@(n.NIVEL == 0 ? "" : "× " + Fmt(n.VAL_FRECUENCIA))</td>
+                                    <td class="n mono">@OperacionesApi.Min(n.VAL_SAM_PROPIO)</td>
+                                    <td class="n mono">@OperacionesApi.Min(n.VAL_SAM_NODO)</td>
+                                    <td class="n mono"><b>@OperacionesApi.Min(n.VAL_SAM_PRENDA)</b></td>
+                                    <td>@if (n.CAN_HOJAS_SIN_TIEMPO > 0) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" title="Hojas sin versión de tiempo vigente">@n.CAN_HOJAS_SIN_TIEMPO sin tiempo</MudChip> }</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Tiempos y estudios">
+                @if (_compuesta)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" data-zona="solo-hojas">Una operación compuesta no tiene tiempo propio: suma el de sus hojas (ver la pestaña Árbol y minutos). Para cambiar un tiempo, abre la ficha de la hoja.</MudAlert>
+                }
+                else
+                {
+                    <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                        <MudText Typo="Typo.subtitle1">Versiones de tiempo</MudText>
+                        <MudSpacer />
+                        <MudDatePicker T="DateTime?" @bind-Date="_desde" Label="Vigente desde (al aprobar)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:210px;" data-campo="desde" />
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => AbrirTiempo(null))" data-accion="nueva-version">Nueva versión</MudButton>
+                    </div>
+                    <div style="overflow-x:auto;">
+                        <table class="of-tabla" data-tabla="versiones">
+                            <thead><tr><th>Ver.</th><th>Estado</th><th>Método</th><th class="n">Base</th><th class="n">Supl. %</th><th class="n">SAM</th><th>Rige desde</th><th>Hasta</th><th>Estudio</th><th></th></tr></thead>
+                            <tbody>
+                                @foreach (var t in _tiempos)
+                                {
+                                    <tr data-version="@t.NUM_VERSION" class="@(t.FLG_VIGENTE ? "of-vigente" : "")">
+                                        <td class="mono">@t.NUM_VERSION @(t.FLG_VIGENTE ? "●" : "")</td>
+                                        <td><EstadoChip Estado="@t.DES_ESTADO" BackColor="@t.DES_BACKCOLOR" ForeColor="@t.DES_FORECOLOR" /></td>
+                                        <td>@t.DES_METODO_TIEMPO</td>
+                                        <td class="n mono">@OperacionesApi.Min(t.VAL_TIEMPO_BASE)</td>
+                                        <td class="n mono">@Fmt(t.VAL_SUPLEMENTO_PCT)</td>
+                                        <td class="n mono"><b>@OperacionesApi.Min(t.VAL_SAM)</b></td>
+                                        <td>@Fecha(t.FEC_VIGENCIA_DESDE)</td>
+                                        <td>@Fecha(t.FEC_VIGENCIA_HASTA)</td>
+                                        <td class="mono">@(t.NUM_ESTUDIO_TIEMPO?.ToString() ?? "")</td>
+                                        <td>
+                                            @if (t.COD_ESTADO == 0)
+                                            {
+                                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => AbrirTiempo(t))" data-accion="editar-version" title="Modificar el borrador" />
+                                                <MudIconButton Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Small" Color="Color.Success" OnClick="@(() => Aprobar(t))" data-accion="aprobar" title="Aprobar con la vigencia de arriba" />
+                                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => EliminarVersion(t))" data-accion="eliminar-version" title="Borrar el borrador" />
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                                @if (_tiempos.Count == 0) { <tr><td colspan="10" style="opacity:.6;">Sin versiones: crea la primera con «Nueva versión».</td></tr> }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex align-center gap-2 mt-4 mb-2">
+                        <MudText Typo="Typo.subtitle1">Estudios de tiempos</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => AbrirEstudio(null))" data-accion="nuevo-estudio">Nuevo estudio</MudButton>
+                    </div>
+                    <div style="overflow-x:auto;">
+                        <table class="of-tabla" data-tabla="estudios">
+                            <thead><tr><th>N.°</th><th>Fecha</th><th>Método</th><th class="n">Ritmo %</th><th class="n">Elementos</th><th class="n">Base</th><th class="n">Parte máquina</th><th>Uso</th><th></th></tr></thead>
+                            <tbody>
+                                @foreach (var s in _estudios)
+                                {
+                                    <tr data-estudio="@s.NUM_ESTUDIO_TIEMPO">
+                                        <td class="mono">@s.NUM_ESTUDIO_TIEMPO</td>
+                                        <td>@Fecha(s.FEC_ESTUDIO)</td>
+                                        <td>@s.DES_METODO_TIEMPO</td>
+                                        <td class="n mono">@Fmt(s.VAL_RITMO_PCT)</td>
+                                        <td class="n mono">@s.CAN_ELEMENTOS</td>
+                                        <td class="n mono">@OperacionesApi.Min(s.VAL_TIEMPO_BASE)</td>
+                                        <td class="n mono">@(s.VAL_TIEMPO_BASE > 0 ? (s.VAL_TIEMPO_MAQUINA / s.VAL_TIEMPO_BASE * 100).ToString("0") + " %" : "")</td>
+                                        <td>@(s.FLG_APROBADO ? "respalda una aprobada" : s.CAN_VERSIONES > 0 ? "en borrador" : "sin usar")</td>
+                                        <td>
+                                            <MudIconButton Icon="@(s.FLG_APROBADO ? Icons.Material.Filled.Visibility : Icons.Material.Filled.Edit)" Size="Size.Small" OnClick="@(() => AbrirEstudio(s))" data-accion="abrir-estudio" />
+                                            @if (s.CAN_VERSIONES == 0) { <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => EliminarEstudio(s))" data-accion="eliminar-estudio" /> }
+                                        </td>
+                                    </tr>
+                                }
+                                @if (_estudios.Count == 0) { <tr><td colspan="9" style="opacity:.6;">Sin estudios.</td></tr> }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </MudTabPanel>
+
+            <MudTabPanel Text="Resumen">
+                <div class="d-flex flex-wrap gap-4" data-zona="resumen">
+                    <div>
+                        <MudText Typo="Typo.subtitle2">Minutos por categoría</MudText>
+                        <table class="of-tabla"><thead><tr><th>Categoría</th><th class="n">SAM</th><th class="n">Hojas</th></tr></thead><tbody>
+                            @foreach (var c in _porCategoria) { <tr data-cat="@c.COD_CATEGORIA_OCUPACIONAL"><td>@c.COD_CATEGORIA_OCUPACIONAL · @c.DES_CATEGORIA_OCUPACIONAL</td><td class="n mono">@OperacionesApi.Min(c.VAL_SAM)</td><td class="n mono">@c.CAN_HOJAS</td></tr> }
+                        </tbody></table>
+                    </div>
+                    <div>
+                        <MudText Typo="Typo.subtitle2">Minutos por clase de operación</MudText>
+                        <table class="of-tabla"><thead><tr><th>Clase</th><th class="n">SAM</th></tr></thead><tbody>
+                            @foreach (var c in _porClase) { <tr data-clase="@c.COD_CLASE_OPERACION_PRODUCCION"><td>@c.DES_CLASE_OPERACION_PRODUCCION</td><td class="n mono">@OperacionesApi.Min(c.VAL_SAM)</td></tr> }
+                        </tbody></table>
+                    </div>
+                </div>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Usada en">
+                <MudText Typo="Typo.subtitle2">Forma parte de estas operaciones</MudText>
+                <table class="of-tabla" data-tabla="usada-en"><thead><tr><th>Operación</th><th>Camino</th><th class="n">Veces por unidad</th></tr></thead><tbody>
+                    @foreach (var u in _usadaEn) { <tr><td>@u.COD_OPERACION · @u.DES_OPERACION @(u.FLG_RAIZ ? "(completa)" : "")</td><td class="mono">@u.CAMINO</td><td class="n mono">@Fmt(u.FREC_ACUM)</td></tr> }
+                    @if (_usadaEn.Count == 0) { <tr><td colspan="3" style="opacity:.6;">No forma parte de otra operación.</td></tr> }
+                </tbody></table>
+                <MudText Typo="Typo.subtitle2" Class="mt-4">Rutas que la usan</MudText>
+                <table class="of-tabla" data-tabla="usada-rutas"><thead><tr><th>Ruta</th><th class="n">Filas</th><th class="n">SAM</th><th>Versión</th></tr></thead><tbody>
+                    @foreach (var u in _usadaRutas) { <tr><td>@u.COD_RUTA_PRODUCCION · @u.DES_RUTA_PRODUCCION</td><td class="n mono">@u.CAN_FILAS</td><td class="n mono">@OperacionesApi.Min(u.VAL_SAM)</td><td>@(u.FLG_TIEMPO_PROPIO ? "propio" : "v" + u.NUM_VERSION_TIEMPO)</td></tr> }
+                    @if (_usadaRutas.Count == 0) { <tr><td colspan="4" style="opacity:.6;">Ninguna ruta la usa todavía.</td></tr> }
+                </tbody></table>
+            </MudTabPanel>
+        </MudTabs>
+    </DialogContent>
+    <DialogActions>
+        <PanelAuditoria Class="" CodUsuarioRegistro="@Operacion.COD_USUARIO_REGISTRO" CodEstacionRegistro="@Operacion.COD_ESTACION_REGISTRO" FecRegistro="@Operacion.FEC_REGISTRO"
+                         CodUsuarioActualizacion="@Operacion.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@Operacion.COD_ESTACION_ACTUALIZACION" FecActualizacion="@Operacion.FEC_ACTUALIZACION" />
+        <MudSpacer />
+        <MudButton OnClick="@(() => MudDialog.Close())" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .of-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .of-tabla th, .of-tabla td { padding: 4px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .of-tabla th { font-weight: 600; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; white-space: nowrap; }
+    .of-tabla .n { text-align: right; white-space: nowrap; }
+    .of-compuesta td { font-weight: 600; background: rgba(128,128,128,.08); }
+    .of-vigente td { box-shadow: inset 3px 0 0 var(--mud-palette-success, #3a3); }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Operacion Operacion { get; set; } = new();
+
+    private List<OperacionArbolNodo> _arbol = new();
+    private List<OperacionTiempo> _tiempos = new();
+    private List<EstudioTiempo> _estudios = new();
+    private List<SamPorCategoria> _porCategoria = new();
+    private List<SamPorClase> _porClase = new();
+    private List<OperacionUsadaEn> _usadaEn = new();
+    private List<OperacionUsadaEnRuta> _usadaRutas = new();
+    private int _tab;
+    private DateTime? _desde = DateTime.Today;
+    private string _error = "";
+    private bool _compuesta => _arbol.Count > 1 || Operacion.FLG_COMPUESTA;
+
+    private static string Fmt(decimal v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Fecha(DateTime? f) => f?.ToString("dd/MM/yyyy") ?? "—";
+
+    protected override async Task OnInitializedAsync() => await Cargar();
+
+    private async Task<List<T>> Leer<T>(string url)
+    {
+        var r = await OperacionesApi.LeerAsync<List<T>>(Http, url);
+        if (!r.Ok) _error = r.Mensaje ?? "No se pudo leer.";
+        return r.Data ?? new();
+    }
+
+    private async Task Cargar()
+    {
+        _error = "";
+        var c = Operacion.COD_OPERACION;
+        _arbol = await Leer<OperacionArbolNodo>(IngRoute.Operacion(c, "arbol"));
+        _tiempos = await Leer<OperacionTiempo>(IngRoute.Operacion(c, "tiempos"));
+        _estudios = await Leer<EstudioTiempo>(IngRoute.Operacion(c, "estudios"));
+        _porCategoria = await Leer<SamPorCategoria>(IngRoute.Operacion(c, "sam-por-categoria"));
+        _porClase = await Leer<SamPorClase>(IngRoute.Operacion(c, "sam-por-clase"));
+        _usadaEn = await Leer<OperacionUsadaEn>(IngRoute.Operacion(c, "usada-en"));
+        _usadaRutas = await Leer<OperacionUsadaEnRuta>(IngRoute.Operacion(c, "usada-en-rutas"));
+        StateHasChanged();
+    }
+
+    private async Task EditarComponentes()
+    {
+        var dlg = await DialogService.ShowAsync<OperacionComponentesDialog>($"Componentes de {Operacion.COD_OPERACION}", new DialogParameters { ["Operacion"] = Operacion },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { Operacion.FLG_COMPUESTA = true; await Cargar(); }
+    }
+
+    private async Task AbrirTiempo(OperacionTiempo? t)
+    {
+        var dlg = await DialogService.ShowAsync<OperacionTiempoDialog>(t is null ? "Nueva versión de tiempo" : $"Versión {t.NUM_VERSION} (borrador)", new DialogParameters { ["Operacion"] = Operacion, ["Version"] = t },
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Cargar();
+    }
+
+    private async Task AbrirEstudio(EstudioTiempo? s)
+    {
+        var dlg = await DialogService.ShowAsync<EstudioTiempoDialog>(s is null ? "Nuevo estudio de tiempos" : $"Estudio {s.NUM_ESTUDIO_TIEMPO}", new DialogParameters { ["Operacion"] = Operacion, ["Estudio"] = s },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await Cargar();
+    }
+
+    private async Task Aprobar(OperacionTiempo t)
+    {
+        var r = await ProyectoApi.PostAsync(Http, IngRoute.OperacionesTiemposAprobar, new { COD_OPERACION = Operacion.COD_OPERACION, t.NUM_VERSION, FEC_VIGENCIA_DESDE = _desde });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo aprobar."; return; }
+        Snackbar.Add($"Versión {t.NUM_VERSION} aprobada.", Severity.Success);
+        await Cargar();
+    }
+
+    private async Task EliminarVersion(OperacionTiempo t)
+    {
+        var r = await ProyectoApi.PostAsync(Http, IngRoute.OperacionesTiemposEliminar, new { COD_OPERACION = Operacion.COD_OPERACION, t.NUM_VERSION });
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo borrar."; return; }
+        await Cargar();
+    }
+
+    private async Task EliminarEstudio(EstudioTiempo s)
+    {
+        var r = await ProyectoApi.DeleteAsync(Http, $"{IngRoute.OperacionesEstudios}/{s.NUM_ESTUDIO_TIEMPO}");
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo borrar."; return; }
+        await Cargar();
+    }
+}

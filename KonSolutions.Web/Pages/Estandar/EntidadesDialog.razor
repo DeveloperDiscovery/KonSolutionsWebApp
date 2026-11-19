@@ -1,0 +1,1702 @@
+@using KONSolutions.Shared.Models.Estandar
+@using ConfiguracionGeneralModel = KONSolutions.Shared.Models.Estandar.ConfiguracionGeneral
+@using KONSolutions.Web.Pages.Comercial
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject ConfiguracionGeneralService CfgSvc
+
+<MudDialog Style="width:min(1992px,95vw);">
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_NOMBRE_COMPLETO" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_model" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0 pt-3" @bind-ActivePanelIndex="_tabActiva">
+            <MudTabPanel Text="Información Básica">
+            @* align-items:stretch (antes flex-start) para que las dos columnas midan lo
+               mismo: es lo que le permite a "Tipos de Entidad" (flex:1 más abajo) llegar
+               hasta el borde inferior de Estado, el último campo de la columna izquierda. *@
+            <div style="display:flex;gap:var(--input-space-h,16px);align-items:stretch;width:100%;">
+            <div style="flex:1 1 auto;min-width:0;">
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposPersona"
+                               TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                               Value="@(_model.COD_TIPO_PERSONA?.ToString())"
+                               ValueChanged="@(v => { _model.COD_TIPO_PERSONA = int.TryParse(v, out var n) ? n : null; ActualizarNombreCompleto(); LimpiarPrefijoSiNoAplica(); LimpiarDependenciaSiNoAplica(); })"
+                               Label="Tipo de Persona" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    @* Solo aplica a Persona Jurídica (2) — deshabilitado en Natural (1). *@
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="NUM_DUNS"
+                                @bind-Value="_model.NUM_DUNS"
+                                Obligatorio="false" Disabled="@(_readonly || _model.COD_TIPO_PERSONA != 2)" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposDoc"
+                               TextFunc="@(td => td.Texto)" ValueFunc="@(td => td.Id)"
+                               Value="@(_model.COD_TIPO_DOCUMENTO_IDENTIDAD?.ToString())"
+                               ValueChanged="@(v => _model.COD_TIPO_DOCUMENTO_IDENTIDAD = int.TryParse(v, out var n) ? n : null)"
+                               Label="Tipo doc. identidad" Obligatorio="true" Disabled="_readonly" Class="mt-1 mb-3" />
+                </MudItem>
+                <MudItem xs="12" md="8">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="NUM_DOCUMENTO_IDENTIDAD"
+                                @bind-Value="_model.NUM_DOCUMENTO_IDENTIDAD"
+                                Obligatorio="true" Disabled="_readonly" Class="mt-1 mb-3" />
+                </MudItem>
+                @* Solo aplican a Persona Natural (COD_TIPO_PERSONA = 1) — deshabilitados en Jurídica. *@
+                <MudItem xs="6" md="3">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_PATERNO"
+                                Value="@_model.DES_PATERNO"
+                                ValueChanged="@(v => { _model.DES_PATERNO = v ?? ""; ActualizarNombreCompleto(); })"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA == 2)" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_MATERNO"
+                                Value="@_model.DES_MATERNO"
+                                ValueChanged="@(v => { _model.DES_MATERNO = v ?? ""; ActualizarNombreCompleto(); })"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA == 2)" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_NOMBRE"
+                                Value="@_model.DES_NOMBRE"
+                                ValueChanged="@(v => { _model.DES_NOMBRE = v ?? ""; ActualizarNombreCompleto(); })"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA == 2)" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_NOMBRE2"
+                                Value="@_model.DES_NOMBRE2"
+                                ValueChanged="@(v => { _model.DES_NOMBRE2 = v ?? ""; ActualizarNombreCompleto(); })"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA == 2)" />
+                </MudItem>
+                @* Persona Natural (1): calculado y deshabilitado. Persona Jurídica (2): editable y obligatorio. *@
+                <MudItem xs="12" md="6">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_NOMBRE_COMPLETO"
+                                @bind-Value="_model.DES_NOMBRE_COMPLETO"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA == 1)" Obligatorio="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    @* Habilitado para los dos tipos de persona. Antes se bloqueaba en Jurídica (2),
+                       que es justamente donde el nombre comercial más se usa: no había forma de
+                       cargarlo desde la pantalla. A diferencia del prefijo y de la dependencia,
+                       este campo no se limpia al cambiar de tipo — aplica a los dos. *@
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_COMERCIAL"
+                                @bind-Value="_model.DES_COMERCIAL"
+                                Disabled="@_readonly" />
+                </MudItem>
+                @* Solo aplica a Persona Jurídica (2) — deshabilitado y limpiado en Natural (1),
+                   ver LimpiarPrefijoSiNoAplica. *@
+                <MudItem xs="12" md="6">
+                    <CampoTexto Tabla="ESTANDAR.ENTIDADES" Columna="DES_PREFIJO_USUARIO_COMERCIAL"
+                                Label="Prefijo usuario comercial"
+                                @bind-Value="_model.DES_PREFIJO_USUARIO_COMERCIAL"
+                                Disabled="@(_readonly || _model.COD_TIPO_PERSONA != 2)" />
+                </MudItem>
+                @* Solo aplica a Persona Natural (1) — deshabilitado y limpiado en Jurídica (2),
+                   ver LimpiarDependenciaSiNoAplica. Lista precargada desde
+                   PROC_ESTANDAR_ENTIDADES_PARADEPENDER (ya viene filtrada a Persona Jurídica
+                   por el propio SP, con nombre y prefijo, sin la ambigüedad de columnas que
+                   tiene SHOWALL/SHOWBYID — ver Domain/Models/Estandar/Entidades.cs del lado API). *@
+                <MudItem xs="12" md="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_entidadesParaDepender"
+                               TextFunc="@(x => $"{x.Id} - {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               Value="@(_model.COD_ENTIDAD_DEPENDENCIA?.ToString())"
+                               ValueChanged="@(v => _model.COD_ENTIDAD_DEPENDENCIA = decimal.TryParse(v, out var n) ? n : null)"
+                               Label="Entidad dependencia"
+                               Disabled="@(_readonly || _model.COD_TIPO_PERSONA != 1)" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <div class="d-flex align-center gap-1 mt-2"><MudIcon Icon="@Icons.Material.Filled.Home" Color="Color.Primary" Size="Size.Medium" />
+                        <MudSwitch T="bool?" Value="_model.FLG_DOMICILIADO" ValueChanged="@(v => OnDomiciliadoChanged(v))"
+                                   Label="Domiciliado" Disabled="_readonly" Color="Color.Primary" /></div>
+                </MudItem>
+                <MudItem xs="12" md="8">
+                    @* Si es Domiciliado, País se precarga desde Configuración General, pero queda editable.
+                       ItemSelected actualiza DES_PAIS (no solo COD_PAIS): TextoInicial está atado a
+                       DES_PAIS, y si no se refresca, el combo remoto revierte el texto mostrado al
+                       valor viejo apenas se re-renderiza tras elegir un país nuevo. *@
+                    <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                               TextFunc="@(x => $"{x.Id} – {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               Value="@_model.COD_PAIS" ValueChanged="@(v => _model.COD_PAIS = v ?? "")"
+                               ItemSelected="@(item => _model.DES_PAIS = item?.Texto ?? "")"
+                               SearchFunc="BuscarPaisAsync" MinCharacters="2"
+                               TextoInicial="@(_model.DES_PAIS)"
+                               Label="País" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                               TextFunc="@(x => $"{x.Id} – {x.Texto}")" ValueFunc="@(x => x.Id)"
+                               Value="@_model.COD_USUARIO_RELACIONADO" ValueChanged="@(v => _model.COD_USUARIO_RELACIONADO = v ?? "")"
+                               SearchFunc="BuscarUsuarioEntidadAsync" MinCharacters="2"
+                               TextoInicial="@(_model.COD_USUARIO_RELACIONADO)"
+                               Label="Usuario relacionado" Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <EstadoCombo DesTabla="ESTANDAR.ENTIDADES"
+                                 @bind-Value="_model.COD_ESTADO"
+                                 CodTipoEstadoChanged="@(v => _model.COD_TIPO_ESTADO = v)"
+                                 Disabled="_readonly" Class="mb-3" />
+                </MudItem>
+            </MudGrid>
+            </div>
+            <div style="flex-shrink:0;padding-left:8px;border-left:1px solid rgba(0,0,0,.1);width:290px;display:flex;flex-direction:column;height:100%;">
+                <ImagePicker Label="Logo" Image="_model.IMG_LOGO"
+                             ImageChanged="@(v => _model.IMG_LOGO = v)"
+                             ReadOnly="_readonly" />
+
+                @* Tipos de Entidad: check = INSERT inmediato en ENTIDADES_TIPOS_ENTIDADES,
+                   uncheck = DELETE inmediato — no espera al Guardar del formulario principal. *@
+                <MudText Typo="Typo.caption" Class="mono mt-3 mb-1"
+                          Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Tipos de Entidad:</MudText>
+                @if (_esNuevo)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar tipos.</MudAlert>
+                }
+                else
+                {
+                    @* flex:1 (antes max-height:225px fijo) para que el borde inferior de este
+                       panel llegue hasta el de Estado, en vez de dejar un hueco vacío debajo. *@
+                    <div style="border:1px solid var(--line);border-radius:4px;padding:6px 8px;flex:1;min-height:0;overflow-y:auto;">
+                        @foreach (var t in _tiposEntidadTodos)
+                        {
+                            <div class="d-flex align-center">
+                                <MudSwitch T="bool"
+                                           Value="@(BloquearTipoEntidad ? t.Id == CodTipoEntidadFijo : _tiposEntidadAsignados.Contains(t.Id))"
+                                           ValueChanged="@(v => ToggleTipoEntidad(t.Id, v))"
+                                           Disabled="@(_readonly || _tipoEntidadGuardando == t.Id || BloquearTipoEntidad)"
+                                           Dense="true" Color="Color.Primary" />
+                                <MudText Typo="Typo.body2" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@t.Texto</MudText>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            </div>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Documentos de Identidad">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar sus Documentos de Identidad.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_documentos.Count documento(s)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarDocumento">Agregar documento</MudButton>
+                    }
+                </div>
+                @* Tabla HTML simple (sin el wrapper "overflow-x:auto" de MudSimpleTable) —
+                   ese wrapper recorta también el overflow vertical (regla CSS: un eje
+                   overflow:auto fuerza el otro a auto), lo que ocultaba el desplegable
+                   de AriaCombo (position:absolute) apenas se abrea dentro de una fila. *@
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:280px;">Tipo de documento</th>
+                            <th>Número de documento</th>
+                            <th style="width:190px;">Fecha de caducidad</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _documentos)
+                        {
+                            <tr>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_tiposDoc"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@(row.CodTipo?.ToString())"
+                                               ValueChanged="@(v => row.CodTipo = int.TryParse(v, out var n) ? n : null)"
+                                               Disabled="@(!row.EsNueva || _readonly)" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="ESTANDAR.ENTIDADES_DOCUMENTOS_IDENTIDAD" Columna="NUM_DOCUMENTO_IDENTIDAD"
+                                                    @bind-Value="row.NumDocumento" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td>
+                                    <MudDatePicker @bind-Date="row.FecCaducidad" Variant="Variant.Outlined" Disabled="_readonly"
+                                                   Margin="Margin.None" Class="mb-0" Editable="true" DateFormat="dd/MM/yyyy" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                                </td>
+                                <td>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || row.CodTipo is null || string.IsNullOrWhiteSpace(row.NumDocumento))"
+                                                       OnClick="@(() => GuardarDocumentoAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarDocumentoAsync(row))" />
+                                    }
+                                    @if (!row.EsNueva)
+                                    {
+                                        <PanelAuditoria CodUsuarioRegistro="@row.CodUsuarioRegistro"
+                                                        CodEstacionRegistro="@row.CodEstacionRegistro"
+                                                        FecRegistro="@row.FecRegistro"
+                                                        CodUsuarioActualizacion="@row.CodUsuarioActualizacion"
+                                                        CodEstacionActualizacion="@row.CodEstacionActualizacion"
+                                                        FecActualizacion="@row.FecActualizacion" />
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            </div>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Medios de Contacto">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar sus Medios de Contacto.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_mediosContacto.Count medio(s) de contacto</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarMedioContacto">Agregar medio de contacto</MudButton>
+                    }
+                </div>
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:240px;">Tipo de medio de contacto</th>
+                            <th>Dato (correo, teléfono, url, usuario...)</th>
+                            <th style="width:180px;">Tipo de uso</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _mediosContacto)
+                        {
+                            <tr>
+                                <td>
+                                    @* Ya no es clave (la clave es NUM_SECUENCIA), así que se puede editar
+                                       aunque la fila no sea nueva — permite varias filas del mismo tipo. *@
+                                    <AriaCombo TItem="ComboboxItem" Items="_tiposMedioContacto"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@(row.CodTipo?.ToString())"
+                                               ValueChanged="@(v => row.CodTipo = int.TryParse(v, out var n) ? n : null)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="COMERCIAL.ENTIDADES_TIPOS_MEDIO_CONTACTO" Columna="DAT_TIPO_MEDIO_CONTACTO"
+                                                    @bind-Value="row.Dato" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_tiposUso"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@(row.CodTipoUso)"
+                                               ValueChanged="@(v => row.CodTipoUso = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || row.CodTipo is null || string.IsNullOrWhiteSpace(row.Dato))"
+                                                       OnClick="@(() => GuardarMedioContactoAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarMedioContactoAsync(row))" />
+                                    }
+                                    @if (!row.EsNueva)
+                                    {
+                                        <PanelAuditoria CodUsuarioRegistro="@row.CodUsuarioRegistro"
+                                                        CodEstacionRegistro="@row.CodEstacionRegistro"
+                                                        FecRegistro="@row.FecRegistro"
+                                                        CodUsuarioActualizacion="@row.CodUsuarioActualizacion"
+                                                        CodEstacionActualizacion="@row.CodEstacionActualizacion"
+                                                        FecActualizacion="@row.FecActualizacion" />
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            </div>
+            </MudTabPanel>
+
+            @* COMERCIAL.ENTIDADES_UNIDADES_COMERCIALES — el INSERT SÍ es upsert (autonumera
+               COD_UNIDAD_COMERCIAL si no existe), igual que Medios de Contacto: siempre POST,
+               el código nunca se tipea a mano. *@
+            <MudTabPanel Text="Unidades Comerciales">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar sus Unidades Comerciales.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_unidadesComerciales.Count unidad(es) comercial(es)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarUnidadComercial">Agregar unidad comercial</MudButton>
+                    }
+                </div>
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:90px;">Código</th>
+                            <th style="width:374px;">Descripción</th>
+                            <th style="width:160px;">País</th>
+                            <th>Dirección</th>
+                            <th style="width:170px;">Estado</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _unidadesComerciales)
+                        {
+                            <tr style="vertical-align:middle;">
+                                <td style="vertical-align:middle;">
+                                    @* El código lo asigna el SP (autonumera), nunca se tipea a mano. *@
+                                    <span class="mono">@(row.EsNueva ? "(auto)" : row.CodUnidadComercial?.ToString())</span>
+                                </td>
+                                <td style="vertical-align:middle;">
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="COMERCIAL.ENTIDADES_UNIDADES_COMERCIALES" Columna="DES_UNIDAD_COMERCIAL"
+                                                    @bind-Value="row.DesUnidadComercial" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:middle;">
+                                    <AriaCombo TItem="ComboboxItem" Items="Enumerable.Empty<ComboboxItem>()"
+                                               TextFunc="@(x => $"{x.Id} – {x.Texto}")" ValueFunc="@(x => x.Id)"
+                                               Value="@row.CodPais" ValueChanged="@(v => row.CodPais = v)"
+                                               ItemSelected="@(item => row.DesPais = item?.Texto ?? "")"
+                                               SearchFunc="BuscarPaisAsync" MinCharacters="2" TextoInicial="@row.DesPais"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td style="vertical-align:middle;">
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="COMERCIAL.ENTIDADES_UNIDADES_COMERCIALES" Columna="DES_DIRECCION"
+                                                    @bind-Value="row.DesDireccion" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:middle;">
+                                    <div style="margin-top:0;">
+                                        <EstadoCombo DesTabla="COMERCIAL.ENTIDADES_UNIDADES_COMERCIALES"
+                                                     Value="row.CodEstado" ValueChanged="@(v => row.CodEstado = v)"
+                                                     CodTipoEstadoChanged="@(v => row.CodTipoEstado = v)"
+                                                     Disabled="_readonly" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td style="vertical-align:middle;">
+                                    <div class="d-flex align-center gap-1">
+                                        @if (!_readonly)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                           Disabled="@(row.Guardando || string.IsNullOrWhiteSpace(row.DesUnidadComercial))"
+                                                           OnClick="@(() => GuardarUnidadComercialAsync(row))" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                           Disabled="row.Guardando" OnClick="@(() => EliminarUnidadComercialAsync(row))" />
+                                        }
+                                        @if (!row.EsNueva)
+                                        {
+                                            <PanelAuditoria CodUsuarioRegistro="@row.CodUsuarioRegistro"
+                                                            CodEstacionRegistro="@row.CodEstacionRegistro"
+                                                            FecRegistro="@row.FecRegistro"
+                                                            CodUsuarioActualizacion="@row.CodUsuarioActualizacion"
+                                                            CodEstacionActualizacion="@row.CodEstacionActualizacion"
+                                                            FecActualizacion="@row.FecActualizacion" />
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            </div>
+            </MudTabPanel>
+
+            @* Direcciones tiene demasiados campos (17, incluyendo el mapa de ubicación)
+               para editarse en una fila de grilla como Documentos/Medios de Contacto —
+               aquí cada fila abre EntidadesDireccionesDialog (diálogo CRUD completo,
+               mismo patrón que el resto de la app) en vez de edición in-place. *@
+            <MudTabPanel Text="Direcciones">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar sus Direcciones.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_direcciones.Count dirección(es)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarDireccion">Agregar dirección</MudButton>
+                    }
+                </div>
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:170px;">Tipo</th>
+                            <th>Dirección</th>
+                            <th style="width:170px;">Ubigeo</th>
+                            <th style="width:130px;">Coordenadas</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var d in _direcciones)
+                        {
+                            <tr>
+                                <td>@d.DES_TIPO_DIRECCION</td>
+                                <td>@d.DES_DIRECCION</td>
+                                <td>@d.DES_UBIGEO</td>
+                                <td>
+                                    @if (d.VAL_LATITUD is not null && d.VAL_LONGITUD is not null)
+                                    {
+                                        <MudIcon Icon="@Icons.Material.Filled.LocationOn" Color="Color.Success" Size="Size.Small" Title="Tiene coordenadas guardadas" />
+                                    }
+                                </td>
+                                <td>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditarDireccion(d))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => EliminarDireccionAsync(d))" />
+                                    }
+                                    <PanelAuditoria CodUsuarioRegistro="@d.COD_USUARIO_REGISTRO"
+                                                    CodEstacionRegistro="@d.COD_ESTACION_REGISTRO"
+                                                    FecRegistro="@d.FEC_REGISTRO"
+                                                    CodUsuarioActualizacion="@d.COD_USUARIO_ACTUALIZACION"
+                                                    CodEstacionActualizacion="@d.COD_ESTACION_ACTUALIZACION"
+                                                    FecActualizacion="@d.FEC_ACTUALIZACION" />
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            </div>
+            </MudTabPanel>
+
+            @* FINANZAS.ENTIDADES_CUENTAS_BANCARIAS no tiene columnas de auditoría (no lleva
+               PanelAuditoria), y su INSERT no es upsert (POST para alta, PUT para modificar) —
+               a diferencia de Documentos/Medios de Contacto de más arriba. El Nº de cuenta es
+               parte de la clave: solo se edita mientras la fila es nueva, igual que Área/Cargo
+               en el tipo de documento de la pestaña de Documentos. *@
+            <MudTabPanel Text="Información Financiera">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para asignar sus Cuentas Bancarias.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_cuentasBancarias.Count cuenta(s) bancaria(s)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarCuentaBancaria">Agregar cuenta bancaria</MudButton>
+                    }
+                </div>
+                @* Con CCI, Descripción y 6 flags de más la fila no entra en el ancho del diálogo:
+                   las flags se agrupan en una sola columna de íconos toggle (clic = prende/apaga,
+                   igual que el resto de la fila, recién se graba al tocar ✓) y la tabla scrollea
+                   horizontal en vez de comprimir las columnas de texto hasta ilegibles. *@
+                <div style="overflow-x:auto;">
+                <table class="tabla-simple-editable" style="width:100%;min-width:1520px;">
+                    <thead>
+                        <tr>
+                            <th style="width:170px;">Banco</th>
+                            <th style="width:340px;">Número de cuenta</th>
+                            <th style="width:340px;">CCI</th>
+                            <th style="width:200px;">Descripción</th>
+                            <th style="width:160px;">Tipo de cuenta</th>
+                            <th style="width:120px;">Moneda</th>
+                            <th style="width:180px;">Características</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _cuentasBancarias)
+                        {
+                            <tr>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_bancos"
+                                               TextFunc="@(b => $"{b.Id} - {b.Texto}")" ValueFunc="@(b => b.Id)"
+                                               Value="@row.CodBanco"
+                                               ValueChanged="@(v => row.CodBanco = v ?? "")"
+                                               Disabled="@(!row.EsNueva || _readonly)" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.ENTIDADES_CUENTAS_BANCARIAS" Columna="NUM_CUENTA_BANCARIA"
+                                                    @bind-Value="row.NumCuenta" Disabled="@(!row.EsNueva || _readonly)" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.ENTIDADES_CUENTAS_BANCARIAS" Columna="NUM_CUENTA_BANCARIA_CCI"
+                                                    @bind-Value="row.NumCuentaCci" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="grilla-campo-texto">
+                                        <CampoTexto Tabla="FINANZAS.ENTIDADES_CUENTAS_BANCARIAS" Columna="DES_CUENTA_BANCARIA"
+                                                    @bind-Value="row.DesCuenta" Disabled="_readonly" MostrarLabel="false"
+                                                    Margin="Margin.None" Class="mb-0" />
+                                    </div>
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_tiposCuentaBancaria"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@row.CodTipoCuenta"
+                                               ValueChanged="@(v => row.CodTipoCuenta = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_monedas"
+                                               TextFunc="@(m => $"{m.Id} - {m.Texto}")" ValueFunc="@(m => m.Id)"
+                                               Value="@row.CodMoneda"
+                                               ValueChanged="@(v => row.CodMoneda = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <div class="d-flex gap-1">
+                                        <MudTooltip Text="Principal">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Star" Size="Size.Small"
+                                                           Color="@(row.FlgPrincipal ? Color.Warning : Color.Default)"
+                                                           Style="@(row.FlgPrincipal ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgPrincipal = !row.FlgPrincipal)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Habilitada">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Small"
+                                                           Color="@(row.FlgHabilitada ? Color.Success : Color.Default)"
+                                                           Style="@(row.FlgHabilitada ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgHabilitada = !row.FlgHabilitada)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Cuenta de la empresa">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Business" Size="Size.Small"
+                                                           Color="@(row.FlgCuentaEmpresa ? Color.Primary : Color.Default)"
+                                                           Style="@(row.FlgCuentaEmpresa ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgCuentaEmpresa = !row.FlgCuentaEmpresa)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Cobros">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CallReceived" Size="Size.Small"
+                                                           Color="@(row.FlgCobros ? Color.Info : Color.Default)"
+                                                           Style="@(row.FlgCobros ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgCobros = !row.FlgCobros)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Pagos">
+                                            <MudIconButton Icon="@Icons.Material.Filled.CallMade" Size="Size.Small"
+                                                           Color="@(row.FlgPagos ? Color.Info : Color.Default)"
+                                                           Style="@(row.FlgPagos ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgPagos = !row.FlgPagos)" />
+                                        </MudTooltip>
+                                        <MudTooltip Text="Restringida">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Block" Size="Size.Small"
+                                                           Color="@(row.FlgRestringida ? Color.Error : Color.Default)"
+                                                           Style="@(row.FlgRestringida ? "" : "opacity:.3;")"
+                                                           Disabled="_readonly" OnClick="@(() => row.FlgRestringida = !row.FlgRestringida)" />
+                                        </MudTooltip>
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || string.IsNullOrEmpty(row.CodBanco) || string.IsNullOrWhiteSpace(row.NumCuenta))"
+                                                       OnClick="@(() => GuardarCuentaBancariaAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarCuentaBancariaAsync(row))" />
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                </div>
+            }
+            </div>
+            </MudTabPanel>
+
+            @* Solo aplica al Catálogo de Clientes (COD_TIPO_ENTIDAD = 'CLI', ver
+               CodTipoEntidadFijo/BloquearTipoEntidad) — no tiene sentido en la grilla
+               genérica de Entidades ni para otros tipos (Proveedores, Personal, etc.). *@
+            @if (BloquearTipoEntidad && CodTipoEntidadFijo == "CLI")
+            {
+                <MudTabPanel Text="Asesores Comerciales">
+                <div style="min-height:40vh;">
+                @if (_esNuevo)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda el cliente primero para asignar sus Asesores Comerciales.</MudAlert>
+                }
+                else
+                {
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_asesoresComerciales.Count asesor(es) asignado(s)</MudText>
+                        @if (!_readonly)
+                        {
+                            <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                       Style="@EstilosBoton.Confirmar" OnClick="AgregarAsesorComercial">Agregar asesor comercial</MudButton>
+                        }
+                    </div>
+                    <table class="tabla-simple-editable" style="width:100%;">
+                        <thead>
+                            <tr>
+                                <th>Asesor comercial</th>
+                                <th style="width:130px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var a in _asesoresComerciales)
+                            {
+                                <tr>
+                                    <td>@(a.DES_NOMBRE_COMPLETO ?? a.COD_ENTIDAD_ASESOR_COMERCIAL?.ToString())</td>
+                                    <td>
+                                        @if (!_readonly)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => EliminarAsesorComercialAsync(a))" />
+                                        }
+                                        <PanelAuditoria CodUsuarioRegistro="@a.COD_USUARIO_REGISTRO"
+                                                        CodEstacionRegistro="@a.COD_ESTACION_REGISTRO"
+                                                        FecRegistro="@a.FEC_REGISTRO" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                </div>
+                </MudTabPanel>
+            }
+            @* COMERCIAL.ENTIDADES_INFORMACION_COMERCIAL — condiciones comerciales pactadas
+               con esta entidad: moneda, condición y forma de pago, por tipo de operación.
+               Grilla editable, mismo patrón que Medios de Contacto y Direcciones: se agrega
+               una fila vacía, se completa y se graba con el tilde de la propia fila.
+               Clase y Tipo de Operación forman parte de la clave junto con la entidad, así
+               que sólo se eligen en la fila nueva; una vez grabada quedan bloqueados. *@
+            <MudTabPanel Text="Información Comercial">
+            <div style="min-height:40vh;">
+            @if (_esNuevo)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">Guarda la entidad primero para cargar su Información Comercial.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center justify-space-between mb-2">
+                    <MudText Typo="Typo.caption" Class="mono" Style="opacity:.6;font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);">@_informacionComercial.Count condición(es) comercial(es)</MudText>
+                    @if (!_readonly)
+                    {
+                        <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Filled" Size="Size.Small"
+                                   Style="@EstilosBoton.Confirmar" OnClick="AgregarInformacionComercial">Agregar condición comercial</MudButton>
+                    }
+                </div>
+                <table class="tabla-simple-editable" style="width:100%;">
+                    <thead>
+                        <tr>
+                            <th style="width:230px;">Clase de operación</th>
+                            <th style="width:230px;">Tipo de operación</th>
+                            <th style="width:160px;">Moneda</th>
+                            <th style="width:190px;">Condición de pago</th>
+                            <th style="width:190px;">Forma de pago</th>
+                            <th style="width:130px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _informacionComercial)
+                        {
+                            <tr>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_clasesOperacionInfoCom"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@row.CodClaseOperacion"
+                                               ValueChanged="@(v => CambiarClaseFilaInfoComAsync(row, v))"
+                                               Disabled="@(_readonly || !row.EsNueva)" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="@TiposDeClaseInfoCom(row.CodClaseOperacion)"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@row.CodTipoOperacion"
+                                               ValueChanged="@(v => row.CodTipoOperacion = v)"
+                                               Disabled="@(_readonly || !row.EsNueva || string.IsNullOrWhiteSpace(row.CodClaseOperacion))"
+                                               Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_monedasInfoCom"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@row.CodMoneda"
+                                               ValueChanged="@(v => row.CodMoneda = v)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_condicionesPagoInfoCom"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@(row.CodCondicionPago?.ToString())"
+                                               ValueChanged="@(v => row.CodCondicionPago = int.TryParse(v, out var n) ? n : null)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    <AriaCombo TItem="ComboboxItem" Items="_formasPagoInfoCom"
+                                               TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                                               Value="@(row.CodFormaPago?.ToString())"
+                                               ValueChanged="@(v => row.CodFormaPago = int.TryParse(v, out var n) ? n : null)"
+                                               Disabled="_readonly" Class="mb-0" Style="margin-top:0;" />
+                                </td>
+                                <td>
+                                    @if (!_readonly)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success"
+                                                       Disabled="@(row.Guardando || string.IsNullOrWhiteSpace(row.CodClaseOperacion) || string.IsNullOrWhiteSpace(row.CodTipoOperacion))"
+                                                       OnClick="@(() => GuardarInformacionComercialAsync(row))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       Disabled="row.Guardando" OnClick="@(() => EliminarInformacionComercialAsync(row))" />
+                                    }
+                                    @if (!row.EsNueva)
+                                    {
+                                        <PanelAuditoria CodUsuarioRegistro="@row.CodUsuarioRegistro"
+                                                        CodEstacionRegistro="@row.CodEstacionRegistro"
+                                                        FecRegistro="@row.FecRegistro"
+                                                        CodUsuarioActualizacion="@row.CodUsuarioActualizacion"
+                                                        CodEstacionActualizacion="@row.CodEstacionActualizacion"
+                                                        FecActualizacion="@row.FecActualizacion" />
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            </div>
+            </MudTabPanel>
+
+            </MudTabs>
+
+            <CrudDialogActions Modo="Modo" Saving="_saving"
+                               OnCancel="@(() => MudDialog.Cancel())"
+                               CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO"
+                                    CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO"
+                                    FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION"
+                                    CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION"
+                                    FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public Entidad? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+
+    // Reutilización de este diálogo con un Tipo de Entidad fijo (ej. "CLI" = Clientes) —
+    // ver Entidades.razor y DES_PARAMETRO en SEGURIDAD.APLICACIONES_OPCIONES. Cuando
+    // BloquearTipoEntidad es true, el panel "Tipos de Entidad" queda con ese tipo marcado
+    // y TODO el panel deshabilitado (no se puede desmarcar ni marcar otro).
+    [Parameter] public string? CodTipoEntidadFijo { get; set; }
+    [Parameter] public bool BloquearTipoEntidad { get; set; }
+    // Solo para resolver el combo de Asesores Comerciales (tab condicional, ver arriba) —
+    // identifica la opción de menú actual para encontrar su Área enlazada
+    // (ESTANDAR.APLICACIONES_OPCIONES_AREAS) y así los cargos/entidades asignados a ella.
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    // FLG_DOMICILIADO por defecto true en Crear — MapearDesdeModelo reemplaza el objeto
+    // completo en Editar/Ver, así que este default no pisa el valor real guardado.
+    private Entidad _model = new() { FLG_DOMICILIADO = true };
+    private bool _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    private List<ComboboxItem> _tiposDoc = new();
+    private bool _esNuevo;
+    private int _tabActiva;
+
+
+    // ── Documentos de Identidad (pestaña, grilla editable in-place) ──
+    private class DocumentoIdentidadRow
+    {
+        public int? CodTipo { get; set; }
+        public string NumDocumento { get; set; } = "";
+        public DateTime? FecCaducidad { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+    private List<DocumentoIdentidadRow> _documentos = new();
+
+    private async Task CargarDocumentosAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Estandar.EntidadesDocumentosIdentidad>>(
+            $"{ApiRoutes.Estandar.EntidadesDocumentosIdentidad}?codEntidad={_model.COD_ENTIDAD}") ?? new();
+        _documentos = lista.Select(m => new DocumentoIdentidadRow
+        {
+            CodTipo = m.COD_TIPO_DOCUMENTO_IDENTIDAD,
+            NumDocumento = m.NUM_DOCUMENTO_IDENTIDAD,
+            FecCaducidad = m.FEC_CADUCIDAD,
+            EsNueva = false,
+            CodUsuarioRegistro = m.COD_USUARIO_REGISTRO,
+            CodEstacionRegistro = m.COD_ESTACION_REGISTRO,
+            FecRegistro = m.FEC_REGISTRO,
+            CodUsuarioActualizacion = m.COD_USUARIO_ACTUALIZACION,
+            CodEstacionActualizacion = m.COD_ESTACION_ACTUALIZACION,
+            FecActualizacion = m.FEC_ACTUALIZACION
+        }).ToList();
+    }
+
+    private void AgregarDocumento() => _documentos.Add(new DocumentoIdentidadRow { EsNueva = true });
+
+    private async Task GuardarDocumentoAsync(DocumentoIdentidadRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new
+            {
+                COD_ENTIDAD = _model.COD_ENTIDAD,
+                COD_TIPO_DOCUMENTO_IDENTIDAD = row.CodTipo,
+                NUM_DOCUMENTO_IDENTIDAD = row.NumDocumento,
+                FEC_CADUCIDAD = row.FecCaducidad
+            };
+            // El comentario que estaba acá decía "_INSERT es upsert — siempre POST". NO LO ES:
+            // el SP de alta rechaza una clave que ya existe, así que modificar un documento ya
+            // grabado devolvía "Ya existe un registro con esa clave" y no había forma de
+            // corregir un número mal tipeado — había que borrar la fila y volver a cargarla.
+            //
+            // El SP de UPDATE y el verbo PUT existían desde siempre; nadie los llamaba.
+            // EsNueva es lo único que sabe la pantalla y la API no: cuál era la intención.
+            var resp = await Http.GuardarAsync(ApiRoutes.Estandar.EntidadesDocumentosIdentidad, dto, row.EsNueva);
+            if (resp.IsSuccessStatusCode) { row.EsNueva = false; Snackbar.Add("Guardado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(GuardarDocumentoAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarDocumentoAsync(DocumentoIdentidadRow row)
+    {
+        if (row.EsNueva) { _documentos.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Estandar.EntidadesDocumentosIdentidad}/{_model.COD_ENTIDAD}/{row.CodTipo}");
+            if (resp.IsSuccessStatusCode) { _documentos.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarDocumentoAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    // ── Información Financiera / Cuentas Bancarias (pestaña, grilla editable in-place) ──
+    // Clave (COD_ENTIDAD_BANCARIA, COD_BANCO, NUM_CUENTA_BANCARIA): Banco y Nº de cuenta
+    // solo se editan mientras la fila es nueva, igual que el Tipo en Documentos de Identidad.
+    private class CuentaBancariaRow
+    {
+        public string CodBanco { get; set; } = "";
+        public string NumCuenta { get; set; } = "";
+        public string? NumCuentaCci { get; set; }
+        public string? DesCuenta { get; set; }
+        public bool FlgPrincipal { get; set; }
+        public bool FlgHabilitada { get; set; }
+        public bool FlgCuentaEmpresa { get; set; }
+        public bool FlgCobros { get; set; }
+        public bool FlgPagos { get; set; }
+        public bool FlgRestringida { get; set; }
+        public string? CodTipoCuenta { get; set; }
+        public string? CodMoneda { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+    }
+    private List<CuentaBancariaRow> _cuentasBancarias = new();
+    private List<ComboboxItem> _bancos = new();
+    private List<ComboboxItem> _tiposCuentaBancaria = new();
+    private List<ComboboxItem> _monedas = new();
+
+    private async Task CargarCuentasBancariasAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Finanzas.EntidadCuentaBancaria>>(
+            $"{ApiRoutes.Finanzas.EntidadesCuentasBancarias}?codEntidad={_model.COD_ENTIDAD}") ?? new();
+        _cuentasBancarias = lista.Select(m => new CuentaBancariaRow
+        {
+            CodBanco = m.COD_BANCO,
+            NumCuenta = m.NUM_CUENTA_BANCARIA,
+            NumCuentaCci = m.NUM_CUENTA_BANCARIA_CCI,
+            DesCuenta = m.DES_CUENTA_BANCARIA,
+            FlgPrincipal = m.FLG_PRINCIPAL == true,
+            FlgHabilitada = m.FLG_HABILITADA == true,
+            FlgCuentaEmpresa = m.FLG_CUENTA_EMPRESA == true,
+            FlgCobros = m.FLG_COBROS == true,
+            FlgPagos = m.FLG_PAGOS == true,
+            FlgRestringida = m.FLG_RESTRINGIDA == true,
+            CodTipoCuenta = m.COD_TIPO_CUENTA_BANCARIA,
+            CodMoneda = m.COD_MONEDA,
+            EsNueva = false
+        }).ToList();
+    }
+
+    // Habilitada arranca en true: es el estado normal de una cuenta recién agregada.
+    private void AgregarCuentaBancaria() => _cuentasBancarias.Add(new CuentaBancariaRow { EsNueva = true, FlgHabilitada = true });
+
+    private async Task GuardarCuentaBancariaAsync(CuentaBancariaRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new
+            {
+                COD_ENTIDAD_BANCARIA = _model.COD_ENTIDAD,
+                COD_BANCO = row.CodBanco,
+                NUM_CUENTA_BANCARIA = row.NumCuenta,
+                NUM_CUENTA_BANCARIA_CCI = row.NumCuentaCci,
+                DES_CUENTA_BANCARIA = row.DesCuenta,
+                FLG_PRINCIPAL = row.FlgPrincipal,
+                FLG_HABILITADA = row.FlgHabilitada,
+                FLG_CUENTA_EMPRESA = row.FlgCuentaEmpresa,
+                FLG_COBROS = row.FlgCobros,
+                FLG_PAGOS = row.FlgPagos,
+                FLG_RESTRINGIDA = row.FlgRestringida,
+                COD_TIPO_CUENTA_BANCARIA = row.CodTipoCuenta,
+                COD_MONEDA = row.CodMoneda
+            };
+            // PROC_FINANZAS_ENTIDADES_CUENTAS_BANCARIAS_INSERT ya NO es upsert: alta con
+            // POST, modificación con PUT — a diferencia de Documentos de Identidad.
+            var resp = row.EsNueva
+                ? await Http.PostAsJsonAsync(ApiRoutes.Finanzas.EntidadesCuentasBancarias, dto)
+                : await Http.PutAsJsonAsync(ApiRoutes.Finanzas.EntidadesCuentasBancarias, dto);
+            if (resp.IsSuccessStatusCode) { row.EsNueva = false; Snackbar.Add("Guardado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(GuardarCuentaBancariaAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarCuentaBancariaAsync(CuentaBancariaRow row)
+    {
+        if (row.EsNueva) { _cuentasBancarias.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync(
+                $"{ApiRoutes.Finanzas.EntidadesCuentasBancarias}/{_model.COD_ENTIDAD}/{Uri.EscapeDataString(row.CodBanco)}/{Uri.EscapeDataString(row.NumCuenta)}");
+            if (resp.IsSuccessStatusCode) { _cuentasBancarias.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarCuentaBancariaAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    // ── Medios de Contacto (pestaña, grilla editable in-place) ──
+    // Clave: COD_ENTIDAD + NUM_SECUENCIA (auto-generado por el SP INSERT al crear,
+    // ver PROC_COMERCIAL_ENTIDADES_TIPOS_MEDIO_CONTACTO_INSERT) — permite varias filas
+    // del mismo tipo de medio de contacto para una misma entidad.
+    private class MedioContactoRow
+    {
+        public short? NumSecuencia { get; set; }
+        public int? CodTipo { get; set; }
+        public string Dato { get; set; } = "";
+        public string? CodTipoUso { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+    private List<MedioContactoRow> _mediosContacto = new();
+    private List<ComboboxItem> _tiposMedioContacto = new();
+    private List<ComboboxItem> _tiposUso = new();
+
+    private async Task CargarMediosContactoAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Comercial.EntidadesTiposMedioContacto>>(
+            $"{ApiRoutes.Comercial.EntidadesTiposMedioContacto}?codEntidad={_model.COD_ENTIDAD}") ?? new();
+        _mediosContacto = lista.Select(m => new MedioContactoRow
+        {
+            NumSecuencia = m.NUM_SECUENCIA,
+            CodTipo = m.COD_TIPO_MEDIO_CONTACTO,
+            Dato = m.DAT_TIPO_MEDIO_CONTACTO,
+            CodTipoUso = m.COD_TIPO_USO,
+            EsNueva = false,
+            CodUsuarioRegistro = m.COD_USUARIO_REGISTRO,
+            CodEstacionRegistro = m.COD_ESTACION_REGISTRO,
+            FecRegistro = m.FEC_REGISTRO,
+            CodUsuarioActualizacion = m.COD_USUARIO_ACTUALIZACION,
+            CodEstacionActualizacion = m.COD_ESTACION_ACTUALIZACION,
+            FecActualizacion = m.FEC_ACTUALIZACION
+        }).ToList();
+    }
+
+    private void AgregarMedioContacto() => _mediosContacto.Add(new MedioContactoRow { EsNueva = true });
+
+    private async Task GuardarMedioContactoAsync(MedioContactoRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new
+            {
+                COD_ENTIDAD = _model.COD_ENTIDAD,
+                NUM_SECUENCIA = row.NumSecuencia ?? 0,
+                COD_TIPO_MEDIO_CONTACTO = row.CodTipo,
+                DAT_TIPO_MEDIO_CONTACTO = row.Dato,
+                COD_TIPO_USO = row.CodTipoUso
+            };
+            // PROC_COMERCIAL_ENTIDADES_TIPOS_MEDIO_CONTACTO_INSERT es upsert — siempre POST.
+            // NUM_SECUENCIA se recalcula en el servidor al crear (0/null), así que tras un
+            // alta se recarga la grilla completa para obtener el correlativo asignado.
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.EntidadesTiposMedioContacto, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                if (row.EsNueva) await CargarMediosContactoAsync(); else row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(GuardarMedioContactoAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarMedioContactoAsync(MedioContactoRow row)
+    {
+        if (row.EsNueva) { _mediosContacto.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.EntidadesTiposMedioContacto}/{_model.COD_ENTIDAD}/{row.NumSecuencia}");
+            if (resp.IsSuccessStatusCode) { _mediosContacto.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarMedioContactoAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    // ── Unidades Comerciales (pestaña, grilla editable in-place, después de Medios de Contacto) ──
+    private class UnidadComercialRow
+    {
+        public byte? CodUnidadComercial { get; set; }
+        public string? DesUnidadComercial { get; set; }
+        public string? CodPais { get; set; }
+        public string DesPais { get; set; } = "";
+        public string? DesDireccion { get; set; }
+        public int? CodTipoEstado { get; set; }
+        public int? CodEstado { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+    private List<UnidadComercialRow> _unidadesComerciales = new();
+
+    private async Task CargarUnidadesComercialesAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        var lista = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Comercial.EntidadesUnidadesComerciales>>(
+            $"{ApiRoutes.Comercial.EntidadesUnidadesComerciales}?codEntidad={_model.COD_ENTIDAD}") ?? new();
+        _unidadesComerciales = lista.Select(u => new UnidadComercialRow
+        {
+            CodUnidadComercial = u.COD_UNIDAD_COMERCIAL,
+            DesUnidadComercial = u.DES_UNIDAD_COMERCIAL,
+            CodPais = u.COD_PAIS,
+            CodTipoEstado = u.COD_TIPO_ESTADO,
+            CodEstado = u.COD_ESTADO,
+            DesDireccion = u.DES_DIRECCION,
+            EsNueva = false,
+            CodUsuarioRegistro = u.COD_USUARIO_REGISTRO,
+            CodEstacionRegistro = u.COD_ESTACION_REGISTRO,
+            FecRegistro = u.FEC_REGISTRO,
+            CodUsuarioActualizacion = u.COD_USUARIO_ACTUALIZACION,
+            CodEstacionActualizacion = u.COD_ESTACION_ACTUALIZACION,
+            FecActualizacion = u.FEC_ACTUALIZACION
+        }).ToList();
+
+        // PROC_COMERCIAL_ENTIDADES_UNIDADES_COMERCIALES_SHOWALL solo trae el código del país,
+        // no el nombre (no hace JOIN contra ESTANDAR.PAISES) — sin esto el combo se ve vacío
+        // después de recargar aunque el país sí esté guardado. Se resuelve aquí, aparte.
+        await Task.WhenAll(_unidadesComerciales
+            .Where(r => !string.IsNullOrWhiteSpace(r.CodPais))
+            .Select(async r => r.DesPais = await ResolverTextoPaisAsync(r.CodPais!) ?? ""));
+    }
+
+    private async Task<string?> ResolverTextoPaisAsync(string codPais)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Estandar.Pais>>($"{ApiRoutes.Estandar.Paises}/{Uri.EscapeDataString(codPais)}");
+            return r?.Data?.DES_PAIS;
+        }
+        catch { return null; }
+    }
+
+    private void AgregarUnidadComercial() => _unidadesComerciales.Add(new UnidadComercialRow { EsNueva = true });
+
+    private async Task GuardarUnidadComercialAsync(UnidadComercialRow row)
+    {
+        row.Guardando = true;
+        try
+        {
+            var dto = new
+            {
+                COD_ENTIDAD = _model.COD_ENTIDAD,
+                COD_UNIDAD_COMERCIAL = row.CodUnidadComercial ?? 0,
+                DES_UNIDAD_COMERCIAL = row.DesUnidadComercial,
+                COD_PAIS = row.CodPais,
+                DES_DIRECCION = row.DesDireccion,
+                COD_TIPO_ESTADO = row.CodTipoEstado,
+                COD_ESTADO = row.CodEstado
+            };
+            // PROC_COMERCIAL_ENTIDADES_UNIDADES_COMERCIALES_INSERT es upsert (autonumera el
+            // código si no existe) — siempre POST, igual que Medios de Contacto. Tras un alta
+            // se recarga la grilla completa para traer el código que asignó el servidor.
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Comercial.EntidadesUnidadesComerciales, dto);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Guardado.", Severity.Success);
+                if (row.EsNueva) await CargarUnidadesComercialesAsync(); else row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(GuardarUnidadComercialAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarUnidadComercialAsync(UnidadComercialRow row)
+    {
+        if (row.EsNueva) { _unidadesComerciales.Remove(row); return; }
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.EntidadesUnidadesComerciales}/{_model.COD_ENTIDAD}/{row.CodUnidadComercial}");
+            if (resp.IsSuccessStatusCode) { _unidadesComerciales.Remove(row); Snackbar.Add("Eliminado.", Severity.Success); }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarUnidadComercialAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+
+    // ── Direcciones (pestaña, lista + diálogo CRUD completo — ver comentario en el markup) ──
+    private List<KONSolutions.Shared.Models.Comercial.EntidadesDirecciones> _direcciones = new();
+
+    private async Task CargarDireccionesAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        _direcciones = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Comercial.EntidadesDirecciones>>(
+            $"{ApiRoutes.Comercial.EntidadesDirecciones}?codEntidad={_model.COD_ENTIDAD}") ?? new();
+    }
+
+    private async Task AgregarDireccion()
+    {
+        var parametros = new DialogParameters { ["Modo"] = CrudModo.Create, ["CodEntidad"] = _model.COD_ENTIDAD };
+        var dlg = await DialogService.ShowAsync<EntidadesDireccionesDialog>("Nueva dirección", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarDireccionesAsync();
+    }
+
+    private async Task EditarDireccion(KONSolutions.Shared.Models.Comercial.EntidadesDirecciones d)
+    {
+        var parametros = new DialogParameters { ["Modo"] = CrudModo.Update, ["Item"] = d, ["CodEntidad"] = _model.COD_ENTIDAD };
+        var dlg = await DialogService.ShowAsync<EntidadesDireccionesDialog>($"Editar · {d.DES_DIRECCION}", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarDireccionesAsync();
+    }
+
+    private async Task EliminarDireccionAsync(KONSolutions.Shared.Models.Comercial.EntidadesDirecciones d)
+    {
+        var parametros = new DialogParameters { ["Modo"] = CrudModo.Delete, ["Item"] = d, ["CodEntidad"] = _model.COD_ENTIDAD };
+        var dlg = await DialogService.ShowAsync<EntidadesDireccionesDialog>($"Eliminar · {d.DES_DIRECCION}", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarDireccionesAsync();
+    }
+
+    private ConfiguracionGeneralModel? _cfg;
+
+    private List<ComboboxItem> _tiposEntidadTodos = new();
+    private HashSet<string> _tiposEntidadAsignados = new();
+    private string? _tipoEntidadGuardando;
+
+    // ── Asesores Comerciales (tab condicional, solo Catálogo de Clientes) ──
+    private List<KONSolutions.Shared.Models.Comercial.EntidadesAsesoresComerciales> _asesoresComerciales = new();
+
+    private async Task CargarAsesoresComercialesAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        _asesoresComerciales = await Http.SafeGetAsync<List<KONSolutions.Shared.Models.Comercial.EntidadesAsesoresComerciales>>(
+            $"{ApiRoutes.Comercial.EntidadesAsesoresComerciales}/{_model.COD_ENTIDAD}") ?? new();
+    }
+
+    private async Task AgregarAsesorComercial()
+    {
+        var yaAsignados = _asesoresComerciales
+            .Where(a => a.COD_ENTIDAD_ASESOR_COMERCIAL is not null)
+            .Select(a => a.COD_ENTIDAD_ASESOR_COMERCIAL!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .ToList();
+        var parametros = new DialogParameters
+        {
+            ["CodEntidadCliente"] = _model.COD_ENTIDAD!.Value,
+            ["YaAsignados"] = yaAsignados
+        };
+        var dlg = await DialogService.ShowAsync<KONSolutions.Web.Pages.Comercial.EntidadesAsesoresComercialesDialog>("Nuevo asesor comercial", parametros,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarAsesoresComercialesAsync();
+    }
+
+    private async Task EliminarAsesorComercialAsync(KONSolutions.Shared.Models.Comercial.EntidadesAsesoresComerciales a)
+    {
+        var confirmar = await DialogService.ShowMessageBox("Confirmar", $"¿Eliminar al asesor comercial \"{a.DES_NOMBRE_COMPLETO}\"?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (confirmar != true) return;
+        var resp = await Http.DeleteAsync($"{ApiRoutes.Comercial.EntidadesAsesoresComerciales}/{a.COD_ENTIDAD_CLIENTE}/{a.COD_ENTIDAD_ASESOR_COMERCIAL}");
+        if (resp.IsSuccessStatusCode) await CargarAsesoresComercialesAsync();
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarAsesorComercialAsync));
+    }
+
+    // ── Información Comercial (COMERCIAL.ENTIDADES_INFORMACION_COMERCIAL) ──
+    // Grilla editable con Clase y Tipo de Operación adentro.
+    //
+    // El SHOWALL pide entidad Y clase de operación: no existe una lectura de "toda la
+    // información comercial de la entidad". Como la Clase ahora vive dentro de la grilla,
+    // hay que traer todas: se pide una vez por clase y se concatena. Son pocas clases y las
+    // llamadas van en paralelo, así que en la práctica cuesta lo mismo que una.
+    // Si preferís un solo viaje, alcanza con un SP que reciba sólo @COD_ENTIDAD; dímelo
+    // y se cambia CargarInformacionComercialAsync por esa llamada.
+    private class InformacionComercialRow
+    {
+        public string? CodClaseOperacion { get; set; }
+        public string? CodTipoOperacion { get; set; }
+        public string? CodMoneda { get; set; }
+        public int? CodCondicionPago { get; set; }
+        public int? CodFormaPago { get; set; }
+        public bool EsNueva { get; set; }
+        public bool Guardando { get; set; }
+        public string? CodUsuarioRegistro { get; set; }
+        public string? CodEstacionRegistro { get; set; }
+        public DateTime? FecRegistro { get; set; }
+        public string? CodUsuarioActualizacion { get; set; }
+        public string? CodEstacionActualizacion { get; set; }
+        public DateTime? FecActualizacion { get; set; }
+    }
+    private List<InformacionComercialRow> _informacionComercial = new();
+    private List<ComboboxItem> _clasesOperacionInfoCom = new(), _monedasInfoCom = new(),
+                               _condicionesPagoInfoCom = new(), _formasPagoInfoCom = new();
+    // Tipos de operación por clase, cacheados: la columna Tipo depende de lo que se elija en
+    // la columna Clase de la misma fila, y dos filas pueden estar en clases distintas.
+    private readonly Dictionary<string, List<ComboboxItem>> _tiposPorClaseInfoCom = new();
+
+    private List<ComboboxItem> TiposDeClaseInfoCom(string? codClaseOperacion)
+        => !string.IsNullOrWhiteSpace(codClaseOperacion) && _tiposPorClaseInfoCom.TryGetValue(codClaseOperacion, out var l)
+            ? l : new();
+
+    private async Task CargarCombosInfoComAsync()
+    {
+        await Task.WhenAll(
+            CargarComboInfoComAsync(ApiRoutes.Estandar.ClasesOperacionCombobox, l => _clasesOperacionInfoCom = l),
+            CargarComboInfoComAsync(ApiRoutes.Estandar.MonedasCombobox,         l => _monedasInfoCom = l),
+            CargarComboInfoComAsync(ApiRoutes.Comercial.CondicionesPagoCombobox, l => _condicionesPagoInfoCom = l),
+            CargarComboInfoComAsync(ApiRoutes.Comercial.FormasPagoCombobox,      l => _formasPagoInfoCom = l));
+    }
+
+    private async Task CargarComboInfoComAsync(string url, Action<List<ComboboxItem>> asignar)
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(url); asignar(r?.Data ?? new()); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadesDialog), nameof(CargarComboInfoComAsync)); }
+    }
+
+    private async Task CargarTiposDeClaseInfoComAsync(string codClaseOperacion)
+    {
+        if (string.IsNullOrWhiteSpace(codClaseOperacion) || _tiposPorClaseInfoCom.ContainsKey(codClaseOperacion)) return;
+        try
+        {
+            var url = $"{ApiRoutes.Estandar.TiposOperacion}?codClaseOperacion={Uri.EscapeDataString(codClaseOperacion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<TipoOperacionInfoComLite>>>(url);
+            _tiposPorClaseInfoCom[codClaseOperacion] = (r?.Data ?? new())
+                .Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION }).ToList();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(EntidadesDialog), nameof(CargarTiposDeClaseInfoComAsync)); }
+    }
+
+    private class TipoOperacionInfoComLite
+    {
+        public string COD_TIPO_OPERACION { get; set; } = "";
+        public string DES_TIPO_OPERACION { get; set; } = "";
+    }
+
+    private async Task CambiarClaseFilaInfoComAsync(InformacionComercialRow row, string? codClaseOperacion)
+    {
+        row.CodClaseOperacion = codClaseOperacion;
+        // El tipo elegido pertenecía a la clase anterior: dejarlo sería grabar un par
+        // (clase, tipo) que no existe.
+        row.CodTipoOperacion = null;
+        await CargarTiposDeClaseInfoComAsync(codClaseOperacion ?? "");
+    }
+
+    private async Task CargarInformacionComercialAsync()
+    {
+        if (_model.COD_ENTIDAD is null) { _informacionComercial = new(); return; }
+        if (_clasesOperacionInfoCom.Count == 0) await CargarCombosInfoComAsync();
+
+        var tareas = _clasesOperacionInfoCom.Select(c =>
+            Http.SafeGetAsync<List<KONSolutions.Shared.Models.Comercial.EntidadesInformacionComercial>>(
+                $"{ApiRoutes.Comercial.EntidadesInformacionComercial}/{_model.COD_ENTIDAD}/{Uri.EscapeDataString(c.Id)}")).ToList();
+        var resultados = await Task.WhenAll(tareas);
+
+        _informacionComercial = resultados
+            .Where(r => r is not null).SelectMany(r => r!)
+            .OrderBy(x => x.COD_CLASE_OPERACION).ThenBy(x => x.COD_TIPO_OPERACION)
+            .Select(x => new InformacionComercialRow
+            {
+                CodClaseOperacion = x.COD_CLASE_OPERACION,
+                CodTipoOperacion  = x.COD_TIPO_OPERACION,
+                CodMoneda         = x.COD_MONEDA,
+                CodCondicionPago  = x.COD_CONDICION_PAGO,
+                CodFormaPago      = x.COD_FORMA_PAGO,
+                CodUsuarioRegistro = x.COD_USUARIO_REGISTRO,
+                CodEstacionRegistro = x.COD_ESTACION_REGISTRO,
+                FecRegistro = x.FEC_REGISTRO,
+                CodUsuarioActualizacion = x.COD_USUARIO_ACTUALIZACION,
+                CodEstacionActualizacion = x.COD_ESTACION_ACTUALIZACION,
+                FecActualizacion = x.FEC_ACTUALIZACION
+            }).ToList();
+
+        // Las clases que ya tienen filas necesitan sus tipos cargados para que la columna
+        // Tipo de Operación muestre la descripción y no quede en blanco.
+        foreach (var clase in _informacionComercial.Select(r => r.CodClaseOperacion!).Distinct())
+            await CargarTiposDeClaseInfoComAsync(clase);
+    }
+
+    private void AgregarInformacionComercial() => _informacionComercial.Add(new InformacionComercialRow { EsNueva = true });
+
+    private async Task GuardarInformacionComercialAsync(InformacionComercialRow row)
+    {
+        if (row.Guardando || _model.COD_ENTIDAD is null) return;
+        row.Guardando = true;
+        try
+        {
+            var dto = new KONSolutions.Shared.Models.Comercial.EntidadesInformacionComercialSaveDto
+            {
+                COD_ENTIDAD         = _model.COD_ENTIDAD,
+                COD_CLASE_OPERACION = row.CodClaseOperacion ?? "",
+                COD_TIPO_OPERACION  = row.CodTipoOperacion ?? "",
+                COD_MONEDA          = row.CodMoneda,
+                COD_CONDICION_PAGO  = row.CodCondicionPago,
+                COD_FORMA_PAGO      = row.CodFormaPago
+            };
+            var resp = await Http.GuardarAsync(ApiRoutes.Comercial.EntidadesInformacionComercial, dto, row.EsNueva);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add(row.EsNueva ? "Creado." : "Modificado.", Severity.Success);
+                if (row.EsNueva) await CargarInformacionComercialAsync(); else row.EsNueva = false;
+            }
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(GuardarInformacionComercialAsync));
+        }
+        finally { row.Guardando = false; }
+    }
+
+    private async Task EliminarInformacionComercialAsync(InformacionComercialRow row)
+    {
+        // Fila que nunca se grabó: se saca de la lista y listo, no hay nada que borrar.
+        if (row.EsNueva) { _informacionComercial.Remove(row); return; }
+
+        var confirmar = await DialogService.ShowMessageBox("Confirmar",
+            "¿Eliminar esta condición comercial?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (confirmar != true) return;
+
+        row.Guardando = true;
+        try
+        {
+            var resp = await Http.DeleteAsync(
+                $"{ApiRoutes.Comercial.EntidadesInformacionComercial}/{_model.COD_ENTIDAD}/{Uri.EscapeDataString(row.CodClaseOperacion!)}/{Uri.EscapeDataString(row.CodTipoOperacion!)}");
+            if (resp.IsSuccessStatusCode) await CargarInformacionComercialAsync();
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(EliminarInformacionComercialAsync), "No se pudo eliminar el registro");
+        }
+        finally { row.Guardando = false; }
+    }
+    private class EntidadTipoEntidadShowselectRow
+    {
+        public bool FLG_SELECT { get; set; }
+        public decimal? COD_ENTIDAD { get; set; }
+        public string COD_TIPO_ENTIDAD { get; set; } = "";
+        public string DES_TIPO_ENTIDAD { get; set; } = "";
+    }
+
+    /// <summary>PROC_ESTANDAR_ENTIDADES_TIPOS_ENTIDADES_SHOWWSELECT trae en un solo llamado
+    /// TODOS los tipos de entidad con FLG_SELECT indicando si ya están asignados a esta
+    /// entidad — se ordenan asignados primero.</summary>
+    private async Task CargarTiposEntidadAsync()
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        var filas = await Http.SafeGetAsync<List<EntidadTipoEntidadShowselectRow>>(
+            $"{ApiRoutes.Estandar.EntidadesTiposEntidadesShowselect}/{_model.COD_ENTIDAD}") ?? new();
+        _tiposEntidadTodos = filas
+            .OrderByDescending(f => f.FLG_SELECT)
+            .ThenBy(f => f.DES_TIPO_ENTIDAD)
+            .Select(f => new ComboboxItem { Id = f.COD_TIPO_ENTIDAD, Texto = f.DES_TIPO_ENTIDAD })
+            .ToList();
+        _tiposEntidadAsignados = filas.Where(f => f.FLG_SELECT).Select(f => f.COD_TIPO_ENTIDAD).ToHashSet();
+    }
+
+    private async Task ToggleTipoEntidad(string codTipoEntidad, bool marcado)
+    {
+        if (_model.COD_ENTIDAD is null) return;
+        _tipoEntidadGuardando = codTipoEntidad;
+        try
+        {
+            if (marcado)
+            {
+                var dto = new { COD_ENTIDAD = _model.COD_ENTIDAD, COD_TIPO_ENTIDAD = codTipoEntidad };
+                var resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.EntidadesTiposEntidades, dto);
+                if (resp.IsSuccessStatusCode) _tiposEntidadAsignados.Add(codTipoEntidad);
+                else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(ToggleTipoEntidad));
+            }
+            else
+            {
+                var resp = await Http.DeleteAsync($"{ApiRoutes.Estandar.EntidadesTiposEntidades}/{_model.COD_ENTIDAD}/{Uri.EscapeDataString(codTipoEntidad)}");
+                if (resp.IsSuccessStatusCode) _tiposEntidadAsignados.Remove(codTipoEntidad);
+                else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(ToggleTipoEntidad));
+            }
+        }
+        finally { _tipoEntidadGuardando = null; }
+    }
+
+    /// <summary>Al marcar/desmarcar Domiciliado, hereda (o limpia) el País desde
+    /// Configuración General — pedido explícito: "País se hereda de la Configuración
+    /// General si es Domiciliado".</summary>
+    private void OnDomiciliadoChanged(bool? v)
+    {
+        _model.FLG_DOMICILIADO = v;
+        if (v == true)
+        {
+            _model.COD_PAIS = _cfg?.COD_PAIS ?? "";
+            _model.DES_PAIS = _cfg?.DES_PAIS ?? "";
+        }
+    }
+
+    // COD_TIPO_PERSONA: valor fijo de 2 opciones (tinyint), no viene de una tabla catálogo.
+    private readonly List<ComboboxItem> _tiposPersona = new()
+    {
+        new() { Id = "1", Texto = "Persona Natural" },
+        new() { Id = "2", Texto = "Persona Jurídica" },
+    };
+
+    /// <summary>Solo aplica para Persona Natural: DES_NOMBRE_COMPLETO se calcula y queda
+    /// deshabilitado. Para Persona Jurídica el usuario lo escribe directamente.</summary>
+    private void ActualizarNombreCompleto()
+    {
+        if (_model.COD_TIPO_PERSONA == 1)
+            _model.DES_NOMBRE_COMPLETO = $"{_model.DES_PATERNO} {_model.DES_MATERNO} {_model.DES_NOMBRE} {_model.DES_NOMBRE2}".Trim();
+    }
+
+    /// <summary>DES_PREFIJO_USUARIO_COMERCIAL solo aplica a Persona Jurídica: al cambiar a
+    /// Natural se limpia para no dejar un valor guardado que ya no corresponde mostrar.</summary>
+    private void LimpiarPrefijoSiNoAplica()
+    {
+        if (_model.COD_TIPO_PERSONA != 2)
+            _model.DES_PREFIJO_USUARIO_COMERCIAL = null;
+    }
+
+    /// <summary>COD_ENTIDAD_DEPENDENCIA solo aplica a Persona Natural: al cambiar a
+    /// Jurídica se limpia para no dejar un valor guardado que ya no corresponde mostrar.</summary>
+    private void LimpiarDependenciaSiNoAplica()
+    {
+        if (_model.COD_TIPO_PERSONA != 1)
+            _model.COD_ENTIDAD_DEPENDENCIA = null;
+    }
+
+    private List<ComboboxItem> _entidadesParaDepender = new();
+
+    /// <summary>Carga PROC_ESTANDAR_ENTIDADES_PARADEPENDER (ya filtrado a Persona Jurídica
+    /// por el propio SP) y descarta la propia entidad — no puede depender de sí misma.</summary>
+    private async Task CargarEntidadesParaDependerAsync()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                ApiRoutes.Estandar.EntidadesParaDepender);
+            _entidadesParaDepender = (r?.Data ?? new())
+                .Where(x => x.Id != _model.COD_ENTIDAD?.ToString())
+                .ToList();
+        }
+        catch { _entidadesParaDepender = new(); }
+    }
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is not null) MapearDesdeModelo(Item);
+    }
+
+    private void MapearDesdeModelo(Entidad m)
+    {
+        _model = new Entidad
+        {
+            COD_ENTIDAD                  = m.COD_ENTIDAD,
+            COD_TIPO_PERSONA             = m.COD_TIPO_PERSONA,
+            DES_PATERNO                  = m.DES_PATERNO,
+            DES_MATERNO                  = m.DES_MATERNO,
+            DES_NOMBRE                   = m.DES_NOMBRE,
+            DES_NOMBRE2                  = m.DES_NOMBRE2,
+            DES_NOMBRE_COMPLETO          = m.DES_NOMBRE_COMPLETO,
+            DES_COMERCIAL                = m.DES_COMERCIAL,
+            DES_PREFIJO_USUARIO_COMERCIAL = m.DES_PREFIJO_USUARIO_COMERCIAL,
+            COD_ENTIDAD_DEPENDENCIA      = m.COD_ENTIDAD_DEPENDENCIA,
+            COD_TIPO_DOCUMENTO_IDENTIDAD = m.COD_TIPO_DOCUMENTO_IDENTIDAD,
+            NUM_DOCUMENTO_IDENTIDAD      = m.NUM_DOCUMENTO_IDENTIDAD,
+            FLG_DOMICILIADO              = m.FLG_DOMICILIADO,
+            COD_PAIS                     = m.COD_PAIS,
+            DES_PAIS                     = m.DES_PAIS,
+            NUM_DUNS                     = m.NUM_DUNS,
+            COD_USUARIO_RELACIONADO      = m.COD_USUARIO_RELACIONADO,
+            IMG_LOGO                     = m.IMG_LOGO,
+            COD_TIPO_ESTADO              = m.COD_TIPO_ESTADO,
+            COD_ESTADO                   = m.COD_ESTADO,
+        };
+    }
+
+    /// <summary>Trae la Entidad fresca desde SHOWBYID — evita mostrar datos desactualizados
+    /// de la grilla al Modificar/Eliminar/Ver.</summary>
+    private async Task RecargarDesdeShowbyidAsync()
+    {
+        var fresco = await Http.SafeGetAsync<Entidad>($"{ApiRoutes.Estandar.Entidades}/{Uri.EscapeDataString(_model.COD_ENTIDAD?.ToString() ?? "")}");
+        if (fresco is not null) MapearDesdeModelo(fresco);
+    }
+    protected override async Task OnInitializedAsync()
+    {
+        if (!_esNuevo && Item is not null) await RecargarDesdeShowbyidAsync();
+
+        // PROC_ESTANDAR_ENTIDADES_LOADCOMBOS: tipos de documento de identidad y tipos de
+        // medio de contacto en un solo viaje (antes eran dos GET independientes). TiposUso
+        // no está entre los result sets de este SP, así que sigue como pedido aparte.
+        var tLoadcombos = Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<KONSolutions.Shared.Models.Estandar.EntidadesLoadCombosResult>>(
+            $"{ApiRoutes.Estandar.EntidadesLoadcombos}?codTipoEstado={_model.COD_TIPO_ESTADO ?? 0}");
+        // SHOWCOMBOX de TIPOS_USO no alias sus columnas como Id/Texto (igual que
+        // ClasesDesarrollo), así que se trae el DTO propio y se mapea a ComboboxItem aquí.
+        var tTiposUso = Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<KONSolutions.Shared.Models.Estandar.TiposUso>>>(ApiRoutes.Estandar.TiposUsoCombobox);
+        var tCfg = CfgSvc.GetCurrentAsync();
+        var tParaDepender = CargarEntidadesParaDependerAsync();
+        // Combos de la pestaña Información Financiera: se cargan siempre (no solo en
+        // Editar) para no bloquear el resto del OnInitializedAsync con un await de más.
+        var tBancos = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Finanzas.BancosCombobox);
+        var tTiposCuentaBancaria = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Finanzas.TiposCuentasBancariasCombobox);
+        var tMonedas = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.MonedasCombobox);
+        await Task.WhenAll(tLoadcombos, tTiposUso, tCfg, tParaDepender, tBancos, tTiposCuentaBancaria, tMonedas);
+        var loadcombos = (await tLoadcombos)?.Data;
+        _tiposDoc = loadcombos?.TiposDocumentoIdentidad ?? new();
+        _tiposMedioContacto = loadcombos?.TiposMedioContacto ?? new();
+        _tiposUso = ((await tTiposUso)?.Data ?? new())
+            .Select(t => new ComboboxItem { Id = t.COD_TIPO_USO, Texto = t.DES_TIPO_USO }).ToList();
+        _cfg = await tCfg;
+        _bancos = await tBancos ?? new();
+        _tiposCuentaBancaria = await tTiposCuentaBancaria ?? new();
+        _monedas = await tMonedas ?? new();
+
+        // Alta nueva con Domiciliado por defecto (true): hereda el País de Configuración General.
+        if (_esNuevo && _model.FLG_DOMICILIADO == true)
+        {
+            _model.COD_PAIS = _cfg?.COD_PAIS ?? "";
+            _model.DES_PAIS = _cfg?.DES_PAIS ?? "";
+        }
+
+        // Tipos de Entidad, Documentos de Identidad y Medios de Contacto (solo aplica en
+        // Editar/Ver/Eliminar, cuando ya existe COD_ENTIDAD).
+        if (!_esNuevo)
+        {
+            await CargarTiposEntidadAsync();
+            await CargarDocumentosAsync();
+            await CargarMediosContactoAsync();
+            await CargarUnidadesComercialesAsync();
+            await CargarDireccionesAsync();
+            await CargarCuentasBancariasAsync();
+            if (BloquearTipoEntidad && CodTipoEntidadFijo == "CLI") await CargarAsesoresComercialesAsync();
+            await CargarInformacionComercialAsync();
+        }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarPaisAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Length < 2) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Estandar.PaisesCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    private async Task<IEnumerable<ComboboxItem>> BuscarUsuarioEntidadAsync(string texto, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(texto) || texto.Length < 2) return [];
+        try
+        {
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<ComboboxItem>>>(
+                $"{ApiRoutes.Seguridad.UsuariosCombobox}?search={Uri.EscapeDataString(texto)}", ct);
+            return r?.Data ?? [];
+        }
+        catch { return []; }
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        if (Modo == CrudModo.Delete)
+        {
+            var rd = await Http.DeleteAsync($"{ApiRoutes.Estandar.Entidades}/{_model.COD_ENTIDAD}");
+            _saving = false;
+            if (rd.IsSuccessStatusCode) { Snackbar.Add("Eliminado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+            else await ErrorDialogHelper.MostrarAsync(rd, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(Submit), "No se pudo eliminar el registro");
+            return;
+        }
+        var esNuevo = Modo == CrudModo.Create;
+        var dto = new
+        {
+            _model.COD_ENTIDAD, _model.COD_TIPO_PERSONA,
+            _model.DES_PATERNO, _model.DES_MATERNO, _model.DES_NOMBRE, _model.DES_NOMBRE2,
+            _model.DES_NOMBRE_COMPLETO, _model.DES_COMERCIAL,
+            DES_PREFIJO_USUARIO_COMERCIAL = NullSiVacio(_model.DES_PREFIJO_USUARIO_COMERCIAL),
+            _model.COD_ENTIDAD_DEPENDENCIA,
+            _model.COD_TIPO_DOCUMENTO_IDENTIDAD, _model.NUM_DOCUMENTO_IDENTIDAD,
+            _model.FLG_DOMICILIADO,
+            COD_PAIS = NullSiVacio(_model.COD_PAIS),
+            NUM_DUNS = NullSiVacio(_model.NUM_DUNS),
+            COD_USUARIO_RELACIONADO = NullSiVacio(_model.COD_USUARIO_RELACIONADO),
+            _model.COD_TIPO_ESTADO, _model.COD_ESTADO, _model.IMG_LOGO,
+            // Solo en Create: el SP INSERT (upsert) asigna atómicamente este tipo si viene
+            // seteado. En Update no hace falta reenviarlo — ya quedó asignado la primera vez.
+            COD_TIPO_ENTIDAD = (esNuevo && BloquearTipoEntidad) ? CodTipoEntidadFijo : null
+        };
+        // PROC_ESTANDAR_ENTIDADES_INSERT es upsert — el Controller nunca tuvo endpoint PUT,
+        // siempre se llama al mismo POST.
+        var resp = await Http.PostAsJsonAsync(ApiRoutes.Estandar.Entidades, dto);
+        _saving = false;
+        if (resp.IsSuccessStatusCode) { Snackbar.Add(esNuevo ? "Creado." : "Modificado.", Severity.Success); MudDialog.Close(DialogResult.Ok(true)); }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(EntidadesDialog), nameof(Submit));
+    }
+
+    static string? NullSiVacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v;
+}

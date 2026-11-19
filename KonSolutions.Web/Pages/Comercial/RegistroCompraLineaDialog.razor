@@ -1,0 +1,268 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Una línea del comprobante. Si el comprobante tiene órdenes asociadas, se puede elegir la línea de la orden a la que corresponde: al elegirla se completan el producto, la cantidad
+   que falta facturar, la unidad del proveedor y el precio de la orden; después se ajusta a lo que dice la factura. El total sale de cantidad por precio menos el descuento. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@(Linea is null ? "Nueva línea" : $"Línea {Linea.NUM_SECUENCIA}")</MudText></TitleContent>
+    <DialogContent>
+        <EditForm Model="_forma" OnValidSubmit="Submit">
+            <MudGrid Spacing="2">
+                @if (_conGuia && _info?.NUM_COMPROBANTE_PAGO is not null)
+                {
+                    <MudItem xs="12">
+                        <MudAlert Severity="Severity.Info" Dense="true" Icon="@Icons.Material.Filled.Receipt" data-panel="factura-afectada">
+                            Factura afectada <b class="mono">@_info.NUM_COMPROBANTE_PAGO</b>, línea @_info.NUM_SECUENCIA_ASOCIADO:
+                            @(string.IsNullOrWhiteSpace(_info.COD_PRODUCTO) ? "" : _info.COD_PRODUCTO + " · ")@_info.DES_PRODUCTO
+                            · facturado <b>@_info.CAN_FACTURADA?.ToString("0.######")</b> @_info.COD_UNIDAD_MEDIDA a <b>@_info.PRE_UNITARIO?.ToString("0.00####")</b>
+                            @if (_info.CAN_GUIA is not null)
+                            {
+                                <span data-campo="cantidad-guia"> · cantidad del proveedor según la guía @_info.NUM_GUIAS: <b>@_info.CAN_GUIA?.ToString("0.######")</b></span>
+                            }
+                            else
+                            {
+                                <span data-aviso="sin-guia"> · todavía no hay guía adjunta con este producto.</span>
+                            }
+                        </MudAlert>
+                    </MudItem>
+                }
+                @if (_lineasOrden.Count > 0)
+                {
+                    <MudItem xs="12">
+                        <AriaCombo TItem="ComboboxItem" Items="_lineasOrdenCombo"
+                                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                                   Value="@_lineaOrdenElegida" ValueChanged="ElegirLineaOrden"
+                                   Label="Línea de la orden a la que corresponde" Class="mb-1" />
+                    </MudItem>
+                }
+                <MudItem xs="12" md="8">
+                    <AriaCombo TItem="ProductoModel" Items="_productos"
+                               TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")" ValueFunc="@(x => x.COD_PRODUCTO)"
+                               Value="@_dto.COD_PRODUCTO" ValueChanged="@(v => _dto.COD_PRODUCTO = string.IsNullOrWhiteSpace(v) ? null : v)"
+                               SearchFunc="BuscarProductoAsync" MinCharacters="2"
+                               TextoInicial="@(string.IsNullOrWhiteSpace(Linea?.COD_PRODUCTO) ? null : $"{Linea!.COD_PRODUCTO} — {Linea.DES_PRODUCTO}")"
+                               Label="Producto" Class="mb-1" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudTextField T="string" Variant="Variant.Outlined" Label="Código del producto para el proveedor" MaxLength="60" @bind-Value="_dto.COD_PRODUCTO_ENTIDAD" Immediate="true" data-campo="cod-proveedor" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField T="string" Variant="Variant.Outlined" Label="Descripción tal como la dice el comprobante" MaxLength="500" @bind-Value="_dto.DES_PRODUCTO_COMPROBANTE" Immediate="true" data-campo="descripcion" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <MudNumericField T="decimal?" Variant="Variant.Outlined" Label="@(_conGuia && _info?.CAN_GUIA is not null ? "Cantidad (del proveedor, según la guía)" : "Cantidad")" Value="_dto.CAN_PRODUCTO" ValueChanged="CambiarCantidad" Immediate="true" Min="0" Required="true" data-campo="cantidad" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <AriaCombo TItem="ComboboxItem" Items="_unidades"
+                               TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                               Value="@_dto.COD_UNIDAD_MEDIDA" ValueChanged="@(v => _dto.COD_UNIDAD_MEDIDA = string.IsNullOrWhiteSpace(v) ? null : v)"
+                               Label="Unidad de medida" Class="mb-1" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <MudNumericField T="decimal?" Variant="Variant.Outlined" Label="Precio unitario (sin IGV)" Value="_dto.PRE_UNITARIO" ValueChanged="CambiarPrecio" Immediate="true" Min="0" Disabled="@_precioBloqueado" data-campo="precio"
+                                     HelperText="@(_precioBloqueado ? "Es el de la factura afectada." : null)" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <MudNumericField T="decimal?" Variant="Variant.Outlined" Label="Descuento (%)" Value="_dto.TAS_DESCUENTO" ValueChanged="CambiarTasaDescuento" Immediate="true" Min="0" Max="100" data-campo="descuento-tasa"
+                                     HelperText="@(_dto.COD_TIPO_DESCUENTO is not null ? "Tomado de la orden." : null)" />
+                </MudItem>
+                <MudItem xs="6" md="3">
+                    <MudNumericField T="decimal?" Variant="Variant.Outlined" Label="Descuento (importe)" Value="_dto.VAL_DESCUENTO" ValueChanged="CambiarImporteDescuento" Immediate="true" Min="0" data-campo="descuento"
+                                     HelperText="@(_dto.VAL_DESCUENTO is null ? "Vacío: se calcula." : null)" />
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudNumericField T="decimal?" Variant="Variant.Outlined" Label="Total de la línea" Value="_dto.VAL_TOTAL" ValueChanged="CambiarTotal" Immediate="true" Min="0" Disabled="@_precioBloqueado" data-campo="total"
+                                     HelperText="@(_precioBloqueado ? "Cantidad del proveedor × precio." : _dto.VAL_TOTAL is null ? "Vacío: se calcula." : "Si lo cambias, se calcula el precio unitario.")" />
+                </MudItem>
+            </MudGrid>
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_saving" data-accion="cancelar">Cancelar</MudButton>
+                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving" data-accion="guardar">Guardar</MudButton>
+            </MudStack>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public decimal NumRegistro { get; set; }
+    /// <summary>La línea a modificar; nulo = línea nueva.</summary>
+    [Parameter] public RegistroCompraLinea? Linea { get; set; }
+    /// <summary>El tipo de operación admite guías (FLG_INCIDENCIA_PRODUCTO y devolución o cargo): se muestran la factura afectada y la cantidad del proveedor de la guía,
+    /// el precio unitario es el de la factura (no se edita) y el total sale de cantidad × precio.</summary>
+    [Parameter] public bool ConGuia { get; set; }
+    /// <summary>Descuento general de la cabecera (%): si la línea no tiene su propia tasa, el precio unitario se calcula con esta.</summary>
+    [Parameter] public decimal? TasaDescuentoGeneral { get; set; }
+
+    private bool _conGuia => ConGuia && Linea is not null;
+    private RegistroCompraIncidenciaLineaGuia? _info;
+    /// <summary>Con guía y con la línea de la factura afectada conocida, el precio es el de la factura y no se edita.</summary>
+    private bool _precioBloqueado => _conGuia && _info?.PRE_UNITARIO is not null;
+
+    private readonly object _forma = new();
+    private RegistroCompraLineaDto _dto = new();
+    private List<ProductoModel> _productos = new();
+    private List<ComboboxItem> _unidades = new();
+    private List<RegistroCompraPedidoLinea> _lineasOrden = new();
+    private List<ComboboxItem> _lineasOrdenCombo = new();
+    private string? _lineaOrdenElegida;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Linea is not null)
+        {
+            _dto = new RegistroCompraLineaDto
+            {
+                NUM_SECUENCIA = Linea.NUM_SECUENCIA, COD_PRODUCTO = Linea.COD_PRODUCTO, DES_PRODUCTO_COMPROBANTE = Linea.DES_PRODUCTO_COMPROBANTE, COD_PRODUCTO_ENTIDAD = Linea.COD_PRODUCTO_ENTIDAD,
+                CAN_PRODUCTO = Linea.CAN_PRODUCTO, COD_UNIDAD_MEDIDA = Linea.COD_UNIDAD_MEDIDA, COD_UNIDAD_MEDIDA_COMPROBANTE = Linea.COD_UNIDAD_MEDIDA_COMPROBANTE,
+                COD_TIPO_DESCUENTO = Linea.COD_TIPO_DESCUENTO, TAS_DESCUENTO = Linea.TAS_DESCUENTO, PRE_UNITARIO = Linea.PRE_UNITARIO, VAL_DESCUENTO = Linea.VAL_DESCUENTO, VAL_TOTAL = Linea.VAL_TOTAL,
+                COD_CLASE_OPERACION_PEDIDO = Linea.COD_CLASE_OPERACION_PEDIDO, COD_TIPO_OPERACION_PEDIDO = Linea.COD_TIPO_OPERACION_PEDIDO,
+                NUM_PEDIDO_COMERCIAL = Linea.NUM_PEDIDO_COMERCIAL, NUM_SECUENCIA_PEDIDO_COMERCIAL = Linea.NUM_SECUENCIA_PEDIDO_COMERCIAL
+            };
+            if (!string.IsNullOrWhiteSpace(Linea.COD_PRODUCTO)) _productos.Add(new ProductoModel { COD_PRODUCTO = Linea.COD_PRODUCTO!, DES_PRODUCTO = Linea.DES_PRODUCTO ?? "" });
+        }
+        await Task.WhenAll(CargarUnidades(), CargarLineasOrden(), CargarInfoGuia());
+    }
+
+    private async Task CargarInfoGuia()
+    {
+        if (!_conGuia) return;
+        try
+        {
+            _info = (await Http.GetFromJsonAsync<ApiResponse<RegistroCompraIncidenciaLineaGuia?>>($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/incidencias/lineas/{Linea!.NUM_SECUENCIA}/guia"))?.Data;
+            if (_info?.PRE_UNITARIO is { } pre)
+            {
+                _dto.PRE_UNITARIO = pre;                                         // el precio es el de la factura afectada
+                if (_info.CAN_GUIA is { } g) _dto.CAN_PRODUCTO = g;              // y la cantidad, la del proveedor según la guía
+                RecalcularTotal();
+            }
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraLineaDialog), nameof(CargarInfoGuia)); }
+    }
+
+    // ── Precio y total ──────────────────────────────────────────────────────────────────────
+    // Con guía: precio = el de la factura (bloqueado) y total = cantidad × precio. Sin guía: precio y total son editables y se calculan entre sí:
+    // si cambias el precio, el total; si cambias el total, el precio. La tasa de descuento es la de la línea o, si no tiene, la general de la cabecera.
+    private decimal TasaEfectiva => _dto.TAS_DESCUENTO ?? TasaDescuentoGeneral ?? 0m;
+
+    private void CambiarCantidad(decimal? v) { _dto.CAN_PRODUCTO = v; RecalcularTotal(); }
+    private void CambiarPrecio(decimal? v) { _dto.PRE_UNITARIO = v; RecalcularTotal(); }
+    private void CambiarTotal(decimal? v) { _dto.VAL_TOTAL = v; RecalcularPrecio(); }
+
+    private void RecalcularTotal()
+    {
+        if (_dto.CAN_PRODUCTO is not > 0 || _dto.PRE_UNITARIO is null) { _dto.VAL_TOTAL = null; return; }
+        var bruto = _dto.CAN_PRODUCTO.Value * _dto.PRE_UNITARIO.Value;
+        var desc = _precioBloqueado ? 0m : _dto.TAS_DESCUENTO is null && _dto.VAL_DESCUENTO is { } vd ? vd : bruto * TasaEfectiva / 100m;
+        _dto.VAL_TOTAL = Math.Round(bruto - desc, 2);
+    }
+
+    private void RecalcularPrecio()
+    {
+        if (_dto.CAN_PRODUCTO is not > 0 || _dto.VAL_TOTAL is null) return;
+        var can = _dto.CAN_PRODUCTO.Value; var total = _dto.VAL_TOTAL.Value; var tasa = TasaEfectiva;
+        if (tasa > 0 && tasa < 100) _dto.PRE_UNITARIO = Math.Round(total / (can * (1m - tasa / 100m)), 8);
+        else if (_dto.TAS_DESCUENTO is null && _dto.VAL_DESCUENTO is > 0) _dto.PRE_UNITARIO = Math.Round((total + _dto.VAL_DESCUENTO.Value) / can, 8);
+        else _dto.PRE_UNITARIO = Math.Round(total / can, 8);
+    }
+
+    private async Task CargarUnidades()
+    {
+        try { var r = await Http.GetFromJsonAsync<ApiResponse<List<ComboboxItem>>>(ApiRoutes.Estandar.UnidadesMedidaCombobox); _unidades = r?.Data ?? new(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraLineaDialog), nameof(CargarUnidades)); }
+    }
+
+    private async Task CargarLineasOrden()
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompraPedidoLinea>>>($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/pedidos/lineas");
+            _lineasOrden = r?.Data ?? new();
+            _lineasOrdenCombo = _lineasOrden.Select(l => new ComboboxItem { Id = Clave(l), Texto = Texto(l) }).ToList();
+            if (Linea?.NUM_PEDIDO_COMERCIAL is { } n && Linea.COD_CLASE_OPERACION_PEDIDO is { } c && Linea.COD_TIPO_OPERACION_PEDIDO is { } t && Linea.NUM_SECUENCIA_PEDIDO_COMERCIAL is { } s)
+                _lineaOrdenElegida = $"{c}|{t}|{n:0}|{s}";
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraLineaDialog), nameof(CargarLineasOrden)); }
+    }
+
+    private static string Clave(RegistroCompraPedidoLinea l) => $"{l.COD_CLASE_OPERACION}|{l.COD_TIPO_OPERACION}|{l.NUM_PEDIDO_COMERCIAL:0}|{l.NUM_SECUENCIA}";
+    private static string Texto(RegistroCompraPedidoLinea l)
+        => $"Orden {l.NUM_PEDIDO_COMERCIAL:0} · línea {l.NUM_SECUENCIA} — {l.COD_PRODUCTO} {l.DES_PRODUCTO} · pendiente {l.CAN_PENDIENTE:0.######} {l.COD_UNIDAD_MEDIDA} a {l.PRE_UNITARIO:0.######}";
+
+    private void ElegirLineaOrden(string? clave)
+    {
+        _lineaOrdenElegida = string.IsNullOrWhiteSpace(clave) ? null : clave;
+        var l = _lineasOrden.FirstOrDefault(x => Clave(x) == clave);
+        if (l is null)
+        {
+            _dto.COD_CLASE_OPERACION_PEDIDO = null; _dto.COD_TIPO_OPERACION_PEDIDO = null; _dto.NUM_PEDIDO_COMERCIAL = null; _dto.NUM_SECUENCIA_PEDIDO_COMERCIAL = null;
+            return;
+        }
+        _dto.COD_CLASE_OPERACION_PEDIDO = l.COD_CLASE_OPERACION; _dto.COD_TIPO_OPERACION_PEDIDO = l.COD_TIPO_OPERACION;
+        _dto.NUM_PEDIDO_COMERCIAL = l.NUM_PEDIDO_COMERCIAL; _dto.NUM_SECUENCIA_PEDIDO_COMERCIAL = l.NUM_SECUENCIA;
+        _dto.COD_PRODUCTO = l.COD_PRODUCTO;
+        if (!string.IsNullOrWhiteSpace(l.COD_PRODUCTO) && _productos.All(p => p.COD_PRODUCTO != l.COD_PRODUCTO))
+            _productos.Add(new ProductoModel { COD_PRODUCTO = l.COD_PRODUCTO!, DES_PRODUCTO = l.DES_PRODUCTO ?? "" });
+        if (_dto.CAN_PRODUCTO is null or 0) _dto.CAN_PRODUCTO = l.CAN_PENDIENTE > 0 ? l.CAN_PENDIENTE : l.CAN_ORDEN;
+        if (!string.IsNullOrWhiteSpace(l.COD_UNIDAD_MEDIDA)) _dto.COD_UNIDAD_MEDIDA = l.COD_UNIDAD_MEDIDA;
+        _dto.PRE_UNITARIO = l.PRE_UNITARIO;
+        // El descuento de la línea de la orden viene con la línea; el importe y el total se vuelven a calcular con la cantidad, el precio y la tasa.
+        _dto.COD_TIPO_DESCUENTO = l.COD_TIPO_DESCUENTO; _dto.TAS_DESCUENTO = l.TAS_DESCUENTO;
+        _dto.VAL_DESCUENTO = null; _dto.VAL_TOTAL = null;
+    }
+
+    /// <summary>Si se cambia la tasa, el importe del descuento y el total se calculan de nuevo al grabar (y el tipo de la orden ya no corresponde).</summary>
+    private void CambiarTasaDescuento(decimal? tasa)
+    {
+        _dto.TAS_DESCUENTO = tasa;
+        _dto.COD_TIPO_DESCUENTO = null;
+        _dto.VAL_DESCUENTO = null; _dto.VAL_TOTAL = null;
+        RecalcularTotal();
+    }
+
+    /// <summary>Si se escribe el importe del descuento, ya no hay una tasa que lo explique: el total se calcula con ese importe.</summary>
+    private void CambiarImporteDescuento(decimal? importe)
+    {
+        _dto.VAL_DESCUENTO = importe;
+        _dto.TAS_DESCUENTO = null; _dto.COD_TIPO_DESCUENTO = null;
+        _dto.VAL_TOTAL = null;
+        RecalcularTotal();
+    }
+
+    private async Task<IEnumerable<ProductoModel>> BuscarProductoAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>($"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto)}", ct);
+            var lista = r?.Data ?? new();
+            _productos = _productos.Where(p => lista.All(l => l.COD_PRODUCTO != p.COD_PRODUCTO)).Concat(lista).ToList();
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ProductoModel>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraLineaDialog), nameof(BuscarProductoAsync)); return Enumerable.Empty<ProductoModel>(); }
+    }
+
+    private async Task Submit()
+    {
+        if (_dto.CAN_PRODUCTO is null or <= 0)
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("La cantidad de la línea tiene que ser mayor que cero.", DialogService, nameof(RegistroCompraLineaDialog));
+            return;
+        }
+        _saving = true;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync($"{ApiRoutes.Comercial.RegistroCompras}/{NumRegistro:0}/lineas", _dto);
+            if (resp.IsSuccessStatusCode) MudDialog.Close(DialogResult.Ok(true));
+            else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraLineaDialog), nameof(Submit), "No se pudo guardar la línea");
+        }
+        finally { _saving = false; }
+    }
+}

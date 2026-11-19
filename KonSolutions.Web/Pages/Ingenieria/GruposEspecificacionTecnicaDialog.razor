@@ -1,0 +1,195 @@
+@using Microsoft.JSInterop
+@using KONSolutions.Shared.Models.Ingenieria
+@using TreeListModel = KONSolutions.Shared.Models.Ingenieria.GruposFamiliasSubFamiliasEspecificacionTecnicaTreeList
+@using InsertDto = KONSolutions.Shared.Models.Ingenieria.GruposFamiliasSubFamiliasEspecificacionTecnicaInsertDto
+@using AsignacionModel = KONSolutions.Shared.Models.Ingenieria.GruposFamiliasSubFamiliasEspecificacionTecnica
+@using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@(EsNuevo ? "Asignar" : "Editar") — @Nodo?.DES_KEY</MudText>
+    </TitleContent>
+    <DialogContent>
+        <div @ref="_formRoot">
+        <EditForm Model="_model" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalidSubmit">
+            <DataAnnotationsValidator />
+            <CampoTexto Tabla="INGENIERIA.GRUPOS_FAMILIAS_SUB_FAMILIAS_ESPECIFICACION_TECNICA" Columna="VAL_ESPECIFICACION_TENICA"
+                        @bind-Value="_model.VAL_ESPECIFICACION_TENICA" />
+            <MudNumericField T="decimal?" @bind-Value="_model.VAL_MINIMO" Label="Mínimo"
+                              Variant="Variant.Outlined" Class="mb-3" Format="@Decimales.FormatoCantidad" />
+            <MudNumericField T="decimal?" @bind-Value="_model.VAL_MAXIMO" Label="Máximo"
+                              Variant="Variant.Outlined" Class="mb-3" Format="@Decimales.FormatoCantidad" />
+            <MudNumericField T="int?" @bind-Value="_model.NUM_ORDEN_PRESENTACION" Label="Orden de Presentación"
+                              Variant="Variant.Outlined" Class="mb-3" />
+            <div class="d-flex align-center justify-space-between py-1">
+                <MudText Typo="Typo.body2">Incluir en Descripción</MudText>
+                <MudSwitch T="bool?" @bind-Value="_model.FLG_INCLUIR_DESCRIPCION" Color="Color.Primary" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1">
+                <MudText Typo="Typo.body2">Registro Comercial</MudText>
+                <MudSwitch T="bool?" @bind-Value="_model.FLG_REGISTRO_COMERCIAL" Color="Color.Primary" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1">
+                <MudText Typo="Typo.body2">Ficha Técnica</MudText>
+                <MudSwitch T="bool?" @bind-Value="_model.FLG_FICHA_TECNICA" Color="Color.Primary" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1">
+                <MudText Typo="Typo.body2">Control de Calidad</MudText>
+                <MudSwitch T="bool?" @bind-Value="_model.FLG_CONTROL_CALIDAD" Color="Color.Primary" />
+            </div>
+            <AriaCombo TItem="ComboboxItem" Items="_tiposRegistroDatos"
+                       TextFunc="@(t => $"{t.Id} - {t.Texto}")" ValueFunc="@(t => t.Id)"
+                       Value="@_model.COD_TIPO_REGISTRO_DATOS" ValueChanged="@(v => _model.COD_TIPO_REGISTRO_DATOS = v)"
+                       Label="Tipo de Registro de Datos" Class="mb-3" />
+            <AriaCombo TItem="ComboboxItem" Items="_gruposEspecificacion"
+                       TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+                       Value="@(_model.COD_GRUPO_ESPECIFICACION_TECNICA?.ToString())"
+                       ValueChanged="@(v => _model.COD_GRUPO_ESPECIFICACION_TECNICA = int.TryParse(v, out var n) ? n : null)"
+                       Label="Grupo de Especificación Técnica" Class="mb-3" />
+            @* Estado: viaja bundleado en /loadcombos junto con Tipos de Registro de Datos y
+               Grupos de Especificación Técnica (mismo query que usaba el EstadoCombo genérico
+               para esta tabla). *@
+            <div class="estado-combo-wrap @(!string.IsNullOrEmpty(_colorEstadoActual) ? "estado-combo-con-punto" : "") mb-3">
+                @if (!string.IsNullOrEmpty(_colorEstadoActual))
+                {
+                    <div class="estado-combo-dot" style="background:@_colorEstadoActual;"></div>
+                }
+                <AriaCombo TItem="EstadoItem" Items="_estados"
+                           TextFunc="@(e => e.DesEstado)" ValueFunc="@(e => e.CodEstado.ToString())"
+                           Value="@(_model.COD_ESTADO?.ToString())" ValueChanged="OnEstadoChanged"
+                           Label="Estado">
+                    <OptionTemplate Context="e">
+                        <div class="d-flex align-center gap-2">
+                            @if (!string.IsNullOrEmpty(e.BackColor))
+                            {
+                                <div style="width:10px;height:10px;border-radius:50%;background:@e.BackColor;flex-shrink:0;"></div>
+                            }
+                            <span>@e.DesEstado</span>
+                        </div>
+                    </OptionTemplate>
+                </AriaCombo>
+            </div>
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mt-4" Spacing="2">
+                <PanelAuditoria CodUsuarioRegistro="@_asignacion?.COD_USUARIO_REGISTRO"
+                                CodEstacionRegistro="@_asignacion?.COD_ESTACION_REGISTRO"
+                                FecRegistro="@_asignacion?.FEC_REGISTRO"
+                                CodUsuarioActualizacion="@_asignacion?.COD_USUARIO_ACTUALIZACION"
+                                CodEstacionActualizacion="@_asignacion?.COD_ESTACION_ACTUALIZACION"
+                                FecActualizacion="@_asignacion?.FEC_ACTUALIZACION"
+                                Class="" />
+                <MudStack Row="true" Spacing="2">
+                    <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving">
+                        @(_saving ? "Guardando..." : "Guardar")
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </EditForm>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodGrupoProducto { get; set; } = "";
+    [Parameter] public string CodFamiliaProducto { get; set; } = "";
+    [Parameter] public string CodSubFamiliaProducto { get; set; } = "";
+    [Parameter] public TreeListModel? Nodo { get; set; }
+    [Parameter] public bool EsNuevo { get; set; }
+
+    private InsertDto _model = new();
+    private AsignacionModel? _asignacion;
+    private List<ComboboxItem> _tiposRegistroDatos = new();
+    private List<ComboboxItem> _gruposEspecificacion = new();
+    private List<EstadoItem> _estados = new();
+    private string? _colorEstadoActual => _estados.FirstOrDefault(e => e.CodEstado == _model.COD_ESTADO)?.BackColor;
+    private bool _saving;
+
+    private void OnEstadoChanged(string? v)
+    {
+        _model.COD_ESTADO = int.TryParse(v, out var n) ? n : null;
+    }
+    private ElementReference _formRoot;
+
+    /// <summary>Lleva el foco al primer campo obligatorio vacío. Va en try/catch a propósito:
+    /// esto es una ayuda visual, no parte del guardado, y si el helper de JS no estuviera
+    /// cargado la excepción tumbaba el render del diálogo entero — el usuario veía un error
+    /// de Blazor en vez del aviso de que le falta un campo.</summary>
+    private async Task OnInvalidSubmit(EditContext ctx)
+    {
+        try { await JS.InvokeVoidAsync("validationFocus.focusFirstInvalid", _formRoot); }
+        catch (JSException) { /* sin foco automático, pero el diálogo sigue en pie */ }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _model.COD_GRUPO_PRODUCTO = CodGrupoProducto;
+        _model.COD_FAMILIA_PRODUCTO = CodFamiliaProducto;
+        _model.COD_SUB_FAMILIA_PRODUCTO = CodSubFamiliaProducto;
+        _model.COD_ESPECIFICACION_TECNICA = Nodo?.COD_KEY ?? "";
+
+        // PROC_INGENIERIA_GRUPOS_FAMILIAS_SUB_FAMILIAS_ESPECIFICACION_TECNICA_LOADCOMBOS:
+        // Tipos de Registro de Datos + Grupos de Especificación Técnica + Estado en un solo
+        // viaje (mismo patrón que AreaDialog.razor / PROC_ADMINISTRACION_AREAS_LOADCOMBOS).
+        try
+        {
+            var url = $"{IngenieriaRoute.GruposEspecificacionTecnicaLoadcombos}?codTipoEstado={_model.COD_TIPO_ESTADO ?? 0}";
+            var r = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<GruposFamiliasSubFamiliasEspecificacionTecnicaLoadCombosResult>>(url);
+            _tiposRegistroDatos = r?.Data?.TiposRegistroDatos ?? new();
+            _gruposEspecificacion = r?.Data?.GruposEspecificacionTecnica ?? new();
+            _estados = r?.Data?.Estados ?? new();
+            if (EsNuevo && _model.COD_ESTADO is null or 0)
+                _model.COD_ESTADO = _estados.FirstOrDefault(e => e.EsDefault)?.CodEstado;
+        }
+        catch { _tiposRegistroDatos = new(); _gruposEspecificacion = new(); _estados = new(); }
+
+        if (!EsNuevo && Nodo is not null)
+        {
+            _model.VAL_ESPECIFICACION_TENICA = Nodo.VAL_ESPECIFICACION_TENICA;
+            _model.VAL_MINIMO = Nodo.VAL_MINIMO;
+            _model.VAL_MAXIMO = Nodo.VAL_MAXIMO;
+            _model.NUM_ORDEN_PRESENTACION = Nodo.NUM_ORDEN_PRESENTACION;
+            _model.COD_TIPO_ESTADO = Nodo.COD_TIPO_ESTADO;
+            _model.COD_ESTADO = Nodo.COD_ESTADO;
+            // El TREELIST ya trae COD_TIPO_REGISTRO_DATOS (agregado por Pedro al SP) — no hace
+            // falta un GET aparte, se toma directo del Nodo.
+            _model.COD_TIPO_REGISTRO_DATOS = Nodo.COD_TIPO_REGISTRO_DATOS;
+
+            // El TREELIST no expone FLG_INCLUIR_DESCRIPCION — se busca con un GetById aparte.
+            try
+            {
+                var url = $"{IngenieriaRoute.GruposEspecificacionTecnica}/{CodGrupoProducto}/{CodFamiliaProducto}/{CodSubFamiliaProducto}/{_model.COD_ESPECIFICACION_TECNICA}";
+                var rr = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<AsignacionModel>>(url);
+                _asignacion = rr?.Data;
+                _model.FLG_INCLUIR_DESCRIPCION = rr?.Data?.FLG_INCLUIR_DESCRIPCION;
+                _model.COD_GRUPO_ESPECIFICACION_TECNICA = rr?.Data?.COD_GRUPO_ESPECIFICACION_TECNICA;
+                _model.FLG_REGISTRO_COMERCIAL = rr?.Data?.FLG_REGISTRO_COMERCIAL;
+                _model.FLG_FICHA_TECNICA = rr?.Data?.FLG_FICHA_TECNICA;
+                _model.FLG_CONTROL_CALIDAD = rr?.Data?.FLG_CONTROL_CALIDAD;
+            }
+            catch { }
+        }
+    }
+
+    private async Task Submit()
+    {
+        _saving = true;
+        var resp = await Http.PostAsJsonAsync(IngenieriaRoute.GruposEspecificacionTecnica, _model);
+        _saving = false;
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(EsNuevo ? "Asignado." : "Modificado.", Severity.Success);
+            // Se devuelve el propio _model (no solo "true") para que la pantalla pueda copiar
+            // estos mismos flags (Reg. Comercial / Ficha Técnica / Control de Calidad / Grupo)
+            // a los hijos que se auto-asignan junto con este nodo padre.
+            MudDialog.Close(DialogResult.Ok(_model));
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(GruposEspecificacionTecnicaDialog), nameof(Submit));
+    }
+}

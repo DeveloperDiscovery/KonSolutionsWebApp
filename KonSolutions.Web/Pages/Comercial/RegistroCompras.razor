@@ -1,0 +1,502 @@
+@page "/comercial/registro-compras"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Models
+@using KONSolutions.Shared.Common
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject ErrorLogService ErrorLog
+@implements IDisposable
+
+@*
+    Registro de Compras (FINANZAS.COMPROBANTES_PAGO y _DETALLE): los comprobantes de los proveedores (y de RRHH), asociados a sus órdenes de compra o de servicio y validados contra ellas
+    (recepción en almacén, cantidades, precios, importes). Mismo esquema que Pedidos Comerciales: una solapa con la lista y otra con el documento.
+
+    La clase de operación NO está en el código: sale del parámetro de la opción de menú (SEGURIDAD.APLICACIONES_OPCIONES.DES_PARAMETRO = "COD_CLASE_OPERACION = 'CMPRS'"),
+    igual que en Pedidos Comerciales. Si falta, la pantalla lo dice en vez de quedar vacía.
+*@
+
+<PageTitle>Registro de Compras · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<MudTabs Elevation="0" ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)"
+         Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4" KeepPanelsAlive="true">
+
+<MudTabPanel Text="@_tituloLista" Icon="@Icons.Material.Filled.List" Disabled="@_enDocumento">
+<div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <TituloPagina Fallback="Registro de Compras" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema FINANZAS · @_visibles.Count de @_items.Count registros</MudText>
+    </div>
+    <BarraBusqueda @bind-Value="_search" OnSearch="Load" MaxWidth="560px" Class="grid-header-search" />
+    @if (_tiposOperacion.Count > 0)
+    {
+        <AriaCombo TItem="ComboboxItem" Items="_tiposOperacion"
+                   TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                   Value="@_codTipoOperacion" ValueChanged="OnCambioTipoOperacion"
+                   Label="Tipo de operación" Class="mb-0" Style="min-width:280px;max-width:360px;margin-top:0;" />
+    }
+    <AriaCombo TItem="ComboboxItem" Items="_estados"
+               TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+               Value="@_codEstado" ValueChanged="OnCambioEstado"
+               Label="Estado" Class="mb-0" Style="min-width:200px;max-width:260px;margin-top:0;" />
+    <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@(_filtros.Any(f => f.Value is not null))" />
+    <div class="grid-header-divider"></div>
+    <div class="d-flex gap-2">
+        <GridRefreshButton OnRefresh="Load" />
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeader" Fila="@ContextoReportes" />
+    </div>
+</div>
+
+@if (string.IsNullOrWhiteSpace(_codClaseOperacion))
+{
+    <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3" data-aviso="sin-clase">
+        Esta opción de menú no tiene configurada su clase de operación, así que no hay nada que mostrar. En Seguridad → Opciones de Aplicación, campo <b>Parámetro</b> de esta opción,
+        hay que poner <code>COD_CLASE_OPERACION = 'CMPRS'</code>.
+    </MudAlert>
+}
+@if (_errorCombos is not null)
+{
+    <MudAlert Severity="Severity.Error" Dense="true" Class="mb-3" data-aviso="error-combos">@_errorCombos</MudAlert>
+}
+
+<MudPaper Elevation="0" Style="border:1px solid var(--line);">
+    <div @key="@(_codClaseOperacion ?? "")" data-resizable-grid="registro-compras" style="position:relative;">
+    <MudDataGrid T="RegistroCompra" Items="_visibles" Dense="true" Hover="true" Striped="true"
+                 Height="100%" FixedHeader="true" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaUnica">
+        <Columns>
+            <TemplateColumn Sortable="false" Title="N° Registro" Width="130">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="N° Registro" Campo="NUM_REGISTRO" Activo="@(_ordenColumna == 0)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(0))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(0)" ValorDe="@(x => x.NUM_REGISTRO.ToString("0"))"
+                                            ValoresActivos="_filtros.GetValueOrDefault(0)" ValoresActivosChanged="@(v => Filtro(0, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate><span class="mono">@context.Item.NUM_REGISTRO.ToString("0")</span></CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Tipo de Operación" Width="200">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Tipo de Operación" Campo="DES_TIPO_OPERACION" Activo="@(_ordenColumna == 1)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(1))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(1)" ValorDe="@(x => x.DES_TIPO_OPERACION ?? x.COD_TIPO_OPERACION)"
+                                            ValoresActivos="_filtros.GetValueOrDefault(1)" ValoresActivosChanged="@(v => Filtro(1, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@(context.Item.DES_TIPO_OPERACION ?? context.Item.COD_TIPO_OPERACION)</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Proveedor" Width="260">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Proveedor" Campo="DES_ENTIDAD" Activo="@(_ordenColumna == 2)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(2))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(2)" ValorDe="@(x => x.DES_ENTIDAD ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(2)" ValoresActivosChanged="@(v => Filtro(2, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_ENTIDAD<span class="mono" style="opacity:.6;"> @context.Item.NUM_DOCUMENTO_IDENTIDAD</span></CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Tipo de Comprobante" Width="180">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Tipo de Comprobante" Campo="DES_TIPO_COMPROBANTE_PAGO" Activo="@(_ordenColumna == 3)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(3))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(3)" ValorDe="@(x => x.DES_TIPO_COMPROBANTE_PAGO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(3)" ValoresActivosChanged="@(v => Filtro(3, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.DES_TIPO_COMPROBANTE_PAGO</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Serie - Número" Width="160">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Serie - Número" Campo="NUM_COMPROBANTE_PAGO" Activo="@(_ordenColumna == 4)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(4))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(4)" ValorDe="@(x => x.NUM_COMPROBANTE_PAGO ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(4)" ValoresActivosChanged="@(v => Filtro(4, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate><span class="mono">@context.Item.NUM_COMPROBANTE_PAGO</span></CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Emisión" Width="150">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Emisión" Campo="FEC_COMPROBANTE_PAGO" Activo="@(_ordenColumna == 5)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(5))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(5)" ValorDe="@(x => x.FEC_COMPROBANTE_PAGO?.ToString("dd/MM/yyyy") ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(5)" ValoresActivosChanged="@(v => Filtro(5, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.FEC_COMPROBANTE_PAGO?.ToString("dd/MM/yyyy")</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Vencimiento" Width="150">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Vencimiento" Campo="FEC_VENCIMIENTO" Activo="@(_ordenColumna == 6)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(6))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(6)" ValorDe="@(x => x.FEC_VENCIMIENTO?.ToString("dd/MM/yyyy") ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(6)" ValoresActivosChanged="@(v => Filtro(6, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.FEC_VENCIMIENTO?.ToString("dd/MM/yyyy")</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Moneda" Width="100">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Moneda" Campo="COD_MONEDA" Activo="@(_ordenColumna == 7)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(7))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(7)" ValorDe="@(x => x.COD_MONEDA ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(7)" ValoresActivosChanged="@(v => Filtro(7, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.COD_MONEDA</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Total" Width="140" CellStyle="text-align:right;">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Total" Campo="VAL_TOTAL" Activo="@(_ordenColumna == 8)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(8))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(8)" ValorDe="@(x => x.VAL_TOTAL?.ToString("N2") ?? "")"
+                                            ValoresActivos="_filtros.GetValueOrDefault(8)" ValoresActivosChanged="@(v => Filtro(8, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate>@context.Item.VAL_TOTAL?.ToString("N2")</CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Órdenes" Width="110" CellStyle="text-align:center;">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Órdenes" Campo="NUM_PEDIDOS" Activo="@(_ordenColumna == 9)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(9))" /></div>
+                </HeaderTemplate>
+                <CellTemplate>
+                    <span class="mono" data-num-ordenes="@context.Item.NUM_REGISTRO.ToString("0")">@(context.Item.NUM_PEDIDOS ?? 0)</span>
+                    @if (context.Item.FLG_TIENE_XML == true) { <MudIcon Icon="@Icons.Material.Filled.Code" Size="Size.Small" Title="Importado de un XML" Style="opacity:.6;" /> }
+                </CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Sortable="false" Title="Estado" Width="190">
+                <HeaderTemplate>
+                    <div class="d-flex align-center gap-1"><EncabezadoOrdenable Texto="Estado" Campo="COD_ESTADO_ALIAS_CONCILIACION" Activo="@(_ordenColumna == 10)" Ascendente="_ordenAscendente" OnClick="@(() => ToggleOrden(10))" />
+                        <FiltroExcelColumna T="RegistroCompra" ItemsBase="@Base(10)" ValorDe="@(x => TextoEstado(x))"
+                                            ValoresActivos="_filtros.GetValueOrDefault(10)" ValoresActivosChanged="@(v => Filtro(10, v))" />
+                    </div>
+                </HeaderTemplate>
+                <CellTemplate><MudChip T="string" Size="Size.Small" Color="@ColorDe(context.Item.COD_ESTADO_ALIAS_CONCILIACION)" data-estado="@context.Item.COD_ESTADO_ALIAS_CONCILIACION">@TextoEstado(context.Item)</MudChip></CellTemplate>
+            </TemplateColumn>
+
+            <TemplateColumn Title="Acciones" Sortable="false">
+                <CellTemplate>
+                    @{ var item = context.Item; }
+                    <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrilla(item, b))" Fila="@item"
+                                     Filtro="@(b => BotonAplica(b, item))" />
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="registros">Sin registros.</MudText></NoRecordsContent>
+        <PagerContent><MudDataGridPager T="RegistroCompra" /></PagerContent>
+    </MudDataGrid>
+    <div class="grid-resize-handle"></div>
+    </div>
+</MudPaper>
+</MudTabPanel>
+
+<MudTabPanel Text="@_tituloDocumento" Icon="@Icons.Material.Filled.Description" Disabled="@(!_enDocumento)">
+    @if (_enDocumento)
+    {
+        <RegistroCompraDocumento @key="@(_docItem?.NUM_REGISTRO ?? 0m)" Item="_docItem" Modo="_docModo"
+                                 CodClaseOperacion="@_codClaseOperacion"
+                                 CodTipoOperacionSugerido="@_codTipoOperacion"
+                                 Combos="_combos"
+                                 CodAplicacion="@CodAplicacion"
+                                 CodOpcionAplicacion="@CodOpcionAplicacion"
+                                 OnCerrar="CerrarDocumento" />
+    }
+</MudTabPanel>
+</MudTabs>
+
+@code {
+    private Func<Task>? _onCambio;
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+    /// <summary>Si viene, al abrir la pantalla se muestra ese comprobante en modo consulta (lo usa Proyectos > Costos > Ver).</summary>
+    [Parameter] public decimal? NumRegistroInicial { get; set; }
+
+    /// <summary>Nombre de la opción de menú con la que se abrió la pantalla, en cascada desde WorkspaceTabHost.</summary>
+    [CascadingParameter(Name = "TituloOpcion")] public string? TituloOpcion { get; set; }
+
+    private string _tituloLista => string.IsNullOrWhiteSpace(TituloOpcion) ? "Registro de Compras" : TituloOpcion;
+
+    // La clase la fija el parámetro de la opción de menú: «COD_CLASE_OPERACION = 'CMPRS'» (con o sin comillas simples de más).
+    private static readonly System.Text.RegularExpressions.Regex _reParametroClaseOperacion =
+        new(@"COD_CLASE_OPERACION\s*=\s*'([^']+)'", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private string? _codClaseOperacion;
+    private string? _errorCombos;
+    private RegistroCompraCombos _combos = new();
+    private List<ComboboxItem> _tiposOperacion = new();
+    private string? _codTipoOperacion;
+    private string? _codEstado;
+
+    private static readonly List<ComboboxItem> _estados = new[] { "REG", "OBS", "RET", "EXC", "BLQ", "VAL", "APR", "CON", "ANU" }
+        .Select(c => new ComboboxItem { Id = c, Texto = RegistroCompraEstados.Texto(c) }).Prepend(new ComboboxItem { Id = "", Texto = "Todos los estados" }).ToList();
+
+    /// <summary>Lo que los botones de cabecera con reporte (un listado) reciben de la pantalla.</summary>
+    private Dictionary<string, string?> ContextoReportes => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["COD_CLASE_OPERACION"] = _codClaseOperacion,
+        ["COD_TIPO_OPERACION"] = string.IsNullOrWhiteSpace(_codTipoOperacion) ? null : _codTipoOperacion
+    };
+
+    private async Task ResolverClaseOperacionDesdeOpcionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(CodAplicacion) || string.IsNullOrWhiteSpace(CodOpcionAplicacion)) return;
+        try
+        {
+            var url = $"{ApiRoutes.Seguridad.AplicacionesOpciones}/{Uri.EscapeDataString(CodAplicacion)}/{Uri.EscapeDataString(CodOpcionAplicacion)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<KONSolutions.Shared.Models.Seguridad.AplicacionesOpcionesFormDto>>(url);
+            var parametro = r?.Data?.DES_PARAMETRO;
+            if (string.IsNullOrWhiteSpace(parametro)) return;
+            var m = _reParametroClaseOperacion.Match(parametro);
+            _codClaseOperacion = m.Success ? m.Groups[1].Value : parametro.Trim();
+        }
+        catch { /* sin parámetro accesible, la pantalla avisa que falta */ }
+    }
+
+    private async Task CargarCombosAsync()
+    {
+        _errorCombos = null;
+        if (string.IsNullOrWhiteSpace(_codClaseOperacion)) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<RegistroCompraCombos>>($"{ApiRoutes.Comercial.RegistroComprasLoadcombos}?codClaseOperacion={Uri.EscapeDataString(_codClaseOperacion)}");
+            _combos = r?.Data ?? new();
+            _tiposOperacion = _combos.TIPOS_OPERACION.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION ?? t.COD_TIPO_OPERACION })
+                                                     .Prepend(new ComboboxItem { Id = "", Texto = "Todos los tipos de operación" }).ToList();
+            if (_combos.TIPOS_OPERACION.Count == 0)
+                _errorCombos = $"La clase de operación «{_codClaseOperacion}» no tiene tipos de operación: créalos en Estándar → Tipos de operación.";
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompras), nameof(CargarCombosAsync));
+            _errorCombos = "No se pudieron cargar los catálogos de la pantalla. Ver detalle en el log de errores.";
+        }
+    }
+
+    private async Task OnCambioTipoOperacion(string? valor) { _codTipoOperacion = string.IsNullOrWhiteSpace(valor) ? null : valor; await Load(); }
+    private async Task OnCambioEstado(string? valor) { _codEstado = string.IsNullOrWhiteSpace(valor) ? null : valor; await Load(); }
+
+    // ── Lista: orden, filtros por columna ─────────────────────────────────────────────────────
+    private List<RegistroCompra> _items = new();
+    private string _search = "";
+    private readonly Dictionary<int, HashSet<string>?> _filtros = new();
+    private int? _ordenColumna;
+    private bool _ordenAscendente = true;
+
+    private static string TextoEstado(RegistroCompra x) => !string.IsNullOrWhiteSpace(x.DES_ESTADO_CONCILIACION) ? x.DES_ESTADO_CONCILIACION! : RegistroCompraEstados.Texto(x.COD_ESTADO_ALIAS_CONCILIACION);
+
+    private static Color ColorDe(string? estado) => (estado ?? "REG").ToUpperInvariant() switch
+    {
+        "VAL" or "APR" or "CON" => Color.Success,
+        "OBS" or "RET" => Color.Warning,
+        "EXC" or "BLQ" => Color.Error,
+        "ANU" => Color.Dark,
+        _ => Color.Default
+    };
+
+    private void ToggleOrden(int columna)
+    {
+        if (_ordenColumna == columna) _ordenAscendente = !_ordenAscendente;
+        else { _ordenColumna = columna; _ordenAscendente = true; }
+        StateHasChanged();
+    }
+
+    private List<RegistroCompra> Ordenar(List<RegistroCompra> items)
+    {
+        if (_ordenColumna is null) return items;
+        Func<RegistroCompra, object?> clave = _ordenColumna switch
+        {
+            0 => x => x.NUM_REGISTRO,
+            1 => x => x.DES_TIPO_OPERACION ?? x.COD_TIPO_OPERACION,
+            2 => x => x.DES_ENTIDAD,
+            3 => x => x.DES_TIPO_COMPROBANTE_PAGO,
+            4 => x => x.NUM_COMPROBANTE_PAGO,
+            // Las fechas y los importes se ordenan por su VALOR, no por el texto formateado: si no, 09/12 iría antes que 28/08 y 9,00 antes que 100,00.
+            5 => x => x.FEC_COMPROBANTE_PAGO,
+            6 => x => x.FEC_VENCIMIENTO,
+            7 => x => x.COD_MONEDA,
+            8 => x => x.VAL_TOTAL,
+            9 => x => x.NUM_PEDIDOS,
+            10 => x => TextoEstado(x),
+            _ => x => x.NUM_REGISTRO
+        };
+        return _ordenAscendente ? items.OrderBy(clave).ToList() : items.OrderByDescending(clave).ToList();
+    }
+
+    private List<RegistroCompra> _visibles => Ordenar(Aplicar(_items, -1));
+    private List<RegistroCompra> Base(int col) => Aplicar(_items, col);
+
+    private List<RegistroCompra> Aplicar(List<RegistroCompra> src, int ex)
+    {
+        var hay = false;
+        foreach (var (kc, kv) in _filtros) if (kc != ex && kv is not null) { hay = true; break; }
+        if (!hay) return src;
+
+        IEnumerable<RegistroCompra> q = src;
+        foreach (var (c, v) in _filtros)
+        {
+            if (c == ex || v is null) continue;
+            q = c switch
+            {
+                0 => q.Where(x => v.Contains(x.NUM_REGISTRO.ToString("0"))),
+                1 => q.Where(x => v.Contains(x.DES_TIPO_OPERACION ?? x.COD_TIPO_OPERACION)),
+                2 => q.Where(x => v.Contains(x.DES_ENTIDAD ?? "")),
+                3 => q.Where(x => v.Contains(x.DES_TIPO_COMPROBANTE_PAGO ?? "")),
+                4 => q.Where(x => v.Contains(x.NUM_COMPROBANTE_PAGO ?? "")),
+                5 => q.Where(x => v.Contains(x.FEC_COMPROBANTE_PAGO?.ToString("dd/MM/yyyy") ?? "")),
+                6 => q.Where(x => v.Contains(x.FEC_VENCIMIENTO?.ToString("dd/MM/yyyy") ?? "")),
+                7 => q.Where(x => v.Contains(x.COD_MONEDA ?? "")),
+                8 => q.Where(x => v.Contains(x.VAL_TOTAL?.ToString("N2") ?? "")),
+                10 => q.Where(x => v.Contains(TextoEstado(x))),
+                _ => q
+            };
+        }
+        return q.ToList();
+    }
+
+    private void Filtro(int c, HashSet<string>? v) { _filtros[c] = v; StateHasChanged(); }
+    private void LimpiarFiltros() { foreach (var k in _filtros.Keys.ToList()) _filtros[k] = null; StateHasChanged(); }
+
+    // ── Carga ─────────────────────────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("COMERCIAL", "RegistroCompras");
+        await ResolverClaseOperacionDesdeOpcionAsync();
+        await CargarCombosAsync();
+        await Load();
+        if (NumRegistroInicial is { } numIni)
+        {
+            try
+            {
+                var rIni = await Http.GetFromJsonAsync<ApiResponse<RegistroCompra>>($"{ApiRoutes.Comercial.RegistroCompras}/{numIni:0}");
+                if (rIni?.Data is not null) await Abrir(rIni.Data, CrudModo.Read);
+            }
+            catch { /* si no se puede cargar, se queda en la lista */ }
+        }
+        _onCambio = async () => await InvokeAsync(async () => { await Load(); StateHasChanged(); });
+        Cambios.Suscribir("FINANZAS.COMPROBANTES_PAGO", _onCambio);
+    }
+
+    private async Task Load() => _items = await Fetch();
+
+    private async Task<List<RegistroCompra>> Fetch()
+    {
+        if (string.IsNullOrWhiteSpace(_codClaseOperacion)) return new();
+        try
+        {
+            var url = $"{ApiRoutes.Comercial.RegistroCompras}?COD_CLASE_OPERACION={Uri.EscapeDataString(_codClaseOperacion)}";
+            if (!string.IsNullOrWhiteSpace(_search)) url += $"&SEARCH={Uri.EscapeDataString(_search)}";
+            if (!string.IsNullOrWhiteSpace(_codTipoOperacion)) url += $"&COD_TIPO_OPERACION={Uri.EscapeDataString(_codTipoOperacion)}";
+            if (!string.IsNullOrWhiteSpace(_codEstado)) url += $"&COD_ESTADO_ALIAS_CONCILIACION={Uri.EscapeDataString(_codEstado)}";
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<RegistroCompra>>>(url);
+            return r?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompras), nameof(Fetch));
+            await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(RegistroCompras));
+            return new();
+        }
+    }
+
+    // ── Botones ───────────────────────────────────────────────────────────────────────────────
+    private RegistroCompraFlujo? _flujo;
+    private RegistroCompraFlujo Flujo => _flujo ??= new RegistroCompraFlujo(Http, Snackbar, ErrorLog, DialogService, nameof(RegistroCompras));
+
+    /// <summary>Qué botones se ven en la fila: los de flujo, solo si el estado los admite; modificar y eliminar, solo mientras el comprobante se pueda modificar.</summary>
+    private static bool BotonAplica(BotonTreeviewItem b, RegistroCompra x)
+    {
+        if (RegistroCompraFlujo.EsDeFlujo(b.DES_METODO)) return RegistroCompraFlujo.Motivo(b.DES_METODO, x.COD_ESTADO_ALIAS_CONCILIACION) is null;
+        if (b.FLG_ACCION_DELETE == true || b.FLG_ACCION_PUT == true) return RegistroCompraEstados.Editable(x.COD_ESTADO_ALIAS_CONCILIACION);
+        return true;
+    }
+
+    private async Task OnAccionHeader(BotonTreeviewItem b)
+    {
+        // El botón «Importar XML» es POST como el de «Nuevo»: se reconoce por su método antes de mirar el verbo.
+        if ((b.DES_METODO ?? "").Trim() == RegistroCompraFlujo.ImportarXml) { await ImportarXmlAsync(); return; }
+        // «Traer de XML recibidos» (los comprobantes que bajó el servicio del correo): también POST, también se reconoce por su método.
+        if ((b.DES_METODO ?? "").Trim() == RegistroCompraFlujo.TraerXmlRecibido) { await TraerXmlRecibidoAsync(); return; }
+        if (b.FLG_ACCION_POST == true) await Abrir(null, CrudModo.Create);
+    }
+
+    private async Task OnAccionGrilla(RegistroCompra item, BotonTreeviewItem b)
+    {
+        // Los de flujo, antes que los CRUD: un botón de acción puede traer también GET marcado y caería en la rama de consulta.
+        if (RegistroCompraFlujo.EsDeFlujo(b.DES_METODO))
+        {
+            if (await Flujo.EjecutarAsync(b.DES_METODO, item.NUM_REGISTRO, item.COD_ESTADO_ALIAS_CONCILIACION, item.DES_JUSTIFICACION)) await Load();
+            return;
+        }
+        // Del más específico al más genérico: Modificar suele traer GET y PUT, Eliminar GET y DELETE.
+        if (b.FLG_ACCION_DELETE == true) { await Abrir(item, CrudModo.Delete); return; }
+        if (b.FLG_ACCION_PUT == true) { await Abrir(item, CrudModo.Update); return; }
+        if (b.FLG_ACCION_GET == true) { await Abrir(item, CrudModo.Read); return; }
+        await ErrorDialogHelper.MostrarAvisoAsync(
+            $"El botón \"{b.DES_BOTON_OPCION ?? b.COD_BOTON_OPCION}\" (opción {b.COD_OPCION_APLICACION}, código {b.COD_BOTON_OPCION}) todavía no tiene una acción conectada en esta pantalla.",
+            DialogService, nameof(RegistroCompras), "Acción pendiente");
+    }
+
+    /// <summary>Elegir uno de los comprobantes que bajó el servicio del correo y generar con él el registro de compras (con su detalle y el PDF del correo).</summary>
+    private async Task TraerXmlRecibidoAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_codClaseOperacion)) return;
+        var dlg = await DialogService.ShowAsync<RegistroCompraXmlRecibidosDialog>("",
+            new DialogParameters { ["CodClaseOperacion"] = _codClaseOperacion, ["TiposOperacion"] = _combos.TIPOS_OPERACION },
+            new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false } && res.Data is decimal) await Load();
+    }
+
+    private async Task ImportarXmlAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_codClaseOperacion)) return;
+        var dlg = await DialogService.ShowAsync<RegistroCompraImportarDialog>("",
+            new DialogParameters { ["CodClaseOperacion"] = _codClaseOperacion, ["TiposOperacion"] = _combos.TIPOS_OPERACION },
+            new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+        var res = await dlg.Result;
+        if (res is { Canceled: false } && res.Data is true) await Load();
+    }
+
+    // ── Documento ─────────────────────────────────────────────────────────────────────────────
+    private int _tab;
+    private bool _enDocumento;
+    private RegistroCompra? _docItem;
+    private CrudModo _docModo = CrudModo.Create;
+
+    private string _tituloDocumento => !_enDocumento ? "Documento" : _docModo switch
+    {
+        CrudModo.Create => "Nuevo",
+        CrudModo.Delete => $"Eliminar N° {_docItem?.NUM_REGISTRO:0}",
+        CrudModo.Read => $"Consultar N° {_docItem?.NUM_REGISTRO:0}",
+        _ => $"Editar N° {_docItem?.NUM_REGISTRO:0}"
+    };
+
+    /// <summary>Pasa a la solapa del documento; la lista queda deshabilitada mientras tanto.</summary>
+    private Task Abrir(RegistroCompra? item, CrudModo modo)
+    {
+        if (string.IsNullOrWhiteSpace(_codClaseOperacion) || _combos.TIPOS_OPERACION.Count == 0)
+            return ErrorDialogHelper.MostrarAvisoAsync(_errorCombos ?? "La opción no tiene clase de operación: no se puede abrir el documento.", DialogService, nameof(RegistroCompras));
+        _docItem = item;
+        _docModo = modo;
+        _enDocumento = true;
+        _tab = 1;
+        return Task.CompletedTask;
+    }
+
+    private async Task CerrarDocumento(bool huboCambios)
+    {
+        _enDocumento = false;
+        _docItem = null;
+        _tab = 0;
+        if (huboCambios) await Load();
+    }
+
+    public void Dispose()
+        => Cambios.Desuscribir("FINANZAS.COMPROBANTES_PAGO", _onCambio ?? (() => Task.CompletedTask));
+}

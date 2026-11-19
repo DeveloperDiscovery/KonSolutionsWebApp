@@ -1,0 +1,803 @@
+@* Cronograma de entregas de un pedido comercial.
+
+   Dos pestañas para LEER el cronograma, y un panel debajo para CARGARLO:
+
+     · "Por línea": cada fila es una línea del pedido con su avance (solicitado / programado
+       / pendiente / entregado), y al desplegarla, sus fechas de entrega.
+
+     · "Por fecha": la misma información al revés. Cada fila es una fecha y al desplegarla,
+       las líneas que salen ese día. Responde "qué sale el martes" en vez de "cuánto falta
+       de este producto". No consulta nada nuevo: agrupa el mismo cronograma que ya está en
+       memoria.
+
+     · "Entregas a programar": queda DEBAJO de las pestañas, no dentro de una, porque es una
+       acción y no una vista — se carga igual desde cualquiera de las dos.
+
+   Está en su propio componente y no escrito dentro de la pantalla, mismo criterio que
+   ComparativoPanel: si mañana se le da opción de menú propia, se reusa tal cual.
+
+   VALIDACIÓN. Lo programado no puede superar lo solicitado (bloquea) y puede quedar por
+   debajo (sólo avisa: un cronograma se arma de a partes y casi nunca se completa en una
+   sola sesión). La misma regla está en el SP: esto avisa antes, no reemplaza aquello. *@
+@using KONSolutions.Shared.Models.Logistica
+@using KONSolutions.Shared.Models.Comercial
+@using System.Globalization
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+<div class="d-flex align-center justify-space-between gap-2 flex-wrap mb-3">
+    <MudText Typo="Typo.subtitle2">
+        Cronograma de entregas
+        <span class="mono" style="opacity:.55;font-weight:400;"> · @_lineas.Count línea(s)</span>
+    </MudText>
+    <div class="d-flex align-center gap-2">
+        <MudButton StartIcon="@Icons.Material.Filled.Refresh" Size="Size.Small" Variant="Variant.Text"
+                   Disabled="_cargando" OnClick="RecargarAsync">Actualizar</MudButton>
+        @if (!SoloLectura)
+        {
+            <MudButton StartIcon="@Icons.Material.Filled.EventAvailable" Variant="Variant.Filled" Size="Size.Small"
+                       Style="font-weight:700;background-color:var(--boton-backcolor,var(--ink));color:var(--boton-forecolor,var(--paper));"
+                       Disabled="@(_cargando || _lineas.Count == 0)"
+                       OnClick="AgregarFecha">Agregar fecha</MudButton>
+        }
+    </div>
+</div>
+
+@if (NumPedidoComercial is null or 0)
+{
+    @* Igual que en Requerimientos: sin cabecera grabada no hay pedido al que colgarle un
+       cronograma, y el usuario tiene que saber por qué la pestaña está vacía. *@
+    <MudText Typo="Typo.caption" Style="opacity:.55;">Graba la cabecera del pedido para poder programar entregas.</MudText>
+}
+else if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Class="mb-2" />
+}
+else if (_lineas.Count == 0)
+{
+    <MudText Typo="Typo.caption" Style="opacity:.55;">El pedido todavía no tiene líneas para programar.</MudText>
+}
+else
+{
+    @* Dos lecturas del MISMO cronograma. No es información distinta: es la misma tabla
+       agrupada por línea o por fecha, según lo que uno esté mirando. "Por línea" responde
+       "cuánto falta de este producto"; "Por fecha" responde "qué sale este día". *@
+    <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-2">
+    <MudTabPanel Text="Por línea" Icon="@Icons.Material.Filled.FormatListNumbered">
+
+    @* ── PANEL 1 · Líneas del pedido ─────────────────────────────────────────── *@
+    <div class="d-flex justify-end mb-1">
+        <MudButton Size="Size.Small" Variant="Variant.Text"
+                   StartIcon="@(TodasLineasAbiertas ? Icons.Material.Filled.UnfoldLess : Icons.Material.Filled.UnfoldMore)"
+                   OnClick="AlternarTodasLineas">
+            @(TodasLineasAbiertas ? "Contraer todo" : "Expandir todo")
+        </MudButton>
+    </div>
+    <div class="mb-2" style="overflow-x:auto;">
+        <table class="tabla-simple-editable" style="width:100%;min-width:940px;">
+            <thead>
+                <tr>
+                    <th style="width:34px;"></th>
+                    <th style="width:52px;">Sec</th>
+                    <th>Producto</th>
+                    <th style="width:60px;">UM</th>
+                    <th style="width:110px;text-align:right;">Solicitado</th>
+                    <th style="width:110px;text-align:right;">Programado</th>
+                    <th style="width:104px;text-align:right;">Pendiente</th>
+                    <th style="width:110px;text-align:right;">Entregado</th>
+                    <th style="width:150px;">Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var l in _lineas)
+                {
+                    var sec = l.NUM_SECUENCIA ?? 0;
+                    var prog = Programado(sec);
+                    var entr = Entregado(sec);
+                    var sol = l.CAN_PRODUCTO ?? 0m;
+                    var pend = sol - prog;
+                    var abierta = _lineasAbiertas.Contains(sec);
+                    <tr class="@(abierta ? "fila-padre-abierta" : "")" style="cursor:pointer;"
+                        @onclick="@(() => AlternarLinea(sec))">
+                        <td style="text-align:center;opacity:.6;">@(abierta ? "▾" : "▸")</td>
+                        <td class="mono">@sec</td>
+                        <td>@l.COD_PRODUCTO@(string.IsNullOrWhiteSpace(l.DES_OBSERVACION) ? "" : $" — {l.DES_OBSERVACION}")</td>
+                        <td class="mono">@l.COD_UNIDAD_MEDIDA</td>
+                        <td class="mono" style="text-align:right;">@Fmt(sol)</td>
+                        <td class="mono" style="text-align:right;">@Fmt(prog)</td>
+                        <td class="mono" style="text-align:right;@(pend > 0 ? "color:var(--warn,#B87503);font-weight:600;" : "opacity:.45;")">@Fmt(pend)</td>
+                        <td class="mono" style="text-align:right;">@Fmt(entr)</td>
+                        <td>@{ var ch = ChipLinea(sol, prog, entr); }<EstadoChip Estado="@ch.T" BackColor="@ch.B" ForeColor="@ch.F" /></td>
+                    </tr>
+                    @if (abierta)
+                    {
+                        <tr>
+                            <td colspan="9" style="padding:0;">
+                                <div style="padding:10px 12px 12px 30px;border-left:3px solid var(--input-line,#1473be);background:var(--grilla-fila-par,rgba(0,0,0,.02));">
+                                    @if (!CronogramaDe(sec).Any())
+                                    {
+                                        <MudText Typo="Typo.caption" Style="opacity:.55;">Esta línea todavía no tiene entregas programadas.</MudText>
+                                    }
+                                    else
+                                    {
+                                        <div style="overflow-x:auto;">
+                                        <table class="tabla-simple-editable" style="width:100%;min-width:700px;">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width:130px;">Fecha entrega</th>
+                                                    <th style="width:120px;text-align:right;">A entregar</th>
+                                                    <th style="width:140px;">Fecha realizada</th>
+                                                    <th style="width:116px;text-align:right;">Entregado</th>
+                                                    <th style="width:160px;">Mov. almacén</th>
+                                                    <th style="width:130px;">Estado</th>
+                                                    <th style="width:56px;"></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var c in CronogramaDe(sec))
+                                                {
+                                                    var cc = c;
+                                                    <tr>
+                                                        <td class="mono">@cc.FEC_ENTREGA?.ToString("dd/MM/yyyy")</td>
+                                                        <td class="mono" style="text-align:right;">@Fmt(cc.CAN_PRODUCTO_ENTREGAR ?? 0m)</td>
+                                                        <td class="mono">@(cc.FEC_ENTREGA_REALIZADA?.ToString("dd/MM/yyyy") ?? "—")</td>
+                                                        <td class="mono" style="text-align:right;">@Fmt(cc.CAN_PRODUCTO_ENTREGADO ?? 0m)</td>
+                                                        <td class="mono">@MovimientoTexto(cc)</td>
+                                                        <td>@{ var ce = ChipEntrega(cc); }<EstadoChip Estado="@ce.T" BackColor="@ce.B" ForeColor="@ce.F" /></td>
+                                                        <td style="text-align:center;">
+                                                            @if (!SoloLectura && !YaDespachada(cc))
+                                                            {
+                                                                <MudTooltip Text="Eliminar esta entrega">
+                                                                    <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small"
+                                                                                   Disabled="_grabando"
+                                                                                   OnClick="@(() => EliminarAsync(cc))" />
+                                                                </MudTooltip>
+                                                            }
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                        </div>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    </MudTabPanel>
+
+    <MudTabPanel Text="Por fecha" Icon="@Icons.Material.Filled.CalendarMonth">
+        @if (!Fechas().Any())
+        {
+            <MudText Typo="Typo.caption" Style="opacity:.55;">Todavía no hay entregas programadas en este pedido.</MudText>
+        }
+        else
+        {
+            <div class="d-flex justify-end mb-1">
+                <MudButton Size="Size.Small" Variant="Variant.Text"
+                           StartIcon="@(TodasFechasAbiertas ? Icons.Material.Filled.UnfoldLess : Icons.Material.Filled.UnfoldMore)"
+                           OnClick="AlternarTodasFechas">
+                    @(TodasFechasAbiertas ? "Contraer todo" : "Expandir todo")
+                </MudButton>
+            </div>
+            <div style="overflow-x:auto;">
+                <table class="tabla-simple-editable" style="width:100%;min-width:860px;">
+                    <thead>
+                        <tr>
+                            <th style="width:34px;"></th>
+                            <th style="width:150px;">Fecha de entrega</th>
+                            <th style="width:90px;text-align:right;">Líneas</th>
+                            <th style="width:140px;text-align:right;">Total a entregar</th>
+                            <th style="width:140px;text-align:right;">Total entregado</th>
+                            <th style="width:170px;">Estado</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var f in Fechas())
+                        {
+                            var fecha = f;
+                            var delDia = CronogramaDe(fecha).ToList();
+                            var aEntregar = delDia.Sum(x => x.CAN_PRODUCTO_ENTREGAR ?? 0m);
+                            var entregado = delDia.Sum(x => x.CAN_PRODUCTO_ENTREGADO ?? 0m);
+                            var abiertaF = _fechasAbiertas.Contains(fecha);
+                            var cf = ChipFecha(delDia);
+                            <tr class="@(abiertaF ? "fila-padre-abierta" : "")" style="cursor:pointer;"
+                                @onclick="@(() => AlternarFecha(fecha))">
+                                <td style="text-align:center;opacity:.6;">@(abiertaF ? "▾" : "▸")</td>
+                                <td class="mono">@fecha.ToString("dd/MM/yyyy")</td>
+                                <td class="mono" style="text-align:right;">@delDia.Count</td>
+                                <td class="mono" style="text-align:right;">@Fmt(aEntregar)</td>
+                                <td class="mono" style="text-align:right;">@Fmt(entregado)</td>
+                                <td><EstadoChip Estado="@cf.T" BackColor="@cf.B" ForeColor="@cf.F" /></td>
+                                <td class="mono" style="opacity:.55;font-size:.78rem;">@ResumenProductos(delDia)</td>
+                            </tr>
+                            @if (abiertaF)
+                            {
+                                <tr>
+                                    <td colspan="7" style="padding:0;">
+                                        <div style="padding:10px 12px 12px 30px;border-left:3px solid var(--input-line,#1473be);background:var(--grilla-fila-par,rgba(0,0,0,.02));">
+                                            <div style="overflow-x:auto;">
+                                            <table class="tabla-simple-editable" style="width:100%;min-width:760px;">
+                                                <thead>
+                                                    <tr>
+                                                        <th style="width:52px;">Sec</th>
+                                                        <th>Producto</th>
+                                                        <th style="width:60px;">UM</th>
+                                                        <th style="width:120px;text-align:right;">A entregar</th>
+                                                        <th style="width:140px;">Fecha realizada</th>
+                                                        <th style="width:116px;text-align:right;">Entregado</th>
+                                                        <th style="width:160px;">Mov. almacén</th>
+                                                        <th style="width:130px;">Estado</th>
+                                                        <th style="width:56px;"></th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var c in delDia)
+                                                    {
+                                                        var cd = c;
+                                                        var secD = cd.NUM_SECUENCIA ?? 0;
+                                                        var ced = ChipEntrega(cd);
+                                                        <tr>
+                                                            <td class="mono">@secD</td>
+                                                            <td>@ProductoDe(secD)</td>
+                                                            <td class="mono">@UnidadDe(secD)</td>
+                                                            <td class="mono" style="text-align:right;">@Fmt(cd.CAN_PRODUCTO_ENTREGAR ?? 0m)</td>
+                                                            <td class="mono">@(cd.FEC_ENTREGA_REALIZADA?.ToString("dd/MM/yyyy") ?? "—")</td>
+                                                            <td class="mono" style="text-align:right;">@Fmt(cd.CAN_PRODUCTO_ENTREGADO ?? 0m)</td>
+                                                            <td class="mono">@MovimientoTexto(cd)</td>
+                                                            <td><EstadoChip Estado="@ced.T" BackColor="@ced.B" ForeColor="@ced.F" /></td>
+                                                            <td style="text-align:center;">
+                                                                @if (!SoloLectura && !YaDespachada(cd))
+                                                                {
+                                                                    <MudTooltip Text="Eliminar esta entrega">
+                                                                        <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="Size.Small"
+                                                                                       Disabled="_grabando"
+                                                                                       OnClick="@(() => EliminarAsync(cd))" />
+                                                                    </MudTooltip>
+                                                                }
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </MudTabPanel>
+    </MudTabs>
+
+    @* ── PANEL 2 · Programación por fecha ────────────────────────────────────── *@
+    @if (_borradores.Count > 0)
+    {
+        <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Entregas a programar</MudText>
+
+        <div style="overflow-x:auto;">
+            <table class="tabla-simple-editable" style="width:100%;min-width:880px;">
+                <thead>
+                    <tr>
+                        <th style="width:34px;"></th>
+                        <th style="width:190px;">Fecha de entrega</th>
+                        <th style="width:90px;text-align:right;">Líneas</th>
+                        <th style="width:140px;text-align:right;">Total a entregar</th>
+                        <th>Estado</th>
+                        <th style="width:56px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var b in _borradores)
+                    {
+                        var bb = b;
+                        var abierto = _borradorAbierto == bb.Id;
+                        var errores = ErroresDe(bb);
+                        <tr class="@(abierto ? "fila-padre-abierta" : "")" style="cursor:pointer;"
+                            @onclick="@(() => _borradorAbierto = abierto ? (Guid?)null : bb.Id)">
+                            <td style="text-align:center;opacity:.6;">@(abierto ? "▾" : "▸")</td>
+                            <td @onclick:stopPropagation="true">
+                                <MudDatePicker Date="bb.Fecha" DateChanged="@(d => bb.Fecha = d)"
+                                               Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-0"
+                                               DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                            </td>
+                            <td class="mono" style="text-align:right;">@bb.Seleccionadas.Count</td>
+                            <td class="mono" style="text-align:right;">@Fmt(bb.Total)</td>
+                            <td>
+                                @if (bb.Fecha is null)
+                                {
+                                    <EstadoChip Estado="Falta la fecha" BackColor="#FBF0DC" ForeColor="#B87503" />
+                                }
+                                else if (errores.Count > 0)
+                                {
+                                    <EstadoChip Estado="@($"{errores.Count} línea(s) con error")" BackColor="#FAE5E2" ForeColor="#C0392B" />
+                                }
+                                else if (bb.Seleccionadas.Count == 0)
+                                {
+                                    <EstadoChip Estado="Sin líneas" BackColor="rgba(0,0,0,.06)" ForeColor="#6B819A" />
+                                }
+                                else
+                                {
+                                    <EstadoChip Estado="Lista para grabar" BackColor="#E2F1EA" ForeColor="#2E7D5B" />
+                                }
+                            </td>
+                            <td style="text-align:center;" @onclick:stopPropagation="true">
+                                <MudTooltip Text="Descartar esta fecha">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                   Disabled="_grabando" OnClick="@(() => _borradores.Remove(bb))" />
+                                </MudTooltip>
+                            </td>
+                        </tr>
+                        @if (abierto)
+                        {
+                            <tr>
+                                <td colspan="6" style="padding:0;">
+                                    <div style="padding:10px 12px 12px 30px;border-left:3px solid var(--input-line,#1473be);background:var(--grilla-fila-par,rgba(0,0,0,.02));">
+                                        <div style="overflow-x:auto;">
+                                        <table class="tabla-simple-editable" style="width:100%;min-width:840px;">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width:50px;text-align:center;">
+                                                        <MudCheckBox T="bool" Value="@TodasMarcadas(bb)" Dense="true"
+                                                                     ValueChanged="@((bool v) => MarcarTodas(bb, v))" />
+                                                    </th>
+                                                    <th style="width:52px;">Sec</th>
+                                                    <th>Producto</th>
+                                                    <th style="width:110px;text-align:right;">Solicitado</th>
+                                                    <th style="width:120px;text-align:right;">Ya programado</th>
+                                                    <th style="width:104px;text-align:right;">Pendiente</th>
+                                                    <th style="width:150px;text-align:right;">A entregar</th>
+                                                    <th style="width:190px;">Validación</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var l in _lineas)
+                                                {
+                                                    var sec = l.NUM_SECUENCIA ?? 0;
+                                                    var sol = l.CAN_PRODUCTO ?? 0m;
+                                                    var otras = ProgramadoConBorradores(sec, bb);
+                                                    var pend = sol - otras;
+                                                    var marcada = bb.Seleccionadas.ContainsKey(sec);
+                                                    var cant = marcada ? bb.Seleccionadas[sec] : 0m;
+                                                    var exceso = marcada ? (otras + cant) - sol : 0m;
+                                                    <tr class="@(marcada ? "fila-padre-abierta" : "")">
+                                                        <td style="text-align:center;">
+                                                            <MudCheckBox T="bool" Value="@marcada" Dense="true"
+                                                                         Disabled="@(pend <= 0 && !marcada)"
+                                                                         ValueChanged="@((bool v) => Marcar(bb, sec, v, pend))" />
+                                                        </td>
+                                                        <td class="mono">@sec</td>
+                                                        <td style="@(pend <= 0 && !marcada ? "opacity:.5;" : "")">@l.COD_PRODUCTO</td>
+                                                        <td class="mono" style="text-align:right;">@Fmt(sol)</td>
+                                                        <td class="mono" style="text-align:right;">@Fmt(otras)</td>
+                                                        <td class="mono" style="text-align:right;">@Fmt(pend)</td>
+                                                        <td style="text-align:right;">
+                                                            @if (marcada)
+                                                            {
+                                                                <MudNumericField T="decimal" Value="@cant" Immediate="true"
+                                                                                 ValueChanged="@((decimal v) => bb.Seleccionadas[sec] = v)"
+                                                                                 Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                                                 Min="0" Format="@Decimales.FormatoCantidad" Class="campo-numerico-derecha mb-0"
+                                                                                 Error="@(exceso > 0)" />
+                                                            }
+                                                            else
+                                                            {
+                                                                <span style="opacity:.4;">—</span>
+                                                            }
+                                                        </td>
+                                                        <td>@{ var cv = ChipValidacion(marcada, pend, cant, exceso); }<EstadoChip Estado="@cv.T" BackColor="@cv.B" ForeColor="@cv.F" /></td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-flex align-center justify-end gap-2 mt-3">
+            @if (HayErrores)
+            {
+                <MudText Typo="Typo.caption" Style="color:var(--bad,#C0392B);">
+                    Hay cantidades que superan lo solicitado. Corrígelas para poder grabar.
+                </MudText>
+            }
+            <MudButton Size="Size.Small" Disabled="_grabando"
+                       OnClick="@(() => _borradores.Clear())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Save"
+                       Disabled="@(_grabando || !SePuedeGrabar)"
+                       OnClick="GrabarAsync">Grabar cronograma</MudButton>
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public string  CodClaseOperacion  { get; set; } = "";
+    [Parameter, EditorRequired] public string  CodTipoOperacion   { get; set; } = "";
+    /// <summary>decimal? y no decimal: PedidoComercialDocumento.NumPedidoActual devuelve null
+    /// mientras la cabecera no está grabada. Mismo criterio que RequerimientosPedidoPanel.</summary>
+    [Parameter, EditorRequired] public decimal? NumPedidoComercial { get; set; }
+    [Parameter] public bool SoloLectura { get; set; }
+
+    private List<PedidoComercialDetalle> _lineas = new();
+    private List<PedidoComercialCronogramaEntrega> _cronograma = new();
+    private bool _cargando = true, _grabando;
+    // Conjuntos, no un solo valor: se pueden tener varias filas desplegadas a la vez y
+    // comparar dos líneas (o dos fechas) sin que abrir una cierre la otra.
+    private readonly HashSet<int> _lineasAbiertas = new();
+    private readonly HashSet<DateTime> _fechasAbiertas = new();
+
+    private void AlternarLinea(int sec)
+    { if (!_lineasAbiertas.Add(sec)) _lineasAbiertas.Remove(sec); }
+
+    private void AlternarFecha(DateTime f)
+    { if (!_fechasAbiertas.Add(f.Date)) _fechasAbiertas.Remove(f.Date); }
+
+    private bool TodasLineasAbiertas
+        => _lineas.Count > 0 && _lineas.All(l => _lineasAbiertas.Contains(l.NUM_SECUENCIA ?? 0));
+
+    private void AlternarTodasLineas()
+    {
+        if (TodasLineasAbiertas) _lineasAbiertas.Clear();
+        else foreach (var l in _lineas) _lineasAbiertas.Add(l.NUM_SECUENCIA ?? 0);
+    }
+
+    private bool TodasFechasAbiertas
+        => Fechas().Any() && Fechas().All(f => _fechasAbiertas.Contains(f));
+
+    private void AlternarTodasFechas()
+    {
+        if (TodasFechasAbiertas) _fechasAbiertas.Clear();
+        else foreach (var f in Fechas()) _fechasAbiertas.Add(f);
+    }
+
+    private Guid? _borradorAbierto;
+
+    /// <summary>Una fecha de entrega todavía sin grabar, con las líneas que entran en ella.
+    /// Vive sólo en memoria: recién al grabar se convierte en filas del cronograma.</summary>
+    private class Borrador
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public DateTime? Fecha { get; set; }
+        public Dictionary<int, decimal> Seleccionadas { get; } = new();
+        public decimal Total => Seleccionadas.Values.Sum();
+    }
+    private readonly List<Borrador> _borradores = new();
+
+    private static string Fmt(decimal v) => v.ToString("N4", CultureInfo.CurrentCulture);
+
+    protected override async Task OnParametersSetAsync() => await CargarAsync();
+
+    private async Task CargarAsync()
+    {
+        if (NumPedidoComercial is null or 0) { _lineas = new(); _cronograma = new(); _cargando = false; return; }
+
+        _cargando = true;
+        try
+        {
+            // Las líneas del pedido.
+            //
+            // Se mandan los TRES códigos y no sólo el número. Dos intentos previos fallaron
+            // y vale dejar escrito por qué, para que nadie los repita:
+            //
+            //   /pedidos-comerciales-detalle/por-cabecera/2
+            //       400: "The value 'por-cabecera' is not valid." La ruta cayó en la acción
+            //       de dos segmentos {numPedidoComercial}/{numSecuencia}.
+            //
+            //   /pedidos-comerciales-detalle?numPedidoComercial=2
+            //       400: "The codTipoOperacion field is required." El GetAll del controller
+            //       identifica el pedido por operación + número, no sólo por número — que es
+            //       lo correcto: el número solo no es único entre clases de operación.
+            var urlLineas = $"{ApiRoutes.Comercial.PedidosComercialesDetalle}"
+                          + $"?codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion ?? "")}"
+                          + $"&codTipoOperacion={Uri.EscapeDataString(CodTipoOperacion ?? "")}"
+                          + $"&numPedidoComercial={NumPedidoComercial!.Value.ToString(CultureInfo.InvariantCulture)}";
+            var rl = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<PedidoComercialDetalle>>>(urlLineas);
+            _lineas = rl?.Data ?? new();
+
+            var url = $"{ApiRoutes.Logistica.PedidosComercialesCronogramaEntregasPorPedido}"
+                    + $"?codTipoOperacion={Uri.EscapeDataString(CodTipoOperacion ?? "")}"
+                    + $"&codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion ?? "")}"
+                    + $"&numPedidoComercial={NumPedidoComercial!.Value.ToString(CultureInfo.InvariantCulture)}";
+            var rc = await Http.GetFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<PedidoComercialCronogramaEntrega>>>(url);
+            _cronograma = rc?.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(PedidosComercialesCronogramaEntregas), nameof(CargarAsync));
+            _lineas = new(); _cronograma = new();
+        }
+        _cargando = false;
+    }
+
+    public async Task RecargarAsync()
+    {
+        await CargarAsync();
+        StateHasChanged();
+    }
+
+    // ── Cálculos de avance ───────────────────────────────────────────────────
+    private IEnumerable<PedidoComercialCronogramaEntrega> CronogramaDe(int sec)
+        => _cronograma.Where(c => (c.NUM_SECUENCIA ?? -1) == sec).OrderBy(c => c.FEC_ENTREGA);
+
+    // ── Vista por fecha ──────────────────────────────────────────────────────
+    // Es el MISMO _cronograma, agrupado por FEC_ENTREGA en vez de por línea. No hace falta
+    // otra consulta: el SP ya trae todo el cronograma del pedido.
+
+    /// <summary>Las fechas con entregas programadas, sin repetir y en orden.</summary>
+    private IEnumerable<DateTime> Fechas()
+        => _cronograma.Where(c => c.FEC_ENTREGA is not null)
+                      .Select(c => c.FEC_ENTREGA!.Value.Date)
+                      .Distinct().OrderBy(d => d);
+
+    /// <summary>Las entregas de una fecha, ordenadas por línea.</summary>
+    private IEnumerable<PedidoComercialCronogramaEntrega> CronogramaDe(DateTime fecha)
+        => _cronograma.Where(c => c.FEC_ENTREGA?.Date == fecha.Date)
+                      .OrderBy(c => c.NUM_SECUENCIA);
+
+    /// <summary>Producto de una línea. La vista por fecha no tiene el producto a mano —el
+    /// cronograma guarda la secuencia, no el código— así que se busca en las líneas que ya
+    /// están cargadas, sin ir de nuevo al servidor.</summary>
+    private string ProductoDe(int sec)
+        => _lineas.FirstOrDefault(l => (l.NUM_SECUENCIA ?? 0) == sec)?.COD_PRODUCTO ?? "—";
+
+    private string UnidadDe(int sec)
+        => _lineas.FirstOrDefault(l => (l.NUM_SECUENCIA ?? 0) == sec)?.COD_UNIDAD_MEDIDA ?? "";
+
+    /// <summary>Los primeros productos del día, para que la fila cerrada diga algo útil sin
+    /// tener que desplegarla.</summary>
+    private string ResumenProductos(List<PedidoComercialCronogramaEntrega> delDia)
+    {
+        var nombres = delDia.Select(c => ProductoDe(c.NUM_SECUENCIA ?? 0)).ToList();
+        return nombres.Count <= 2
+            ? string.Join(" · ", nombres)
+            : $"{nombres[0]} · {nombres[1]} y {nombres.Count - 2} más";
+    }
+
+    /// <summary>Estado de una fecha completa, mirando sus entregas: si ninguna se realizó está
+    /// pendiente; si todas sí, entregada; si alguna se realizó después de lo previsto, fuera
+    /// de fecha; y si sólo una parte se entregó, parcial.</summary>
+    private static (string T, string B, string F) ChipFecha(List<PedidoComercialCronogramaEntrega> delDia)
+    {
+        var realizadas = delDia.Count(c => c.FEC_ENTREGA_REALIZADA is not null);
+        var tarde      = delDia.Count(c => c.FEC_ENTREGA_REALIZADA is not null && c.FEC_ENTREGA_REALIZADA > c.FEC_ENTREGA);
+        return realizadas == 0            ? ("Pendiente",      "rgba(0,0,0,.06)", "#6B819A")
+             : tarde > 0                  ? ("Fuera de fecha", "#FBF0DC", "#B87503")
+             : realizadas == delDia.Count ? ("Entregada",      "#E2F1EA", "#2E7D5B")
+             :                              ("Parcial",        "#E3EFF9", "#1473BE");
+    }
+
+    private decimal Programado(int sec) => CronogramaDe(sec).Sum(c => c.CAN_PRODUCTO_ENTREGAR ?? 0m);
+    private decimal Entregado(int sec)  => CronogramaDe(sec).Sum(c => c.CAN_PRODUCTO_ENTREGADO ?? 0m);
+
+    /// <summary>Lo ya grabado MÁS lo que otras fechas del borrador actual ya reservaron para
+    /// esa línea. Sin esto se podría programar 80 en dos fechas distintas de la misma tanda y
+    /// las dos parecerían válidas por separado.</summary>
+    private decimal ProgramadoConBorradores(int sec, Borrador excepto)
+        => Programado(sec)
+         + _borradores.Where(b => b.Id != excepto.Id && b.Seleccionadas.ContainsKey(sec))
+                      .Sum(b => b.Seleccionadas[sec]);
+
+    private static bool YaDespachada(PedidoComercialCronogramaEntrega c)
+        => c.NUM_MOVIMIENTO_ALMACEN is not null || (c.CAN_PRODUCTO_ENTREGADO ?? 0m) > 0m;
+
+    private static string MovimientoTexto(PedidoComercialCronogramaEntrega c)
+        => c.NUM_MOVIMIENTO_ALMACEN is null
+            ? "—"
+            : $"{c.NUM_MOVIMIENTO_ALMACEN} / {c.NUM_SECUENCIA_MOVIMIENTO?.ToString() ?? "—"}";
+
+    // ── Chips de estado ──────────────────────────────────────────────────────
+    // Devuelven (texto, fondo, letra) en vez de RenderFragment: es lo mismo de leer y no
+    // depende de construir markup dentro del bloque @code.
+
+    private static (string T, string B, string F) ChipLinea(decimal sol, decimal prog, decimal entr)
+        => entr >= sol && sol > 0  ? ("Entregada",     "#E2F1EA", "#2E7D5B")
+         : prog >= sol && sol > 0  ? ("Programada",    "#E3EFF9", "#1473BE")
+         : prog > 0                ? ("Incompleto",    "#FBF0DC", "#B87503")
+         :                           ("Sin programar", "rgba(0,0,0,.06)", "#6B819A");
+
+    private static (string T, string B, string F) ChipEntrega(PedidoComercialCronogramaEntrega c)
+        => c.FEC_ENTREGA_REALIZADA is null            ? ("Pendiente",      "rgba(0,0,0,.06)", "#6B819A")
+         : c.FEC_ENTREGA_REALIZADA > c.FEC_ENTREGA    ? ("Fuera de fecha", "#FBF0DC", "#B87503")
+         :                                              ("Entregada",      "#E2F1EA", "#2E7D5B");
+
+    private static (string T, string B, string F) ChipValidacion(bool marcada, decimal pend, decimal cant, decimal exceso)
+        => !marcada && pend <= 0 ? ("Sin pendiente",    "rgba(0,0,0,.06)", "#6B819A")
+         : !marcada              ? ("No incluida",      "rgba(0,0,0,.06)", "#6B819A")
+         : exceso > 0            ? ($"Excede en {Fmt(exceso)}", "#FAE5E2", "#C0392B")
+         : cant <= 0             ? ("Cantidad en cero", "#FBF0DC", "#B87503")
+         : exceso == 0           ? ("Completa la línea","#E2F1EA", "#2E7D5B")
+         :                         ("Entrega parcial",  "#E3EFF9", "#1473BE");
+
+    // ── Borradores ───────────────────────────────────────────────────────────
+    private void AgregarFecha()
+    {
+        var b = new Borrador();
+        _borradores.Add(b);
+        _borradorAbierto = b.Id;
+    }
+
+    private void Marcar(Borrador b, int sec, bool marcar, decimal pendiente)
+    {
+        if (marcar)
+        {
+            // Arranca en el pendiente: es lo que se quiere el 90% de las veces, y bajarlo
+            // cuesta menos que escribir la cifra entera.
+            b.Seleccionadas[sec] = pendiente > 0 ? pendiente : 0m;
+        }
+        else b.Seleccionadas.Remove(sec);
+    }
+
+    private bool TodasMarcadas(Borrador b)
+        => _lineas.Any() && _lineas.All(l => b.Seleccionadas.ContainsKey(l.NUM_SECUENCIA ?? 0)
+                                          || (l.CAN_PRODUCTO ?? 0m) - ProgramadoConBorradores(l.NUM_SECUENCIA ?? 0, b) <= 0);
+
+    private void MarcarTodas(Borrador b, bool marcar)
+    {
+        foreach (var l in _lineas)
+        {
+            var sec = l.NUM_SECUENCIA ?? 0;
+            var pend = (l.CAN_PRODUCTO ?? 0m) - ProgramadoConBorradores(sec, b);
+            if (marcar) { if (pend > 0) b.Seleccionadas[sec] = pend; }
+            else b.Seleccionadas.Remove(sec);
+        }
+    }
+
+    /// <summary>Las líneas de un borrador cuya cantidad supera lo solicitado.</summary>
+    private List<int> ErroresDe(Borrador b)
+        => b.Seleccionadas
+            .Where(kv =>
+            {
+                var l = _lineas.FirstOrDefault(x => (x.NUM_SECUENCIA ?? 0) == kv.Key);
+                var sol = l?.CAN_PRODUCTO ?? 0m;
+                return ProgramadoConBorradores(kv.Key, b) + kv.Value > sol;
+            })
+            .Select(kv => kv.Key).ToList();
+
+    private bool HayErrores => _borradores.Any(b => ErroresDe(b).Count > 0);
+
+    private bool SePuedeGrabar
+        => !HayErrores
+        && _borradores.Any(b => b.Fecha is not null && b.Seleccionadas.Any(kv => kv.Value > 0))
+        && _borradores.All(b => b.Seleccionadas.Count == 0 || b.Fecha is not null);
+
+    // ── Grabar ───────────────────────────────────────────────────────────────
+    private async Task GrabarAsync()
+    {
+        if (_grabando || !SePuedeGrabar) return;
+
+        // Una línea no puede repetirse en la MISMA fecha: la clave de la tabla la rechazaría
+        // con "registro existente". Se detecta antes de mandar nada, para no dejar la mitad
+        // de las filas grabadas y la otra mitad no.
+        var choque = _borradores
+            .Where(b => b.Fecha is not null)
+            .SelectMany(b => b.Seleccionadas.Keys.Select(sec => (Fecha: b.Fecha!.Value.Date, Sec: sec)))
+            .GroupBy(x => x)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (choque is not null)
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync(
+                $"La línea {choque.Key.Sec} está dos veces para el {choque.Key.Fecha:dd/MM/yyyy}. "
+                + "Cada línea puede programarse una sola vez por fecha.",
+                DialogService, nameof(PedidosComercialesCronogramaEntregas), "Fecha repetida");
+            return;
+        }
+
+        // Contra lo YA grabado: si esa línea ya tiene entrega para esa fecha, el _INSERT
+        // respondería "registro existente". Mejor decirlo antes y con nombre propio.
+        foreach (var b in _borradores.Where(x => x.Fecha is not null))
+        {
+            foreach (var sec in b.Seleccionadas.Keys)
+            {
+                if (_cronograma.Any(c => (c.NUM_SECUENCIA ?? -1) == sec
+                                      && c.FEC_ENTREGA?.Date == b.Fecha!.Value.Date))
+                {
+                    await ErrorDialogHelper.MostrarAvisoAsync(
+                        $"La línea {sec} ya tiene una entrega programada para el {b.Fecha!.Value:dd/MM/yyyy}. "
+                        + "Modifica esa entrega o elige otra fecha.",
+                        DialogService, nameof(PedidosComercialesCronogramaEntregas), "Entrega ya programada");
+                    return;
+                }
+            }
+        }
+
+        _grabando = true;
+        StateHasChanged();
+
+        var grabadas = 0;
+        try
+        {
+            foreach (var b in _borradores.Where(x => x.Fecha is not null))
+            {
+                foreach (var kv in b.Seleccionadas.Where(k => k.Value > 0))
+                {
+                    var dto = new PedidoComercialCronogramaEntregaDto
+                    {
+                        COD_TIPO_OPERACION    = CodTipoOperacion,
+                        COD_CLASE_OPERACION   = CodClaseOperacion,
+                        NUM_PEDIDO_COMERCIAL  = NumPedidoComercial!.Value,
+                        NUM_SECUENCIA         = kv.Key,
+                        FEC_ENTREGA           = b.Fecha!.Value.Date,
+                        CAN_PRODUCTO_ENTREGAR = kv.Value
+                    };
+                    var resp = await Http.PostAsJsonAsync(ApiRoutes.Logistica.PedidosComercialesCronogramaEntregas, dto);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        // Se corta en la primera que falla y se recarga: lo grabado hasta acá
+                        // queda, y la pantalla muestra el estado real en vez de uno inventado.
+                        await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                            nameof(PedidosComercialesCronogramaEntregas), nameof(GrabarAsync),
+                            $"No se pudo programar la línea {kv.Key}");
+                        await CargarAsync();
+                        return;
+                    }
+                    grabadas++;
+                }
+            }
+
+            _borradores.Clear();
+            _borradorAbierto = null;
+            Snackbar.Add($"{grabadas} entrega(s) programada(s).", Severity.Success);
+            await CargarAsync();
+        }
+        finally
+        {
+            _grabando = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task EliminarAsync(PedidoComercialCronogramaEntrega c)
+    {
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            $"Se va a eliminar la entrega de la línea {c.NUM_SECUENCIA} del {c.FEC_ENTREGA:dd/MM/yyyy}. ¿Continuar?",
+            yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        _grabando = true;
+        StateHasChanged();
+        try
+        {
+            var url = $"{ApiRoutes.Logistica.PedidosComercialesCronogramaEntregas}"
+                    + $"?codTipoOperacion={Uri.EscapeDataString(CodTipoOperacion ?? "")}"
+                    + $"&codClaseOperacion={Uri.EscapeDataString(CodClaseOperacion ?? "")}"
+                    + $"&numPedidoComercial={NumPedidoComercial!.Value.ToString(CultureInfo.InvariantCulture)}"
+                    + $"&numSecuencia={c.NUM_SECUENCIA}"
+                    + $"&fecEntrega={c.FEC_ENTREGA:yyyy-MM-dd}";
+            var resp = await Http.DeleteAsync(url);
+            if (resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Entrega eliminada.", Severity.Success);
+                await CargarAsync();
+            }
+            else
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService,
+                    nameof(PedidosComercialesCronogramaEntregas), nameof(EliminarAsync),
+                    "No se pudo eliminar la entrega");
+            }
+        }
+        finally
+        {
+            _grabando = false;
+            StateHasChanged();
+        }
+    }
+}

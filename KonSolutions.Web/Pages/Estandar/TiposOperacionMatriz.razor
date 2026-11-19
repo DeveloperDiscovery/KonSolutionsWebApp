@@ -1,0 +1,322 @@
+@* TiposOperacionMatriz.razor
+   -----------------------------------------------------------------------
+   Matriz de una clase de operacion: COLUMNAS = tipos de operacion; FILAS = tipos de valor de calculo (Modo "calculo") o tipos de comprobante de pago
+   (Modo "comprobantes"). Cada casilla marcada es una fila de COMERCIAL.TIPOS_OPERACION_CALCULO / COMERCIAL.TIPOS_OPERACION_TIPOS_COMPROBANTE_PAGO.
+   Editable: marcar agrega, desmarcar elimina (al instante, con la API). Quitar un valor de calculo con afectados pide confirmar.
+   En "calculo", cada casilla marcada trae un boton con la formula (ƒ): abre FormulaValorDialog para cambiar que valores suma, su orden y sus flags.
+   Al agregar un valor, el orden y los flags se toman del mismo valor en otro tipo de la clase (ver script SQL 104). *@
+@using KONSolutions.Shared.Common
+@using KONSolutions.Shared.Models.Estandar
+@using KONSolutions.Shared.Models.Comercial
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@using ComercialRoute = KONSolutions.Web.Services.ApiRoutes.Comercial
+@using System.Net.Http.Json
+@using TipoOperacionModel = KONSolutions.Shared.Models.Estandar.TipoOperacion
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<style>
+    /* El alto lo pone gridAutoAlto.js (el contenedor lleva data-resizable-grid): se estira hasta el borde superior de la barra de estado. */
+    .mtx-grid { background:var(--paper); border:1px solid var(--line); border-radius:4px; min-height:150px; position:relative; }
+    .mtx-wrap { flex:1 1 auto; min-height:0; overflow:auto; }
+    .mtx { border-collapse:separate; border-spacing:0; font-size:.78rem; width:max-content; min-width:100%; }
+    .mtx th, .mtx td { border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:3px 6px; text-align:center; background:var(--paper); }
+    .mtx thead th { position:sticky; top:0; z-index:3; background:var(--grilla-cab-fondo,#16405f); color:var(--grilla-cab-texto,#fff); font-weight:600; vertical-align:bottom; min-width:96px; max-width:130px; white-space:normal; }
+    .mtx thead th .mtx-des { display:block; font-weight:400; font-size:.68rem; opacity:.85; line-height:1.1; }
+    .mtx .mtx-fila { position:sticky; left:0; z-index:2; text-align:left; min-width:250px; max-width:330px; background:var(--paper); }
+    .mtx thead th.mtx-fila { z-index:4; background:var(--grilla-cab-fondo,#16405f); vertical-align:middle; }
+    .mtx tbody tr:nth-child(even) td, .mtx tbody tr:nth-child(even) th.mtx-fila { background:var(--grilla-fila-par, rgba(127,127,127,.08)); }
+    .mtx tbody tr:hover td, .mtx tbody tr:hover th.mtx-fila { filter:brightness(.96); }
+    .mtx input[type=checkbox] { width:16px; height:16px; cursor:pointer; accent-color:var(--primary,#16405f); vertical-align:middle; }
+    .mtx input[type=checkbox]:disabled { cursor:progress; opacity:.5; }
+    .mtx .mtx-n { opacity:.55; font-size:.7rem; }
+    .mtx .mtx-f { margin-left:4px; border:1px solid var(--line); border-radius:10px; padding:0 6px; font-size:.72rem; cursor:pointer; background:transparent; color:inherit; }
+    .mtx .mtx-f.con-formula { border-color:var(--primary,#16405f); font-weight:700; }
+    .mtx .mtx-f:hover { background:rgba(127,127,127,.18); }
+    .mtx thead th.mtx-col-v { height:150px; min-width:54px; max-width:70px; padding:4px 2px; }
+    .mtx thead th.mtx-col-v .mtx-v { writing-mode:vertical-rl; transform:rotate(180deg); white-space:nowrap; max-height:140px; overflow:hidden; text-overflow:ellipsis; display:inline-block; }
+    .mtx .mtx-signo { display:inline-block; width:1.1rem; text-align:center; font-weight:700; opacity:.8; }
+</style>
+
+<div class="d-flex align-center gap-3 mb-2 flex-wrap">
+    <MudText Typo="Typo.body2" Style="opacity:.75;">
+        @(Modo == "calculo" ? "Valores de cálculo" : "Tipos de documento") ·
+        @(_transpuesta ? "tipos de operación en filas" : "tipos de operación en columnas") @(Modo == "calculo" ? "· ƒ = fórmula" : "") ·
+        <span class="mono">@_marcas.Count marcada(s)</span>
+    </MudText>
+    <MudTextField T="string" @bind-Value="_filtroFila" Immediate="true" Placeholder="@(Modo == "calculo" ? "Filtrar valores..." : "Filtrar documentos...")" Variant="Variant.Outlined" Margin="Margin.Dense"
+                  Style="max-width:260px;" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+    @* Transponer: intercambia filas y columnas (tipos de operacion en columnas <-> tipos de operacion en filas) *@
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.SwapHoriz" data-transponer="true"
+               OnClick="@(() => _transpuesta = !_transpuesta)">Transponer</MudButton>
+</div>
+
+@if (_cargando)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (!string.IsNullOrEmpty(_error))
+{
+    <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+}
+else
+{
+    <div class="mtx-grid" data-resizable-grid="matriz-tipos-operacion">
+    <div class="mtx-wrap" data-matriz="@Modo" data-transpuesta="@(_transpuesta ? "si" : "no")">
+        <table class="mtx">
+            <thead>
+                <tr>
+                    <th class="mtx-fila">@(_transpuesta ? "Tipo de operación" : (Modo == "calculo" ? "Valor de cálculo" : "Tipo de documento"))</th>
+                    @foreach (var col in Columnas)
+                    {
+                        if (col.EsTipo)
+                        {
+                            <th title="@col.Id - @col.Texto">@col.Id<span class="mtx-des">@col.Texto</span></th>
+                        }
+                        else
+                        {
+                            <th class="mtx-col-v" title="@col.Id - @col.Texto"><span class="mtx-v">@col.Texto</span></th>
+                        }
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in Filas)
+                {
+                    var fila = row;
+                    <tr data-fila="@fila.Id">
+                        <th class="mtx-fila" scope="row">
+                            @if (!fila.EsTipo && Modo == "calculo") { <span class="mtx-signo" title="@(Positivo(fila.Id) == true ? "Suma (+)" : "Resta (−)") cuando otro valor lo incluye en su fórmula">@(Positivo(fila.Id) == true ? "+" : "−")</span> }
+                            <strong>@fila.Id</strong> · @fila.Texto
+                            @if (!fila.EsTipo && Modo == "calculo" && EsImpuesto(fila.Id)) { <span class="mtx-n">(impuesto)</span> }
+                            <span class="mtx-n">(@Contar(fila))</span>
+                        </th>
+                        @foreach (var col in Columnas)
+                        {
+                            @Celda(fila, col)
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="grid-resize-handle"></div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string CodClase { get; set; } = "";
+    [Parameter, EditorRequired] public List<TipoOperacionModel> Tipos { get; set; } = new();
+    /// <summary>"calculo" o "comprobantes".</summary>
+    [Parameter] public string Modo { get; set; } = "calculo";
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private List<ComboboxItem> _filas = new();
+    private HashSet<(string tipo, string fila)> _marcas = new();
+    private readonly HashSet<(string tipo, string fila)> _ocupadas = new();
+    private Dictionary<(string tipo, string fila), MatrizCalculoCelda> _detalle = new();
+    private Dictionary<string, TiposValorCalculo> _valores = new();
+    private List<FormulaCelda> _formulas = new();
+    private bool _cargando = true;
+    private string? _error, _filtroFila;
+    private (string, string)? _cargadoPara;
+
+    private IEnumerable<ComboboxItem> FilasVisibles => string.IsNullOrWhiteSpace(_filtroFila)
+        ? _filas
+        : _filas.Where(c => c.Texto.Contains(_filtroFila, StringComparison.OrdinalIgnoreCase) || c.Id.Contains(_filtroFila, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_cargadoPara == (CodClase, Modo)) return;
+        _cargadoPara = (CodClase, Modo);
+        await CargarAsync();
+    }
+
+    /// <summary>Un eje de la matriz: un tipo de operacion o un valor / tipo de documento.</summary>
+    private sealed record Eje(string Id, string Texto, bool EsTipo, TipoOperacionModel? Tipo);
+    private bool _transpuesta;
+
+    private IEnumerable<Eje> EjesTipos => Tipos.Select(t => new Eje(t.COD_TIPO_OPERACION, t.DES_TIPO_OPERACION, true, t));
+    private IEnumerable<Eje> EjesItems => FilasVisibles.Select(f => new Eje(f.Id, f.Texto, false, null));
+    /// <summary>Por defecto: filas = valores / documentos, columnas = tipos de operacion. Transpuesta: al reves.</summary>
+    private IEnumerable<Eje> Filas => _transpuesta ? EjesTipos : EjesItems;
+    private IEnumerable<Eje> Columnas => _transpuesta ? EjesItems : EjesTipos;
+
+    private int Contar(Eje e) => e.EsTipo ? _marcas.Count(m => m.tipo == e.Id) : ContarFila(e.Id);
+
+    private RenderFragment Celda(Eje fila, Eje col) => __builder =>
+    {
+        var eTipo = fila.EsTipo ? fila : col;
+        var eItem = fila.EsTipo ? col : fila;
+        var tipo = eTipo.Tipo!;
+        var item = new ComboboxItem { Id = eItem.Id, Texto = eItem.Texto };
+        var marcado = _marcas.Contains((tipo.COD_TIPO_OPERACION, item.Id));
+        var ocupado = _ocupadas.Contains((tipo.COD_TIPO_OPERACION, item.Id));
+        <td>
+            <input type="checkbox" checked="@marcado" disabled="@(ocupado || ReadOnly)"
+                   title="@Titulo(tipo, item)" aria-label="@tipo.COD_TIPO_OPERACION @item.Texto"
+                   data-celda="@tipo.COD_TIPO_OPERACION|@item.Id"
+                   @onchange="@(e => AlternarAsync(tipo.COD_TIPO_OPERACION, item, (bool)(e.Value ?? false)))" />
+            @if (Modo == "calculo" && marcado)
+            {
+                var n = Afectados(tipo.COD_TIPO_OPERACION, item.Id).Count;
+                <button type="button" class="mtx-f @(n > 0 ? "con-formula" : "")" data-formula="@tipo.COD_TIPO_OPERACION|@item.Id"
+                        title="@TextoFormula(tipo.COD_TIPO_OPERACION, item)" disabled="@(ocupado || ReadOnly)"
+                        @onclick="@(() => AbrirFormulaAsync(tipo, item))">ƒ@(n > 0 ? n.ToString() : "")</button>
+            }
+        </td>
+    };
+
+    private int ContarFila(string fila) => _marcas.Count(m => m.fila == fila);
+    private bool? Positivo(string cod) => _valores.TryGetValue(cod, out var v) ? v.FLG_POSITIVO : null;
+    private bool EsImpuesto(string cod) => _valores.TryGetValue(cod, out var v) && v.FLG_IMPUESTO == true;
+    private List<string> Afectados(string tipo, string valor) => _formulas.Where(f => f.COD_TIPO_OPERACION == tipo && f.COD_TIPO_VALOR_CALCULO == valor).Select(f => f.COD_TIPO_VALOR_CALCULO_AFECTADO).ToList();
+
+    private string Titulo(TipoOperacionModel t, ComboboxItem f)
+    {
+        if (Modo == "calculo" && _detalle.TryGetValue((t.COD_TIPO_OPERACION, f.Id), out var d))
+            return $"{t.COD_TIPO_OPERACION} · {f.Texto} (orden {d.NUM_ORDEN_PRESENTACION})";
+        return $"{t.COD_TIPO_OPERACION} · {f.Texto}";
+    }
+
+    /// <summary>"SUBTO = BSIMP + BSINA − DSCTS": el signo de cada sumando sale del flag Positivo del valor sumado (asi lo calcula el comprobante).</summary>
+    private string TextoFormula(string tipo, ComboboxItem f)
+    {
+        var af = Afectados(tipo, f.Id);
+        if (af.Count == 0) return $"{f.Id} = valor base (lo suman las líneas). Clic para editar la fórmula.";
+        var orden = af.OrderBy(a => _detalle.TryGetValue((tipo, a), out var d) ? d.NUM_ORDEN_PRESENTACION ?? int.MaxValue : int.MaxValue).ThenBy(a => a).ToList();
+        var cuerpo = string.Concat(orden.Select((a, i) => (i == 0 ? (Positivo(a) == true ? "" : "− ") : (Positivo(a) == true ? " + " : " − ")) + a));
+        return (EsImpuesto(f.Id) ? $"{f.Id} = ({cuerpo}) × tasa %" : $"{f.Id} = {cuerpo}") + ". Clic para editar.";
+    }
+
+    private async Task CargarAsync()
+    {
+        _cargando = true; _error = null;
+        try
+        {
+            var calculo = Modo == "calculo";
+            _marcas = new(); _detalle = new(); _formulas = new();
+            if (calculo)
+            {
+                var vals = await Http.SafeGetAsync<List<TiposValorCalculo>>(ComercialRoute.TiposValorCalculo) ?? new();
+                _valores = vals.ToDictionary(v => v.COD_TIPO_VALOR_CALCULO, v => v);
+                _filas = vals.Select(v => new ComboboxItem { Id = v.COD_TIPO_VALOR_CALCULO, Texto = v.DES_TIPO_VALOR_CALCULO ?? v.COD_TIPO_VALOR_CALCULO }).ToList();
+            }
+            else
+                _filas = await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.TiposComprobantesPagoCombobox) ?? new();
+
+            var url = $"{(calculo ? EstandarRoute.MatrizTiposOperacionCalculo : EstandarRoute.MatrizTiposOperacionComprobantes)}?codClaseOperacion={Uri.EscapeDataString(CodClase)}";
+            var resp = await Http.GetAsync(url);
+            if (!resp.IsSuccessStatusCode) { _error = $"No se pudo leer la matriz ({(int)resp.StatusCode})."; return; }
+            if (calculo)
+            {
+                var b = await resp.Content.ReadFromJsonAsync<ApiResponse<List<MatrizCalculoCelda>>>();
+                foreach (var c in b?.Data ?? new()) { _marcas.Add((c.COD_TIPO_OPERACION, c.COD_TIPO_VALOR_CALCULO)); _detalle[(c.COD_TIPO_OPERACION, c.COD_TIPO_VALOR_CALCULO)] = c; }
+                _formulas = await Http.SafeGetAsync<List<FormulaCelda>>($"{EstandarRoute.MatrizTiposOperacionFormulas}?codClaseOperacion={Uri.EscapeDataString(CodClase)}") ?? new();
+                // las filas siguen el orden con que se calculan: el menor orden del valor entre los tipos de la clase, y luego el codigo
+                var ord = _detalle.Values.GroupBy(d => d.COD_TIPO_VALOR_CALCULO).ToDictionary(g => g.Key, g => g.Min(d => d.NUM_ORDEN_PRESENTACION ?? int.MaxValue));
+                _filas = _filas.OrderBy(f => ord.GetValueOrDefault(f.Id, int.MaxValue)).ThenBy(f => f.Id).ToList();
+            }
+            else
+            {
+                var b = await resp.Content.ReadFromJsonAsync<ApiResponse<List<MatrizComprobanteCelda>>>();
+                foreach (var c in b?.Data ?? new()) _marcas.Add((c.COD_TIPO_OPERACION, c.COD_TIPO_COMPROBANTE_PAGO));
+            }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Marca o desmarca una casilla: se refleja de inmediato y se revierte si la API la rechaza.</summary>
+    private async Task AlternarAsync(string tipo, ComboboxItem fila, bool activo)
+    {
+        var clave = (tipo, fila.Id);
+        if (!_ocupadas.Add(clave)) return;
+        var antes = _marcas.Contains(clave);
+        if (activo) _marcas.Add(clave); else _marcas.Remove(clave);
+        try
+        {
+            var r = await EnviarAsync(tipo, fila.Id, activo, forzar: false);
+            if (r is null) { Revertir(clave, antes); return; }
+            if (r.ACCION == "CONFIRMAR")
+            {
+                var dlg = await DialogService.ShowAsync<ConfirmarAccionDialog>("Quitar valor de cálculo",
+                    new DialogParameters
+                    {
+                        ["Titulo"] = "Quitar valor de cálculo",
+                        ["IconoTitulo"] = Icons.Material.Filled.Warning,
+                        ["Mensaje"] = $"{tipo} · {fila.Texto}: {r.MENSAJE} ¿Quitarlo?",
+                        ["TextoConfirmar"] = "Quitar",
+                        ["IconoConfirmar"] = Icons.Material.Filled.Delete
+                    },
+                    new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+                if ((await dlg.Result) is not { Canceled: false }) { Revertir(clave, antes); return; }
+                r = await EnviarAsync(tipo, fila.Id, false, forzar: true);
+                if (r is null) { Revertir(clave, antes); return; }
+            }
+            if (!activo)
+            {
+                _detalle.Remove(clave);
+                // sus afectados y las referencias a el desaparecen (lo hace el procedimiento)
+                _formulas.RemoveAll(f => f.COD_TIPO_OPERACION == tipo && (f.COD_TIPO_VALOR_CALCULO == fila.Id || f.COD_TIPO_VALOR_CALCULO_AFECTADO == fila.Id));
+            }
+            else if (Modo == "calculo") await RefrescarCalculoAsync();
+        }
+        finally { _ocupadas.Remove(clave); StateHasChanged(); }
+    }
+
+    private void Revertir((string, string) clave, bool antes) { if (antes) _marcas.Add(clave); else _marcas.Remove(clave); }
+
+    private async Task<MatrizSetResultado?> EnviarAsync(string tipo, string fila, bool activo, bool forzar)
+    {
+        try
+        {
+            HttpResponseMessage resp;
+            if (Modo == "calculo")
+                resp = await Http.PostAsJsonAsync(EstandarRoute.MatrizTiposOperacionCalculo,
+                    new MatrizCalculoSetDto { COD_CLASE_OPERACION = CodClase, COD_TIPO_OPERACION = tipo, COD_TIPO_VALOR_CALCULO = fila, ACTIVO = activo, FORZAR = forzar });
+            else
+                resp = await Http.PostAsJsonAsync(EstandarRoute.MatrizTiposOperacionComprobantes,
+                    new MatrizComprobanteSetDto { COD_CLASE_OPERACION = CodClase, COD_TIPO_OPERACION = tipo, COD_TIPO_COMPROBANTE_PAGO = fila, ACTIVO = activo });
+            var body = await resp.Content.ReadFromJsonAsync<ApiResponse<MatrizSetResultado>>();
+            if (!resp.IsSuccessStatusCode || body is null || !body.Success || body.Data is null)
+            { Snackbar.Add(body?.Message ?? $"No se pudo guardar ({(int)resp.StatusCode}).", Severity.Error); return null; }
+            return body.Data;
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); return null; }
+    }
+
+    /// <summary>Trae de nuevo el orden, los flags y las formulas (el procedimiento los toma de otro tipo de la clase al agregar).</summary>
+    private async Task RefrescarCalculoAsync()
+    {
+        try
+        {
+            var b = await Http.SafeGetAsync<List<MatrizCalculoCelda>>($"{EstandarRoute.MatrizTiposOperacionCalculo}?codClaseOperacion={Uri.EscapeDataString(CodClase)}");
+            if (b is not null) { _detalle = b.ToDictionary(c => (c.COD_TIPO_OPERACION, c.COD_TIPO_VALOR_CALCULO), c => c); }
+            _formulas = await Http.SafeGetAsync<List<FormulaCelda>>($"{EstandarRoute.MatrizTiposOperacionFormulas}?codClaseOperacion={Uri.EscapeDataString(CodClase)}") ?? _formulas;
+        }
+        catch { }
+    }
+
+    private async Task AbrirFormulaAsync(TipoOperacionModel tipo, ComboboxItem fila)
+    {
+        if (!_detalle.TryGetValue((tipo.COD_TIPO_OPERACION, fila.Id), out var d)) await RefrescarCalculoAsync();
+        _detalle.TryGetValue((tipo.COD_TIPO_OPERACION, fila.Id), out d);
+        var candidatos = _marcas.Where(m => m.tipo == tipo.COD_TIPO_OPERACION && m.fila != fila.Id)
+            .Select(m => new FormulaValorDialog.Candidato(m.fila, _filas.FirstOrDefault(x => x.Id == m.fila)?.Texto ?? m.fila,
+                _detalle.TryGetValue(m, out var dd) ? dd.NUM_ORDEN_PRESENTACION : null, Positivo(m.fila)))
+            .OrderBy(c => c.Orden ?? int.MaxValue).ThenBy(c => c.Cod).ToList();
+        var dlg = await DialogService.ShowAsync<FormulaValorDialog>("Fórmula",
+            new DialogParameters
+            {
+                ["CodClase"] = CodClase, ["CodTipo"] = tipo.COD_TIPO_OPERACION, ["DesTipo"] = tipo.DES_TIPO_OPERACION,
+                ["CodValor"] = fila.Id, ["DesValor"] = fila.Texto, ["EsImpuesto"] = EsImpuesto(fila.Id),
+                ["Candidatos"] = candidatos, ["Afectados"] = Afectados(tipo.COD_TIPO_OPERACION, fila.Id),
+                ["Orden"] = d?.NUM_ORDEN_PRESENTACION, ["FlgInverso"] = d?.FLG_CALCULO_INVERSO, ["FlgMostrarComprobante"] = d?.FLG_MOSTRAR_COMPROBANTE,
+                ["FlgValorMostrar"] = d?.FLG_VALOR_MOSTRAR, ["FlgPositivo"] = d?.FLG_POSITIVO
+            },
+            new DialogOptions { MaxWidth = MaxWidth.False, FullWidth = false, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await RefrescarCalculoAsync(); StateHasChanged(); }
+    }
+}

@@ -1,0 +1,417 @@
+@using KONSolutions.Shared.Models.Comercial
+@using KONSolutions.Shared.Models.Finanzas
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@using ProductoModel = KONSolutions.Shared.Models.Estandar.Productos
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject ErrorLogService ErrorLog
+@inject IDialogService DialogService
+
+@* Traer un comprobante recibido por correo al Registro de Compras. El servicio de XML recibidos ya bajó los XML (y los PDF) de los correos de los proveedores; aquí se elige uno, se completa el producto
+   de la empresa de cada línea (lo que no salió solo de la ficha del proveedor ni del código de barras), se confirma el tipo de operación y se genera el registro con su detalle.
+   El tipo de operación sale del XML (el código de SUNAT y si trae servicios, unidad ZZ): se propone ya elegido y se puede cambiar. El PDF que vino en el mismo correo queda como PDF del registro. *@
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Traer de XML recibidos</MudText></TitleContent>
+    <DialogContent>
+        @if (_sel is null)
+        {
+            <MudGrid Spacing="2" Class="mb-2">
+                <MudItem xs="12" md="5">
+                    <MudTextField T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Buscar (número, proveedor, RUC o producto)" @bind-Value="_texto" Immediate="true"
+                                  OnKeyUp="@(async (KeyboardEventArgs e) => { if (e.Key == "Enter") await BuscarAsync(); })" data-campo="buscar-texto" />
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudSelect T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Estado" Value="_estado" ValueChanged="@(v => { _estado = v ?? ""; return BuscarAsync(); })" data-campo="estado">
+                        <MudSelectItem T="string" Value="@("PEN")">Pendientes</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("USA")">Ya usados</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("DES")">Descartados</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="4" Class="d-flex align-center" Style="gap:8px;">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="BuscarAsync" Disabled="_cargando" data-accion="buscar">Buscar</MudButton>
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.MarkEmailUnread" OnClick="CargarAhoraAsync" Disabled="@(_cargando || _trabajando)" data-accion="cargar-ahora">Traer los nuevos del correo</MudButton>
+                </MudItem>
+            </MudGrid>
+            @if (_cargando || _trabajando)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" data-estado="cargando" />
+            }
+            @if (_items.Count == 0 && !_cargando)
+            {
+                <MudText Class="pa-4 mono" Style="opacity:.6;" data-vacio="xml-recibidos">@(_errorLista ?? "No hay comprobantes recibidos con ese filtro.")</MudText>
+            }
+            else
+            {
+                <div style="max-height:440px;overflow:auto;">
+                    <MudSimpleTable Dense="true" Hover="true" Bordered="true" FixedHeader="true">
+                        <thead>
+                            <tr><th>Emisión</th><th>Tipo</th><th>Número</th><th>Proveedor</th><th>Moneda</th><th style="text-align:right;">Total</th><th style="text-align:center;">Líneas sin producto</th><th>Estado</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var x in _items)
+                            {
+                                <tr @onclick="@(() => ElegirAsync(x))" style="cursor:pointer;" data-cpe="@x.NUM_CPE.ToString("0")">
+                                    <td class="mono">@x.FEC_EMISION.ToString("dd/MM/yyyy")</td>
+                                    <td>@x.DES_TIPO_COMPROBANTE</td>
+                                    <td class="mono">@x.NUM_COMPROBANTE</td>
+                                    <td>@(string.IsNullOrWhiteSpace(x.DES_ENTIDAD) ? x.DES_RAZON_SOCIAL_EMISOR : x.DES_ENTIDAD) <span class="mono" style="opacity:.6;">@x.NUM_RUC_EMISOR</span>@if (x.COD_ENTIDAD is null) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-1" data-chip="sin-proveedor">proveedor sin registrar</MudChip> }</td>
+                                    <td>@x.COD_MONEDA_SUNAT</td>
+                                    <td class="mono" style="text-align:right;">@x.VAL_TOTAL_CON_SIGNO.ToString("N2")</td>
+                                    <td class="mono" style="text-align:center;">@(x.NUM_LINEAS_SIN_PRODUCTO > 0 ? x.NUM_LINEAS_SIN_PRODUCTO.ToString() : "")</td>
+                                    <td><MudChip T="string" Size="Size.Small" Color="@ColorEstado(x.COD_ESTADO_USO)">@x.DES_ESTADO_USO@(x.NUM_REGISTRO is { } n ? $" · registro {n:0}" : "")</MudChip></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+                <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.7;" data-resumen="lista">@_items.Count comprobante@(_items.Count == 1 ? "" : "s"). Haz clic en uno para revisarlo y traerlo.</MudText>
+            }
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" data-accion="cerrar">Cerrar</MudButton>
+            </MudStack>
+        }
+        else
+        {
+            var f = _ficha;
+            <MudStack Row="true" Spacing="2" Class="mb-2" AlignItems="AlignItems.Center">
+                <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Volver" Disabled="_trabajando" data-accion="volver">Volver a la lista</MudButton>
+                <MudText Typo="Typo.subtitle1" data-titulo="comprobante">@_sel.DES_TIPO_COMPROBANTE @_sel.NUM_COMPROBANTE</MudText>
+                <MudChip T="string" Size="Size.Small" Color="@ColorEstado(_sel.COD_ESTADO_USO)" data-chip="estado">@_sel.DES_ESTADO_USO</MudChip>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Code" OnClick="VerXmlAsync" data-accion="ver-xml">Ver XML</MudButton>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.PictureAsPdf" OnClick="VerPdfAsync" Disabled="@string.IsNullOrWhiteSpace(_sel.DES_NOMBRE_ARCHIVO_PDF)" data-accion="ver-pdf">Ver PDF</MudButton>
+            </MudStack>
+
+            @if (_sel.COD_ESTADO_USO == "USA")
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-aviso="usado">Este comprobante ya generó el registro de compras N° @_sel.NUM_REGISTRO?.ToString("0"). No se puede traer otra vez.</MudAlert>
+            }
+            else if (_sel.COD_ESTADO_USO == "DES")
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-aviso="descartado">Está descartado. Devuélvelo a pendiente si quieres traerlo.</MudAlert>
+            }
+
+            <MudPaper Elevation="0" Class="pa-3 mb-2" Style="border:1px solid var(--line);" data-panel="cabecera">
+                <MudGrid Spacing="1">
+                    <MudItem xs="12" md="6"><MudText Typo="Typo.caption" Style="opacity:.7;">Proveedor</MudText><MudText data-dato="proveedor">@(string.IsNullOrWhiteSpace(_sel.DES_ENTIDAD) ? _sel.DES_RAZON_SOCIAL_EMISOR : _sel.DES_ENTIDAD) · RUC @_sel.NUM_RUC_EMISOR</MudText></MudItem>
+                    <MudItem xs="6" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Emisión</MudText><MudText class="mono">@_sel.FEC_EMISION.ToString("dd/MM/yyyy")</MudText></MudItem>
+                    <MudItem xs="6" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Vencimiento</MudText><MudText class="mono">@(_sel.FEC_VENCIMIENTO?.ToString("dd/MM/yyyy") ?? "—")</MudText></MudItem>
+                    <MudItem xs="12" md="2"><MudText Typo="Typo.caption" Style="opacity:.7;">Total</MudText><MudText class="mono" data-dato="total">@_sel.COD_MONEDA_SUNAT @_sel.VAL_TOTAL_CON_SIGNO.ToString("N2")</MudText></MudItem>
+                    @if (!string.IsNullOrWhiteSpace(_sel.NUM_ORDEN_COMPRA_CITADA))
+                    {
+                        <MudItem xs="12"><MudText Typo="Typo.caption" data-dato="oc">Cita la orden de compra <b>@_sel.NUM_ORDEN_COMPRA_CITADA</b>: si está aprobada y es de este proveedor, el registro se asocia a ella solo.</MudText></MudItem>
+                    }
+                    @if (_sel.COD_ENTIDAD is null)
+                    {
+                        <MudItem xs="12"><MudAlert Severity="Severity.Warning" Dense="true" data-aviso="sin-proveedor">El RUC @_sel.NUM_RUC_EMISOR no está registrado como proveedor. Regístralo antes de traer el comprobante.</MudAlert></MudItem>
+                    }
+                </MudGrid>
+            </MudPaper>
+
+            <MudGrid Spacing="2" Class="mb-1">
+                <MudItem xs="12" md="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tipos"
+                               TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                               Value="@_codTipoOperacion" ValueChanged="@(v => _codTipoOperacion = string.IsNullOrWhiteSpace(v) ? null : v)"
+                               Disabled="@(!Editable)" Label="Tipo de operación del registro" Class="mb-1" />
+                </MudItem>
+                <MudItem xs="12" md="6" Class="d-flex align-center">
+                    <MudText Typo="Typo.caption" data-aviso="tipo-operacion" Style="opacity:.85;">@TextoTipoOperacion</MudText>
+                </MudItem>
+            </MudGrid>
+
+            @if (Editable && _sel.NUM_LINEAS_SIN_PRODUCTO > 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-aviso="sin-producto">
+                    @_sel.NUM_LINEAS_SIN_PRODUCTO línea@(_sel.NUM_LINEAS_SIN_PRODUCTO == 1 ? "" : "s") sin producto de la empresa. El registro se genera igual con lo que dice el proveedor y el producto se completa después en el registro; si lo eliges aquí, queda listo.
+                </MudAlert>
+            }
+            <div style="max-height:300px;overflow:auto;">
+                <MudSimpleTable Dense="true" Bordered="true" FixedHeader="true">
+                    <thead>
+                        <tr><th>#</th><th>Producto del proveedor</th><th>Unidad</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;">Precio</th><th>Lote</th><th style="min-width:300px;">Producto de la empresa</th><th>Cómo salió</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var l in _lineas)
+                        {
+                            <tr data-linea="@l.NUM_ITEM">
+                                <td class="mono">@l.NUM_ITEM</td>
+                                <td>@if (!string.IsNullOrWhiteSpace(l.COD_PRODUCTO_VENDEDOR)) { <span class="mono">@l.COD_PRODUCTO_VENDEDOR · </span> }@l.DES_PRODUCTO</td>
+                                <td>@l.COD_UNIDAD_SUNAT</td>
+                                <td class="mono" style="text-align:right;">@l.CAN_PRODUCTO?.ToString("0.######")</td>
+                                <td class="mono" style="text-align:right;">@l.PRE_UNITARIO?.ToString("0.00####")</td>
+                                <td class="mono" data-celda="lote">@l.NUM_LOTE</td>
+                                <td>
+                                    <AriaCombo TItem="ProductoModel" Items="_productos"
+                                               TextFunc="@(x => $"{x.COD_PRODUCTO} — {x.DES_PRODUCTO}")" ValueFunc="@(x => x.COD_PRODUCTO)"
+                                               Value="@l.COD_PRODUCTO" ValueChanged="@(v => AsignarAsync(l, v))"
+                                               SearchFunc="BuscarProductoAsync" MinCharacters="2"
+                                               TextoInicial="@(string.IsNullOrWhiteSpace(l.COD_PRODUCTO) ? null : $"{l.COD_PRODUCTO} — {l.DES_PRODUCTO_EMPRESA}")"
+                                               Disabled="@(!Editable || _trabajando)" Label="Producto" Class="mb-0" />
+                                </td>
+                                <td data-celda="origen">@Origen(l.COD_ORIGEN_ASIGNACION)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+
+            @if (Editable)
+            {
+                <MudStack Row="true" Spacing="3" Class="mt-2" AlignItems="AlignItems.Center">
+                    <MudSwitch T="bool" @bind-Value="_recordar" Color="Color.Primary" Label="Recordar en la ficha del proveedor los productos que asigné a mano" data-campo="recordar" />
+                    <MudSwitch T="bool" @bind-Value="_validar" Color="Color.Primary" Label="Validar al generar" data-campo="validar" />
+                </MudStack>
+            }
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+                @if (_sel.COD_ESTADO_USO == "PEN")
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="@(() => DescartarAsync(true))" Disabled="_trabajando" data-accion="descartar">Descartar</MudButton>
+                }
+                else if (_sel.COD_ESTADO_USO == "DES")
+                {
+                    <MudButton Variant="Variant.Outlined" OnClick="@(() => DescartarAsync(false))" Disabled="_trabajando" data-accion="devolver">Devolver a pendiente</MudButton>
+                }
+                <MudButton Variant="Variant.Text" OnClick="@(() => MudDialog.Cancel())" Disabled="_trabajando" data-accion="cancelar">Cerrar</MudButton>
+                @if (Editable)
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="GenerarAsync" Disabled="@(_trabajando || _sel.COD_ENTIDAD is null)" data-accion="generar">Generar registro de compras</MudButton>
+                }
+            </MudStack>
+        }
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>La clase de operación del Registro de Compras (la de la opción de menú).</summary>
+    [Parameter, EditorRequired] public string CodClaseOperacion { get; set; } = "";
+    /// <summary>Los tipos de operación de esa clase, para elegir con cuál se registra.</summary>
+    [Parameter] public List<RegistroCompraTipoOperacion> TiposOperacion { get; set; } = new();
+    private List<ComboboxItem> _tipos = new();
+
+    private List<CpeRecibido> _items = new();
+    private string _texto = "", _estado = "PEN";
+    private bool _cargando, _trabajando;
+    private string? _errorLista;
+
+    private CpeRecibido? _sel;
+    private CpeRecibidoFicha? _ficha;
+    private List<CpeRecibidoLinea> _lineas = new();
+    private CpeRecibidoTipoOperacion? _prop;
+    private string? _codTipoOperacion;
+    private bool _recordar = true, _validar;
+    private List<ProductoModel> _productos = new();
+
+    private bool Editable => _sel is { COD_ESTADO_USO: "PEN" };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tipos = TiposOperacion.Select(t => new ComboboxItem { Id = t.COD_TIPO_OPERACION, Texto = t.DES_TIPO_OPERACION ?? t.COD_TIPO_OPERACION }).ToList();
+        await BuscarAsync();
+    }
+
+    private static Color ColorEstado(string? e) => e switch { "PEN" => Color.Warning, "USA" => Color.Success, _ => Color.Default };
+
+    private static string Origen(string? o) => o switch
+    {
+        "EQU" => "ficha del proveedor", "GTI" => "código de barras", "MAN" => "asignado a mano", "COM" => "código del comprador", _ => ""
+    };
+
+    /// <summary>Lo que dice el XML sobre el tipo de operación, o por qué hay que elegirlo.</summary>
+    private string TextoTipoOperacion
+    {
+        get
+        {
+            if (_prop is null) return "";
+            var xml = string.IsNullOrWhiteSpace(_prop.COD_TIPO_OPERACION_SUNAT) ? "El XML no trae el tipo de operación de SUNAT" : $"El XML trae el tipo de operación {_prop.COD_TIPO_OPERACION_SUNAT}";
+            var que = _prop.FLG_BIEN ? "de bienes" : "de servicios (unidad ZZ)";
+            return _prop.COD_TIPO_OPERACION is not null
+                ? $"{xml}, {que}: le corresponde «{_prop.DES_TIPO_OPERACION}». Puedes elegir otro."
+                : $"{xml}, {que}. {_prop.DES_MOTIVO}";
+        }
+    }
+
+    private async Task BuscarAsync()
+    {
+        _cargando = true; _errorLista = null;
+        try
+        {
+            var url = $"{ApiRoutes.Finanzas.CpeRecibidos}?NUM_FILAS=200"
+                    + (string.IsNullOrWhiteSpace(_estado) ? "" : $"&COD_ESTADO_USO={Uri.EscapeDataString(_estado)}")
+                    + (string.IsNullOrWhiteSpace(_texto) ? "" : $"&SEARCH={Uri.EscapeDataString(_texto.Trim())}");
+            var resp = await Http.GetAsync(url);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<List<CpeRecibido>>>();
+            if (!resp.IsSuccessStatusCode || r is not { Success: true }) { _items = new(); _errorLista = string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo leer la lista de comprobantes." : r!.Message; }
+            else _items = r.Data ?? new();
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(BuscarAsync));
+            _items = new(); _errorLista = "No se pudo leer la lista de comprobantes. Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+    }
+
+    /// <summary>Corre ahora el servicio que baja los XML del correo y vuelve a buscar.</summary>
+    private async Task CargarAhoraAsync()
+    {
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PostAsync(ApiRoutes.Finanzas.XmlRecibidosEjecutar, null);
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<XmlRecibidosCiclo>>();
+            if (!resp.IsSuccessStatusCode || r is not { Success: true })
+            {
+                await ErrorDialogHelper.MostrarAvisoAsync(string.IsNullOrWhiteSpace(r?.Message) ? "No se pudo revisar el correo." : r!.Message, DialogService, nameof(RegistroCompraXmlRecibidosDialog), "No se pudo revisar el correo");
+                return;
+            }
+            var c = r.Data ?? new();
+            Snackbar.Add(c.Correos == 0 ? "No hay correos nuevos." :
+                $"Se revisaron {c.Correos} correo{(c.Correos == 1 ? "" : "s")}: {c.XmlCargados} XML cargado{(c.XmlCargados == 1 ? "" : "s")}"
+                + (c.XmlRepetidos > 0 ? $", {c.XmlRepetidos} repetido{(c.XmlRepetidos == 1 ? "" : "s")}" : "")
+                + (c.CorreosConError > 0 ? $", {c.CorreosConError} con error" : "") + ".", c.CorreosConError > 0 ? Severity.Warning : Severity.Success);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(CargarAhoraAsync)); Snackbar.Add("No se pudo revisar el correo. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+        await BuscarAsync();
+    }
+
+    private async Task ElegirAsync(CpeRecibido x)
+    {
+        _trabajando = true;
+        try
+        {
+            var tFicha = Http.SafeGetAsync<CpeRecibidoFicha>(ApiRoutes.Finanzas.CpeRecibido(x.NUM_CPE));
+            var tLineas = Http.SafeGetAsync<List<CpeRecibidoLinea>>(ApiRoutes.Finanzas.CpeRecibido(x.NUM_CPE, "lineas"));
+            var tProp = Http.SafeGetAsync<CpeRecibidoTipoOperacion>(ApiRoutes.Finanzas.CpeRecibidoTipoOperacion(x.NUM_CPE, CodClaseOperacion));
+            await Task.WhenAll(tFicha, tLineas, tProp);
+            _ficha = tFicha.Result;
+            _lineas = tLineas.Result ?? new();
+            _prop = tProp.Result;
+            _productos = _lineas.Where(l => !string.IsNullOrWhiteSpace(l.COD_PRODUCTO)).Select(l => new ProductoModel { COD_PRODUCTO = l.COD_PRODUCTO!, DES_PRODUCTO = l.DES_PRODUCTO_EMPRESA ?? "" }).ToList();
+            // el tipo que propone el XML, si es uno de los que se pueden elegir aquí
+            _codTipoOperacion = _prop?.COD_TIPO_OPERACION is { } t && _tipos.Any(o => o.Id == t) ? t : null;
+            _sel = x;
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(ElegirAsync));
+            Snackbar.Add("No se pudo leer el comprobante. Ver detalle en el log de errores.", Severity.Error);
+        }
+        finally { _trabajando = false; }
+    }
+
+    private async Task Volver() { _sel = null; _ficha = null; _lineas = new(); _prop = null; await BuscarAsync(); }
+
+    private async Task<IEnumerable<ProductoModel>> BuscarProductoAsync(string texto, CancellationToken ct)
+    {
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>($"{ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(texto)}", ct);
+            var lista = r?.Data ?? new();
+            _productos = _productos.Where(p => lista.All(l => l.COD_PRODUCTO != p.COD_PRODUCTO)).Concat(lista).ToList();
+            return lista;
+        }
+        catch (OperationCanceledException) { return Enumerable.Empty<ProductoModel>(); }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(BuscarProductoAsync)); return Enumerable.Empty<ProductoModel>(); }
+    }
+
+    /// <summary>Asigna (o quita, si viene vacío) el producto de la empresa de una línea y vuelve a leer las líneas para ver cómo quedó.</summary>
+    private async Task AsignarAsync(CpeRecibidoLinea l, string? cod)
+    {
+        if (_sel is null) return;
+        cod = string.IsNullOrWhiteSpace(cod) ? null : cod;
+        if (cod == l.COD_PRODUCTO) return;
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Finanzas.CpeRecibido(_sel.NUM_CPE, $"lineas/{l.NUM_ITEM}/producto"), new RecibidoAsignarProductoDto { COD_PRODUCTO = cod });
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraXmlRecibidosDialog), nameof(AsignarAsync), $"No se pudo asignar el producto de la línea {l.NUM_ITEM}");
+            }
+            await RecargarLineasAsync();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(AsignarAsync)); Snackbar.Add("No se pudo asignar el producto. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+    }
+
+    private async Task RecargarLineasAsync()
+    {
+        if (_sel is null) return;
+        var r = await Http.SafeGetAsync<List<CpeRecibidoLinea>>(ApiRoutes.Finanzas.CpeRecibido(_sel.NUM_CPE, "lineas"));
+        _lineas = r ?? _lineas;
+        _sel.NUM_LINEAS_SIN_PRODUCTO = _lineas.Count(x => string.IsNullOrWhiteSpace(x.COD_PRODUCTO));
+    }
+
+    private async Task DescartarAsync(bool descartar)
+    {
+        if (_sel is null) return;
+        if (descartar)
+        {
+            var ok = await DialogService.ShowMessageBox("Descartar comprobante",
+                $"¿Descartar {_sel.DES_TIPO_COMPROBANTE} {_sel.NUM_COMPROBANTE}? Dejará de salir entre los pendientes; puedes devolverlo a pendiente cuando quieras.",
+                yesText: "Descartar", cancelText: "Cancelar");
+            if (ok != true) return;
+        }
+        _trabajando = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(ApiRoutes.Finanzas.CpeRecibido(_sel.NUM_CPE, "descartar"), new RecibidoDescartarDto { FLG_DESCARTAR = descartar });
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraXmlRecibidosDialog), nameof(DescartarAsync), descartar ? "No se pudo descartar" : "No se pudo devolver a pendiente");
+                return;
+            }
+            Snackbar.Add(descartar ? "Comprobante descartado." : "Comprobante devuelto a pendiente.", Severity.Success);
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(DescartarAsync)); Snackbar.Add("No se pudo cambiar el estado. Ver detalle en el log de errores.", Severity.Error); return; }
+        finally { _trabajando = false; }
+        await Volver();
+    }
+
+    private Task VerXmlAsync()
+        => DialogService.ShowAsync<RecibidoXmlDialog>("", new DialogParameters { ["Url"] = ApiRoutes.Finanzas.CpeRecibido(_sel!.NUM_CPE, "xml"), ["Titulo"] = $"XML de {_sel.NUM_COMPROBANTE}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private Task VerPdfAsync()
+        => DialogService.ShowAsync<RecibidoPdfDialog>("", new DialogParameters { ["Url"] = ApiRoutes.Finanzas.CpeRecibido(_sel!.NUM_CPE, "pdf"), ["Titulo"] = $"PDF de {_sel.NUM_COMPROBANTE}" },
+                                                      new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = false });
+
+    private async Task GenerarAsync()
+    {
+        if (_sel is null) return;
+        if (string.IsNullOrWhiteSpace(_codTipoOperacion))
+        {
+            await ErrorDialogHelper.MostrarAvisoAsync("Elige el tipo de operación con el que se registra el comprobante." + (string.IsNullOrWhiteSpace(_prop?.DES_MOTIVO) ? "" : " " + _prop!.DES_MOTIVO),
+                                                      DialogService, nameof(RegistroCompraXmlRecibidosDialog), "Falta el tipo de operación");
+            return;
+        }
+        _trabajando = true;
+        try
+        {
+            var dto = new CpeRecibidoGenerarDto { COD_CLASE_OPERACION = CodClaseOperacion, COD_TIPO_OPERACION = _codTipoOperacion, COD_ENTIDAD = _sel.COD_ENTIDAD, FLG_RECORDAR_EQUIVALENCIAS = _recordar, VALIDAR = _validar };
+            var resp = await Http.PostAsJsonAsync(ApiRoutes.Finanzas.CpeRecibido(_sel.NUM_CPE, "generar-registro"), dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(RegistroCompraXmlRecibidosDialog), nameof(GenerarAsync), "No se pudo generar el registro de compras");
+                return;
+            }
+            var r = await resp.Content.ReadFromJsonAsync<ApiResponse<CpeRecibidoGenerarResult>>();
+            var d = r?.Data ?? new CpeRecibidoGenerarResult();
+            var msg = $"Registro de compras N° {d.NUM_REGISTRO:0} generado.";
+            if (d.NUM_PEDIDOS_ASOCIADOS > 0) msg += $" Asociado a {d.NUM_PEDIDOS_ASOCIADOS} orden{(d.NUM_PEDIDOS_ASOCIADOS == 1 ? "" : "es")} de compra ({d.NUM_LINEAS_VINCULADAS} línea{(d.NUM_LINEAS_VINCULADAS == 1 ? "" : "s")} vinculada{(d.NUM_LINEAS_VINCULADAS == 1 ? "" : "s")}).";
+            if (d.NUM_LINEAS_SIN_PRODUCTO > 0) msg += $" {d.NUM_LINEAS_SIN_PRODUCTO} línea{(d.NUM_LINEAS_SIN_PRODUCTO == 1 ? "" : "s")} sin producto: complétala{(d.NUM_LINEAS_SIN_PRODUCTO == 1 ? "" : "s")} en el registro.";
+            if (d.NUM_EQUIVALENCIAS_RECORDADAS > 0) msg += $" Se recordaron {d.NUM_EQUIVALENCIAS_RECORDADAS} producto{(d.NUM_EQUIVALENCIAS_RECORDADAS == 1 ? "" : "s")} en la ficha del proveedor.";
+            if (d.PDF_COPIADO) msg += " El PDF del correo quedó en el registro.";
+            Snackbar.Add(msg, Severity.Success);
+            if (!string.IsNullOrWhiteSpace(d.AVISO_PDF)) Snackbar.Add(d.AVISO_PDF, Severity.Warning);
+            MudDialog.Close(DialogResult.Ok(d.NUM_REGISTRO));
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(RegistroCompraXmlRecibidosDialog), nameof(GenerarAsync)); Snackbar.Add("No se pudo generar el registro. Ver detalle en el log de errores.", Severity.Error); }
+        finally { _trabajando = false; }
+    }
+}

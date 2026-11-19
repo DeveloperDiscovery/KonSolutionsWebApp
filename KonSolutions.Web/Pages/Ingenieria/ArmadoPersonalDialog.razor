@@ -1,0 +1,180 @@
+@* Personal del armado de linea (script SQL 127): pone a cada persona en un puesto, compara el personal REQUERIDO por categoria con el DISPONIBLE y sugiere la asignacion.
+   Una persona va en un solo puesto; no mas personas que operarios; la categoria de la persona debe ser la que pide el puesto o una mas alta (A es mas alta que B...). *@
+@using KONSolutions.Shared.Models.Ingenieria
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+        <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" Disabled="_ocupado" OnClick="Sugerir" data-accion="sugerir-personal">Sugerir personal</MudButton>
+            <MudText Typo="Typo.caption" Style="opacity:.7;">@_vacantes vacantes de @_lugares lugares</MudText>
+            @if (_sucio) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" data-chip="sin-guardar">cambios sin guardar</MudChip> }
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="@(_ocupado || !_sucio)" OnClick="Cargar" data-accion="descartar">Descartar cambios</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_ocupado || !_sucio)" OnClick="Guardar" data-accion="guardar">Guardar personal</MudButton>
+        </div>
+        <div class="d-flex flex-wrap gap-3" style="align-items:flex-start;">
+            <div style="flex:1 1 560px;min-width:0;" data-zona="puestos">
+                @foreach (var p in _puestos.OrderBy(x => x.NUM_PUESTO))
+                {
+                    var gente = Gente(p.NUM_PUESTO).ToList();
+                    var libres = p.NUM_OPERARIOS - gente.Count;
+                    <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border:1px solid var(--line);" data-puesto="@p.NUM_PUESTO">
+                        <div class="d-flex align-center gap-2 flex-wrap">
+                            <MudChip T="string" Size="Size.Small">@p.NUM_PUESTO</MudChip>
+                            <b>@p.DES_PUESTO</b>
+                            @if (!string.IsNullOrEmpty(p.COD_CATEGORIA_OCUPACIONAL)) { <MudChip T="string" Size="Size.Small" title="La categoría que pide el puesto (o una más alta)">pide @p.COD_CATEGORIA_OCUPACIONAL</MudChip> }
+                            <MudChip T="string" Size="Size.Small" Color="@(libres > 0 ? Color.Warning : Color.Success)" data-dato="cupo">@gente.Count de @p.NUM_OPERARIOS</MudChip>
+                        </div>
+                        <table class="of-tabla mt-1" data-tabla="personas-puesto"><tbody>
+                            @foreach (var x in gente)
+                            {
+                                <tr data-persona="@x.COD_ENTIDAD_PERSONAL">
+                                    <td class="mono" style="width:90px;opacity:.6;">@x.COD_PERSONAL</td>
+                                    <td>@x.DES_PERSONAL
+                                        @if (x.FLG_CATEGORIA_SUPERIOR) { <MudChip T="string" Size="Size.Small" Color="Color.Info" title="Su categoría es más alta que la que pide el puesto">categoría superior</MudChip> }
+                                        @if (x.FLG_NO_VIGENTE) { <MudChip T="string" Size="Size.Small" Color="Color.Error" title="Cesó o su categoría está inactiva">no vigente</MudChip> }</td>
+                                    <td style="width:60px;"><MudChip T="string" Size="Size.Small">@x.COD_CATEGORIA_OCUPACIONAL</MudChip></td>
+                                    <td style="width:40px;"><MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => Quitar(x))" title="Sacar del puesto" data-accion="quitar-persona" /></td>
+                                </tr>
+                            }
+                            @if (gente.Count == 0) { <tr><td style="opacity:.5;">Sin personal asignado.</td></tr> }
+                        </tbody></table>
+                        @if (libres > 0)
+                        {
+                            <MudSelect T="int" Value="0" ValueChanged="@(v => Agregar(p, v))" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Agregar persona" Class="mt-1" data-campo="agregar">
+                                @foreach (var c in Candidatos(p)) { <MudSelectItem T="int" Value="@c.COD_ENTIDAD_PERSONAL">@c.COD_PERSONAL · @c.DES_PERSONAL · @c.COD_CATEGORIA_OCUPACIONAL@(string.IsNullOrEmpty(c.DES_OPERACION) ? "" : " · hace " + c.DES_OPERACION)</MudSelectItem> }
+                            </MudSelect>
+                        }
+                    </MudPaper>
+                }
+                @if (_puestos.Count == 0) { <MudText Class="pa-3" Style="opacity:.55;" data-zona="sin-puestos">El armado no tiene puestos: reparte las operaciones primero.</MudText> }
+            </div>
+            <div style="flex:0 1 420px;min-width:300px;" data-zona="cobertura">
+                <MudPaper Elevation="0" Class="pa-2" Style="border:1px solid var(--line);">
+                    <MudText Typo="Typo.subtitle2">Requerido contra disponible</MudText>
+                    <table class="of-tabla" data-tabla="cobertura">
+                        <thead><tr><th>Cat.</th><th class="n">Pide</th><th class="n">Hay</th><th class="n">Puestos</th><th class="n">Cubre sup.</th><th class="n">Falta</th></tr></thead>
+                        <tbody>
+                            @foreach (var c in _cobertura)
+                            {
+                                <tr data-cat="@c.COD_CATEGORIA_OCUPACIONAL" class="@(c.CAN_FALTANTES > 0 ? "ap-falta" : "")">
+                                    <td title="@c.DES_CATEGORIA_OCUPACIONAL">@c.COD_CATEGORIA_OCUPACIONAL</td>
+                                    <td class="n mono">@c.CAN_REQUERIDOS</td><td class="n mono">@c.CAN_DISPONIBLES</td><td class="n mono">@AsignadosDeCategoria(c.COD_CATEGORIA_OCUPACIONAL)</td>
+                                    <td class="n mono">@c.CAN_CUBIERTOS_SUPERIOR</td><td class="n mono"><b>@c.CAN_FALTANTES</b></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <MudText Typo="Typo.caption" Style="opacity:.65;">"Hay" es el personal activo de la categoría en el proceso; "Cubre sup." es lo que cubre el sobrante de una categoría más alta. "Puestos" cuenta lo asignado aquí (sin guardar incluido).</MudText>
+                    @if (_cobertura.Sum(c => c.CAN_FALTANTES) > 0) { <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2" data-aviso="faltan">Faltan @_cobertura.Sum(c => c.CAN_FALTANTES) operarios que ni el sobrante de categorías superiores cubre.</MudAlert> }
+                    else { <MudAlert Severity="Severity.Success" Dense="true" Class="mt-2" data-aviso="cubierto">El personal disponible cubre lo que pide el armado.</MudAlert> }
+                </MudPaper>
+            </div>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Close(DialogResult.Ok(true)))" data-accion="cerrar">Cerrar</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .of-tabla { width: 100%; border-collapse: collapse; background: transparent; color: inherit; }
+    .of-tabla th, .of-tabla td { padding: 3px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--mud-palette-lines-default, rgba(128,128,128,.35)); color: inherit; }
+    .of-tabla th { font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
+    .of-tabla .n { text-align: right; white-space: nowrap; }
+    .ap-falta td { background: rgba(200,90,40,.14); }
+</style>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string CodArmado { get; set; } = "";
+
+    private sealed class Asig { public int COD_ENTIDAD_PERSONAL; public string? COD_PERSONAL, DES_PERSONAL, COD_CATEGORIA_OCUPACIONAL, DES_OPERACION; public int NUM_PUESTO; public bool FLG_CATEGORIA_SUPERIOR, FLG_NO_VIGENTE; }
+
+    private List<ArmadoPuesto> _puestos = new();
+    private List<ArmadoPersonaDisponible> _disponibles = new();
+    private List<ArmadoCobertura> _cobertura = new();
+    private List<Asig> _asig = new();
+    private Dictionary<string, int> _orden = new();      // categoria -> posicion (A = 1...)
+    private bool _sucio, _ocupado;
+    private string _error = "";
+
+    private int _lugares => _puestos.Sum(p => p.NUM_OPERARIOS);
+    private int _vacantes => _lugares - _asig.Count(a => _puestos.Any(p => p.NUM_PUESTO == a.NUM_PUESTO));
+
+    private IEnumerable<Asig> Gente(int puesto) => _asig.Where(a => a.NUM_PUESTO == puesto).OrderBy(a => _orden.GetValueOrDefault(a.COD_CATEGORIA_OCUPACIONAL ?? "", 99)).ThenBy(a => a.DES_PERSONAL);
+    private int AsignadosDeCategoria(string cat) => _asig.Count(a => a.COD_CATEGORIA_OCUPACIONAL == cat);
+
+    /// <summary>Las personas libres cuya categoria es la que pide el puesto o una mas alta (los puestos sin categoria aceptan a cualquiera).</summary>
+    private IEnumerable<ArmadoPersonaDisponible> Candidatos(ArmadoPuesto p)
+    {
+        var usados = _asig.Select(a => a.COD_ENTIDAD_PERSONAL).ToHashSet();
+        var tope = string.IsNullOrEmpty(p.COD_CATEGORIA_OCUPACIONAL) ? int.MaxValue : _orden.GetValueOrDefault(p.COD_CATEGORIA_OCUPACIONAL, int.MaxValue);
+        return _disponibles.Where(d => !usados.Contains(d.COD_ENTIDAD_PERSONAL) && d.NUM_ORDEN_CATEGORIA <= tope)
+            .OrderByDescending(d => d.NUM_ORDEN_CATEGORIA).ThenBy(d => d.DES_PERSONAL);        // primero la de la categoria mas cercana a la que pide
+    }
+
+    protected override async Task OnInitializedAsync() => await Cargar();
+
+    private async Task Cargar()
+    {
+        _error = "";
+        var p = await OperacionesApi.LeerAsync<List<ArmadoPuesto>>(Http, IngRoute.LineaArmado(CodArmado, "puestos"));
+        var a = await OperacionesApi.LeerAsync<List<ArmadoPersonaAsignada>>(Http, IngRoute.LineaArmado(CodArmado, "personal"));
+        var d = await OperacionesApi.LeerAsync<List<ArmadoPersonaDisponible>>(Http, IngRoute.LineaArmado(CodArmado, "personal-disponible"));
+        var c = await OperacionesApi.LeerAsync<List<ArmadoCobertura>>(Http, IngRoute.LineaArmado(CodArmado, "cobertura"));
+        if (!p.Ok) _error = p.Mensaje ?? "No se pudieron leer los puestos."; else if (!a.Ok) _error = a.Mensaje ?? "No se pudo leer el personal."; else if (!d.Ok) _error = d.Mensaje ?? "No se pudo leer el personal disponible."; else if (!c.Ok) _error = c.Mensaje ?? "No se pudo leer la cobertura.";
+        _puestos = p.Data ?? new(); _disponibles = d.Data ?? new(); _cobertura = c.Data ?? new();
+        _orden = _cobertura.Where(x => x.COD_CATEGORIA_OCUPACIONAL != "-").ToDictionary(x => x.COD_CATEGORIA_OCUPACIONAL, x => x.NUM_ORDEN);
+        foreach (var x in _disponibles) _orden.TryAdd(x.COD_CATEGORIA_OCUPACIONAL, x.NUM_ORDEN_CATEGORIA);
+        _asig = (a.Data ?? new()).Select(x => new Asig { COD_ENTIDAD_PERSONAL = x.COD_ENTIDAD_PERSONAL, COD_PERSONAL = x.COD_PERSONAL, DES_PERSONAL = x.DES_PERSONAL, COD_CATEGORIA_OCUPACIONAL = x.COD_CATEGORIA_OCUPACIONAL,
+            NUM_PUESTO = x.NUM_PUESTO, FLG_CATEGORIA_SUPERIOR = x.FLG_CATEGORIA_SUPERIOR, FLG_NO_VIGENTE = x.FLG_NO_VIGENTE, DES_OPERACION = _disponibles.FirstOrDefault(z => z.COD_ENTIDAD_PERSONAL == x.COD_ENTIDAD_PERSONAL)?.DES_OPERACION }).ToList();
+        _sucio = false;
+        StateHasChanged();
+    }
+
+    private void Agregar(ArmadoPuesto p, int id)
+    {
+        var d = _disponibles.FirstOrDefault(x => x.COD_ENTIDAD_PERSONAL == id);
+        if (d is null || _asig.Any(a => a.COD_ENTIDAD_PERSONAL == id) || Gente(p.NUM_PUESTO).Count() >= p.NUM_OPERARIOS) return;
+        var sup = !string.IsNullOrEmpty(p.COD_CATEGORIA_OCUPACIONAL) && d.NUM_ORDEN_CATEGORIA < _orden.GetValueOrDefault(p.COD_CATEGORIA_OCUPACIONAL, int.MaxValue);
+        _asig.Add(new Asig { COD_ENTIDAD_PERSONAL = id, COD_PERSONAL = d.COD_PERSONAL, DES_PERSONAL = d.DES_PERSONAL, COD_CATEGORIA_OCUPACIONAL = d.COD_CATEGORIA_OCUPACIONAL, NUM_PUESTO = p.NUM_PUESTO, FLG_CATEGORIA_SUPERIOR = sup, DES_OPERACION = d.DES_OPERACION });
+        _sucio = true;
+    }
+
+    private void Quitar(Asig x) { _asig.Remove(x); _sucio = true; }
+
+    private async Task Guardar()
+    {
+        _error = "";
+        _ocupado = true;
+        var dto = new ArmadoPersonalGuardarDto
+        {
+            COD_ARMADO = CodArmado,
+            Puestos = _puestos.OrderBy(p => p.NUM_PUESTO).Select(p => new ArmadoPersonalPuestoDto { NUM_PUESTO = p.NUM_PUESTO, PERSONAS = Gente(p.NUM_PUESTO).Select(x => x.COD_ENTIDAD_PERSONAL).ToList() }).ToList()
+        };
+        var r = await ProyectoApi.PutAsync(Http, IngRoute.LineaArmado(CodArmado, "personal"), dto);
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo guardar el personal."; return; }
+        Snackbar.Add("Personal guardado.", Severity.Success);
+        await Cargar();
+    }
+
+    private async Task Sugerir()
+    {
+        _error = "";
+        var ok = await DialogService.ShowMessageBox("Sugerir personal", "Se asigna el personal disponible a los puestos y se REEMPLAZA el personal actual. ¿Continuar?", yesText: "Sugerir", cancelText: "Cancelar");
+        if (ok != true) return;
+        _ocupado = true;
+        var r = await OperacionesApi.EnviarAsync<ArmadoPersonalSugerido>(Http, HttpMethod.Post, IngRoute.LineaArmado(CodArmado, "personal/sugerir"));
+        _ocupado = false;
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo sugerir el personal."; return; }
+        Snackbar.Add($"Personal sugerido: {r.Data?.CAN_ASIGNADAS} asignadas, {r.Data?.CAN_VACANTES} vacantes.", Severity.Success);
+        await Cargar();
+    }
+}

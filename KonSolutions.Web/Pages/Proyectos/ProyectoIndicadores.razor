@@ -1,0 +1,103 @@
+@using KONSolutions.Shared.Models.Proyectos
+
+@* Indicadores del expediente: lo programado contra lo real, en fechas y en presupuesto. Se calculan con el resumen del proyecto. *@
+@if (R is not null)
+{
+    <div class="ind-fila">
+        <div class="ind-card">
+            <div class="ind-titulo"><span class="ind-luz @Sem(FechasClase)"></span> <MudIcon Icon="@Icons.Material.Filled.EventAvailable" Size="Size.Small" /> Fechas: programado vs real</div>
+            <div class="ind-dos">
+                <div><span class="ind-et">Programado</span><span class="mono">@ProyectoApi.Fecha(R.FEC_INICIO_PROGRAMADO) → @ProyectoApi.Fecha(R.FEC_FINAL_PROGRAMADO)</span><span class="ind-sub">@(DiasProg is null ? "sin fechas" : $"{DiasProg} " + (DiasProg == 1 ? "día" : "días"))</span></div>
+                <div><span class="ind-et">Real</span><span class="mono">@ProyectoApi.Fecha(R.FEC_INICIO_EJECUTADO) → @(R.FEC_FINAL_EJECUTADO is null ? (R.FEC_INICIO_EJECUTADO is null ? "—" : "en curso") : ProyectoApi.Fecha(R.FEC_FINAL_EJECUTADO))</span><span class="ind-sub">@(DiasReal is null ? "sin iniciar" : $"{DiasReal} " + (DiasReal == 1 ? "día" : "días") + (R.FEC_FINAL_EJECUTADO is null ? " transcurridos" : ""))</span></div>
+            </div>
+            <div class="ind-barra" title="Tiempo transcurrido del plazo programado"><span class="ind-lbl">Plazo usado</span><div class="ind-trk"><i class="ind-barra-@Sem(FechasClase)" style="width:@Pct(PctTiempo)%"></i></div><span class="mono ind-val">@(PctTiempo is null ? "—" : PctTiempo.Value.ToString("0") + "%")</span></div>
+            <div class="ind-barra" title="Avance de las tareas"><span class="ind-lbl">Avance</span><div class="ind-trk"><i class="ind-avance" style="width:@Pct(R.TAS_AVANCE)%"></i></div><span class="mono ind-val">@R.TAS_AVANCE.ToString("0")%</span></div>
+            <div class="ind-estado @FechasClase">@FechasTexto</div>
+        </div>
+        <div class="ind-card">
+            <div class="ind-titulo"><span class="ind-luz @Sem(PresClase)"></span> <MudIcon Icon="@Icons.Material.Filled.Paid" Size="Size.Small" /> Presupuesto: programado vs real</div>
+            <div class="ind-dos">
+                <div><span class="ind-et">Presupuesto</span><span class="mono ind-num">@R.COD_MONEDA_VALORIZACION @Pres.ToString("N2")</span></div>
+                <div><span class="ind-et">Costo real</span><span class="mono ind-num">@R.COD_MONEDA_VALORIZACION @Costo.ToString("N2")</span><span class="ind-sub">gastos + materiales consumidos</span></div>
+            </div>
+            <div class="ind-barra" title="Costo real sobre el presupuesto"><span class="ind-lbl">Costo usado</span><div class="ind-trk"><i class="ind-barra-@Sem(PresClase)" style="width:@Pct(PctCosto)%"></i></div><span class="mono ind-val">@(PctCosto is null ? "—" : PctCosto.Value.ToString("0") + "%")</span></div>
+            <div class="ind-barra" title="Avance de las tareas"><span class="ind-lbl">Avance</span><div class="ind-trk"><i class="ind-avance" style="width:@Pct(R.TAS_AVANCE)%"></i></div><span class="mono ind-val">@R.TAS_AVANCE.ToString("0")%</span></div>
+            <div class="ind-estado @PresClase">@PresTexto</div>
+        </div>
+    </div>
+    <div class="ind-leyenda">
+        <span><i class="ind-luz verde"></i> Verde: dentro de lo previsto</span>
+        <span><i class="ind-luz naranja"></i> Naranja: desvío moderado</span>
+        <span><i class="ind-luz rojo"></i> Rojo: desvío crítico</span>
+        <span class="ind-sub">Fechas: plazo usado − avance ≤ 10 pts verde, hasta 25 naranja, más de 25 rojo; plazo vencido sin terminar, rojo · Presupuesto: índice de costo (valor ganado ÷ costo) ≥ 0,95 verde, 0,80–0,95 naranja, &lt; 0,80 o costo sobre el presupuesto, rojo</span>
+    </div>
+}
+
+@code {
+    [Parameter] public ExpedienteResumen? R { get; set; }
+
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+    private static string Pct(decimal? v) => Math.Max(0m, Math.Min(100m, v ?? 0m)).ToString("0.#", Inv);
+
+    private DateTime Hoy => DateTime.Today;
+    private int? DiasProg => ProyectoApi.Dias(R?.FEC_INICIO_PROGRAMADO, R?.FEC_FINAL_PROGRAMADO);
+    private int? DiasReal => R?.FEC_INICIO_EJECUTADO is null ? null : ProyectoApi.Dias(R.FEC_INICIO_EJECUTADO, R.FEC_FINAL_EJECUTADO ?? Hoy);
+    private decimal? PctTiempo => DiasProg is > 0 && R?.FEC_INICIO_PROGRAMADO is { } ini
+        ? Math.Max(0m, Math.Min(100m, (decimal)((Hoy - ini.Date).Days + 1) * 100m / DiasProg.Value)) : null;
+
+    // semáforo: "bien" = verde, "alerta" = naranja, "mal" = rojo
+    private static string Sem(string c) => c switch { "mal" => "rojo", "alerta" => "naranja", "bien" => "verde", _ => "gris" };
+
+    private string FechasClase => Fechas.Clase;
+    private string FechasTexto => Fechas.Texto;
+    private (string Clase, string Texto) Fechas
+    {
+        get
+        {
+            if (R is null) return ("", "");
+            var fin = R.FEC_FINAL_PROGRAMADO?.Date;
+            if (R.FEC_FINAL_EJECUTADO is not null && DiasProg is { } dp && DiasReal is { } dr)
+            {
+                var d = dr - dp;
+                if (d <= 0) return ("bien", d < 0 ? $"Terminó {-d} día(s) antes de lo programado." : "Terminó en el plazo programado.");
+                var clase = d * 100m / dp <= 10m ? "alerta" : "mal";
+                return (clase, $"Terminó con {d} día(s) de retraso sobre lo programado ({d * 100m / dp:0}% del plazo).");
+            }
+            if (fin is not null && fin < Hoy) return ("mal", $"Atrasado: el plazo venció hace {(Hoy - fin.Value).Days} día(s) y el proyecto no termina.");
+            if (R.FEC_INICIO_EJECUTADO is null && R.FEC_INICIO_PROGRAMADO is { } ip && ip.Date < Hoy)
+            {
+                var dias = (Hoy - ip.Date).Days;
+                return (dias <= 7 ? "alerta" : "mal", $"Debió iniciar hace {dias} día(s) y no tiene fecha de inicio real.");
+            }
+            if (PctTiempo is { } t)
+            {
+                var desvio = t - R.TAS_AVANCE; // puntos de plazo usados por encima del avance
+                if (desvio <= 10m) return ("bien", "En plazo.");
+                return (desvio <= 25m ? "alerta" : "mal", $"Va por debajo de lo previsto: usó {t:0}% del plazo y lleva {R.TAS_AVANCE:0}% de avance.");
+            }
+            return ("", "Sin fechas programadas.");
+        }
+    }
+
+    private decimal Pres => R?.VAL_PRESUPUESTO_PROYECTO ?? 0m;
+    private decimal Costo => R?.VAL_COSTO_PROYECTO ?? 0m;
+    private decimal? PctCosto => Pres > 0 ? Costo * 100m / Pres : null;
+    private string PresClase => Presup.Clase;
+    private string PresTexto => Presup.Texto;
+    private (string Clase, string Texto) Presup
+    {
+        get
+        {
+            if (R is null) return ("", "");
+            var mon = R.COD_MONEDA_VALORIZACION;
+            if (Pres <= 0) return ("", Costo > 0 ? "El proyecto no tiene presupuesto asignado." : "Sin presupuesto ni costos.");
+            var ganado = Pres * R.TAS_AVANCE / 100m;
+            if (Costo > Pres) return ("mal", $"Excedido en {mon} {(Costo - Pres):N2} sobre el presupuesto.");
+            if (Costo <= 0) return ("bien", $"Sin costos todavía: el presupuesto está completo ({mon} {Pres:N2}).");
+            var cpi = ganado / Costo; // índice de costo: valor ganado ÷ costo real
+            var txt = $"Valor ganado {mon} {ganado:N2} contra costo {mon} {Costo:N2} (índice {cpi:0.00}); quedan {mon} {(Pres - Costo):N2}.";
+            if (cpi >= 0.95m) return ("bien", "Dentro del presupuesto. " + txt);
+            return (cpi >= 0.80m ? "alerta" : "mal", "Gasta más de lo que avanza. " + txt);
+        }
+    }
+}

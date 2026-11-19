@@ -1,0 +1,96 @@
+@using KONSolutions.Shared.Common
+@using System.Net.Http.Json
+@implements IAsyncDisposable
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject ErrorLogService ErrorLog
+
+@* El PDF que vino en el mismo correo que el XML (comprobante o guía): se pide a la API (con la sesión) y se muestra desde una blob: URL, sin rutas de disco ni de red. *@
+<style>
+    /* Ampliado: el contenido del dialogo pasa a columna y el visor toma TODO el alto y el ancho que sobran (el boton de abajo queda a la vista). */
+    .mud-dialog-fullscreen:has(.pdf-visor-amp) .mud-dialog-content { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:hidden; }
+    .mud-dialog-fullscreen .pdf-visor-amp { flex:1 1 auto; min-height:0; width:100%; }
+</style>
+<MudDialog>
+    <TitleContent>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <MudText Typo="Typo.h6" Style="flex:1;min-width:0;"><MudIcon Icon="@Icons.Material.Filled.PictureAsPdf" Class="mr-1" />@Titulo</MudText>
+            <MudTooltip Text="@(_ampliado ? "Volver al tamaño normal" : "Ampliar a toda la pantalla")">
+                <MudIconButton Icon="@(_ampliado ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="Size.Small" Style="background-color:var(--boton-backcolor,#8bd672);color:var(--boton-forecolor,#fff);border-radius:8px;" OnClick="AlternarAmpliado" data-accion="pdf-ampliar" />
+            </MudTooltip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="@(_ampliado ? "pdf-visor-amp" : "")" style="@(_ampliado ? "" : "height:70vh;min-width:min(900px,90vw);")" data-visor-caja="@(_ampliado ? "ampliado" : "normal")">
+            @if (_cargando)
+            {
+                <div style="height:100%;display:flex;align-items:center;justify-content:center;" data-vacio="pdf-cargando"><MudProgressCircular Indeterminate="true" Color="Color.Primary" /></div>
+            }
+            else if (string.IsNullOrWhiteSpace(_blobUrl))
+            {
+                <div style="height:100%;display:flex;align-items:center;justify-content:center;opacity:.6;" data-vacio="pdf"><MudText>@(_error ?? "No se pudo cargar el PDF.")</MudText></div>
+            }
+            else
+            {
+                <PdfFrame Src="@(_blobUrl + "#zoom=page-width")" Title="@Titulo" />
+            }
+        </div>
+        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2" Class="mt-3">
+            @if (!string.IsNullOrWhiteSpace(_blobUrl))
+            {
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Download" Href="@_blobUrl" Target="_blank" data-accion="pdf-descargar">Abrir aparte</MudButton>
+            }
+            <MudButton Variant="Variant.Filled" OnClick="@(() => MudDialog.Close())" Style="@EstilosBoton.Cancelar" data-accion="cerrar">Cerrar</MudButton>
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    /// <summary>La dirección de la API que entrega el PDF (…/{num}/pdf).</summary>
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter] public string Titulo { get; set; } = "PDF recibido";
+
+    private string? _blobUrl, _error;
+    private bool _ampliado;
+    private DialogOptions? _opcionesIniciales;
+
+    /// <summary>Ampliar el visor hasta el tope de la ventana (diálogo a pantalla completa) y volver. MudBlazor toma las opciones del diálogo solo al abrirlo: por eso va por SetOptions.</summary>
+    private void AlternarAmpliado()
+    {
+        _ampliado = !_ampliado;
+        var b = _opcionesIniciales ??= MudDialog.Options;
+        MudDialog.SetOptions(new DialogOptions { CloseButton = b.CloseButton, BackdropClick = b.BackdropClick, CloseOnEscapeKey = b.CloseOnEscapeKey, Position = b.Position, MaxWidth = b.MaxWidth, FullWidth = true, FullScreen = _ampliado });
+    }
+
+    private bool _cargando = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var resp = await Http.GetAsync(Url);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // la API explica el motivo en el cuerpo (ApiResponse): el correo no trajo PDF, la carpeta no existe…
+                string? motivo = null;
+                try { motivo = (await resp.Content.ReadFromJsonAsync<ApiResponse<object>>())?.Message; } catch { }
+                _error = string.IsNullOrWhiteSpace(motivo) ? $"No se pudo leer el PDF (HTTP {(int)resp.StatusCode})." : motivo;
+                return;
+            }
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            _blobUrl = await JS.InvokeAsync<string>("blobViewer.crear", bytes, "application/pdf");
+        }
+        catch (Exception ex)
+        {
+            await ErrorLog.LogAsync(ex, nameof(RecibidoPdfDialog), nameof(OnInitializedAsync));
+            _error = "No se pudo leer el PDF. Ver detalle en el log de errores.";
+        }
+        finally { _cargando = false; }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!string.IsNullOrEmpty(_blobUrl)) { try { await JS.InvokeVoidAsync("blobViewer.liberar", _blobUrl); } catch { } }
+    }
+}

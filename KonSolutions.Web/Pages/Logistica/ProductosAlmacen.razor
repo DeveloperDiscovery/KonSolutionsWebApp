@@ -1,0 +1,408 @@
+@page "/logistica/productos-almacen"
+@page "/logistica/productos-almacenes"
+@page "/logistica/punto-reorden"
+@attribute [Authorize]
+@inject HttpClient Http
+@inject ErrorLogService ErrorLog
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+@*
+    Punto de Reorden (LOGISTICA.PRODUCTOS_ALMACENES).
+
+    La misma tabla mirada por sus dos lados, una pestaña cada uno:
+      · Por producto → en qué almacenes está configurado ese producto.
+      · Por almacén  → qué productos están configurados en ese almacén.
+
+    Cada pestaña usa su propio SP de lectura: el SHOWALL original filtra por
+    @COD_PRODUCTO obligatorio, así que la vuelta necesitó uno nuevo
+    (PROC_LOGISTICA_PRODUCTOS_ALMACENES_SHOWALL_ALMACEN). Las escrituras son las mismas para
+    las dos: el INSERT/UPDATE/DELETE reciben los dos códigos, no les importa por cuál lado se
+    entró.
+
+    KeepPanelsAlive va en false a propósito: al volver a una pestaña conviene releer, porque
+    lo que se grabó en la otra pudo cambiar justamente lo que esta muestra (son la misma
+    tabla). El costo es una consulta por cambio de pestaña, no un documento a medio cargar.
+*@
+
+<PageTitle>Punto de Reorden</PageTitle>
+
+<MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4"
+         ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)">
+
+<MudTabPanel Text="Por producto" Icon="@Icons.Material.Filled.Inventory2">
+    <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Punto de Reorden" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · almacenes configurados para un producto
+            </MudText>
+        </div>
+        <AriaCombo TItem="ComboboxItem" Items="_productos"
+                   TextFunc="@(p => $"{p.Id} — {p.Texto}")" ValueFunc="@(p => p.Id)"
+                   Value="@_codProducto" ValueChanged="OnCambioProducto"
+                   Label="Producto" Class="mb-0"
+                   Style="min-width:420px;max-width:620px;margin-top:0;" />
+        <BarraBusqueda @bind-Value="_buscaProducto" MaxWidth="320px" Class="mt-0 grid-header-search"
+                       Placeholder="Buscar almacén..." />
+        <div class="grid-header-divider"></div>
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionPorProducto" />
+    </div>
+
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);">
+        @if (_cargandoCombos)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (string.IsNullOrWhiteSpace(_codProducto))
+        {
+            <MudText Class="mono pa-6" Style="opacity:.5;">
+                Elige un producto para ver y configurar sus almacenes.
+            </MudText>
+        }
+        else
+        {
+            @* La key fuerza a recrear el panel al cambiar de producto: así arranca limpio en
+               vez de arrastrar filas nuevas sin grabar del producto anterior. *@
+            <ProductoAlmacenesPanel @ref="_panelProducto" @key="_codProducto"
+                                    CodProducto="@_codProducto"
+                                    DesProducto="@_desProducto"
+                                    Busqueda="@_buscaProducto"
+                                    CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        }
+    </MudPaper>
+</MudTabPanel>
+
+<MudTabPanel Text="Por almacén" Icon="@Icons.Material.Filled.Warehouse">
+    <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Punto de Reorden" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · productos configurados en un almacén
+            </MudText>
+        </div>
+        <AriaCombo TItem="ComboboxItem" Items="_almacenes"
+                   TextFunc="@(a => $"{a.Id} — {a.Texto}")" ValueFunc="@(a => a.Id)"
+                   Value="@_codAlmacen" ValueChanged="OnCambioAlmacen"
+                   Label="Almacén" Class="mb-0"
+                   Style="min-width:420px;max-width:620px;margin-top:0;" />
+        <BarraBusqueda @bind-Value="_buscaAlmacen" MaxWidth="320px" Class="mt-0 grid-header-search"
+                       Placeholder="Buscar producto..." />
+        <div class="grid-header-divider"></div>
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionPorAlmacen" />
+    </div>
+
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);">
+        @if (_cargandoCombos)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (string.IsNullOrWhiteSpace(_codAlmacen))
+        {
+            <MudText Class="mono pa-6" Style="opacity:.5;">
+                Elige un almacén para ver y configurar sus productos.
+            </MudText>
+        }
+        else
+        {
+            <AlmacenProductosPanel @ref="_panelAlmacen" @key="_codAlmacen"
+                                   CodAlmacen="@_codAlmacen"
+                                   DesAlmacen="@_desAlmacen"
+                                   Busqueda="@_buscaAlmacen"
+                                   CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+        }
+    </MudPaper>
+</MudTabPanel>
+
+<MudTabPanel Text="A Requerir" Icon="@Icons.Material.Filled.ShoppingCartCheckout">
+    <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+        <div class="grid-header-titulo">
+            <TituloPagina Fallback="Punto de Reorden" CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+            <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                Schema LOGISTICA · todo lo pendiente de pedir (solo lectura)
+            </MudText>
+        </div>
+        @* Sin combo de producto: desde la versión del 04/09 el SP no recibe parámetros y
+           devuelve el pendiente COMPLETO, de todos los productos y almacenes. *@
+        <BarraBusqueda @bind-Value="_buscaRequerir" MaxWidth="420px" Class="mt-0 grid-header-search"
+                       Placeholder="Buscar producto o almacén..." />
+        <div class="grid-header-divider"></div>
+        @* Los mismos botones de proceso que las otras pestañas, menos "Nuevo": acá no se da
+           de alta nada, es un listado de lo que quedó pendiente. El filtro es de esta
+           pantalla y no de la configuración en BD, que es global a la opción. *@
+        <AccionesBotones CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion"
+                         Zona="@AccionesBotones.ZonaBotones.Header"
+                         Filtro="@(b => !AccionesBotones.EsNuevo(b))"
+                         OnAccion="OnAccionPorProducto" />
+    </div>
+
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);">
+        <ProductoAlmacenesRequerirPanel @ref="_panelRequerir" Busqueda="@_buscaRequerir"
+                                        CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion" />
+    </MudPaper>
+</MudTabPanel>
+
+</MudTabs>
+
+@code {
+    [Parameter] public string CodAplicacion { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private List<ComboboxItem> _productos = new(), _almacenes = new();
+    private string? _codProducto, _desProducto;
+    private string? _codAlmacen, _desAlmacen;
+    private bool _cargandoCombos = true;
+
+    // Pestaña activa: los botones de cabecera son los mismos en las tres, así que hay
+    // que saber sobre cuál grilla actuar.
+    private int _tab;
+
+    // Una búsqueda por pestaña, y no una compartida: cada una lista cosas distintas
+    // (almacenes, productos, el pendiente completo), así que un texto común habría dejado
+    // filtrada la pestaña de al lado con un criterio que ahí no significa nada.
+    private string _buscaProducto = "", _buscaAlmacen = "", _buscaRequerir = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Los dos combos se piden juntos y no al entrar a cada pestaña: son catálogos chicos
+        // y así cambiar de pestaña no cuesta una espera.
+        try
+        {
+            var productos = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Estandar.ProductosCombobox);
+            var almacenes = Http.SafeGetAsync<List<ComboboxItem>>(ApiRoutes.Logistica.AlmacenesCombobox);
+            await Task.WhenAll(productos, almacenes);
+            _productos = await productos ?? new();
+            _almacenes = await almacenes ?? new();
+        }
+        catch (Exception ex) { await ErrorLog.LogAsync(ex, nameof(ProductosAlmacen), nameof(OnInitializedAsync)); }
+        _cargandoCombos = false;
+    }
+
+    private void OnCambioProducto(string? cod)
+    {
+        _codProducto = cod;
+        _desProducto = _productos.FirstOrDefault(p => p.Id == cod)?.Texto;
+    }
+
+    private void OnCambioAlmacen(string? cod)
+    {
+        _codAlmacen = cod;
+        _desAlmacen = _almacenes.FirstOrDefault(a => a.Id == cod)?.Texto;
+    }
+
+    private ProductoAlmacenesPanel? _panelProducto;
+    private AlmacenProductosPanel? _panelAlmacen;
+    private ProductoAlmacenesRequerirPanel? _panelRequerir;
+
+    // ── Procesos de reposición ────────────────────────────────────────────────
+    // Los tres botones se configuran en BD y llegan por AccionesBotones. Acá NO se puede
+    // despachar por los verbos HTTP como hacen las pantallas CRUD (todos son POST y darían
+    // lo mismo), así que se distingue por el nombre del botón — mismo criterio que usa
+    // AccionesBotones para elegir ícono y color. Se mira DES_BOTON_OPCION, el alias y el
+    // tooltip juntos, porque en BD el nombre "real" a veces está solo en uno de los tres.
+    private static string TextoBoton(BotonTreeviewItem b)
+        => ((b.DES_BOTON_OPCION ?? "") + " " + (b.DES_ALIAS ?? "") + " " + (b.DES_TOOLTIPTEXT ?? "")).ToUpperInvariant();
+
+    private async Task OnAccionPorProducto(BotonTreeviewItem b) => await EjecutarProcesoAsync(b, almacen: null, producto: _codProducto);
+    private async Task OnAccionPorAlmacen(BotonTreeviewItem b)  => await EjecutarProcesoAsync(b, almacen: _codAlmacen, producto: null);
+
+    /// <summary>Ejecuta el proceso que corresponde al botón, acotado a lo que la pestaña
+    /// tiene seleccionado: por producto manda el producto, por almacén manda el almacén.</summary>
+    private async Task EjecutarProcesoAsync(BotonTreeviewItem b, string? almacen, string? producto)
+    {
+        var n = TextoBoton(b);
+
+        // "Resetear requerimiento de stock" va ANTES que "borrar": el reset es el masivo
+        // (sin acotar) y el borrar por fila vive dentro del panel, no acá.
+        if (n.Contains("RESETEAR") || n.Contains("RESET"))
+        {
+            await ProcesoAsync(ApiRoutes.Logistica.ProductosAlmacenesReset, almacen, producto,
+                "¿Resetear la cantidad a requerir de todo lo que aún no tiene requerimiento generado?",
+                "Requerimientos reseteados.");
+            return;
+        }
+        if (n.Contains("BORRAR REQUERIMIENTO"))
+        {
+            await ProcesoAsync(ApiRoutes.Logistica.ProductosAlmacenesReset, almacen, producto,
+                "¿Borrar la cantidad a requerir de las líneas sin requerimiento generado?",
+                "Requerimientos borrados.");
+            return;
+        }
+        if (n.Contains("REVERTIR") || n.Contains("REVERSION") || n.Contains("REVERSIÓN"))
+        {
+            await RevertirDesdeCabeceraAsync();
+            return;
+        }
+        if (n.Contains("STOCK DE SEGURIDAD") || n.Contains("SEGURIDAD"))
+        {
+            await GenerarStockSeguridadAsync(almacen, producto);
+            return;
+        }
+        if (n.Contains("REQUERIMIENTO DE COMPRA") || n.Contains("GENERAR"))
+        {
+            await GenerarRequerimientoAsync();
+            return;
+        }
+
+        // Botón configurado que esta pantalla no sabe atender: se avisa en vez de no hacer
+        // nada, que es lo que más cuesta diagnosticar después.
+        Snackbar.Add($"El botón \"{b.DES_BOTON_OPCION}\" todavía no está conectado en esta pantalla.", Severity.Warning);
+    }
+
+    /// <summary>Arma la lista de códigos separados por "_" que esperan los SP de proceso.</summary>
+    private static string Lista(IEnumerable<string>? codigos)
+        => codigos is null ? "" : string.Join("_", codigos.Where(c => !string.IsNullOrWhiteSpace(c)));
+
+    /// <summary>"Generar stock de seguridad". El SP recibe DOS listas y arma su universo con
+    /// la UNIÓN de las dos: todas las filas de esos almacenes MÁS todas las de esos productos.
+    /// Por eso se manda una sola dimensión por pestaña —la seleccionada en la grilla— y no
+    /// también el código fijo de la cabecera: mandando los dos, el recálculo se saldría de lo
+    /// que el usuario marcó y tocaría filas de otros productos o almacenes.</summary>
+    private async Task GenerarStockSeguridadAsync(string? almacen, string? producto)
+    {
+        // Por producto se marcan ALMACENES; por almacén se marcan PRODUCTOS.
+        var seleccion = producto is not null ? _panelProducto?.Seleccionados : _panelAlmacen?.Seleccionados;
+        var marcados  = seleccion?.Count ?? 0;
+
+        var alcance = marcados > 0
+            ? $"{marcados} línea(s) seleccionada(s)"
+            : (producto is not null ? "TODOS los almacenes de este producto" : "TODOS los productos de este almacén");
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            $"¿Recalcular la cantidad a requerir contra el stock actual? Alcance: {alcance}.",
+            yesText: "Recalcular", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        // Se manda UNA sola lista, nunca las dos. El SP arma su universo con la UNIÓN de
+        // ambas (todas las filas de esos almacenes MÁS todas las de esos productos), así que
+        // mandar la selección junto con el código fijo de la cabecera saldría del alcance
+        // marcado y tocaría filas de otros productos o almacenes.
+        string lstAlmacenes, lstProductos;
+        if (marcados > 0)
+        {
+            // Con selección: solo los códigos marcados, en la dimensión que corresponde.
+            lstAlmacenes = producto is not null ? Lista(seleccion) : "";
+            lstProductos = producto is not null ? "" : Lista(seleccion);
+        }
+        else
+        {
+            // Sin selección: el código de la cabecera, que abarca toda la grilla que se ve.
+            lstAlmacenes = producto is not null ? "" : (almacen ?? "");
+            lstProductos = producto ?? "";
+        }
+
+        var url = $"{ApiRoutes.Logistica.ProductosAlmacenesCantidades}" +
+                  $"?lstAlmacenes={Uri.EscapeDataString(lstAlmacenes)}" +
+                  $"&lstProductos={Uri.EscapeDataString(lstProductos)}";
+        var resp = await Http.PostAsync(url, null);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Stock de seguridad recalculado.", Severity.Success);
+            await RefrescarAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductosAlmacen), nameof(GenerarStockSeguridadAsync));
+    }
+
+    private async Task ProcesoAsync(string ruta, string? almacen, string? producto, string pregunta, string mensajeOk)
+    {
+        var ok = await DialogService.ShowMessageBox("Confirmar", pregunta, yesText: "Ejecutar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var url = $"{ruta}?codAlmacen={Uri.EscapeDataString(almacen ?? "")}&codProducto={Uri.EscapeDataString(producto ?? "")}";
+        var resp = await Http.PostAsync(url, null);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add(mensajeOk, Severity.Success);
+            await RefrescarAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductosAlmacen), nameof(ProcesoAsync));
+    }
+
+    /// <summary>"Generar requerimiento de compra". OJO: desde la versión del 04/09 el SP ya
+    /// no recibe listas — toma por su cuenta TODO lo que tenga cantidad pendiente, sin
+    /// importar el producto/almacén de la pestaña ni lo que esté seleccionado. El cartel de
+    /// confirmación lo dice explícitamente para que nadie lo dispare creyendo que se acota a
+    /// lo que está viendo.</summary>
+    private async Task GenerarRequerimientoAsync()
+    {
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            "Se van a generar los requerimientos de compra de TODO lo que tenga cantidad pendiente, " +
+            "no solo de lo que estás viendo o seleccionaste. ¿Continuar?",
+            yesText: "Generar", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var resp = await Http.PostAsync(ApiRoutes.Logistica.ProductosAlmacenesRequerimiento, null);
+        if (resp.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Requerimiento de compra generado.", Severity.Success);
+            await RefrescarAsync();
+        }
+        else await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductosAlmacen), nameof(GenerarRequerimientoAsync));
+    }
+
+    /// <summary>Los procesos cambian CAN_STOCK_REQUERIR y NUM_REQUERIMIENTO_STOCK en la BD,
+    /// así que hay que releer para que la grilla no siga mostrando lo de antes.</summary>
+    private async Task RefrescarAsync()
+    {
+        if (_panelProducto is not null) await _panelProducto.RecargarAsync();
+        if (_panelAlmacen  is not null) await _panelAlmacen.RecargarAsync();
+        if (_panelRequerir is not null) await _panelRequerir.RecargarAsync();
+    }
+
+    /// <summary>"Revertir" disparado desde la CABECERA. El SP recibe un número de
+    /// requerimiento por vez, así que acá se recorren los que están a la vista en la pestaña
+    /// activa (respetando el filtro de búsqueda) y se llama una vez por cada uno.
+    ///
+    /// Ojo con el alcance real: cada llamada revierte TODOS los requerimientos generados en
+    /// la misma corrida que el número enviado, así que con una o dos vueltas suele quedar
+    /// todo revertido. Por eso el cartel habla de "los requerimientos que estás viendo" y no
+    /// de una cantidad exacta de documentos.</summary>
+    private async Task RevertirDesdeCabeceraAsync()
+    {
+        var nums = RequerimientosDeLaPestanaActiva();
+        if (nums.Count == 0)
+        {
+            Snackbar.Add("No hay líneas con requerimiento generado para revertir.", Severity.Info);
+            return;
+        }
+
+        var ok = await DialogService.ShowMessageBox("Confirmar",
+            $"Se van a anular los requerimientos de las líneas que estás viendo ({nums.Count} documento(s) distinto(s)) " +
+            "y todos los generados en las mismas corridas. ¿Continuar?",
+            yesText: "Revertir", cancelText: "Cancelar");
+        if (ok != true) return;
+
+        var errores = 0;
+        foreach (var num in nums)
+        {
+            var resp = await Http.PostAsync($"{ApiRoutes.Logistica.ProductosAlmacenesReversion}?numRequerimientoStock={num}", null);
+            if (!resp.IsSuccessStatusCode)
+            {
+                errores++;
+                // Se muestra el primero y se sigue: cortar en el primer error dejaría el
+                // resto sin intentar, y varios de estos números pueden ser de la misma
+                // corrida (ya revertida por la vuelta anterior, que es un fallo esperable).
+                if (errores == 1)
+                    await ErrorDialogHelper.MostrarAsync(resp, ErrorLog, DialogService, nameof(ProductosAlmacen), nameof(RevertirDesdeCabeceraAsync),
+                        $"No se pudo revertir el requerimiento {num}");
+            }
+        }
+
+        if (errores == 0) Snackbar.Add("Requerimientos revertidos.", Severity.Success);
+        else if (errores < nums.Count) Snackbar.Add($"Revertidos con {errores} error(es). Ver el detalle.", Severity.Warning);
+
+        await RefrescarAsync();
+    }
+
+    /// <summary>Los requerimientos visibles en la pestaña que está abierta. Se toma del panel
+    /// correspondiente y no de una consulta aparte: lo que se revierte tiene que ser
+    /// exactamente lo que el usuario está viendo, filtro de búsqueda incluido.</summary>
+    private IReadOnlyCollection<int> RequerimientosDeLaPestanaActiva() => _tab switch
+    {
+        0 => _panelProducto?.RequerimientosVisibles ?? Array.Empty<int>(),
+        1 => _panelAlmacen?.RequerimientosVisibles  ?? Array.Empty<int>(),
+        _ => _panelRequerir?.RequerimientosVisibles ?? Array.Empty<int>()
+    };
+}

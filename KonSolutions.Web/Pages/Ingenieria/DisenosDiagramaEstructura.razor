@@ -1,0 +1,157 @@
+@* Diagrama de la estructura de una version (solo lectura): de izquierda a derecha, version -> sectores -> componentes -> insumos,
+   y los subensambles se expanden en sus propios niveles (hasta 10). Se dibuja en SVG a partir de los nodos que devuelve la API. *@
+@using KONSolutions.Shared.Models.Ingenieria
+@inject IJSRuntime JS
+
+<div class="dgm-barra d-flex align-center gap-3 flex-wrap mb-2">
+    <MudSwitch T="bool" @bind-Value="VerInsumos" Color="Color.Primary" Label="Mostrar insumos" Class="ma-0" data-opcion="insumos" />
+    <MudSwitch T="bool" @bind-Value="VerRutas" Color="Color.Success" Label="Mostrar rutas" Class="ma-0" data-opcion="rutas" />
+    <div class="d-flex align-center gap-1" style="min-width:220px;">
+        <MudIcon Icon="@Icons.Material.Filled.ZoomOut" Size="Size.Small" />
+        <MudSlider T="int" @bind-Value="_zoom" Min="40" Max="150" Step="10" Style="width:140px;" data-opcion="zoom" />
+        <MudIcon Icon="@Icons.Material.Filled.ZoomIn" Size="Size.Small" />
+        <span class="mono" style="font-size:.78rem;">@_zoom%</span>
+    </div>
+    <div class="dgm-leyenda d-flex gap-2 flex-wrap">
+        <span class="dgm-chip dgm-ver">Versión</span><span class="dgm-chip dgm-sec">Sector</span><span class="dgm-chip dgm-com">Componente</span>
+        <span class="dgm-chip dgm-ins">Insumo</span><span class="dgm-chip dgm-ens">Subensamble</span><span class="dgm-chip dgm-rut">Ruta / proceso / operación</span>
+    </div>
+</div>
+
+@if (!_cajas.Any())
+{
+    <MudText Class="mono pa-4" Style="opacity:.55;">No hay estructura para dibujar.</MudText>
+}
+else
+{
+    <div class="dgm-scroll kon-llena" data-diagrama="1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="@(_ancho * _zoom / 100)" height="@(_alto * _zoom / 100)" viewBox="0 0 @_ancho @_alto" role="img" aria-label="Diagrama de la estructura">
+            @foreach (var c in _cajas.Where(c => c.Padre is not null))
+            {
+                var p = c.Padre!;
+                var x1 = p.X + AnchoCaja; var y1 = p.Y + AltoCaja / 2; var x2 = c.X; var y2 = c.Y + AltoCaja / 2; var mx = (x1 + x2) / 2;
+                <path class="dgm-enlace" d="M @x1 @y1 C @mx @y1, @mx @y2, @x2 @y2" fill="none" />
+            }
+            @foreach (var c in _cajas)
+            {
+                var ficha = DiagramaFicha.Json(c.Nodo);
+                <g class="@($"dgm-caja {Clase(c.Nodo)}")" transform="translate(@c.X,@c.Y)" data-tipo="@(c.Nodo.TIPO_NODO)" data-nodo="@c.Nodo.ID"
+                   data-ficha="@ficha" aria-label="@DiagramaFicha.Texto(ficha)">
+                    <rect width="@AnchoCaja" height="@AltoCaja" rx="7" />
+                    <text x="9" y="16" class="dgm-t1">@Recorta(c.Nodo.DESCRIPCION, 30)</text>
+                    <text x="9" y="32" class="dgm-t2">@Linea2(c.Nodo)</text>
+                    <text x="@(AnchoCaja - 16)" y="16" class="dgm-alerta">@(c.Nodo.FLG_CICLO ? "↻" : c.Nodo.FLG_TRUNCADO ? "…" : "")</text>
+                </g>
+            }
+        </svg>
+    </div>
+}
+
+<AltoLlenaEstilos />
+<style>
+    .dgm-scroll { border:1px solid var(--mud-palette-lines-default); border-radius:8px; background:var(--mud-palette-background-gray); padding:8px; }
+    .dgm-enlace { stroke:var(--mud-palette-text-disabled); stroke-width:1.4; }
+    .dgm-caja rect { fill:var(--mud-palette-surface); stroke:var(--mud-palette-lines-inputs); stroke-width:1.2; }
+    .dgm-caja.dgm-ver rect { fill:var(--mud-palette-primary); stroke:var(--mud-palette-primary); }
+    .dgm-caja.dgm-ver text { fill:var(--mud-palette-primary-text); }
+    .dgm-caja.dgm-sec rect { fill:var(--mud-palette-info-lighten); stroke:var(--mud-palette-info); }
+    .dgm-caja.dgm-com rect { fill:var(--mud-palette-secondary-lighten); stroke:var(--mud-palette-secondary); }
+    .dgm-caja.dgm-ens rect { fill:var(--mud-palette-warning-lighten); stroke:var(--mud-palette-warning); stroke-width:2.4; }
+    .dgm-caja.dgm-rut rect { fill:var(--mud-palette-success-lighten); stroke:var(--mud-palette-success); }
+    .dgm-caja.dgm-rut.dgm-ope rect { stroke-dasharray:2 2; }
+    .dgm-chip.dgm-rut { background:var(--mud-palette-success-lighten); border-color:var(--mud-palette-success); }
+    .dgm-caja.dgm-bloq rect { stroke-dasharray:4 3; }
+    .dgm-caja text { fill:var(--mud-palette-text-primary); font-family:inherit; }
+    .dgm-t1 { font-size:12px; font-weight:600; } .dgm-t2 { font-size:10.5px; opacity:.8; }
+    .dgm-alerta { font-size:14px; font-weight:700; fill:var(--mud-palette-error) !important; }
+    .dgm-chip { font-size:.72rem; padding:2px 8px; border-radius:10px; border:1px solid var(--mud-palette-lines-inputs); background:var(--mud-palette-surface); }
+    .dgm-chip.dgm-ver { background:var(--mud-palette-primary); color:var(--mud-palette-primary-text); }
+    .dgm-chip.dgm-sec { background:var(--mud-palette-info-lighten); } .dgm-chip.dgm-com { background:var(--mud-palette-secondary-lighten); }
+    .dgm-chip.dgm-ens { background:var(--mud-palette-warning-lighten); border-color:var(--mud-palette-warning); }
+
+    /* Ficha (tarjeta) del mouse sobre una caja. La dibuja DiagramaFicha.cs al final del documento, fuera de #app. */
+    .dgm-caja { cursor:default; }
+    .dgm-ficha { --fc:var(--mud-palette-text-disabled); zoom:var(--app-scale, 1); box-sizing:border-box; width:max-content; min-width:230px; max-width:360px;
+        background:var(--mud-palette-surface, #fff); color:var(--mud-palette-text-primary, #222); font-size:12px; line-height:1.35;
+        border:1px solid var(--mud-palette-lines-default, #d8d8d8); border-left:6px solid var(--fc); border-radius:8px; padding:9px 12px 10px;
+        box-shadow:0 10px 28px rgba(0,0,0,.24), 0 2px 6px rgba(0,0,0,.14); }
+    .dgm-ficha-ver { --fc:var(--mud-palette-primary); } .dgm-ficha-sec { --fc:var(--mud-palette-info); } .dgm-ficha-com { --fc:var(--mud-palette-secondary); }
+    .dgm-ficha-ens { --fc:var(--mud-palette-warning); } .dgm-ficha-ins { --fc:var(--mud-palette-text-disabled); } .dgm-ficha-rut { --fc:var(--mud-palette-success); }
+    .dgm-ficha-cab { display:flex; align-items:center; margin-bottom:5px; }
+    .dgm-ficha-tipo { font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; padding:1px 8px; border-radius:9px;
+        background:color-mix(in srgb, var(--fc) 16%, transparent); border:1px solid color-mix(in srgb, var(--fc) 55%, transparent); }
+    .dgm-ficha-titulo { font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+    .dgm-ficha-cod { font-family:'Spline Sans Mono', ui-monospace, monospace; font-size:10.5px; opacity:.62; margin-top:1px; overflow-wrap:anywhere; }
+    .dgm-ficha-filas { margin-top:7px; border-top:1px solid var(--mud-palette-lines-default, #ddd); padding-top:4px; }
+    .dgm-ficha-fila { display:flex; justify-content:space-between; gap:18px; padding:2px 0; }
+    .dgm-ficha-fila + .dgm-ficha-fila { border-top:1px dotted color-mix(in srgb, currentColor 18%, transparent); }
+    .dgm-ficha-et { opacity:.66; white-space:nowrap; }
+    .dgm-ficha-val { font-weight:600; text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .dgm-ficha-total { display:flex; justify-content:space-between; gap:18px; margin-top:7px; padding:5px 8px; border-radius:6px; font-size:13px; font-weight:700;
+        background:color-mix(in srgb, var(--fc) 13%, transparent); }
+    .dgm-ficha-aviso { margin-top:6px; color:var(--mud-palette-error); font-weight:600; font-size:11px; }
+</style>
+
+@code {
+    [Parameter] public List<DisenosEstructuraNodo> Nodos { get; set; } = new();
+
+    private const int AnchoCaja = 210, AltoCaja = 40, SepX = 60, SepY = 12, Margen = 16;
+    private bool _verInsumos = true;
+    private bool VerInsumos { get => _verInsumos; set { if (_verInsumos == value) return; _verInsumos = value; Armar(); } }
+    private bool _verRutas = true;
+    private bool VerRutas { get => _verRutas; set { if (_verRutas == value) return; _verRutas = value; Armar(); } }
+    private static bool EsRuta(DisenosEstructuraNodo n) => n.TIPO_NODO is "RUT" or "PRC" or "SPR" or "OPE";
+    private int _zoom = 100;
+    private int _ancho, _alto;
+    private List<Caja> _cajas = new();
+
+    private sealed class Caja { public DisenosEstructuraNodo Nodo = null!; public Caja? Padre; public int X, Y; public double YCentro; }
+
+    protected override void OnParametersSet() => Armar();
+
+    // la ficha del mouse (DiagramaFicha.cs) se instala una vez; en cada dibujado se oculta la que hubiera abierta
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try { await DiagramaFicha.IniciarAsync(JS); } catch (JSException) { }
+    }
+
+    private void Armar()
+    {
+        _cajas = new();
+        var visibles = Nodos.Where(n => (_verInsumos || n.TIPO_NODO != "INS" || n.FLG_ENSAMBLE) && (_verRutas || !EsRuta(n))).ToList();
+        if (visibles.Count == 0) { _ancho = _alto = 0; return; }
+        var hijos = visibles.ToLookup(n => n.PARENT_ID);
+        var porId = new Dictionary<int, Caja>();
+        var ordenados = visibles.OrderBy(n => n.ORDEN, StringComparer.Ordinal).ToList();
+        int hoja = 0;
+        void Poner(DisenosEstructuraNodo n, Caja? padre)
+        {
+            var caja = new Caja { Nodo = n, Padre = padre, X = Margen + (n.PROFUNDIDAD - 1) * (AnchoCaja + SepX) };
+            var hs = hijos[n.ID].OrderBy(h => h.ORDEN, StringComparer.Ordinal).ToList();
+            _cajas.Add(caja); porId[n.ID] = caja;
+            if (hs.Count == 0) { caja.YCentro = Margen + hoja * (AltoCaja + SepY); hoja++; }
+            else { foreach (var h in hs) Poner(h, caja); caja.YCentro = (porId[hs.First().ID].YCentro + porId[hs.Last().ID].YCentro) / 2; }
+            caja.Y = (int)caja.YCentro;
+        }
+        foreach (var raiz in ordenados.Where(n => n.PARENT_ID is null)) Poner(raiz, null);
+        _ancho = _cajas.Max(c => c.X) + AnchoCaja + Margen;
+        _alto = _cajas.Max(c => c.Y) + AltoCaja + Margen;
+    }
+
+    private static string Clase(DisenosEstructuraNodo n) =>
+        (n.TIPO_NODO switch { "VER" => "dgm-ver", "SEC" => "dgm-sec", "COM" => "dgm-com", "RUT" => "dgm-rut dgm-r", "PRC" => "dgm-rut dgm-r", "SPR" => "dgm-rut dgm-r", "OPE" => "dgm-rut dgm-ope", _ => n.FLG_ENSAMBLE ? "dgm-ens" : "dgm-ins" }) + (n.FLG_BLOQUEADO && n.TIPO_NODO == "VER" ? " dgm-bloq" : "");
+
+    private static string Recorta(string? s, int max) => string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    private static string Linea2(DisenosEstructuraNodo n) => n.TIPO_NODO switch
+    {
+        "INS" => $"{n.CAN_CONSUMO:0.####} {n.COD_UNIDAD_MEDIDA} · {n.COSTO_TOTAL:N2}",
+        "OPE" => $"{n.CAN_LEAD_TIME:0.##} {n.COD_UNIDAD_MEDIDA_TIEMPO}" + (n.FLG_MANUAL == true ? " · manual" : "") + (n.FLG_CONTROL_CALIDAD == true ? " · calidad" : ""),
+        "RUT" => "Ruta de producción",
+        "PRC" => "Proceso",
+        "SPR" => "Subproceso",
+        "VER" => $"Costo {n.COSTO_TOTAL:N2}" + (n.FLG_BLOQUEADO ? " · bloqueada" : ""),
+        _ => $"{n.COSTO_TOTAL:N2}"
+    };
+
+}
