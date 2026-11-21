@@ -48,12 +48,12 @@ else
                 <div class="d-flex gap-1">
                     <MudNumericField T="decimal?" Value="Celda.Minimo" Placeholder="Mín"
                                      ValueChanged="@((decimal? v) => Aplicar(c => c.Minimo = v))"
-                                     Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                     Variant="Variant.Outlined" Class="mb-0"
                                      Format="@Formato" Culture="@CultureInfo.CurrentCulture"
                                      Disabled="Disabled" />
                     <MudNumericField T="decimal?" Value="Celda.Maximo" Placeholder="Máx"
                                      ValueChanged="@((decimal? v) => Aplicar(c => c.Maximo = v))"
-                                     Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                     Variant="Variant.Outlined" Class="mb-0"
                                      Format="@Formato" Culture="@CultureInfo.CurrentCulture"
                                      Disabled="Disabled" />
                 </div>
@@ -67,7 +67,7 @@ else
             case TipoEspecMatriz.Numerico:
                 <MudTextField T="string" Value="Celda.Texto"
                               ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
-                              Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0 celda-num"
+                              Variant="Variant.Outlined" Class="mb-0 celda-num"
                               Disabled="Disabled" />
                 break;
 
@@ -83,7 +83,7 @@ else
             case TipoEspecMatriz.FechaHora:
                 <MudDatePicker Date="Celda.Fecha"
                                DateChanged="@((DateTime? v) => Aplicar(c => c.Fecha = v))"
-                               Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                               Variant="Variant.Outlined" Class="mb-0"
                                DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
                                ReadOnly="Disabled" />
                 break;
@@ -91,7 +91,7 @@ else
             case TipoEspecMatriz.Hora:
                 <MudTimePicker Time="Celda.Hora"
                                TimeChanged="@((TimeSpan? v) => Aplicar(c => c.Hora = v))"
-                               Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                               Variant="Variant.Outlined" Class="mb-0"
                                Editable="true" ReadOnly="Disabled" />
                 break;
 
@@ -103,7 +103,7 @@ else
                     <div class="muestra-color grande" style="background:@(string.IsNullOrWhiteSpace(Celda.Texto) ? "transparent" : Celda.Texto);"></div>
                     <MudTextField T="string" Value="Celda.Texto"
                                   ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
-                                  Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                                  Variant="Variant.Outlined" Class="mb-0"
                                   Disabled="Disabled" />
                 </div>
                 break;
@@ -111,7 +111,7 @@ else
             default:
                 <MudTextField T="string" Value="Celda.Texto"
                               ValueChanged="@((string v) => Aplicar(c => c.Texto = v))"
-                              Margin="Margin.Dense" Variant="Variant.Outlined" Class="mb-0"
+                              Variant="Variant.Outlined" Class="mb-0"
                               Disabled="Disabled" />
                 break;
         }

@@ -16,7 +16,7 @@
         <MudPaper Outlined="true" Class="pa-3 mb-3">
             <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">Destino</MudText>
             <AriaCombo TItem="ComboboxItem" Items="_disenos" TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)" @bind-Value="_destino" Label="Diseño destino (la nueva versión se crea ahí)" />
-            <MudTextField T="string" @bind-Value="_descripcion" Label="Descripción de la nueva versión (opcional)" MaxLength="100" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="descripcion" />
+            <MudTextField T="string" @bind-Value="_descripcion" Label="Descripción de la nueva versión (opcional)" MaxLength="100" Variant="Variant.Outlined" data-campo="descripcion" />
         </MudPaper>
         <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">Se crea con el siguiente número libre del diseño destino, Registrada y sin bloqueo. Para mezclar solo una parte en una versión que ya existe, use «Copiar segmento».</MudAlert>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }

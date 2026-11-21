@@ -58,7 +58,7 @@
                                 }
                                 else
                                 {
-                                    <td><MudNumericField T="decimal?" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="f.Cantidad" Immediate="true" Min="0" Disabled="@(f.YaEsta || !f.Marcada)" data-campo="cantidad" /></td>
+                                    <td><MudNumericField T="decimal?" Variant="Variant.Outlined" @bind-Value="f.Cantidad" Immediate="true" Min="0" Disabled="@(f.YaEsta || !f.Marcada)" data-campo="cantidad" /></td>
                                 }
                             </tr>
                         }

@@ -1,0 +1,330 @@
+@* Constructor de formulas de consumo (script SQL 145, API formulacion/formulas). A la izquierda la lista de formulas; a la derecha la cabecera, el lienzo de fichas,
+   la paleta de componentes y sus elementos. La base arma el texto tecnico y el de pantalla al grabar; aqui el texto de pantalla se ve en vivo con los alias.
+   NO calcula formulas: eso es una etapa posterior. *@
+@page "/ingenieria/formulas"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Formulacion
+@using FRoute = KONSolutions.Web.Services.ApiRoutes.Formulacion
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject AccessLogService AccessLog
+
+<PageTitle>Fórmulas de consumo · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<style>
+    .fm-layout { display:grid; grid-template-columns:280px minmax(0,1fr); gap:12px; align-items:start; }
+    @@media (max-width: 900px) { .fm-layout { grid-template-columns:1fr; } }
+    .fm-lista { border:1px solid var(--line); }
+    .fm-item { display:flex; flex-direction:column; gap:2px; padding:8px 12px; border-bottom:1px solid var(--line); cursor:pointer; background:transparent; width:100%; text-align:left; border-left:0; border-right:0; border-top:0; color:inherit; font:inherit; }
+    .fm-item:hover { background:rgba(127,127,127,.08); }
+    .fm-item.fm-sel { background:rgba(63,127,224,.14); }
+    .fm-item small { opacity:.65; }
+    .fm-alias { font-family:var(--mono-font,monospace); padding:8px 14px; border:1px solid var(--line); border-radius:8px; text-align:center; flex:1; min-width:200px; }
+    .fm-tec { font-family:var(--mono-font,monospace); font-size:.8rem; opacity:.7; padding:6px 10px; border:1px dashed var(--line); border-radius:6px; overflow-x:auto; white-space:nowrap; }
+</style>
+
+<div class="d-flex align-center gap-3 mb-2 grid-header-compacto">
+    <div class="grid-header-titulo">
+        <MudText Typo="Typo.h5">Fórmulas de consumo</MudText>
+        <MudText Class="mono" Style="opacity:.55;font-size:.82rem;">@(_cabecera is null ? "Elige una fórmula o crea una nueva" : (_dto.NUM_FORMULACION is > 0 ? $"N.º {_dto.NUM_FORMULACION:0000}" : "Fórmula nueva"))@(_sucio ? " · con cambios sin grabar" : "")</MudText>
+    </div>
+    <GridRefreshButton OnRefresh="CargarLista" />
+</div>
+
+@if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
+
+<div class="fm-layout">
+    <MudPaper Elevation="0" Class="fm-lista" data-zona="lista">
+        <div class="d-flex align-center gap-2 pa-2" style="border-bottom:1px solid var(--line);">
+            <MudText Typo="Typo.subtitle2" Style="flex:1;">Fórmulas</MudText>
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="Copiar" Disabled="@(_dto.NUM_FORMULACION is not > 0)" data-accion="copiar">Copiar fórmula</MudButton>
+            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="Nueva" data-accion="nueva">Nueva</MudButton>
+        </div>
+        <div class="pa-2">
+            <MudTextField T="string" @bind-Value="_buscar" Immediate="true" Placeholder="Filtrar por nombre o sub familia" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" data-campo="buscar" />
+        </div>
+        @foreach (var f in _visibles)
+        {
+            <button type="button" class="fm-item @(_dto.NUM_FORMULACION == f.NUM_FORMULACION ? "fm-sel" : "")" @onclick="@(() => Elegir(f))" data-formula="@f.NUM_FORMULACION">
+                <b>@f.DES_FORMULACION</b>
+                <small>@(f.DES_SUB_FAMILIA_CONSUMO ?? "Cualquier consumo") → @(f.DES_SUB_FAMILIA_PRODUCTO ?? "Cualquier producto")</small>
+                <small class="mono">@f.DES_ALIAS</small>
+                <small>@(f.DES_ESTADO ?? "")</small>
+            </button>
+        }
+        @if (_visibles.Count == 0) { <MudText Class="pa-3" Style="opacity:.6;" data-vacio="1">@(_formulas.Count == 0 ? "Todavía no hay fórmulas. Crea una con «Nueva»." : "Ninguna fórmula coincide con el filtro.")</MudText> }
+    </MudPaper>
+
+    <div class="d-flex flex-column gap-3" style="min-width:0;">
+        @if (_cabecera is null)
+        {
+            <MudPaper Elevation="0" Class="pa-6" Style="border:1px solid var(--line);opacity:.75;" data-vacio-detalle="1">Elige una fórmula de la lista para verla, o usa «Nueva» para armar una.</MudPaper>
+        }
+        else
+        {
+            <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);" data-zona="cabecera">
+                <div class="d-flex align-center gap-2 mb-2">
+                    <MudText Typo="Typo.subtitle2">Datos de la fórmula</MudText>
+                    @if (!_verCabecera) { <MudText Typo="Typo.body2" Style="opacity:.8;" data-resumen-cabecera="1"><b>@(string.IsNullOrWhiteSpace(_dto.DES_FORMULACION) ? "(sin descripción)" : _dto.DES_FORMULACION)</b></MudText> }
+                    <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                        @if (_cabecera.NUM_FORMULACION > 0 && !string.IsNullOrEmpty(_cabecera.DES_ESTADO))
+                        {
+                            <span class="mud-chip mud-chip-filled mud-chip-size-small" style="@EstiloEstado()" data-estado-chip="1"><span class="mud-chip-content">@_cabecera.DES_ESTADO</span></span>
+                        }
+                        <MudIconButton Icon="@(_verCabecera ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)" Size="Size.Small" OnClick="@(() => _verCabecera = !_verCabecera)"
+                                       aria-label="@(_verCabecera ? "Ocultar los datos de la fórmula" : "Mostrar los datos de la fórmula")" title="@(_verCabecera ? "Ocultar la cabecera" : "Mostrar la cabecera")" data-accion="cabecera" />
+                        <PanelAuditoria CodUsuarioRegistro="@_cabecera.COD_USUARIO_REGISTRO" CodEstacionRegistro="@_cabecera.COD_ESTACION_REGISTRO" FecRegistro="@_cabecera.FEC_REGISTRO"
+                                        CodUsuarioActualizacion="@_cabecera.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@_cabecera.COD_ESTACION_ACTUALIZACION" FecActualizacion="@_cabecera.FEC_ACTUALIZACION" Class="" />
+                    </div>
+                </div>
+                @if (_verCabecera)
+                {
+                <MudGrid>
+                    <MudItem xs="12" md="9">
+                        <MudTextField T="string" Value="@_dto.DES_FORMULACION" ValueChanged="@(v => { _dto.DES_FORMULACION = v ?? ""; Modificado(); })" Immediate="true" Label="Descripción" MaxLength="50" Variant="Variant.Outlined" data-campo="nombre" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudSelect T="short" Label="Estado" Variant="Variant.Outlined" Value="@(_dto.COD_ESTADO ?? 0)" ValueChanged="@(v => { _dto.COD_ESTADO = v; _sucio = true; })" data-campo="estado">
+                            <MudSelectItem T="short" Value="0">EN DESARROLLO</MudSelectItem>
+                            <MudSelectItem T="short" Value="1">ACTIVA</MudSelectItem>
+                            <MudSelectItem T="short" Value="2">INACTIVA</MudSelectItem>
+                        </MudSelect>
+                        @if (_sucio && (_dto.COD_ESTADO ?? 0) == 0 && (_cabecera?.COD_ESTADO ?? 0) > 0)
+                        {
+                            <MudText Typo="Typo.caption" Style="opacity:.75;" data-aviso-estado="1">Pasa a EN DESARROLLO porque modificaste la fórmula.</MudText>
+                        }
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <SubFamiliaSelector Id="consumo" Titulo="Sub familia del consumo (lo que se consume)" Grupo="@_dto.COD_GRUPO_PRODUCTO_CONSUMO" Familia="@_dto.COD_FAMILIA_PRODUCTO_CONSUMO" Sub="@_dto.COD_SUB_FAMILIA_PRODUCTO_CONSUMO"
+                                            OnCambio="CambioConsumo" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <SubFamiliaSelector Id="producto" Titulo="Sub familia del producto (donde se usa)" Grupo="@_dto.COD_GRUPO_PRODUCTO" Familia="@_dto.COD_FAMILIA_PRODUCTO" Sub="@_dto.COD_SUB_FAMILIA_PRODUCTO"
+                                            OnCambio="CambioProducto" />
+                    </MudItem>
+                </MudGrid>
+                }
+                <div class="d-flex align-center gap-2 mt-3 flex-wrap">
+                    <MudText Typo="Typo.caption" Style="opacity:.7;">Se muestra como</MudText>
+                    <div class="fm-alias" data-alias="1">@(_fichas.Count == 0 ? "—" : "( " + AliasEnVivo() + " )")</div>
+                </div>
+                <MudCheckBox T="bool" @bind-Value="_verTecnico" Label="Ver la fórmula técnica que se guarda" Dense="true" Size="Size.Small" data-campo="ver-tecnico" />
+                @if (_verTecnico) { <div class="fm-tec" data-tecnico="1">@(_fichas.Count == 0 ? "—" : TecnicoEnVivo())</div> }
+            </MudPaper>
+
+            <FormulaFichasEditor @key="_editorKey" Fichas="_fichas" Paleta="_paleta" PosError="_posError" OnCambio="Tocado">
+                    @if (_validacion is not null)
+                    {
+                        @if (_validacion.ES_VALIDA)
+                        {
+                            <MudAlert Severity="Severity.Success" Dense="true" Class="mt-2" data-validacion="ok">Fórmula válida.</MudAlert>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2" data-validacion="error">
+                                <b>No se puede grabar todavía</b>
+                                <ul style="margin:4px 0 0;padding-left:18px;">@foreach (var e in _validacion.Errores) { <li>@e.DES_ERROR</li> }</ul>
+                            </MudAlert>
+                        }
+                    }
+                    <div class="fm-pie">
+                        <MudButton Variant="Variant.Outlined" Color="Color.Warning" OnClick="Descartar" Disabled="@(!_sucio && _dto.NUM_FORMULACION is not > 0)" data-accion="descartar">Descartar</MudButton>
+                        <MudButton Variant="Variant.Outlined" OnClick="Validar" Disabled="@_ocupado" data-accion="validar">Validar</MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="EliminarFormula" Disabled="@(_dto.NUM_FORMULACION is not > 0)" data-accion="eliminar">Eliminar</MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Grabar" Disabled="@_ocupado" data-accion="grabar">Grabar</MudButton>
+                    </div>
+            </FormulaFichasEditor>
+        }
+    </div>
+</div>
+
+@code {
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    private static readonly HashSet<int> SinError = new();
+    private List<FormulaCabecera> _formulas = new();
+    private FormulaCabecera? _cabecera;
+    private FormulaGuardarDto _dto = new();
+    private readonly List<FormulaFichaUi> _fichas = new();
+    private List<PaletaFicha> _paleta = new();
+    private int _editorKey;
+    private bool _sucio, _ocupado, _verTecnico, _verCabecera = true;
+    private string _buscar = "", _error = "";
+    private FormulaValidacion? _validacion;
+    private HashSet<int> _posError = SinError;
+
+    private IEnumerable<FormulaCabecera> _filtradas => _formulas.Where(f => string.IsNullOrWhiteSpace(_buscar)
+        || (f.DES_FORMULACION?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false) || (f.DES_ALIAS?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false)
+        || (f.DES_SUB_FAMILIA_CONSUMO?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false) || (f.DES_SUB_FAMILIA_PRODUCTO?.Contains(_buscar, StringComparison.OrdinalIgnoreCase) ?? false));
+    private List<FormulaCabecera> _visibles => _filtradas.ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "Formulas");
+        await CargarLista();
+        await CargarPaleta();
+    }
+
+    // ------------------------------------------------------------------ lectura
+    private async Task CargarLista()
+    {
+        var r = await OperacionesApi.LeerAsync<List<FormulaCabecera>>(Http, FRoute.Formulas);
+        _error = r.Ok ? "" : r.Mensaje ?? "No se pudieron leer las fórmulas.";
+        _formulas = r.Data ?? new();
+        StateHasChanged();
+    }
+
+    private async Task CargarPaleta()
+    {
+        var r = await OperacionesApi.LeerAsync<List<PaletaFicha>>(Http, FRoute.Paleta(_dto.COD_GRUPO_PRODUCTO_CONSUMO, _dto.COD_FAMILIA_PRODUCTO_CONSUMO, _dto.COD_SUB_FAMILIA_PRODUCTO_CONSUMO,
+            _dto.COD_GRUPO_PRODUCTO, _dto.COD_FAMILIA_PRODUCTO, _dto.COD_SUB_FAMILIA_PRODUCTO));
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo leer la paleta."; return; }
+        _paleta = r.Data ?? new();
+        StateHasChanged();
+    }
+
+    // ------------------------------------------------------------------ elegir, nueva, copiar
+    private async Task<bool> ConfirmarSiHayCambios()
+    {
+        if (!_sucio) return true;
+        return await DialogService.ShowMessageBox("Cambios sin grabar", "Hay cambios sin grabar en la fórmula. ¿Descartarlos?", yesText: "Descartar", cancelText: "Seguir editando") == true;
+    }
+
+    private async Task Elegir(FormulaCabecera f)
+    {
+        if (f.NUM_FORMULACION == _dto.NUM_FORMULACION && _cabecera is not null) return;
+        if (!await ConfirmarSiHayCambios()) return;
+        await CargarFormula(f.NUM_FORMULACION);
+    }
+
+    private async Task CargarFormula(int num)
+    {
+        var r = await OperacionesApi.LeerAsync<FormulaDetalle>(Http, FRoute.Formula(num));
+        if (!r.Ok || r.Data is null) { _error = r.Mensaje ?? "No se pudo leer la fórmula."; return; }
+        _error = ""; _cabecera = r.Data.Cabecera;
+        var c = r.Data.Cabecera;
+        _dto = new FormulaGuardarDto
+        {
+            NUM_FORMULACION = c.NUM_FORMULACION, DES_FORMULACION = c.DES_FORMULACION ?? "", COD_ESTADO = c.COD_ESTADO,
+            COD_GRUPO_PRODUCTO_CONSUMO = c.COD_GRUPO_PRODUCTO_CONSUMO?.Trim(), COD_FAMILIA_PRODUCTO_CONSUMO = c.COD_FAMILIA_PRODUCTO_CONSUMO?.Trim(), COD_SUB_FAMILIA_PRODUCTO_CONSUMO = c.COD_SUB_FAMILIA_PRODUCTO_CONSUMO?.Trim(),
+            COD_GRUPO_PRODUCTO = c.COD_GRUPO_PRODUCTO?.Trim(), COD_FAMILIA_PRODUCTO = c.COD_FAMILIA_PRODUCTO?.Trim(), COD_SUB_FAMILIA_PRODUCTO = c.COD_SUB_FAMILIA_PRODUCTO?.Trim()
+        };
+        _fichas.Clear();
+        foreach (var f in r.Data.Fichas.OrderBy(x => x.NUM_SECUENCIA))
+            _fichas.Add(new FormulaFichaUi
+            {
+                Comp = f.COD_COMPONENTE_FORMULACION, Elem = f.COD_ELEMENTO_FORMULACION, Alias = f.COD_ALIAS_FORMULACION ?? "", DesComp = f.DES_COMPONENTE_FORMULACION ?? "", DesElem = f.DES_ELEMENTO_FORMULACION ?? "",
+                Tec = f.DES_FORMULA ?? "", Valor = f.COD_COMPONENTE_FORMULACION == "CONST" || f.FLG_ESPECIFICACION == true ? f.DES_FORMULA : null, Espec = f.FLG_ESPECIFICACION == true, Back = f.DES_BACKCOLOR, Fore = f.DES_FORECOLOR
+            });
+        _editorKey++; _sucio = false; _validacion = null; _posError = SinError;
+        await CargarPaleta();
+    }
+
+    private async Task Nueva()
+    {
+        if (!await ConfirmarSiHayCambios()) return;
+        _error = ""; _cabecera = new FormulaCabecera();
+        _dto = new FormulaGuardarDto { COD_ESTADO = 0 };
+        _fichas.Clear(); _editorKey++; _sucio = false; _validacion = null; _posError = SinError;
+        await CargarPaleta();
+    }
+
+    private async Task Copiar()
+    {
+        if (_dto.NUM_FORMULACION is not > 0) return;
+        if (!await ConfirmarSiHayCambios()) return;
+        var r = await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, HttpMethod.Post, FRoute.FormulaCopiar(_dto.NUM_FORMULACION.Value));
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo copiar."; return; }
+        Snackbar.Add("Copia creada. Cambia el nombre y graba.", Severity.Success);
+        await CargarLista();
+        if (int.TryParse(r.Data?.Codigo, out var n)) await CargarFormula(n);
+    }
+
+    private async Task Descartar()
+    {
+        if (_dto.NUM_FORMULACION is > 0) await CargarFormula(_dto.NUM_FORMULACION.Value);
+        else { _cabecera = null; _fichas.Clear(); _editorKey++; _sucio = false; _validacion = null; _posError = SinError; _dto = new(); }
+        Snackbar.Add("Cambios descartados.", Severity.Info);
+    }
+
+    // ------------------------------------------------------------------ sub familias
+    private async Task CambioConsumo((string? G, string? F, string? S) v)
+    {
+        _dto.COD_GRUPO_PRODUCTO_CONSUMO = v.G; _dto.COD_FAMILIA_PRODUCTO_CONSUMO = v.F; _dto.COD_SUB_FAMILIA_PRODUCTO_CONSUMO = v.S; Modificado();
+        await CargarPaleta();
+    }
+
+    private async Task CambioProducto((string? G, string? F, string? S) v)
+    {
+        _dto.COD_GRUPO_PRODUCTO = v.G; _dto.COD_FAMILIA_PRODUCTO = v.F; _dto.COD_SUB_FAMILIA_PRODUCTO = v.S; Modificado();
+        await CargarPaleta();
+    }
+
+    // ------------------------------------------------------------------ texto en vivo (la base arma el definitivo al grabar con las mismas reglas)
+    /// <summary>Cualquier cambio a una formula ya grabada la devuelve a EN DESARROLLO (hay que volver a activarla a proposito, con el selector de Estado).</summary>
+    private void Modificado() { _sucio = true; if (_dto.NUM_FORMULACION is > 0) _dto.COD_ESTADO = 0; }
+
+    /// <summary>El editor de fichas avisa que cambio algo: se pierde la validacion anterior.</summary>
+    private void Tocado() { Modificado(); _validacion = null; _posError = SinError; }
+
+    private static string Etiqueta(FormulaFichaUi f) => FormulaFichaUi.Etiqueta(f);
+    private string AliasEnVivo() => string.Join(" ", _fichas.Select(Etiqueta)).Replace("( ", "(").Replace(" )", ")").Replace("[ ", "[").Replace(" ]", "]");
+    private string TecnicoEnVivo() => string.Join(" ", _fichas.Select(f => f.Comp == "CONST" || f.Espec ? (f.Valor ?? "") : f.Tec));
+
+    private static string Estilo(string? back, string? fore) => $"background:{(string.IsNullOrWhiteSpace(back) ? "#555" : back)};color:{(string.IsNullOrWhiteSpace(fore) ? "#fff" : fore)};";
+    private string EstiloEstado() => $"background:{_cabecera?.DES_ESTADO_BACKCOLOR ?? "#64748b"};color:{_cabecera?.DES_ESTADO_FORECOLOR ?? "#fff"};";
+
+    // ------------------------------------------------------------------ validar y grabar
+    private List<FormulaFichaDto> FichasDto() => _fichas.Select(f => new FormulaFichaDto { COD_COMPONENTE_FORMULACION = f.Comp, COD_ELEMENTO_FORMULACION = f.Elem, DES_FORMULA = f.Comp == "CONST" || f.Espec ? f.Valor : null, COD_ESPECIFICACION_TECNICA = f.EspCod }).ToList();
+
+    private async Task Validar()
+    {
+        _ocupado = true;
+        var r = await OperacionesApi.EnviarAsync<FormulaValidacion>(Http, HttpMethod.Post, FRoute.FormulasValidar, new FormulaValidarDto { Fichas = FichasDto() });
+        _ocupado = false;
+        if (!r.Ok || r.Data is null) { _error = r.Mensaje ?? "No se pudo validar."; return; }
+        _error = ""; _validacion = r.Data;
+        _posError = r.Data.Errores.Where(e => e.NUM_POSICION is > 0).Select(e => e.NUM_POSICION!.Value).ToHashSet();
+    }
+
+    private async Task Grabar()
+    {
+        if (string.IsNullOrWhiteSpace(_dto.DES_FORMULACION)) { _error = "Escribe la descripción de la fórmula."; return; }
+        var n = new[] { _dto.COD_GRUPO_PRODUCTO_CONSUMO, _dto.COD_FAMILIA_PRODUCTO_CONSUMO, _dto.COD_SUB_FAMILIA_PRODUCTO_CONSUMO }.Count(x => !string.IsNullOrWhiteSpace(x));
+        var m = new[] { _dto.COD_GRUPO_PRODUCTO, _dto.COD_FAMILIA_PRODUCTO, _dto.COD_SUB_FAMILIA_PRODUCTO }.Count(x => !string.IsNullOrWhiteSpace(x));
+        if (n is not (0 or 3) || m is not (0 or 3)) { _error = "Elige el grupo, la familia y la sub familia completos, o ninguno."; return; }
+        _ocupado = true; _error = "";
+        _dto.Fichas = FichasDto();
+        var nueva = _dto.NUM_FORMULACION is not > 0;
+        var r = await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, nueva ? HttpMethod.Post : HttpMethod.Put, FRoute.Formulas, _dto);
+        _ocupado = false;
+        if (!r.Ok)
+        {
+            var motivo = r.Mensaje ?? "No se pudo grabar.";
+            // si la base rechazo la forma, se muestran tambien los problemas en las fichas (el motivo de arriba se conserva)
+            await Validar();
+            _error = motivo;
+            return;
+        }
+        Snackbar.Add(nueva ? "Fórmula creada." : "Fórmula grabada.", Severity.Success);
+        _sucio = false;
+        await CargarLista();
+        if (int.TryParse(r.Data?.Codigo, out var num)) await CargarFormula(num);
+    }
+
+    private async Task EliminarFormula()
+    {
+        if (_dto.NUM_FORMULACION is not > 0) return;
+        var ok = await DialogService.ShowMessageBox("Eliminar fórmula", $"¿Eliminar la fórmula «{_dto.DES_FORMULACION}»?", yesText: "Eliminar", cancelText: "Cancelar");
+        if (ok != true) return;
+        var r = await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, HttpMethod.Delete, FRoute.Formula(_dto.NUM_FORMULACION.Value));
+        if (!r.Ok) { _error = r.Mensaje ?? "No se pudo eliminar."; return; }
+        Snackbar.Add("Fórmula eliminada.", Severity.Success);
+        _cabecera = null; _fichas.Clear(); _editorKey++; _sucio = false; _validacion = null; _posError = SinError; _dto = new();
+        await CargarLista();
+    }
+}

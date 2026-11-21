@@ -18,14 +18,14 @@
                         Disabled="_readonly" Obligatorio="true" />
 
             <CampoTextoEstable Label="URL del Snippet" @bind-Value="_model.URL_SNIPPET"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-3"
+                          Variant="Variant.Outlined" Class="mb-3"
                           Disabled="_readonly" Required="true" RequiredError="Campo requerido."
                           Immediate="true"
                           OnBlur="@(_ => _model.URL_SNIPPET = _model.URL_SNIPPET?.Trim() ?? "")"
                           Style="font-family:monospace;font-size:.85rem;" />
 
             <CampoTextoEstable Label="Token de autorización (Bearer)" @bind-Value="_model.DES_TOKEN"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-3"
+                          Variant="Variant.Outlined" Class="mb-3"
                           Disabled="_readonly"
                           Immediate="true"
                           OnBlur="@(_ => _model.DES_TOKEN = string.IsNullOrWhiteSpace(_model.DES_TOKEN) ? null : _model.DES_TOKEN.Trim())"

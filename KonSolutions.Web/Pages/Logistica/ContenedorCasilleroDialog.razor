@@ -19,31 +19,31 @@
                     <MudItem xs="12" sm="3">
                         <CampoTexto Tabla="LOGISTICA.CONTENEDORES_ALMACENAJE_CASILLEROS" Columna="COD_CASILLERO"
                                     @bind-Value="_model.COD_CASILLERO" Disabled="true"
-                                    Margin="Margin.Dense" Class="mb-3" />
+                                    Class="mb-3" />
                     </MudItem>
                 }
                 <MudItem xs="12" sm="@(_esNuevo ? 12 : 9)">
                     <MudTextField T="string" Value="@_desContenedor" Label="Contenedor" Variant="Variant.Outlined"
-                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                                  ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
 
                 <MudItem xs="12">
                     <CampoTexto Tabla="LOGISTICA.CONTENEDORES_ALMACENAJE_CASILLEROS" Columna="DES_CASILLERO"
                                 @bind-Value="_model.DES_CASILLERO" Label="Casillero"
                                 Disabled="_readonly" Obligatorio="true"
-                                Margin="Margin.Dense" Class="mb-3" />
+                                Class="mb-3" />
                 </MudItem>
 
                 @* Fila = nivel (altura), columna = posición a lo largo. De estos dos números
                    sale la posición del casillero dentro del polígono del contenedor. *@
                 <MudItem xs="6" sm="3">
                     <MudNumericField T="int?" @bind-Value="_model.NUM_FILA" Label="Fila (nivel)"
-                                     Min="1" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Min="1" Variant="Variant.Outlined"
                                      Disabled="_readonly" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="6" sm="3">
                     <MudNumericField T="int?" @bind-Value="_model.NUM_COLUMNA" Label="Columna"
-                                     Min="1" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Min="1" Variant="Variant.Outlined"
                                      Disabled="_readonly" Class="mb-3" />
                 </MudItem>
 
@@ -51,7 +51,7 @@
                    dejaría casilleros del mismo mueble direccionando a almacenes distintos. *@
                 <MudItem xs="12" sm="6">
                     <MudTextField T="string" Value="@_desAlmacen" Label="Almacén" Variant="Variant.Outlined"
-                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                                  ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
 
                 <MudItem xs="12">

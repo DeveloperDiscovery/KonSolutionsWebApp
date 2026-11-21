@@ -40,7 +40,7 @@ else
         </div>
 
         <div class="rep-grid4">
-            <MudSelect T="int?" Value="_numDiseno" ValueChanged="ElegirDiseno" Label="Diseño que dispara *" Variant="Variant.Outlined" Margin="Margin.Dense">
+            <MudSelect T="int?" Value="_numDiseno" ValueChanged="ElegirDiseno" Label="Diseño que dispara *" Variant="Variant.Outlined">
                 @foreach (var g in _disenos.Where(x => x.FLG_HABILITADO || x.NUM_DISENO == _numDiseno).GroupBy(x => x.COD_TIPO_DISENO).OrderByDescending(g => g.Key))
                 {
                     foreach (var x in g.OrderBy(x => x.DES_DISENO))
@@ -49,7 +49,7 @@ else
                     }
                 }
             </MudSelect>
-            <MudSelect T="string" @bind-Value="_formato" Label="Formato por defecto" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(diseno is null)">
+            <MudSelect T="string" @bind-Value="_formato" Label="Formato por defecto" Variant="Variant.Outlined" Disabled="@(diseno is null)">
                 @foreach (var f in Formatos(diseno))
                 {
                     <MudSelectItem T="string" Value="@f">@ReportesWebService.NombreFormato(f)</MudSelectItem>
@@ -67,7 +67,7 @@ else
             <MudText Typo="Typo.subtitle2" Style="font-weight:800;">COPIA DEL ARCHIVO</MudText>
         </div>
         <div class="rep-copia">
-            <MudSelect T="string" @bind-Value="_ruta" Label="Guardar una copia en" Variant="Variant.Outlined" Margin="Margin.Dense"
+            <MudSelect T="string" @bind-Value="_ruta" Label="Guardar una copia en" Variant="Variant.Outlined"
                        ToStringFunc="@(r => string.IsNullOrEmpty(r) ? SinCopia : r)">
                 <MudSelectItem T="string" Value="@string.Empty">@SinCopia</MudSelectItem>
                 @foreach (var r in _rutas)
@@ -82,7 +82,7 @@ else
             @* Sin Placeholder: un ejemplo de fondo se confundía con un nombre grabado (y la copia salía con el nombre de
                siempre), y app.css usa :placeholder-shown para bajar la etiqueta al campo vacío, así que cualquier texto de
                fondo queda debajo de la etiqueta. El ejemplo va abajo, con «Usar este ejemplo». *@
-            <MudTextField T="string" @bind-Value="_nombreArchivo" Label="Nombre del archivo" Variant="Variant.Outlined" Margin="Margin.Dense"
+            <MudTextField T="string" @bind-Value="_nombreArchivo" Label="Nombre del archivo" Variant="Variant.Outlined"
                           MaxLength="200" Disabled="@string.IsNullOrEmpty(_ruta)" />
         </div>
         @if (!string.IsNullOrEmpty(_ruta))

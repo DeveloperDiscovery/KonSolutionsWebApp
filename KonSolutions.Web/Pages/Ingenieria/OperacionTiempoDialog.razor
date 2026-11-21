@@ -9,21 +9,21 @@
 <MudDialog>
     <DialogContent>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
-        <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método con que se obtuvo" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="metodo">
+        <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método con que se obtuvo" Variant="Variant.Outlined" data-campo="metodo">
             @foreach (var x in _metodos) { <MudSelectItem T="string" Value="@x.COD">@x.COD · @x.DES</MudSelectItem> }
         </MudSelect>
         <div class="d-flex align-center gap-2 mt-2">
-            <MudSelect T="int?" Value="_m.NUM_ESTUDIO_TIEMPO" ValueChanged="CambiaEstudio" Label="Estudio de tiempos (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" data-campo="estudio">
+            <MudSelect T="int?" Value="_m.NUM_ESTUDIO_TIEMPO" ValueChanged="CambiaEstudio" Label="Estudio de tiempos (opcional)" Variant="Variant.Outlined" Clearable="true" data-campo="estudio">
                 @foreach (var s in _estudios) { <MudSelectItem T="int?" Value="@((int?)s.NUM_ESTUDIO_TIEMPO)">N.° @s.NUM_ESTUDIO_TIEMPO · @s.FEC_ESTUDIO.ToString("dd/MM/yyyy") · base @OperacionesApi.Min(s.VAL_TIEMPO_BASE)</MudSelectItem> }
             </MudSelect>
             <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="NuevoEstudio" StartIcon="@Icons.Material.Filled.Add" data-accion="nuevo-estudio">Estudio</MudButton>
         </div>
         <div class="d-flex gap-3 mt-2">
-            <MudNumericField T="decimal?" @bind-Value="_m.VAL_TIEMPO_BASE" Label="Tiempo base (min por unidad)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0m" HelperText="@(_m.NUM_ESTUDIO_TIEMPO is null ? "" : "Vacío = el del estudio")" data-campo="base" />
-            <MudNumericField T="decimal" @bind-Value="_m.VAL_SUPLEMENTO_PCT" Label="Suplemento %" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0m" Max="200m" data-campo="suplemento" />
+            <MudNumericField T="decimal?" @bind-Value="_m.VAL_TIEMPO_BASE" Label="Tiempo base (min por unidad)" Variant="Variant.Outlined" Min="0m" HelperText="@(_m.NUM_ESTUDIO_TIEMPO is null ? "" : "Vacío = el del estudio")" data-campo="base" />
+            <MudNumericField T="decimal" @bind-Value="_m.VAL_SUPLEMENTO_PCT" Label="Suplemento %" Variant="Variant.Outlined" Min="0m" Max="200m" data-campo="suplemento" />
         </div>
         <MudText Class="mt-2 mono" data-zona="sam">SAM = @OperacionesApi.Min(BaseEfectiva) × (1 + @(_m.VAL_SUPLEMENTO_PCT.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)) / 100) = <b>@OperacionesApi.Min(Sam)</b> min</MudText>
-        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>

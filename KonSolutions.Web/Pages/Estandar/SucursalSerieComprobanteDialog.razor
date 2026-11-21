@@ -20,24 +20,24 @@
             <MudGrid Spacing="2">
                 <MudItem xs="12">
                     <MudTextField T="string" Value="@_desSucursal" Label="Sucursal" Variant="Variant.Outlined"
-                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                                  ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12">
                     <MudTextField T="string" Value="@_desTipo" Label="Tipo de comprobante" Variant="Variant.Outlined"
-                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                                  ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     @* La serie es parte de la clave: se fija al crear y después no se cambia.
                        Cambiarla sería otra serie, no la misma con otro número. *@
                     <MudNumericField T="int?" @bind-Value="_model.NUM_SERIE_COMPROBANTE" Label="Serie"
-                                     Variant="Variant.Outlined" Margin="Margin.Dense" Min="0"
+                                     Variant="Variant.Outlined" Min="0"
                                      Disabled="@(!_esNuevo || _readonly)" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     @* Lo avanza la emisión; acá sólo se ajusta cuando hay que cuadrarlo con el
                        talonario físico. *@
                     <MudNumericField T="int?" @bind-Value="_model.NUM_ULTIMO_CORRELATIVO" Label="Último correlativo"
-                                     Variant="Variant.Outlined" Margin="Margin.Dense" Min="0"
+                                     Variant="Variant.Outlined" Min="0"
                                      Disabled="_readonly" Class="mb-3" />
                 </MudItem>
             </MudGrid>

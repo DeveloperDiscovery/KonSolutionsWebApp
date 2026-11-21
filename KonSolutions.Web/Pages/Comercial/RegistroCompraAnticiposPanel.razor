@@ -49,7 +49,7 @@ else if (!SoloLectura)
 {
     <MudDivider Class="my-2" />
     <div class="d-flex align-center gap-2 flex-wrap">
-        <MudSelect T="decimal?" @bind-Value="_sel" Label="Anticipo del proveedor" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:460px;" Clearable="true" data-campo="anticipo-disponible">
+        <MudSelect T="decimal?" @bind-Value="_sel" Label="Anticipo del proveedor" Variant="Variant.Outlined" Style="min-width:460px;" Clearable="true" data-campo="anticipo-disponible">
             @foreach (var a in _disponibles)
             {
                 <MudSelectItem T="decimal?" Value="@((decimal?)a.NUM_REGISTRO)">@($"{a.NUM_COMPROBANTE_PAGO} · {a.FEC_COMPROBANTE_PAGO:dd/MM/yyyy} · {a.COD_MONEDA} {a.VAL_TOTAL:N2}" + (string.IsNullOrWhiteSpace(a.DES_DETALLE) ? "" : $" · {a.DES_DETALLE}") + $" · {a.DES_ESTADO ?? a.COD_ESTADO_ALIAS}")</MudSelectItem>

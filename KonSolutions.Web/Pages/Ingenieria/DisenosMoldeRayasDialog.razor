@@ -22,10 +22,10 @@
             <MudSwitch T="bool" Value="_y" ValueChanged="@(v => { _y = v; Asegurar(); })" Color="Color.Primary" Label="Coincidir con la raya en el ancho (Y, cuadros)" data-campo="coincide-y" />
         </div>
         <div class="d-flex align-center gap-2 flex-wrap mt-2" data-zona="punto">
-            <MudNumericField T="double?" @bind-Value="_px" Label="Punto X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="punto-x" />
-            <MudNumericField T="double?" @bind-Value="_py" Label="Punto Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="punto-y" />
-            <MudNumericField T="double" @bind-Value="_fx" Label="Fase X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="fase-x" />
-            <MudNumericField T="double" @bind-Value="_fy" Label="Fase Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="fase-y" />
+            <MudNumericField T="double?" @bind-Value="_px" Label="Punto X (mm)" Variant="Variant.Outlined" Style="max-width:150px;" data-campo="punto-x" />
+            <MudNumericField T="double?" @bind-Value="_py" Label="Punto Y (mm)" Variant="Variant.Outlined" Style="max-width:150px;" data-campo="punto-y" />
+            <MudNumericField T="double" @bind-Value="_fx" Label="Fase X (mm)" Variant="Variant.Outlined" Style="max-width:150px;" data-campo="fase-x" />
+            <MudNumericField T="double" @bind-Value="_fy" Label="Fase Y (mm)" Variant="Variant.Outlined" Style="max-width:150px;" data-campo="fase-y" />
             <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="Centro" data-accion="centro">Centro de la caja</MudButton>
         </div>
         @if (_poli is not null)

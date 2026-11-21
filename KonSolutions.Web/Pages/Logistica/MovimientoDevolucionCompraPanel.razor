@@ -114,7 +114,7 @@ else
                         <td style="text-align:right;">@f.L.CAN_SALDO.ToString("0.########")</td>
                         <td style="text-align:right;" data-celda="stock-distribucion">@f.L.CAN_STOCK_DISTRIBUCION.ToString("0.########")</td>
                         <td style="text-align:right;">
-                            <MudNumericField T="decimal?" Value="f.Cant" ValueChanged="@((decimal? v) => CambiaCantidad(f, v))" Variant="Variant.Outlined" Margin="Margin.Dense"
+                            <MudNumericField T="decimal?" Value="f.Cant" ValueChanged="@((decimal? v) => CambiaCantidad(f, v))" Variant="Variant.Outlined"
                                              Min="0" HideSpinButtons="true" Disabled="@(SoloLectura || f.L.CAN_MAXIMA <= 0)" Style="max-width:130px;" data-campo="cantidad-devolver" />
                         </td>
                     </tr>

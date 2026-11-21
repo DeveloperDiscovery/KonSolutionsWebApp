@@ -469,6 +469,19 @@ public static class ApiRoutes
         public const string DisenosEstructuraComponenteCambiar = $"{DisenosEstructura}/componente/cambiar";
         public const string DisenosEstructuraInsumo         = $"{DisenosEstructura}/insumo";
         public const string DisenosEstructuraInsumoEliminar = $"{DisenosEstructura}/insumo/eliminar";
+        // formulas de consumo en las lineas (script 147)
+        private static string LineaQuery(string d, int v, string s, string c, int n, string p) =>
+            $"COD_DISENO={Uri.EscapeDataString(d)}&NUM_VERSION={v}&COD_SECTOR_PRODUCTO={Uri.EscapeDataString(s)}&COD_COMPONENTE_PRODUCTO={Uri.EscapeDataString(c)}&NUM_SECUENCIA={n}&COD_PRODUCTO_COMPONENTE={Uri.EscapeDataString(p)}";
+        public static string DisenosEstructuraFormulaDisponibles(string d, int v, string s, string c, int n, string p) => $"{DisenosEstructura}/formula/disponibles?{LineaQuery(d, v, s, c, n, p)}";
+        public static string DisenosEstructuraFormulaLinea(string d, int v, string s, string c, int n, string p) => $"{DisenosEstructura}/formula?{LineaQuery(d, v, s, c, n, p)}";
+        public const string DisenosEstructuraFormulaAsignar = $"{DisenosEstructura}/formula/asignar";
+        public const string DisenosEstructuraFormulaGuardar = $"{DisenosEstructura}/formula/guardar";
+        public const string DisenosEstructuraFormulaQuitar  = $"{DisenosEstructura}/formula/quitar";
+        public const string DisenosEstructuraFormulaCalcular = $"{DisenosEstructura}/formula/calcular";
+        public static string DisenosEstructuraFormulaCalcularVersion(bool guardar = true) => $"{DisenosEstructura}/formula/calcular-version?guardar={(guardar ? "true" : "false")}";
+        public static string DisenosEstructuraFormulaDiagrama(string d, int v) => $"{DisenosEstructura}/formula/diagrama/{Uri.EscapeDataString(d)}/{v}";
+        public const string DisenosEstructuraTiposMaterial = $"{DisenosEstructura}/tipos-material";
+        public static string DisenosEstructuraIndicadores(string d, int v) => $"{DisenosEstructura}/indicadores/{Uri.EscapeDataString(d)}/{v}";
         public const string DisenosEstructuraBloquear       = $"{DisenosEstructura}/bloquear";
         public const string DisenosEstructuraDesbloquear    = $"{DisenosEstructura}/desbloquear";
         public const string DisenosEstructuraCopiarVersion  = $"{DisenosEstructura}/copiar-version";
@@ -482,6 +495,7 @@ public static class ApiRoutes
         public const string DisenosEspecificacionesGuardar = $"{DisenosEspecificaciones}/guardar";
         // Operaciones y tiempos estandar (scripts SQL 119 a 122)
         public const string CategoriasOcupacionales        = $"{Prefix}/ingenieria/categorias-ocupacionales";
+        public const string TiposMaterialEstructura        = $"{Prefix}/ingenieria/tipos-material-estructura";
         public const string TiposMaquina                   = $"{Prefix}/ingenieria/tipos-maquina";
         public const string MetodosTiempo                  = $"{Prefix}/ingenieria/metodos-tiempo";
         public const string TiposDistribucionLinea         = $"{Prefix}/produccion/tipos-distribucion-linea";
@@ -550,6 +564,29 @@ public static class ApiRoutes
 
         // ── Rutas restauradas (reconstruidas desde los controllers de la API) ──
         public const string GruposEspecificacionTecnicaLoadcombos = $"{Prefix}/ingenieria/grupos-familias-sub-familias-especificacion-tecnica/loadcombos";
+    }
+
+    /// <summary>Constructor de formulas (script SQL 145).</summary>
+    public static class Formulacion
+    {
+        public const string Componentes                     = $"{Prefix}/formulacion/componentes";
+        public static string Componente(string cod)        => $"{Componentes}/{Uri.EscapeDataString(cod)}";
+        public const string Elementos                       = $"{Prefix}/formulacion/elementos";
+        public static string ElementosDe(string? componente) => string.IsNullOrWhiteSpace(componente) ? Elementos : $"{Elementos}?componente={Uri.EscapeDataString(componente)}";
+        public static string Elemento(string componente, string elemento) => $"{Elementos}/{Uri.EscapeDataString(componente)}/{Uri.EscapeDataString(elemento)}";
+        public const string Formulas                        = $"{Prefix}/formulacion/formulas";
+        public static string FormulasBuscar(string? search) => string.IsNullOrWhiteSpace(search) ? Formulas : $"{Formulas}?search={Uri.EscapeDataString(search)}";
+        public static string Formula(int num)               => $"{Formulas}/{num}";
+        public static string FormulaCopiar(int num)         => $"{Formulas}/{num}/copiar";
+        public const string FormulasValidar                 = $"{Formulas}/validar";
+        public static string Paleta(string? gc, string? fc, string? sc, string? gp, string? fp, string? sp)
+        {
+            var q = new List<string>();
+            void A(string k, string? v) { if (!string.IsNullOrWhiteSpace(v)) q.Add($"{k}={Uri.EscapeDataString(v)}"); }
+            A("COD_GRUPO_PRODUCTO_CONSUMO", gc); A("COD_FAMILIA_PRODUCTO_CONSUMO", fc); A("COD_SUB_FAMILIA_PRODUCTO_CONSUMO", sc);
+            A("COD_GRUPO_PRODUCTO", gp); A("COD_FAMILIA_PRODUCTO", fp); A("COD_SUB_FAMILIA_PRODUCTO", sp);
+            return $"{Formulas}/paleta" + (q.Count == 0 ? "" : "?" + string.Join("&", q));
+        }
     }
 
     public static class Controlcalidad

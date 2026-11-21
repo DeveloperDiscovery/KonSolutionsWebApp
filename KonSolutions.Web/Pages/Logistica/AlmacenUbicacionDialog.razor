@@ -19,7 +19,7 @@
                     <CampoTexto Tabla="LOGISTICA.ALMACENES_UBICACIONES_ALMACEN" Columna="COD_UBICACION_ALMACEN"
                                 @bind-Value="_model.COD_UBICACION_ALMACEN"
                                 Disabled="@(!_esNuevo || _soloLectura)" Obligatorio="@_esNuevo"
-                                Margin="Margin.Dense" Class="mb-3" />
+                                Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12" sm="8">
                     @* Mismo componente que el campo de al lado, y no un MudTextField suelto:
@@ -27,13 +27,13 @@
                        los dos dejaba una caja más alta que la otra. *@
                     <CampoTexto Tabla="LOGISTICA.ALMACENES" Columna="DES_ALMACEN"
                                 Value="@_desAlmacen" Label="Almacén"
-                                Disabled="true" Margin="Margin.Dense" Class="mb-3" />
+                                Disabled="true" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12">
                     <CampoTexto Tabla="LOGISTICA.ALMACENES_UBICACIONES_ALMACEN" Columna="DES_UBICACION_ALMACEN"
                                 @bind-Value="_model.DES_UBICACION_ALMACEN"
                                 Disabled="_soloLectura" Obligatorio="true"
-                                Margin="Margin.Dense" Class="mb-3" />
+                                Class="mb-3" />
                 </MudItem>
 
                 <MudItem xs="12" sm="6">

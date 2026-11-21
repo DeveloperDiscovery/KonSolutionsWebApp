@@ -1,0 +1,115 @@
+@using KONSolutions.Shared.Models.Formulacion
+@using FRoute = KONSolutions.Web.Services.ApiRoutes.Formulacion
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.DES_COMPONENTE_FORMULACION" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_m" OnValidSubmit="Submit">
+            <CampoTexto Tabla="FORMULACION.FORMULACION_COMPONENTES" Columna="COD_COMPONENTE_FORMULACION" Label="Código"
+                        @bind-Value="_m.COD_COMPONENTE_FORMULACION" Disabled="@(!_esNuevo || _readonly)" Obligatorio="@_esNuevo" />
+            <CampoTexto Tabla="FORMULACION.FORMULACION_COMPONENTES" Columna="DES_COMPONENTE_FORMULACION" Label="Descripción"
+                        @bind-Value="_m.DES_COMPONENTE_FORMULACION" Disabled="_readonly" Obligatorio="true" />
+            <ColorConSwatch Text="@(_m.DES_BACKCOLOR ?? "")" TextChanged="@(v => _m.DES_BACKCOLOR = v)" Label="Color de fondo" />
+            <ColorConSwatch Text="@(_m.DES_FORECOLOR ?? "")" TextChanged="@(v => _m.DES_FORECOLOR = v)" Label="Color del texto" />
+            <ImagePicker Image="_m.IMG_PICTURE" ImageChanged="@(v => _m.IMG_PICTURE = v)" Label="Ícono" ReadOnly="_readonly" />
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Tiene elementos propios</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_ELEMENTOS" ValueChanged="@(v => _m.FLG_ELEMENTOS = v)" Color="Color.Primary" Disabled="_readonly" data-flag="elementos" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Especificaciones de la sub familia del consumo</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_ESPECIFICACIONES_CONSUMO" Color="Color.Primary" Disabled="_readonly" data-flag="espec-consumo"
+                           ValueChanged="@(v => { _m.FLG_ESPECIFICACIONES_CONSUMO = v; if (v == true) _m.FLG_ESPECIFICACIONES = false; })" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Especificaciones de la sub familia del producto</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_ESPECIFICACIONES" Color="Color.Primary" Disabled="_readonly" data-flag="espec-estructura"
+                           ValueChanged="@(v => { _m.FLG_ESPECIFICACIONES = v; if (v == true) _m.FLG_ESPECIFICACIONES_CONSUMO = false; })" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Consumo</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_CONSUMO" ValueChanged="@(v => _m.FLG_CONSUMO = v)" Color="Color.Primary" Disabled="_readonly" data-flag="consumo" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Consumo superior</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_CONSUMO_SUPERIOR" ValueChanged="@(v => _m.FLG_CONSUMO_SUPERIOR = v)" Color="Color.Primary" Disabled="_readonly" data-flag="consumo-superior" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Consumo inferior</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_CONSUMO_INFERIOR" ValueChanged="@(v => _m.FLG_CONSUMO_INFERIOR = v)" Color="Color.Primary" Disabled="_readonly" data-flag="consumo-inferior" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">Especificaciones pivot</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_ESPECIFICACIONES_PIVOT" ValueChanged="@(v => _m.FLG_ESPECIFICACIONES_PIVOT = v)" Color="Color.Primary" Disabled="_readonly" data-flag="espec-pivot" />
+            </div>
+            <CampoTexto Tabla="FORMULACION.FORMULACION_COMPONENTES" Columna="DES_NAME_TABLE" Label="Nombre de tabla"
+                        @bind-Value="_m.DES_NAME_TABLE" Disabled="_readonly" />
+            <div class="d-flex align-center justify-space-between py-1 mb-3">
+                <MudText Typo="Typo.body2">Habilitado (aparece en la paleta)</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_HABILITADO" ValueChanged="@(v => _m.FLG_HABILITADO = v)" Color="Color.Primary" Disabled="_readonly" data-flag="habilitado" />
+            </div>
+            @if (Modo == CrudModo.Delete && (Item?.CAN_ELEMENTOS ?? 0) > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3" data-aviso="elementos">Este componente tiene @Item!.CAN_ELEMENTOS elemento(s): elimínalos antes de eliminar el componente.</MudAlert>
+            }
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())"
+                               CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@Item?.COD_USUARIO_REGISTRO" CodEstacionRegistro="@Item?.COD_ESTACION_REGISTRO" FecRegistro="@Item?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@Item?.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@Item?.COD_ESTACION_ACTUALIZACION" FecActualizacion="@Item?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public FormulacionComponente? Item { get; set; }
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private FormulacionComponenteGuardarDto _m = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        if (Item is null) return;
+        _m = new FormulacionComponenteGuardarDto
+        {
+            COD_COMPONENTE_FORMULACION = Item.COD_COMPONENTE_FORMULACION, DES_COMPONENTE_FORMULACION = Item.DES_COMPONENTE_FORMULACION ?? "",
+            FLG_ELEMENTOS = Item.FLG_ELEMENTOS, FLG_HABILITADO = Item.FLG_HABILITADO,
+            FLG_ESPECIFICACIONES_CONSUMO = Item.FLG_ESPECIFICACIONES_CONSUMO, FLG_ESPECIFICACIONES = Item.FLG_ESPECIFICACIONES,
+            FLG_CONSUMO = Item.FLG_CONSUMO, FLG_CONSUMO_SUPERIOR = Item.FLG_CONSUMO_SUPERIOR, FLG_CONSUMO_INFERIOR = Item.FLG_CONSUMO_INFERIOR, FLG_ESPECIFICACIONES_PIVOT = Item.FLG_ESPECIFICACIONES_PIVOT, DES_NAME_TABLE = Item.DES_NAME_TABLE,
+            DES_BACKCOLOR = Item.DES_BACKCOLOR, DES_FORECOLOR = Item.DES_FORECOLOR, IMG_PICTURE = Item.IMG_PICTURE
+        };
+    }
+
+    private async Task Submit()
+    {
+        if (Modo == CrudModo.Read) { MudDialog.Cancel(); return; }
+        if (Modo != CrudModo.Delete)
+        {
+            if (_esNuevo && string.IsNullOrWhiteSpace(_m.COD_COMPONENTE_FORMULACION)) { await ErrorDialogHelper.MostrarAvisoAsync("Escribe el código del componente.", DialogService, nameof(FormulacionComponentesDialog)); return; }
+            if (string.IsNullOrWhiteSpace(_m.DES_COMPONENTE_FORMULACION)) { await ErrorDialogHelper.MostrarAvisoAsync("Escribe la descripción del componente.", DialogService, nameof(FormulacionComponentesDialog)); return; }
+            if (_m.FLG_ESPECIFICACIONES_CONSUMO == true && _m.FLG_ESPECIFICACIONES == true)
+            { await ErrorDialogHelper.MostrarAvisoAsync("Un componente usa las especificaciones del consumo o las de la estructura, no las dos.", DialogService, nameof(FormulacionComponentesDialog)); return; }
+        }
+        _saving = true;
+        var r = Modo == CrudModo.Delete
+            ? await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, HttpMethod.Delete, FRoute.Componente(_m.COD_COMPONENTE_FORMULACION))
+            : await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, _esNuevo ? HttpMethod.Post : HttpMethod.Put, FRoute.Componentes, _m);
+        _saving = false;
+        if (!r.Ok) { await ErrorDialogHelper.MostrarMensajeAsync(r.Mensaje ?? "No se pudo completar la operación.", DialogService, nameof(FormulacionComponentesDialog)); return; }
+        Snackbar.Add(Modo == CrudModo.Delete ? "Eliminado." : _esNuevo ? "Creado." : "Modificado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

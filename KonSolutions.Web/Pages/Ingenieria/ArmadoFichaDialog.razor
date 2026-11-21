@@ -51,8 +51,8 @@
                     <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border:1px solid var(--line);" data-puesto="@p.Num">
                         <div class="d-flex align-center gap-2 flex-wrap">
                             <MudChip T="string" Size="Size.Small">@p.Num</MudChip>
-                            <MudTextField T="string" Value="p.Des" ValueChanged="@(v => { p.Des = v ?? ""; _sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" MaxLength="50" Style="max-width:260px;" data-campo="nombre-puesto" />
-                            <MudNumericField T="int" Value="p.Operarios" ValueChanged="@(v => { p.Operarios = Math.Max(1, v); _sucio = true; })" Label="Operarios" Min="1" Max="99" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:110px;" data-campo="operarios" />
+                            <MudTextField T="string" Value="p.Des" ValueChanged="@(v => { p.Des = v ?? ""; _sucio = true; })" Variant="Variant.Text" MaxLength="50" Style="max-width:260px;" data-campo="nombre-puesto" />
+                            <MudNumericField T="int" Value="p.Operarios" ValueChanged="@(v => { p.Operarios = Math.Max(1, v); _sucio = true; })" Label="Operarios" Min="1" Max="99" Variant="Variant.Outlined" Style="max-width:110px;" data-campo="operarios" />
                             <span class="mono" data-dato="minutos">@OperacionesApi.Min(sam) min</span>
                             <span class="mono" style="opacity:.7;" data-dato="ciclo">ciclo @OperacionesApi.Min(ciclo)</span>
                             @if (hs.Count > 0 && CategoriaDe(hs) is { } cat) { <MudChip T="string" Size="Size.Small" title="La categoría más alta entre sus operaciones">Cat. @cat</MudChip> }
@@ -114,7 +114,7 @@
         <td style="width:34px;">@if (!string.IsNullOrEmpty(h.COD_CATEGORIA_OCUPACIONAL)) { <MudChip T="string" Size="Size.Small">@h.COD_CATEGORIA_OCUPACIONAL</MudChip> }</td>
         <td class="n mono" style="width:70px;">@OperacionesApi.Min(h.VAL_SAM_PRENDA)</td>
         <td style="width:150px;">
-            <MudSelect T="int" Value="@(_asigna.GetValueOrDefault(h.NUM_ESTRUCTURA_RUTA_PROCESO))" ValueChanged="@(v => Mover(h, v))" Dense="true" Variant="Variant.Text" Margin="Margin.Dense" Disabled="@(h.FLG_SIN_TIEMPO)" data-campo="mover">
+            <MudSelect T="int" Value="@(_asigna.GetValueOrDefault(h.NUM_ESTRUCTURA_RUTA_PROCESO))" ValueChanged="@(v => Mover(h, v))" Dense="true" Variant="Variant.Text" Disabled="@(h.FLG_SIN_TIEMPO)" data-campo="mover">
                 <MudSelectItem T="int" Value="0">— sin asignar —</MudSelectItem>
                 @foreach (var p in _puestos.OrderBy(x => x.Num)) { <MudSelectItem T="int" Value="@p.Num">Puesto @p.Num</MudSelectItem> }
             </MudSelect>

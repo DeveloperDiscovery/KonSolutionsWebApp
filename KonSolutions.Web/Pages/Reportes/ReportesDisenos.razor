@@ -46,7 +46,7 @@
             <div class="pa-2 px-3 rep-cab">Diseños</div>
             <div class="pa-2 d-flex flex-column gap-2">
                 <MudSelect T="int?" Value="_filtroFuente" ValueChanged="@(v => _filtroFuente = v)" Label="Fuente" Variant="Variant.Outlined"
-                           Margin="Margin.Dense" Clearable="true">
+                           Clearable="true">
                     @foreach (var f in _fuentes)
                     {
                         <MudSelectItem T="int?" Value="@f.NUM_FUENTE">@f.DES_FUENTE</MudSelectItem>
@@ -139,15 +139,15 @@
                     @* ── GENERAL ── *@
                     <MudTabPanel Text="General" Icon="@Icons.Material.Filled.Tune">
                         <div class="rep-grid4">
-                            <MudSelect T="int?" Value="d.NUM_FUENTE" ValueChanged="ElegirFuente" Label="Fuente *" Variant="Variant.Outlined" Margin="Margin.Dense"
+                            <MudSelect T="int?" Value="d.NUM_FUENTE" ValueChanged="ElegirFuente" Label="Fuente *" Variant="Variant.Outlined"
                                        Disabled="@(d.NUM_DISENO is not null)" HelperText="@(d.NUM_DISENO is not null ? "Un diseño grabado no cambia de fuente" : null)">
                                 @foreach (var f in _fuentes.Where(f => f.FLG_HABILITADO || f.NUM_FUENTE == d.NUM_FUENTE))
                                 {
                                     <MudSelectItem T="int?" Value="@f.NUM_FUENTE">@f.DES_FUENTE</MudSelectItem>
                                 }
                             </MudSelect>
-                            <MudTextField T="string" @bind-Value="d.DES_DISENO" Label="Descripción *" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" />
-                            <MudSelect T="string" Value="d.COD_TIPO_DISENO" ValueChanged="CambiarTipo" Label="Tipo" Variant="Variant.Outlined" Margin="Margin.Dense"
+                            <MudTextField T="string" @bind-Value="d.DES_DISENO" Label="Descripción *" Variant="Variant.Outlined" MaxLength="100" />
+                            <MudSelect T="string" Value="d.COD_TIPO_DISENO" ValueChanged="CambiarTipo" Label="Tipo" Variant="Variant.Outlined"
                                        Disabled="@(libre && d.NUM_DISENO is not null)"
                                        HelperText="@(d.NUM_DISENO is not null && libre ? "Un diseño libre no vuelve a ser listado ni ficha" : null)">
                                 <MudSelectItem T="string" Value="@("LIS")">Listado (varias filas)</MudSelectItem>
@@ -159,25 +159,25 @@
                             <MudSwitch T="bool" @bind-Value="d.FLG_HABILITADO" Label="Habilitado" Color="Color.Success" />
                         </div>
                         <div class="rep-grid2b mt-2">
-                            <MudTextField T="string" @bind-Value="d.DES_TITULO" Label="Título" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="200" />
-                            <MudTextField T="string" @bind-Value="d.DES_SUBTITULO" Label="Subtítulo" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="300"
+                            <MudTextField T="string" @bind-Value="d.DES_TITULO" Label="Título" Variant="Variant.Outlined" MaxLength="200" />
+                            <MudTextField T="string" @bind-Value="d.DES_SUBTITULO" Label="Subtítulo" Variant="Variant.Outlined" MaxLength="300"
                                           HelperText="@AyudaTextos" />
                         </div>
                         <div class="rep-grid4 mt-2">
-                            <MudSelect T="string" @bind-Value="d.COD_ORIENTACION" Label="Orientación" Variant="Variant.Outlined" Margin="Margin.Dense">
+                            <MudSelect T="string" @bind-Value="d.COD_ORIENTACION" Label="Orientación" Variant="Variant.Outlined">
                                 <MudSelectItem T="string" Value="@("V")">Vertical</MudSelectItem>
                                 <MudSelectItem T="string" Value="@("H")">Horizontal</MudSelectItem>
                             </MudSelect>
-                            <MudSelect T="string" @bind-Value="d.COD_PAPEL" Label="Papel" Variant="Variant.Outlined" Margin="Margin.Dense">
+                            <MudSelect T="string" @bind-Value="d.COD_PAPEL" Label="Papel" Variant="Variant.Outlined">
                                 <MudSelectItem T="string" Value="@("A4")">A4</MudSelectItem>
                                 <MudSelectItem T="string" Value="@("CAR")">Carta</MudSelectItem>
                                 <MudSelectItem T="string" Value="@("OFI")">Oficio</MudSelectItem>
                             </MudSelect>
-                            <MudNumericField T="int" @bind-Value="d.NUM_TAMANO_LETRA" Label="Tamaño de letra" Min="6" Max="14" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                            <MudNumericField T="int" @bind-Value="d.NUM_TAMANO_LETRA" Label="Tamaño de letra" Min="6" Max="14" Variant="Variant.Outlined" />
                             @if (!esFicha)
                             {
                                 <MudSelect T="string" Value="@(d.DES_SEPARADOR_CSV ?? ";")" ValueChanged="@(v => d.DES_SEPARADOR_CSV = v)" Label="Separador CSV"
-                                           Variant="Variant.Outlined" Margin="Margin.Dense">
+                                           Variant="Variant.Outlined">
                                     <MudSelectItem T="string" Value="@(";")">Punto y coma ( ; )</MudSelectItem>
                                     <MudSelectItem T="string" Value="@(",")">Coma ( , )</MudSelectItem>
                                     <MudSelectItem T="string" Value="@("TAB")">Tabulador</MudSelectItem>
@@ -207,10 +207,10 @@
                             </div>
                             @if (esFicha)
                             {
-                                <MudTextField T="string" @bind-Value="d.DES_FIRMAS" Label="Firmas" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" MaxLength="300"
+                                <MudTextField T="string" @bind-Value="d.DES_FIRMAS" Label="Firmas" Variant="Variant.Outlined" Class="mt-2" MaxLength="300"
                                               HelperText="Separadas con | : Elaborado por|Aprobado por|Proveedor (vacío: sin firmas)" />
                             }
-                            <MudTextField T="string" @bind-Value="d.DES_PIE" Label="Texto al pie" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" Lines="2" MaxLength="500" />
+                            <MudTextField T="string" @bind-Value="d.DES_PIE" Label="Texto al pie" Variant="Variant.Outlined" Class="mt-2" Lines="2" MaxLength="500" />
                         }
                     </MudTabPanel>
 

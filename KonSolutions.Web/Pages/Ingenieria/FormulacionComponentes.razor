@@ -1,0 +1,367 @@
+@* Componentes y elementos de formulacion (script SQL 145, API formulacion/componentes y formulacion/elementos): padre e hijo en una sola pantalla.
+   Dos solapas encadenadas, una por nivel (Componentes → Elementos), que nunca estan habilitadas a la vez: la flecha de la fila abre el nivel siguiente
+   y «Cerrar» vuelve al anterior — mismo mecanismo que GruposProducto.razor y ClasesOperacion.razor.
+   Los componentes son las categorias de la paleta del constructor de formulas (CONSM, CONST, OPEMT...) y los elementos son sus fichas. *@
+@page "/ingenieria/formulacion-componentes"
+@attribute [Authorize]
+@using KONSolutions.Shared.Models.Formulacion
+@using FRoute = KONSolutions.Web.Services.ApiRoutes.Formulacion
+@inject HttpClient Http
+@inject ConfigService ConfigSvc
+@inject IDialogService DialogService
+@inject AccessLogService AccessLog
+@inject ISnackbar Snackbar
+@inject ControlCambiosClientService Cambios
+@inject MenuService MenuSvc
+@implements IDisposable
+
+<PageTitle>Componentes de formulación · @ConfigSvc.Current.NombreApp</PageTitle>
+
+<MudTabs Elevation="0" ActivePanelIndex="@_tab" ActivePanelIndexChanged="@(i => _tab = i)"
+         Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-1" KeepPanelsAlive="true">
+
+    @* ═══════════════ COMPONENTES ═══════════════ *@
+    <MudTabPanel Text="Componentes" Icon="@Icons.Material.Filled.Category" Disabled="@_enElementos">
+        <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+            <div class="grid-header-titulo">
+                <TituloPagina Fallback="Componentes de formulación" CodAplicacion="@_codApComp" CodOpcionAplicacion="@_codOpComp" />
+                <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">Schema FORMULACION · @_compVisibles.Count de @_comps.Count registros</MudText>
+            </div>
+            <BarraBusqueda @bind-Value="_buscarComp" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar componente..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+            <GridClearFiltersButton OnClear="@(() => _gComp.Limpiar())" HasFilters="@_gComp.HayFiltros" />
+            <div class="grid-header-divider"></div>
+            <div class="d-flex gap-2">
+                <GridRefreshButton OnRefresh="CargarComponentes" />
+                <AccionesBotones CodAplicacion="@_codApComp" CodOpcionAplicacion="@_codOpComp"
+                                 Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeaderComp" />
+            </div>
+        </div>
+
+        <MudPaper Elevation="0" Style="border:1px solid var(--line);margin-bottom:16px;">
+            <div data-resizable-grid="formulacion-componentes" data-default-height="280" style="position:relative;">
+            <MudDataGrid T="FormulacionComponente" Items="_compVisibles" Dense="true" Hover="true" Striped="true"
+                         FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaPadre">
+                <Columns>
+                    <TemplateColumn Title="Ícono" Sortable="false" Width="64">
+                        <CellTemplate>@Icono(context.Item.IMG_PICTURE, context.Item.DES_COMPONENTE_FORMULACION, "componente")</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Código" Sortable="false" Width="110">
+                        <HeaderTemplate><EncabezadoOF G="_gComp" Items="_compFuente" Col="0" Texto="Código" OnCambio="Refrescar" /></HeaderTemplate>
+                        <CellTemplate><span class="mono">@context.Item.COD_COMPONENTE_FORMULACION</span></CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Descripción" Sortable="false">
+                        <HeaderTemplate><EncabezadoOF G="_gComp" Items="_compFuente" Col="1" Texto="Descripción" OnCambio="Refrescar" /></HeaderTemplate>
+                        <CellTemplate>@context.Item.DES_COMPONENTE_FORMULACION</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Ficha" Sortable="false" Width="230">
+                        <CellTemplate>
+                            <span class="fm-ficha-chip" style="@EstiloFicha(context.Item.DES_BACKCOLOR, context.Item.DES_FORECOLOR)">@Corto(context.Item.DES_COMPONENTE_FORMULACION)</span>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Características" Sortable="false" Width="150">
+                        <CellTemplate>
+                            <div class="d-flex align-center gap-1 flex-wrap">
+                                @foreach (var (icono, texto) in Flags(context.Item))
+                                {
+                                    <span title="@texto" style="display:inline-flex;align-items:center;"><MudIcon Icon="@icono" Size="Size.Small" Style="opacity:.8;" /></span>
+                                }
+                            </div>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Elementos" Sortable="false" Width="110">
+                        <HeaderTemplate><EncabezadoOF G="_gComp" Items="_compFuente" Col="2" Texto="Elementos" OnCambio="Refrescar" /></HeaderTemplate>
+                        <CellTemplate>@context.Item.CAN_ELEMENTOS</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Habilitado" Sortable="false" Width="120">
+                        <HeaderTemplate><EncabezadoOF G="_gComp" Items="_compFuente" Col="3" Texto="Habilitado" OnCambio="Refrescar" /></HeaderTemplate>
+                        <CellTemplate>@(context.Item.FLG_HABILITADO == true ? "Sí" : "No")</CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Acciones" Sortable="false">
+                        <CellTemplate>
+                            @{ var item = context.Item; }
+                            <div @onclick:stopPropagation="true">
+                                <AccionesBotones CodAplicacion="@_codApComp" CodOpcionAplicacion="@_codOpComp"
+                                                 Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrillaComp(item, b))" />
+                                @* Pasa a la solapa de Elementos de este componente. Fijo en la pantalla: no depende de los botones de la opcion. *@
+                                <span title="Elementos de este componente" style="display:inline-flex;">
+                                    <MudIconButton Size="Size.Small" Icon="@Icons.Material.Filled.ArrowForward" Color="Color.Primary"
+                                                   aria-label="Elementos de este componente" OnClick="@(() => AbrirElementos(item))" data-accion="abrir-elementos" />
+                                </span>
+                            </div>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="componentes">Sin registros.</MudText></NoRecordsContent>
+                <PagerContent><MudDataGridPager T="FormulacionComponente" /></PagerContent>
+            </MudDataGrid>
+            <div class="grid-resize-handle"></div>
+            </div>
+        </MudPaper>
+    </MudTabPanel>
+
+    @* ═══════════════ ELEMENTOS ═══════════════
+       Arranca deshabilitada: se enciende al pasar desde un componente y se apaga al cerrar. *@
+    <MudTabPanel Text="@_tituloElementos" Icon="@Icons.Material.Filled.Extension" Disabled="@(!_enElementos)">
+        @if (_enElementos && _compSel is not null)
+        {
+            <div class="d-flex align-center gap-3 mb-4 grid-header-compacto">
+                <div class="grid-header-titulo">
+                    <TituloPagina Fallback="Elementos de formulación" CodAplicacion="@_codApElem" CodOpcionAplicacion="@_codOpElem" />
+                    <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);">
+                        Componente: @_compSel.COD_COMPONENTE_FORMULACION – @_compSel.DES_COMPONENTE_FORMULACION · @_elems.Count registros
+                    </MudText>
+                </div>
+                <BarraBusqueda @bind-Value="_buscarElem" OnSearch="@(() => { StateHasChanged(); return Task.CompletedTask; })" Placeholder="Buscar elemento o alias..." DebounceInterval="300" MaxWidth="719px" Class="grid-header-search" />
+                <GridClearFiltersButton OnClear="@(() => _gElem.Limpiar())" HasFilters="@_gElem.HayFiltros" />
+                <div class="grid-header-divider"></div>
+                <div class="d-flex gap-2">
+                    <GridRefreshButton OnRefresh="CargarElementos" />
+                    <AccionesBotones CodAplicacion="@_codApElem" CodOpcionAplicacion="@_codOpElem"
+                                     Zona="@AccionesBotones.ZonaBotones.Header" OnAccion="OnAccionHeaderElem" />
+                    <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="CerrarElementos" Style="@EstilosBoton.Cancelar" data-accion="cerrar-elementos">Cerrar</MudButton>
+                </div>
+            </div>
+
+            <MudPaper Elevation="0" Style="border:1px solid var(--line);">
+                <div data-resizable-grid="formulacion-elementos" style="position:relative;">
+                <MudDataGrid T="FormulacionElemento" Items="_elemVisibles" Dense="true" Hover="true" Striped="true"
+                             FixedHeader="true" Height="100%" RowsPerPage="@ConfigSvc.Current.FilasPorPaginaHijo">
+                    <Columns>
+                        <TemplateColumn Title="Ícono" Sortable="false" Width="64">
+                            <CellTemplate>@Icono(context.Item.IMG_PICTURE ?? _compSel?.IMG_PICTURE, context.Item.DES_ELEMENTO_FORMULACION, "elemento")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Código" Sortable="false" Width="100">
+                            <HeaderTemplate><EncabezadoOF G="_gElem" Items="_elemFuente" Col="0" Texto="Código" OnCambio="Refrescar" /></HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.COD_ELEMENTO_FORMULACION</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Elemento" Sortable="false">
+                            <HeaderTemplate><EncabezadoOF G="_gElem" Items="_elemFuente" Col="1" Texto="Elemento" OnCambio="Refrescar" /></HeaderTemplate>
+                            <CellTemplate><span class="mono">@context.Item.DES_ELEMENTO_FORMULACION</span></CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Alias" Sortable="false" Width="200">
+                            <HeaderTemplate><EncabezadoOF G="_gElem" Items="_elemFuente" Col="2" Texto="Alias" OnCambio="Refrescar" /></HeaderTemplate>
+                            <CellTemplate>
+                                <span class="fm-ficha-chip" style="@EstiloFicha(context.Item.DES_BACKCOLOR ?? _compSel.DES_BACKCOLOR, context.Item.DES_FORECOLOR ?? _compSel.DES_FORECOLOR)">@context.Item.COD_ALIAS_FORMULACION</span>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Tipo de especificación" Sortable="false" Width="190">
+                            <HeaderTemplate><EncabezadoOF G="_gElem" Items="_elemFuente" Col="3" Texto="Tipo de especificación" OnCambio="Refrescar" /></HeaderTemplate>
+                            <CellTemplate>@(context.Item.DES_TIPO_ESPECIFICACION_TECNICA ?? "—")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Habilitado" Sortable="false" Width="120">
+                            <HeaderTemplate><EncabezadoOF G="_gElem" Items="_elemFuente" Col="4" Texto="Habilitado" OnCambio="Refrescar" /></HeaderTemplate>
+                            <CellTemplate>@(context.Item.FLG_HABILITADO == true ? "Sí" : "No")</CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Acciones" Sortable="false">
+                            <CellTemplate>
+                                @{ var item = context.Item; }
+                                <div @onclick:stopPropagation="true">
+                                    <AccionesBotones CodAplicacion="@_codApElem" CodOpcionAplicacion="@_codOpElem"
+                                                     Zona="@AccionesBotones.ZonaBotones.Grilla" OnAccion="@(b => OnAccionGrillaElem(item, b))" />
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                    <NoRecordsContent><MudText Class="pa-6 mono" Style="opacity:.5;" data-vacio="elementos">Sin registros.</MudText></NoRecordsContent>
+                    <PagerContent><MudDataGridPager T="FormulacionElemento" /></PagerContent>
+                </MudDataGrid>
+                <div class="grid-resize-handle"></div>
+                </div>
+            </MudPaper>
+        }
+    </MudTabPanel>
+</MudTabs>
+
+<style>
+    .fm-ficha-chip { display:inline-block; padding:2px 10px; border-radius:5px; font-weight:600; font-size:.8rem; }
+</style>
+
+@code {
+    // El menu abre cada opcion pasandole estos dos parametros (WorkspaceTabService); sin declararlos la pantalla falla al dibujarse.
+    [Parameter] public string CodAplicacion       { get; set; } = "";
+    [Parameter] public string CodOpcionAplicacion { get; set; } = "";
+
+    // ── Codigos de seguridad por nivel ──
+    // Esta pantalla aloja 2 niveles (Componentes → Elementos) que en el arbol de Opciones de Aplicaciones son 2 nodos DISTINTOS con sus propios botones.
+    // Se resuelven por DES_FORMULARIO (clave estable ante «Mover»), con fallback a los parametros raiz si el nodo no se encuentra.
+    private string _codApComp = "", _codOpComp = "";
+    private string _codApElem = "", _codOpElem = "";
+
+    private (string App, string Opcion) ResolverCod(string formulario)
+    {
+        var r = MenuSvc.BuscarCodigosPorFormulario(formulario);
+        return r is null ? (CodAplicacion, CodOpcionAplicacion) : (r.Value.CodAplicacion, r.Value.CodOpcionAplicacion);
+    }
+
+    private List<FormulacionComponente> _comps = new();
+    private List<FormulacionElemento> _elems = new();
+    private FormulacionComponente? _compSel;
+    private string _buscarComp = "", _buscarElem = "";
+
+    // ── Solapas ──
+    private int _tab;
+    private bool _enElementos;
+    private string _tituloElementos => !_enElementos || _compSel is null ? "Elementos" : $"Elementos · {_compSel.DES_COMPONENTE_FORMULACION}";
+
+    // ── Orden y filtros de columna (los mismos de las demas grillas) ──
+    private readonly GridOF<FormulacionComponente> _gComp = new();
+    private readonly GridOF<FormulacionElemento> _gElem = new();
+    private void Refrescar() => StateHasChanged();
+
+    public FormulacionComponentes()
+    {
+        _gComp.Add(c => c.COD_COMPONENTE_FORMULACION);
+        _gComp.Add(c => c.DES_COMPONENTE_FORMULACION);
+        _gComp.Add(c => c.CAN_ELEMENTOS.ToString(), c => c.CAN_ELEMENTOS);
+        _gComp.Add(c => c.FLG_HABILITADO == true ? "Sí" : "No");
+        _gElem.Add(e => e.COD_ELEMENTO_FORMULACION);
+        _gElem.Add(e => e.DES_ELEMENTO_FORMULACION);
+        _gElem.Add(e => e.COD_ALIAS_FORMULACION);
+        _gElem.Add(e => e.DES_TIPO_ESPECIFICACION_TECNICA ?? "—");
+        _gElem.Add(e => e.FLG_HABILITADO == true ? "Sí" : "No");
+    }
+
+    private List<FormulacionComponente> _compFuente => _comps.Where(c => string.IsNullOrWhiteSpace(_buscarComp)
+        || c.COD_COMPONENTE_FORMULACION.Contains(_buscarComp, StringComparison.OrdinalIgnoreCase) || (c.DES_COMPONENTE_FORMULACION?.Contains(_buscarComp, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+    private List<FormulacionComponente> _compVisibles => _gComp.Visibles(_compFuente);
+    private List<FormulacionElemento> _elemFuente => _elems.Where(e => string.IsNullOrWhiteSpace(_buscarElem)
+        || (e.DES_ELEMENTO_FORMULACION?.Contains(_buscarElem, StringComparison.OrdinalIgnoreCase) ?? false) || (e.COD_ALIAS_FORMULACION?.Contains(_buscarElem, StringComparison.OrdinalIgnoreCase) ?? false)).ToList();
+    private List<FormulacionElemento> _elemVisibles => _gElem.Visibles(_elemFuente);
+
+    // Ícono de la fila (IMG_PICTURE de la tabla): imagen pequeña; sin imagen la celda queda vacía.
+    private static RenderFragment Icono(byte[]? img, string? texto, string tipo) => b =>
+    {
+        if (img is not { Length: > 0 }) return;
+        b.OpenElement(0, "img");
+        b.AddAttribute(1, "src", "data:image/png;base64," + Convert.ToBase64String(img));
+        b.AddAttribute(2, "alt", texto ?? "");
+        b.AddAttribute(3, "data-icono", tipo);
+        b.AddAttribute(4, "style", "width:24px;height:24px;object-fit:contain;display:block;");
+        b.CloseElement();
+    };
+
+    private static string EstiloFicha(string? back, string? fore) => $"background:{(string.IsNullOrWhiteSpace(back) ? "#555" : back)};color:{(string.IsNullOrWhiteSpace(fore) ? "#fff" : fore)};";
+    private static string Corto(string? d) => string.IsNullOrWhiteSpace(d) ? "" : System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(d.ToLowerInvariant());
+
+    private static IEnumerable<(string Icono, string Texto)> Flags(FormulacionComponente c)
+    {
+        if (c.FLG_ELEMENTOS == true) yield return (Icons.Material.Filled.Extension, "Tiene elementos propios");
+        if (c.FLG_ESPECIFICACIONES_CONSUMO == true) yield return (Icons.Material.Filled.Inventory2, "Especificaciones de la sub familia del consumo");
+        if (c.FLG_ESPECIFICACIONES == true) yield return (Icons.Material.Filled.AccountTree, "Especificaciones de la sub familia del producto");
+        if (c.FLG_CONSUMO == true) yield return (Icons.Material.Filled.Scale, "Consumo");
+        if (c.FLG_ESPECIFICACIONES_PIVOT == true) yield return (Icons.Material.Filled.PivotTableChart, "Especificaciones pivot");
+        if (c.FLG_CONSUMO_SUPERIOR == true) yield return (Icons.Material.Filled.ArrowUpward, "Consumo superior");
+        if (c.FLG_CONSUMO_INFERIOR == true) yield return (Icons.Material.Filled.ArrowDownward, "Consumo inferior");
+        if (!string.IsNullOrWhiteSpace(c.DES_NAME_TABLE)) yield return (Icons.Material.Filled.TableChart, "Tabla: " + c.DES_NAME_TABLE);
+        if (c.IMG_PICTURE is { Length: > 0 }) yield return (Icons.Material.Filled.Image, "Tiene ícono");
+    }
+
+    private Func<Task>? _onCambioComp, _onCambioElem;
+
+    protected override async Task OnInitializedAsync()
+    {
+        (_codApComp, _codOpComp) = ResolverCod("Ingenieria/FormulacionComponentes.razor");
+        (_codApElem, _codOpElem) = ResolverCod("Ingenieria/FormulacionElementos.razor");
+        await AccessLog.LogNavegacionAsync("INGENIERIA", "FormulacionComponentes");
+        await CargarComponentes();
+        _onCambioComp = async () => await InvokeAsync(async () => { await CargarComponentes(); StateHasChanged(); });
+        _onCambioElem = async () => await InvokeAsync(async () => { await CargarComponentes(); if (_enElementos) await CargarElementos(); StateHasChanged(); });
+        Cambios.Suscribir("FORMULACION.FORMULACION_COMPONENTES", _onCambioComp);
+        Cambios.Suscribir("FORMULACION.FORMULACION_ELEMENTOS", _onCambioElem);
+    }
+
+    // ------------------------------------------------------------------ lectura
+    private async Task CargarComponentes()
+    {
+        var r = await OperacionesApi.LeerAsync<List<FormulacionComponente>>(Http, FRoute.Componentes);
+        if (!r.Ok) { await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(FormulacionComponentes)); }
+        _comps = r.Data ?? new();
+        if (_compSel is not null) _compSel = _comps.FirstOrDefault(c => c.COD_COMPONENTE_FORMULACION == _compSel.COD_COMPONENTE_FORMULACION) ?? _compSel;
+        StateHasChanged();
+    }
+
+    private async Task CargarElementos()
+    {
+        if (_compSel is null) return;
+        var r = await OperacionesApi.LeerAsync<List<FormulacionElemento>>(Http, FRoute.ElementosDe(_compSel.COD_COMPONENTE_FORMULACION));
+        if (!r.Ok) { await ErrorDialogHelper.MostrarAvisoAsync("No se pudo cargar la información. Ver detalle en el log de errores.", DialogService, nameof(FormulacionComponentes)); }
+        _elems = r.Data ?? new();
+        StateHasChanged();
+    }
+
+    // ------------------------------------------------------------------ solapas
+    private async Task AbrirElementos(FormulacionComponente c)
+    {
+        _compSel = c; _buscarElem = ""; _gElem.Limpiar();
+        await CargarElementos();
+        _enElementos = true; _tab = 1;
+    }
+
+    private void CerrarElementos() { _enElementos = false; _tab = 0; _elems = new(); }
+
+    // ------------------------------------------------------------------ acciones (los botones salen de las opciones de menu)
+    private Task OnAccionHeaderComp(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return AbrirDialogoComp(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrillaComp(FormulacionComponente item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return AbrirDialogoComp(item, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return AbrirDialogoComp(item, CrudModo.Delete);
+        if (b.FLG_ACCION_GET    == true) return AbrirDialogoComp(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionHeaderElem(BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_POST == true) return AbrirDialogoElem(null, CrudModo.Create);
+        return Task.CompletedTask;
+    }
+
+    private Task OnAccionGrillaElem(FormulacionElemento item, BotonTreeviewItem b)
+    {
+        if (b.FLG_ACCION_PUT    == true) return AbrirDialogoElem(item, CrudModo.Update);
+        if (b.FLG_ACCION_DELETE == true) return AbrirDialogoElem(item, CrudModo.Delete);
+        if (b.FLG_ACCION_GET    == true) return AbrirDialogoElem(item, CrudModo.Read);
+        return Task.CompletedTask;
+    }
+
+    private async Task AbrirDialogoComp(FormulacionComponente? item, CrudModo modo)
+    {
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo componente",
+            CrudModo.Delete => $"Eliminar · {item?.DES_COMPONENTE_FORMULACION}",
+            CrudModo.Read   => $"Consultar · {item?.DES_COMPONENTE_FORMULACION}",
+            _               => $"Editar · {item?.DES_COMPONENTE_FORMULACION}"
+        };
+        var dlg = await DialogService.ShowAsync<FormulacionComponentesDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["CodAplicacion"] = _codApComp, ["CodOpcionAplicacion"] = _codOpComp },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) await CargarComponentes();
+    }
+
+    private async Task AbrirDialogoElem(FormulacionElemento? item, CrudModo modo)
+    {
+        if (_compSel is null) return;
+        var titulo = modo switch
+        {
+            CrudModo.Create => "Nuevo elemento",
+            CrudModo.Delete => $"Eliminar · {item?.COD_ALIAS_FORMULACION}",
+            CrudModo.Read   => $"Consultar · {item?.COD_ALIAS_FORMULACION}",
+            _               => $"Editar · {item?.COD_ALIAS_FORMULACION}"
+        };
+        var dlg = await DialogService.ShowAsync<FormulacionElementosDialog>(titulo,
+            new DialogParameters { ["Item"] = item, ["Modo"] = modo, ["Componente"] = _compSel, ["CodAplicacion"] = _codApElem, ["CodOpcionAplicacion"] = _codOpElem },
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+        if ((await dlg.Result) is { Canceled: false }) { await CargarElementos(); await CargarComponentes(); }
+    }
+
+    public void Dispose()
+    {
+        Cambios.Desuscribir("FORMULACION.FORMULACION_COMPONENTES", _onCambioComp ?? (() => Task.CompletedTask));
+        Cambios.Desuscribir("FORMULACION.FORMULACION_ELEMENTOS", _onCambioElem ?? (() => Task.CompletedTask));
+    }
+}

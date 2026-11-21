@@ -49,10 +49,10 @@
             <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border:1px solid var(--line);">
                 <MudGrid Spacing="2">
                     <MudItem xs="12" sm="6" md="2">
-                        <MudDatePicker Date="_fDesde" DateChanged="@(d => { _fDesde = d; })" Label="Plazo desde" Variant="Variant.Outlined" Margin="Margin.Dense" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        <MudDatePicker Date="_fDesde" DateChanged="@(d => { _fDesde = d; })" Label="Plazo desde" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
                     </MudItem>
                     <MudItem xs="12" sm="6" md="2">
-                        <MudDatePicker Date="_fHasta" DateChanged="@(d => { _fHasta = d; })" Label="Plazo hasta" Variant="Variant.Outlined" Margin="Margin.Dense" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
+                        <MudDatePicker Date="_fHasta" DateChanged="@(d => { _fHasta = d; })" Label="Plazo hasta" Variant="Variant.Outlined" DateFormat="dd/MM/yyyy" Editable="true" Clearable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
                     </MudItem>
                     <MudItem xs="12" sm="6" md="2">
                         <AriaCombo TItem="ComboboxItem" Items="@Opciones(x => x.DES_TIPO_PROYECTO)" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)" Value="@_fTipo" ValueChanged="@(v => { _fTipo = v; })" Label="Tipo de proyecto" />

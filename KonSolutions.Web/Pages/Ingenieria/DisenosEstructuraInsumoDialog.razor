@@ -8,10 +8,12 @@
 @using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
 @using IngenieriaRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
 @using System.Net.Http.Json
+@using KONSolutions.Shared.Models.Formulacion
+@using FRoute = KONSolutions.Web.Services.ApiRoutes.Formulacion
 @inject HttpClient Http
 @inject ISnackbar Snackbar
 
-<MudDialog Style="width:min(760px,96vw);">
+<MudDialog Style="width:min(1520px,96vw);">
     <TitleContent><MudText Typo="Typo.h6">@(NumSecuencia is null ? "Nuevo insumo" : "Modificar insumo") · componente @CodComponente</MudText></TitleContent>
     <DialogContent>
         <MudPaper Outlined="true" Class="pa-3 mb-3">
@@ -29,10 +31,20 @@
         <MudPaper Outlined="true" Class="pa-3 mb-3">
             <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">2 · Cantidad y merma</MudText>
             <MudGrid Spacing="2">
-                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_consumo" Label="Consumo" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="consumo" /></MudItem>
-                <MudItem xs="12" sm="2"><MudTextField T="string" Value="@(_actual?.COD_UNIDAD_MEDIDA ?? "")" Label="Unidad" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_consumo" Label="Consumo" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" data-campo="consumo" /></MudItem>
+                <MudItem xs="12" sm="2"><MudTextField T="string" Value="@(_actual?.COD_UNIDAD_MEDIDA ?? "")" Label="Unidad" ReadOnly="true" Variant="Variant.Outlined" /></MudItem>
                 <MudItem xs="12" sm="4"><AriaCombo TItem="ComboboxItem" Items="_mermas" TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)" @bind-Value="_tipoMerma" Label="Tipo de merma" Class="mb-0" /></MudItem>
-                <MudItem xs="12" sm="2"><MudNumericField T="decimal" @bind-Value="_merma" Label="Merma %" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="merma" /></MudItem>
+                <MudItem xs="12" sm="2"><MudNumericField T="decimal" @bind-Value="_merma" Label="Merma %" Min="0" HideSpinButtons="true" Variant="Variant.Outlined" data-campo="merma" /></MudItem>
+                <MudItem xs="12" sm="6">
+                    <AriaCombo TItem="ComboboxItem" Items="_tiposMat" TextFunc="@(m => m.Texto)" ValueFunc="@(m => m.Id)" @bind-Value="_tipoMat" Label="Tipo de material" Class="mb-0" />
+                    <MudText Typo="Typo.caption" Style="opacity:.65;" data-ayuda="tipo-material">@(string.IsNullOrEmpty(_tipoMat) ? "Sin elegir: al crear la línea se usa el del componente o el de la sub familia." : AyudaTipoMat())</MudText>
+                </MudItem>
+                <MudItem xs="12">
+                    <div class="d-flex align-center justify-space-between">
+                        <MudText Typo="Typo.body2">Producto componente pivot</MudText>
+                        <MudSwitch T="bool" @bind-Value="_pivot" Color="Color.Primary" data-flag="producto-pivot" />
+                    </div>
+                </MudItem>
             </MudGrid>
         </MudPaper>
 
@@ -40,7 +52,7 @@
             <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">3 · Precio</MudText>
             <MudGrid Spacing="2" AlignItems="AlignItems.Center">
                 <MudItem xs="12" sm="3"><AriaCombo TItem="ComboboxItem" Items="_monedas" TextFunc="@(m => m.Id)" ValueFunc="@(m => m.Id)" @bind-Value="_moneda" Label="Moneda" Class="mb-0" /></MudItem>
-                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_precio" Label="Precio unitario" Min="0" HideSpinButtons="true" Disabled="Enlazado" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="precio" /></MudItem>
+                <MudItem xs="12" sm="4"><MudNumericField T="decimal" @bind-Value="_precio" Label="Precio unitario" Min="0" HideSpinButtons="true" Disabled="Enlazado" Variant="Variant.Outlined" data-campo="precio" /></MudItem>
                 <MudItem xs="12" sm="5"><MudText Typo="Typo.subtitle1" Align="Align.Right" data-total="1">Total estimado: <b>@Total.ToString("N4")</b></MudText></MudItem>
             </MudGrid>
         </MudPaper>
@@ -59,9 +71,69 @@
             @if (Enlazado) { <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2" data-ensamble="1">Enlazado con el diseño @_enlD, versión @_enlV: su costo sale de esa estructura.</MudAlert> }
         </MudPaper>
 
+        <MudPaper Outlined="true" Class="pa-3 mb-3" data-panel="formula">
+            <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">5 · Fórmula de consumo</MudText>
+            @if (NumSecuencia is null)
+            {
+                <MudText Style="opacity:.7;font-size:.85rem;" data-formula-nueva="1">Guarda el insumo y vuelve a abrirlo para asignarle una fórmula.</MudText>
+            }
+            else
+            {
+                @if (_fLinea is { CAN_FICHAS: > 0 })
+                {
+                    <div class="mb-1" data-formula-nombre="1">
+                        <MudText Typo="Typo.caption" Style="opacity:.7;">Fórmula asignada</MudText>
+                        <MudText Typo="Typo.subtitle2" Style="font-weight:700;">@(string.IsNullOrWhiteSpace(_fLinea.DES_FORMULACION_ORIGEN) ? "Fórmula propia de esta línea (sin nombre de origen)" : _fLinea.DES_FORMULACION_ORIGEN)</MudText>
+                    </div>
+                    <div style="font-family:var(--mono-font,monospace);padding:6px 10px;border:1px solid var(--line);border-radius:6px;" data-formula-texto="1">@_fLinea.DES_MASCARA_FORMULA</div>
+                    <div class="d-flex flex-wrap gap-1 mt-2 mb-2" data-formula-fichas="1">
+                        @foreach (var f in _fLinea.Fichas)
+                        {
+                            <span style="@($"background:{(string.IsNullOrWhiteSpace(f.DES_BACKCOLOR) ? "#555" : f.DES_BACKCOLOR)};color:{(string.IsNullOrWhiteSpace(f.DES_FORECOLOR) ? "#fff" : f.DES_FORECOLOR)};padding:1px 8px;border-radius:5px;font-size:.78rem;font-weight:600;")" title="@f.DES_COMPONENTE_FORMULACION">@(f.DES_ELEMENTO_MASCARA_FORMULA ?? f.COD_ALIAS_FORMULACION)</span>
+                        }
+                    </div>
+                    @if (_edit)
+                    {
+                        <div data-formula-editor="1" class="mb-2">
+                            <MudText Typo="Typo.caption" Style="opacity:.7;display:block;" Class="mb-1">Es una copia de este insumo: la fórmula original no cambia. Es el mismo editor de la pantalla Fórmulas.</MudText>
+                            <FormulaFichasEditor Fichas="_ed" Paleta="_pal">
+                                <div class="fm-pie">
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="CancelarEdicion" Disabled="@_fOcupado" data-accion="ed-cancelar">Cancelar edición</MudButton>
+                                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="GuardarFormulaAsync" Disabled="@(_fOcupado || _ed.Count == 0)" data-accion="ed-guardar">Guardar fórmula</MudButton>
+                                </div>
+                            </FormulaFichasEditor>
+                        </div>
+                    }
+                    <div class="d-flex align-center gap-3 flex-wrap mb-1">
+                        <MudText Typo="Typo.subtitle1" data-formula-total="1">Cantidad total: <b>@(_fLinea.CAN_TOTAL?.ToString("N4") ?? "—")</b></MudText>
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="EditarFormulaAsync" Disabled="@(_fOcupado || _edit)" data-accion="formula-editar">Editar fórmula</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="CalcularFormulaAsync" Disabled="@_fOcupado" data-accion="formula-calcular">Calcular</MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" OnClick="QuitarFormulaAsync" Disabled="@_fOcupado" data-accion="formula-quitar">Quitar fórmula</MudButton>
+                    </div>
+                }
+                else
+                {
+                    <MudText Style="opacity:.7;font-size:.85rem;" Class="mb-2" data-formula-vacia="1">Este insumo no tiene fórmula: usa el consumo y la merma tal cual.</MudText>
+                }
+                @if (!string.IsNullOrEmpty(_fMsg)) { <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2" data-formula-error="1">@_fMsg</MudAlert> }
+                @if (_fCargaOk && _fDisp.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mb-1" Style="opacity:.8;" data-formula-sin-disponibles="1">No hay fórmulas ACTIVAS para la sub familia de este insumo ni genéricas. En «Fórmulas de consumo» activa una (estado ACTIVA) y que su Grupo / Familia / Sub familia (la del producto) sea la de este insumo, o déjala sin sub familia.</MudText>
+                }
+                <div class="d-flex align-end gap-2">
+                    <div style="flex:1;">
+                        <AriaCombo TItem="DisenosEstructuraFormulaDisponible" Items="_fDisp" TextFunc="@(x => x.DES_FORMULACION + (x.FLG_COINCIDE ? "" : " (genérica)") + " · " + x.DES_ALIAS)" ValueFunc="@(x => x.NUM_FORMULACION.ToString())"
+                                   @bind-Value="_fSel" Label="@(_fLinea is { CAN_FICHAS: > 0 } ? "Cambiar la fórmula (solo ACTIVAS de su sub familia o genéricas)" : "Asignar una fórmula (solo ACTIVAS de su sub familia o genéricas)")" Class="mb-0" />
+                    </div>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="AsignarFormulaAsync" Disabled="@(_fOcupado || string.IsNullOrEmpty(_fSel))" data-accion="formula-asignar">Asignar</MudButton>
+                </div>
+            }
+        </MudPaper>
+
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         <div class="d-flex justify-end gap-2">
-            <MudButton OnClick="@(() => MudDialog.Cancel())" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
+            <MudButton OnClick="@(() => { if (_cambioFormula) MudDialog.Close(DialogResult.Ok(true)); else MudDialog.Cancel(); })" Variant="Variant.Filled" Style="@EstilosBoton.Cancelar">Cancelar</MudButton>
             <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_guardando || string.IsNullOrEmpty(_prod) || _consumo <= 0 || (!string.IsNullOrEmpty(_enlD) && string.IsNullOrEmpty(_enlV)))" OnClick="GuardarAsync" data-accion="guardar">
                 @(_guardando ? "Guardando..." : "Guardar")
             </MudButton>
@@ -90,6 +162,120 @@
     private string? _prod, _tipoMerma, _moneda = "PEN", _enlD, _enlV;
     private decimal _consumo, _merma, _precio;
     private string _error = ""; private bool _guardando;
+    // formula de consumo de la linea (script 147)
+    private DisenosEstructuraFormulaLinea? _fLinea;
+    private bool _pivot;     // FLG_PRODUCTO_COMPONENTE_PIVOT: sin marcar = false
+    // clasificacion del material en esta linea (01 Materia prima ... 05 Herramientas); opcional
+    private List<ComboboxItem> _tiposMat = new();
+    private string? _tipoMat; private bool _tipoMatCargado;
+    private string AyudaTipoMat() => _tiposMat.FirstOrDefault(x => x.Id == _tipoMat)?.Texto is { } t ? "Clasificación de este material en la estructura." : "";
+    private List<DisenosEstructuraFormulaDisponible> _fDisp = new();
+    private string? _fSel; private string _fMsg = ""; private bool _fOcupado, _fCargaOk;
+    private DisenosEstructuraLineaClaveDto LineaClave => new() { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia ?? 0, COD_PRODUCTO_COMPONENTE = _prod ?? "" };
+
+    private async Task CargarFormulaAsync()
+    {
+        if (NumSecuencia is null || string.IsNullOrEmpty(_prod)) return;
+        var l = await OperacionesApi.LeerAsync<DisenosEstructuraFormulaLinea>(Http, IngenieriaRoute.DisenosEstructuraFormulaLinea(CodDiseno, NumVersion, CodSector, CodComponente, NumSecuencia.Value, _prod));
+        _fLinea = l.Data;
+        _pivot = l.Data?.FLG_PRODUCTO_COMPONENTE_PIVOT == true;
+        if (!_tipoMatCargado) { _tipoMat = l.Data?.COD_TIPO_MATERIAL; _tipoMatCargado = true; }      // solo al abrir: no pisa lo que el usuario cambie despues
+        var d = await OperacionesApi.LeerAsync<List<DisenosEstructuraFormulaDisponible>>(Http, IngenieriaRoute.DisenosEstructuraFormulaDisponibles(CodDiseno, NumVersion, CodSector, CodComponente, NumSecuencia.Value, _prod));
+        _fDisp = d.Data ?? new(); _fCargaOk = d.Ok;
+        // si la lectura falla se dice por que, en vez de dejar el combo vacio sin explicacion
+        if (!l.Ok) _fMsg = l.Mensaje ?? "No se pudo leer la fórmula de la línea."; else if (!d.Ok) _fMsg = d.Mensaje ?? "No se pudieron leer las fórmulas disponibles.";
+        _fSel = null;
+    }
+
+    private async Task AsignarFormulaAsync()
+    {
+        if (!int.TryParse(_fSel, out var num) || NumSecuencia is null) return;
+        _fOcupado = true; _fMsg = "";
+        var r = await Http.PostAsync<DisenosEstructuraFormulaResultado>(IngenieriaRoute.DisenosEstructuraFormulaAsignar, new DisenosEstructuraFormulaAsignarDto
+        { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia.Value, COD_PRODUCTO_COMPONENTE = _prod ?? "", NUM_FORMULACION = num });
+        _fOcupado = false;
+        if (!r.Ok) { _fMsg = r.Mensaje; return; }
+        await CargarFormulaAsync();
+        // la asignacion queda hecha aunque no se pueda calcular: el motivo se muestra
+        if (r.Data is { ES_VALIDA: false }) _fMsg = r.Data.DES_ERROR ?? "No se pudo calcular la fórmula."; else Snackbar.Add("Fórmula asignada.", Severity.Success);
+        _cambioFormula = true;
+    }
+
+    private async Task CalcularFormulaAsync()
+    {
+        _fOcupado = true; _fMsg = "";
+        var r = await Http.PostAsync<DisenosEstructuraFormulaResultado>(IngenieriaRoute.DisenosEstructuraFormulaCalcular, new DisenosEstructuraFormulaCalcularDto
+        { COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia ?? 0, COD_PRODUCTO_COMPONENTE = _prod ?? "", GUARDAR = true });
+        _fOcupado = false;
+        if (!r.Ok) { _fMsg = r.Mensaje; return; }
+        await CargarFormulaAsync();
+        if (r.Data is { ES_VALIDA: false }) _fMsg = r.Data.DES_ERROR ?? "No se pudo calcular la fórmula.";
+        _cambioFormula = true;
+    }
+
+    private async Task QuitarFormulaAsync()
+    {
+        _fOcupado = true; _fMsg = "";
+        var r = await Http.PostAsync<bool>(IngenieriaRoute.DisenosEstructuraFormulaQuitar, LineaClave);
+        _fOcupado = false;
+        if (!r.Ok) { _fMsg = r.Mensaje; return; }
+        await CargarFormulaAsync();
+        Snackbar.Add("Fórmula quitada.", Severity.Success);
+        _cambioFormula = true;
+    }
+
+    // ------------------------------------------------------------------ editar la copia de la formula de la linea
+    private bool _edit;
+    private readonly List<FormulaFichaUi> _ed = new();
+    private List<PaletaFicha> _pal = new();
+
+    private async Task EditarFormulaAsync()
+    {
+        if (_fLinea is null) return;
+        _fMsg = "";
+        _ed.Clear();
+        foreach (var f in _fLinea.Fichas.OrderBy(x => x.NUM_SECUENCIA_FORMULA))
+        {
+            var comp = f.COD_COMPONENTE_FORMULACION ?? "";
+            _ed.Add(new FormulaFichaUi
+            {
+                Comp = comp, Elem = f.COD_ELEMENTO_FORMULACION ?? "", DesComp = f.DES_COMPONENTE_FORMULACION ?? "", Alias = f.COD_ALIAS_FORMULACION ?? f.DES_ELEMENTO_MASCARA_FORMULA ?? "",
+                Tec = f.DES_ELEMENTO_FORMULA ?? "", DesElem = f.DES_ELEMENTO_FORMULA ?? "", Valor = comp == "CONST" ? f.DES_ELEMENTO_FORMULA : null, Back = f.DES_BACKCOLOR, Fore = f.DES_FORECOLOR
+            });
+        }
+        _edit = true;
+        if (_pal.Count == 0)
+        {
+            // la paleta: componentes habilitados con sus fichas; las especificaciones tecnicas salen de la sub familia del insumo
+            var r = await OperacionesApi.LeerAsync<List<PaletaFicha>>(Http, FRoute.Paleta(_g, _f, _s, null, null, null));
+            _pal = r.Data ?? new();
+            if (!r.Ok) _fMsg = r.Mensaje ?? "No se pudo leer la paleta de fichas.";
+        }
+        // las fichas de especificaciones (el texto propio es el nombre de la especificacion) se reconocen por el componente
+        var esp = _pal.Where(p => p.FLG_ESPECIFICACIONES_CONSUMO == true || p.FLG_ESPECIFICACIONES == true).Select(p => p.COD_COMPONENTE_FORMULACION).ToHashSet();
+        foreach (var f in _ed.Where(x => esp.Contains(x.Comp))) { f.Espec = true; f.Valor = f.Tec; }
+    }
+
+    private void CancelarEdicion() { _edit = false; _ed.Clear(); }
+
+    private async Task GuardarFormulaAsync()
+    {
+        _fOcupado = true; _fMsg = "";
+        var r = await Http.PostAsync<DisenosEstructuraFormulaResultado>(IngenieriaRoute.DisenosEstructuraFormulaGuardar, new DisenosEstructuraFormulaGuardarDto
+        {
+            COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia ?? 0, COD_PRODUCTO_COMPONENTE = _prod ?? "",
+            Fichas = _ed.Select(e => new FormulaFichaDto { COD_COMPONENTE_FORMULACION = e.Comp, COD_ELEMENTO_FORMULACION = e.Elem, DES_FORMULA = e.Comp == "CONST" || e.Espec ? e.Valor : null, COD_ESPECIFICACION_TECNICA = e.EspCod }).ToList()
+        });
+        _fOcupado = false;
+        if (!r.Ok) { _fMsg = r.Mensaje; return; }                       // la edicion sigue abierta con lo que habia escrito
+        _edit = false; _ed.Clear();
+        await CargarFormulaAsync();
+        if (r.Data is { ES_VALIDA: false }) _fMsg = r.Data.DES_ERROR ?? "No se pudo calcular la fórmula."; else Snackbar.Add("Fórmula guardada.", Severity.Success);
+        _cambioFormula = true;
+    }
+
+    // si se asigno / calculo / quito una formula, el arbol se vuelve a leer aunque se cierre el dialogo sin guardar
+    private bool _cambioFormula;
 
     private string FiltroClasificacion =>
         (_g == "" ? "" : $"&COD_GRUPO_PRODUCTO={Uri.EscapeDataString(_g)}") + (_f == "" ? "" : $"&COD_FAMILIA_PRODUCTO={Uri.EscapeDataString(_f)}") + (_s == "" ? "" : $"&COD_SUB_FAMILIA_PRODUCTO={Uri.EscapeDataString(_s)}");
@@ -104,8 +290,10 @@
         var tMon = Http.SafeGetAsync<List<ComboboxItem>>(KONSolutions.Web.Services.ApiRoutes.Estandar.MonedasCombobox);
         var tD = Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.DisenosCombobox);
         var tG = Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.GruposProductoCombobox);
+        var tMat = Http.SafeGetAsync<List<ComboboxItem>>(IngenieriaRoute.DisenosEstructuraTiposMaterial);
         var tTodos = Http.SafeGetAsync<List<DisenoModel>>(IngenieriaRoute.Disenos);
-        await Task.WhenAll(tM, tMon, tD, tG, tTodos);
+        await Task.WhenAll(tM, tMon, tD, tG, tTodos, tMat);
+        _tiposMat = tMat.Result ?? new();
         _mermas = tM.Result ?? new(); _monedas = tMon.Result ?? new(); _disenos = tD.Result ?? new();
         _grupos = tG.Result ?? new(); _todosDisenos = tTodos.Result ?? new();
         AplicarFiltroDisenos();
@@ -114,11 +302,32 @@
             _prod = Nodo.COD_PRODUCTO_COMPONENTE; _consumo = Nodo.CAN_CONSUMO ?? 0; _merma = Nodo.TAS_MERMA ?? 0;
             _tipoMerma = Nodo.COD_TIPO_MERMA; _moneda = Nodo.COD_MONEDA ?? "PEN"; _precio = Nodo.PRE_UNITARIO ?? 0;
             _actual = new ProductoModel { COD_PRODUCTO = _prod ?? "", COD_UNIDAD_MEDIDA = Nodo.COD_UNIDAD_MEDIDA };
+            await CargarClasificacionDelProductoAsync();
             if (Nodo.FLG_ENSAMBLE && !string.IsNullOrEmpty(Nodo.COD_DISENO_ENSAMBLE))
             {
                 _enlD = Nodo.COD_DISENO_ENSAMBLE; await CargarVersionesAsync(); _enlV = Nodo.NUM_VERSION_ENSAMBLE?.ToString();
             }
+            await CargarFormulaAsync();
         }
+    }
+
+    // Al modificar un insumo, Grupo / Familia / Sub familia salen del producto guardado (antes quedaban vacios hasta elegir otro producto).
+    private async Task CargarClasificacionDelProductoAsync()
+    {
+        if (string.IsNullOrEmpty(_prod)) return;
+        try
+        {
+            var r = await Http.GetFromJsonAsync<ApiResponse<List<ProductoModel>>>($"{KONSolutions.Web.Services.ApiRoutes.Estandar.ProductosSearch}?search={Uri.EscapeDataString(_prod)}");
+            var p = (r?.Data ?? new()).FirstOrDefault(x => x.COD_PRODUCTO == _prod);
+            if (p is null) return;
+            _actual = p; _productos = _productos.Where(x => x.COD_PRODUCTO != p.COD_PRODUCTO).Append(p).ToList();
+            if (!string.IsNullOrWhiteSpace(p.COD_GRUPO_PRODUCTO))
+            {
+                _g = p.COD_GRUPO_PRODUCTO.Trim(); _f = (p.COD_FAMILIA_PRODUCTO ?? "").Trim(); _s = (p.COD_SUB_FAMILIA_PRODUCTO ?? "").Trim();
+                await CargarFamiliasAsync(); await CargarSubFamiliasAsync(); AplicarFiltroDisenos();
+            }
+        }
+        catch { /* sin la clasificacion el insumo se edita igual */ }
     }
 
     private async Task CargarVersionesAsync()
@@ -139,10 +348,37 @@
         if (!string.IsNullOrEmpty(_enlD) && _disenosVista.All(x => x.Id != _enlD)) { var ya = _disenos.FirstOrDefault(x => x.Id == _enlD); if (ya is not null) _disenosVista.Insert(0, ya); }
     }
 
+    // La API no tiene "combobox/{grupo}" ni "combobox/{grupo}/{familia}": Familia y Sub familia salian siempre vacias. Se leen de la lista con filtros
+    // (GET familias-producto?codGrupoProducto= y sub-familias-producto?codGrupoProducto=&codFamiliaProducto=) y, si no trae nada, del combo por padre.
+    private sealed class ClasifLite
+    {
+        public string? Id { get; set; } public string? Texto { get; set; }
+        public string? COD_FAMILIA_PRODUCTO { get; set; } public string? DES_FAMILIA_PRODUCTO { get; set; }
+        public string? COD_SUB_FAMILIA_PRODUCTO { get; set; } public string? DES_SUB_FAMILIA_PRODUCTO { get; set; }
+    }
+
+    private async Task<List<ComboboxItem>> LeerClasifAsync(string[] urls, Func<ClasifLite, ComboboxItem> mapa)
+    {
+        foreach (var u in urls)
+        {
+            try
+            {
+                var l = (await Http.SafeGetAsync<List<ClasifLite>>(u) ?? new()).Select(mapa).Where(i => i.Id.Length > 0).ToList();
+                if (l.Count > 0) return l;
+            }
+            catch { /* se prueba la siguiente ruta */ }
+        }
+        return new();
+    }
+
     private async Task CargarFamiliasAsync() =>
-        _familias = string.IsNullOrEmpty(_g) ? new() : await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.FamiliasProductoPorGrupo(_g)) ?? new();
+        _familias = string.IsNullOrEmpty(_g) ? new() : await LeerClasifAsync(
+            new[] { $"{KONSolutions.Web.Services.ApiRoutes.Estandar.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(_g)}", EstandarRoute.FamiliasProductoPorGrupo(_g) },
+            c => new ComboboxItem { Id = (c.Id ?? c.COD_FAMILIA_PRODUCTO ?? "").Trim(), Texto = (c.Texto ?? c.DES_FAMILIA_PRODUCTO ?? "").Trim() });
     private async Task CargarSubFamiliasAsync() =>
-        _subFamilias = string.IsNullOrEmpty(_g) || string.IsNullOrEmpty(_f) ? new() : await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.SubFamiliasProductoPorFamilia(_g, _f)) ?? new();
+        _subFamilias = string.IsNullOrEmpty(_g) || string.IsNullOrEmpty(_f) ? new() : await LeerClasifAsync(
+            new[] { KONSolutions.Web.Services.ApiRoutes.Estandar.SubFamiliasProductoLista(_g, _f), EstandarRoute.SubFamiliasProductoPorFamilia(_g, _f) },
+            c => new ComboboxItem { Id = (c.Id ?? c.COD_SUB_FAMILIA_PRODUCTO ?? "").Trim(), Texto = (c.Texto ?? c.DES_SUB_FAMILIA_PRODUCTO ?? "").Trim() });
 
     private async Task OnGrupoChanged(string? v)
     {
@@ -207,7 +443,8 @@
             COD_DISENO = CodDiseno, NUM_VERSION = NumVersion, COD_SECTOR_PRODUCTO = CodSector, COD_COMPONENTE_PRODUCTO = CodComponente, NUM_SECUENCIA = NumSecuencia,
             COD_PRODUCTO_COMPONENTE = _prod!, CAN_CONSUMO = _consumo, COD_TIPO_MERMA = string.IsNullOrEmpty(_tipoMerma) ? null : _tipoMerma, TAS_MERMA = _merma,
             COD_MONEDA = _moneda, PRE_UNITARIO = Enlazado ? 0 : _precio,
-            COD_DISENO_ENLACE = Enlazado ? _enlD : null, NUM_VERSION_ENLACE = Enlazado && int.TryParse(_enlV, out var nv) ? nv : null
+            COD_DISENO_ENLACE = Enlazado ? _enlD : null, NUM_VERSION_ENLACE = Enlazado && int.TryParse(_enlV, out var nv) ? nv : null,
+            FLG_PRODUCTO_COMPONENTE_PIVOT = _pivot, COD_TIPO_MATERIAL = string.IsNullOrEmpty(_tipoMat) ? null : _tipoMat
         });
         _guardando = false;
         if (!r.Ok) { _error = r.Mensaje; return; }

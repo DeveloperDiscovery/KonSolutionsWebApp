@@ -1,0 +1,324 @@
+@* Editor de fichas de una formula: lienzo (fichas, arrastrar y soltar, constantes editables) + paleta de componentes y elementos.
+   Lo usan la pantalla Formulas (base de datos de formulas) y el dialogo del insumo (formula de la linea). El que lo usa pone la lista de fichas (Fichas),
+   la paleta (Paleta, de formulas/paleta), y recibe OnCambio cuando el usuario cambia algo. ChildContent se dibuja bajo el lienzo (validacion y botones). *@
+@using KONSolutions.Shared.Models.Formulacion
+@inject ISnackbar Snackbar
+
+<style>
+    .fm-lienzo { display:flex; flex-wrap:wrap; gap:6px; min-height:84px; padding:12px; border:1px solid var(--line); border-radius:8px; align-content:flex-start; }
+    .fm-ficha { border:2px solid transparent; border-radius:6px; padding:4px 11px; cursor:pointer; font:inherit; font-weight:600; display:inline-flex; gap:6px; align-items:center; }
+    .fm-valor { font:inherit; font-weight:600; color:inherit; background:rgba(255,255,255,.18); border:0; border-bottom:1px dashed currentColor; border-radius:3px; padding:0 4px; min-width:2ch; text-align:center; outline:none; cursor:text; }
+    .fm-valor:focus { background:rgba(255,255,255,.32); }
+    .fm-ficha small { font-weight:500; opacity:.85; font-size:.7rem; }
+    .fm-ficha.fm-ficha-sel { border-color:var(--mud-palette-text-primary,#000); box-shadow:0 0 0 2px var(--mud-palette-surface,#fff), 0 0 0 4px var(--mud-palette-primary,#3b82f6); }
+    .fm-ficha.fm-ficha-err { outline:2px solid #d32f2f; outline-offset:2px; }
+    .fm-slot { position:relative; display:inline-flex; }
+    .fm-slot .fm-zona { position:absolute; top:-3px; bottom:-3px; width:50%; z-index:2; display:none; }
+    .fm-slot .fm-zona-izq { left:-3px; } .fm-slot .fm-zona-der { right:-3px; }
+    .fm-lienzo.fm-arrastrando .fm-slot .fm-zona { display:block; }
+    .fm-slot.fm-ins-izq::before, .fm-slot.fm-ins-der::after { content:""; position:absolute; top:-4px; bottom:-4px; width:4px; border-radius:2px; background:var(--mud-palette-primary,#3b82f6); z-index:3; }
+    .fm-slot.fm-ins-izq::before { left:-6px; } .fm-slot.fm-ins-der::after { right:-6px; }
+    .fm-lienzo.fm-arrastrando { outline:2px dashed var(--mud-palette-primary,#3b82f6); outline-offset:-4px; }
+    .fm-lienzo.fm-ins-fin-vacio { background:rgba(63,127,224,.08); }
+    .fm-ficha[draggable="true"] { cursor:grab; } .fm-ficha.fm-arrastrada { opacity:.4; }
+    .fm-paleta { display:flex; flex-wrap:wrap; gap:6px; }
+    .fm-elementos { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:8px; }
+    @@media (max-width: 700px) { .fm-elementos { grid-template-columns:1fr; } }
+    .fm-grupo + .fm-grupo { margin-top:5px; }
+    .fm-grupo-titulo { display:flex; align-items:center; gap:6px; font-size:.75rem; font-weight:600; opacity:.8; margin-bottom:2px; text-transform:uppercase; letter-spacing:.04em; }
+    .fm-grupo-punto { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    .fm-els { display:flex; flex-wrap:wrap; gap:6px; align-content:flex-start; min-height:60px; }
+    .fm-grupo .fm-els { min-height:0; row-gap:3px; }      /* varios grupos: filas compactas para verlos todos sin desplazarse */
+    .fm-grupo .fm-ficha { padding-top:2px; padding-bottom:2px; }
+    .fm-acciones { display:flex; flex-direction:column; gap:6px; min-width:112px; }
+    .fm-pie { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:12px; }
+</style>
+
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);" data-zona="lienzo">
+        <div class="d-flex align-center gap-2 mb-2">
+            <MudText Typo="Typo.subtitle2">Fórmula armada</MudText>
+            <MudText Typo="Typo.caption" Style="opacity:.65;">Clic: seleccionar · doble clic: eliminar · arrastra para mover</MudText>
+            <div style="margin-left:auto;display:flex;gap:6px;">
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" OnClick="MoverIzquierda" Disabled="@(_sel <= 0)" aria-label="Mover la ficha a la izquierda" data-accion="subir" />
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" OnClick="MoverDerecha" Disabled="@(_sel < 0 || _sel >= Fichas.Count - 1)" aria-label="Mover la ficha a la derecha" data-accion="bajar" />
+            </div>
+        </div>
+        <div class="fm-lienzo @(_arrastrando ? "fm-arrastrando" : "") @(_arrastrando && Fichas.Count == 0 ? "fm-ins-fin-vacio" : "")" data-lienzo="1"
+             @ondragover="@(() => SobreZona(Fichas.Count))" @ondragover:preventDefault="true" @ondrop="@(() => Soltar(_insertarEn))" @ondrop:preventDefault="true">
+            @if (Fichas.Count == 0) { <span style="opacity:.6;margin:auto;" data-lienzo-vacio="1">La fórmula está vacía. Arrastra un elemento aquí, o elígelo y usa «Adicionar».</span> }
+            @for (var i = 0; i < Fichas.Count; i++)
+            {
+                var idx = i; var f = Fichas[i];
+                <span class="fm-slot @(_arrastrando && _insertarEn == i ? "fm-ins-izq" : "") @(_arrastrando && _insertarEn == Fichas.Count && i == Fichas.Count - 1 ? "fm-ins-der" : "")" data-slot="@i">
+                    @if (f.Comp == "CONST")
+                    {
+                        @* las constantes se editan ahi mismo: el valor es un campo dentro de la ficha (Enter o salir del campo lo confirma) *@
+                        <span role="button" tabindex="0" class="fm-ficha @(_sel == i ? "fm-ficha-sel" : "") @(PosErr.Contains(i + 1) ? "fm-ficha-err" : "") @(_arrDesde == i ? "fm-arrastrada" : "")" style="@Estilo(f.Back, f.Fore)" aria-pressed="@(_sel == i ? "true" : "false")"
+                              title="@f.DesComp · @f.DesElem" @onclick="@(() => ElegirFicha(idx))" @ondblclick="@(() => QuitarEn(idx))" data-ficha="@i"
+                              draggable="true" data-arrastrable="1" @ondragstart="@(() => IniciarArrastre(idx, null))" @ondragend="FinArrastre">
+                            <input type="text" class="fm-valor" value="@f.Valor" size="@Math.Max(2, (f.Valor ?? "").Length)" draggable="false" aria-label="Valor de la constante @f.Alias" data-valor-ficha="@i"
+                                   @onchange="@(e => CambiarValor(idx, e.Value?.ToString()))" @onclick:stopPropagation="true" @ondblclick:stopPropagation="true" />
+                            <small>@f.Alias</small>
+                        </span>
+                    }
+                    else
+                    {
+                        <button type="button" class="fm-ficha @(_sel == i ? "fm-ficha-sel" : "") @(PosErr.Contains(i + 1) ? "fm-ficha-err" : "") @(_arrDesde == i ? "fm-arrastrada" : "")" style="@Estilo(f.Back, f.Fore)" aria-pressed="@(_sel == i ? "true" : "false")"
+                                title="@f.DesComp · @f.DesElem" @onclick="@(() => ElegirFicha(idx))" @ondblclick="@(() => QuitarEn(idx))" data-ficha="@i"
+                                draggable="true" data-arrastrable="1" @ondragstart="@(() => IniciarArrastre(idx, null))" @ondragend="FinArrastre">@Etiqueta(f)</button>
+                    }
+                    @* mitades de la ficha: soltar en la izquierda inserta antes, en la derecha inserta despues *@
+                    <span class="fm-zona fm-zona-izq" data-zona-ins="@(i)" @ondragover="@(() => SobreZona(idx))" @ondragover:preventDefault="true" @ondragover:stopPropagation="true"
+                          @ondrop="@(() => Soltar(idx))" @ondrop:preventDefault="true" @ondrop:stopPropagation="true"></span>
+                    <span class="fm-zona fm-zona-der" data-zona-ins="@(i + 1)" @ondragover="@(() => SobreZona(idx + 1))" @ondragover:preventDefault="true" @ondragover:stopPropagation="true"
+                          @ondrop="@(() => Soltar(idx + 1))" @ondrop:preventDefault="true" @ondrop:stopPropagation="true"></span>
+                </span>
+            }
+        </div>
+        @ChildContent
+    </MudPaper>
+
+    <MudPaper Elevation="0" Class="pa-3" Style="border:1px solid var(--line);" data-zona="paleta">
+        <div class="d-flex align-center gap-2 mb-2">
+            <MudText Typo="Typo.subtitle2">Componentes</MudText>
+            <MudText Typo="Typo.caption" Style="opacity:.65;">Elige uno o varios componentes y agrega sus elementos</MudText>
+        </div>
+        <div class="fm-paleta" role="group" aria-label="Componentes">
+            @foreach (var c in _comps)
+            {
+                var cod = c.Cod; var sel = _compsVer.Contains(cod);
+                <button type="button" class="fm-ficha @(sel ? "fm-ficha-sel" : "")" style="@Estilo(c.Back, c.Fore)" aria-pressed="@(sel ? "true" : "false")" @onclick="@(a => ElegirComp(cod, a))" data-comp="@cod">@c.Des</button>
+            }
+            @if (_comps.Count == 0) { <span style="opacity:.6;">No hay componentes habilitados.</span> }
+        </div>
+        @if (_comps.Count > 0)
+        {
+            <div class="d-flex gap-4 flex-wrap mt-1">
+                <MudCheckBox T="bool" @bind-Value="_multi" Label="Elegir varios componentes (o Ctrl + clic)" Dense="true" Size="Size.Small" data-campo="multi" />
+                <MudCheckBox T="bool" @bind-Value="_verTodos" Label="Mostrar todos los elementos de todos los componentes" Dense="true" Size="Size.Small" data-campo="ver-todos" />
+            </div>
+            <div class="fm-elementos">
+                <div>
+                    @if (_compsMostrados.Count == 0) { <span style="opacity:.6;" data-sin-seleccion="1">Elige uno o varios componentes, o marca «Mostrar todos los elementos».</span> }
+                    @foreach (var comp in _compsMostrados)
+                    {
+                        <div class="fm-grupo" data-grupo="@comp.Cod">
+                            @if (_compsMostrados.Count > 1) { <div class="fm-grupo-titulo"><span class="fm-grupo-punto" style="background:@(comp.Back ?? "#555");"></span>@comp.Des</div> }
+                            <div class="fm-els" role="group" aria-label="Elementos de @comp.Des">
+                                @foreach (var e in comp.Elementos)
+                                {
+                                    var ec = ClaveEl(e);
+                                    <button type="button" class="fm-ficha @(_elSel == ec ? "fm-ficha-sel" : "")" style="@Estilo(comp.Back, comp.Fore)" aria-pressed="@(_elSel == ec ? "true" : "false")" title="@e.DES_ELEMENTO_FORMULACION" @onclick="@(() => ElegirElemento(ec))" @ondblclick="@(() => AdicionarDirecto(ec))" draggable="true" data-arrastrable="1" @ondragstart="@(() => IniciarArrastre(null, ec))" @ondragend="FinArrastre" data-el="@(e.COD_ESPECIFICACION_TECNICA ?? e.COD_ELEMENTO_FORMULACION)">@e.COD_ALIAS_FORMULACION</button>
+                                }
+                                @if (comp.Elementos.Count == 0)
+                                {
+                                    <span style="opacity:.6;" data-sin-elementos="1">@(comp.EsEspecificacion ? "Ninguna especificación técnica aplica: elige la sub familia arriba." : "Este componente no tiene elementos habilitados.")</span>
+                                }
+                            </div>
+                            @if (!string.IsNullOrEmpty(comp.Pista)) { <MudText Typo="Typo.caption" Style="opacity:.65;" Class="mt-1">@comp.Pista</MudText> }
+                        </div>
+                    }
+                </div>
+                <div class="fm-acciones">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" OnClick="Adicionar" Disabled="@(_elSel is null)" data-accion="adicionar">Adicionar</MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="Insertar" Disabled="@(_elSel is null || _sel < 0)" data-accion="insertar">Insertar</MudButton>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick="QuitarFicha" Disabled="@(_sel < 0)" data-accion="quitar">Eliminar ficha</MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="ModificarConstante" Disabled="@(!EsConstanteSeleccionada)" data-accion="modificar">Modificar</MudButton>
+                </div>
+                @if (_pideValor)
+                {
+                    <div style="grid-column:1/-1;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+                        <MudTextField T="string" @bind-Value="_valor" Immediate="true" Label="@EtiquetaValor" Variant="Variant.Outlined" Style="max-width:240px;" data-campo="valor" />
+                        <MudText Typo="Typo.caption" Style="opacity:.65;" data-ayuda-valor="1">@AyudaValor</MudText>
+                    </div>
+                }
+            </div>
+            <MudText Typo="Typo.caption" Style="opacity:.65;" Class="mt-2"><b>Adicionar</b> agrega al final. <b>Insertar</b> agrega antes de la ficha seleccionada. <b>Modificar</b> solo cambia el valor de las constantes.</MudText>
+        }
+    </MudPaper>
+
+@code {
+    /// <summary>Las fichas de la formula armada (la lista es del que usa el editor; aqui se modifica).</summary>
+    [Parameter, EditorRequired] public List<FormulaFichaUi> Fichas { get; set; } = new();
+    /// <summary>Elementos disponibles (una fila por elemento / especificacion, con los datos del componente).</summary>
+    [Parameter] public List<PaletaFicha> Paleta { get; set; } = new();
+    /// <summary>Posiciones (1..n) con error de validacion: se marcan en rojo.</summary>
+    [Parameter] public HashSet<int>? PosError { get; set; }
+    [Parameter] public EventCallback OnCambio { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private static readonly HashSet<int> SinError = new();
+    private HashSet<int> PosErr => PosError ?? SinError;
+
+    /// <summary>Un componente de la paleta con sus elementos.</summary>
+    private sealed class CompUi
+    {
+        public string Cod = "", Des = "";
+        public string? Back, Fore, Pista;
+        public bool EsEspecificacion;
+        public List<PaletaFicha> Elementos = new();
+    }
+
+    private List<CompUi> _comps = new();
+    private List<PaletaFicha>? _paletaVista;
+    private string? _elSel, _valor;
+    private readonly HashSet<string> _compsVer = new();
+    private bool _multi, _verTodos;
+    private List<CompUi> _compsMostrados => _verTodos ? _comps : _comps.Where(c => _compsVer.Contains(c.Cod)).ToList();
+    private PaletaFicha? _elObj => _elSel is null ? null : _comps.SelectMany(c => c.Elementos).FirstOrDefault(e => ClaveEl(e) == _elSel);
+    private int _sel = -1;
+    private bool EsConstanteSeleccionada => _sel >= 0 && _sel < Fichas.Count && Fichas[_sel].Comp == "CONST";
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_paletaVista, Paleta)) return;
+        _paletaVista = Paleta;
+        _comps = (Paleta ?? new()).GroupBy(p => p.COD_COMPONENTE_FORMULACION).Select(g =>
+        {
+            var p0 = g.First();
+            return new CompUi
+            {
+                Cod = g.Key, Des = Corto(p0.DES_COMPONENTE_FORMULACION), Back = p0.DES_BACKCOLOR, Fore = p0.DES_FORECOLOR,
+                EsEspecificacion = p0.FLG_ESPECIFICACIONES_CONSUMO == true || p0.FLG_ESPECIFICACIONES == true,
+                Pista = p0.FLG_ESPECIFICACIONES_CONSUMO == true ? "Especificaciones técnicas de la sub familia del consumo." : p0.FLG_ESPECIFICACIONES == true ? "Especificaciones técnicas de la sub familia del producto." : null,
+                Elementos = g.Where(x => !string.IsNullOrEmpty(x.COD_ELEMENTO_FORMULACION) || !string.IsNullOrEmpty(x.COD_ESPECIFICACION_TECNICA)).ToList()
+            };
+        }).ToList();
+        _compsVer.RemoveWhere(x => _comps.All(c => c.Cod != x));
+        if (_compsVer.Count == 0 && _comps.Count > 0) _compsVer.Add(_comps[0].Cod);
+        if (_elObj is null) _elSel = null;
+    }
+
+    /// <summary>Identifica la ficha de la paleta: el elemento y, en las especificaciones, cual (varias comparten el mismo elemento).</summary>
+    private static string ClaveEl(PaletaFicha e) => e.COD_COMPONENTE_FORMULACION + "|" + (e.COD_ELEMENTO_FORMULACION ?? "") + "|" + (e.COD_ESPECIFICACION_TECNICA ?? "");
+
+    private static string Corto(string? d) => string.IsNullOrWhiteSpace(d) ? "" : System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(d.ToLowerInvariant());
+
+    private static string Etiqueta(FormulaFichaUi f) => FormulaFichaUi.Etiqueta(f);
+    private static string Estilo(string? back, string? fore) => $"background:{(string.IsNullOrWhiteSpace(back) ? "#555" : back)};color:{(string.IsNullOrWhiteSpace(fore) ? "#fff" : fore)};";
+
+    // ------------------------------------------------------------------ paleta y lienzo
+    // Clic: muestra solo ese componente. Con "Elegir varios componentes" marcado, o con Ctrl / Cmd / Mayus + clic, el componente se suma o se quita de los mostrados.
+    private void ElegirComp(string cod, MouseEventArgs a)
+    {
+        if (_multi || a.CtrlKey || a.MetaKey || a.ShiftKey) { if (!_compsVer.Remove(cod)) _compsVer.Add(cod); }
+        else { _compsVer.Clear(); _compsVer.Add(cod); }
+    }
+
+    private void ElegirElemento(string cod) { _elSel = _elSel == cod ? null : cod; if (_elObj?.COD_COMPONENTE_FORMULACION != "CONST") _valor = null; }
+
+    private bool _pideValor => _elObj?.COD_COMPONENTE_FORMULACION == "CONST" || EsConstanteSeleccionada;
+    private PaletaFicha? ElementoConstante() => _elObj?.COD_COMPONENTE_FORMULACION == "CONST" ? _elObj : null;
+    private string TipoConstante => ElementoConstante()?.COD_ALIAS_FORMULACION ?? (EsConstanteSeleccionada ? Fichas[_sel].Alias : "");
+    private string EtiquetaValor => "Valor (" + (ElementoConstante()?.DES_ELEMENTO_FORMULACION ?? (EsConstanteSeleccionada ? Fichas[_sel].DesElem : "constante")).ToLowerInvariant() + ")";
+    private string AyudaValor => TipoConstante switch
+    {
+        "ENT" => "Número entero, por ejemplo 100.", "NUM" => "Número con decimales, por ejemplo 1.05.", "CAD" => "Texto.", "FEC" => "Fecha con formato dd/mm/aaaa.",
+        "FHR" => "Fecha y hora.", "HOR" => "Hora hh:mm.", "LOG" => "0 (no) o 1 (sí).", _ => ""
+    };
+
+    private void ElegirFicha(int i)
+    {
+        _sel = _sel == i ? -1 : i;
+        if (EsConstanteSeleccionada) { _valor = Fichas[_sel].Valor; }
+    }
+
+    private FormulaFichaUi? NuevaFicha()
+    {
+        var e = _elObj; var c = e is null ? null : _comps.FirstOrDefault(x => x.Cod == e.COD_COMPONENTE_FORMULACION);
+        if (c is null || e is null) return null;
+        string? valor = null;
+        if (c.Cod == "CONST")
+        {
+            valor = _valor?.Trim();
+            if (string.IsNullOrEmpty(valor)) { Snackbar.Add("Escribe el valor de la constante.", Severity.Warning); return null; }
+        }
+        var espec = !string.IsNullOrEmpty(e.COD_ESPECIFICACION_TECNICA);
+        if (espec) valor = e.DES_ESPECIFICACION_TECNICA_SINGULAR ?? e.COD_ALIAS_FORMULACION;
+        return new FormulaFichaUi { Comp = c.Cod, Elem = e.COD_ELEMENTO_FORMULACION ?? "", Alias = e.COD_ALIAS_FORMULACION ?? "", Tec = e.DES_ELEMENTO_FORMULACION ?? "", DesComp = c.Des, DesElem = e.DES_ELEMENTO_FORMULACION ?? "", Valor = valor, Espec = espec, EspCod = e.COD_ESPECIFICACION_TECNICA, Back = c.Back, Fore = c.Fore };
+    }
+
+    // ------------------------------------------------------------------ arrastrar y soltar
+    // Se arrastra un elemento de la paleta (agrega una ficha) o una ficha del lienzo (la mueve). Mientras se arrastra, cada mitad de cada ficha es una zona de
+    // insercion (izquierda: antes; derecha: despues) y una barra marca donde caera; soltar en un hueco del lienzo agrega al final.
+    private bool _arrastrando;
+    private int? _arrDesde;
+    private string? _arrPaleta;
+    private int _insertarEn = -1;
+
+    private void IniciarArrastre(int? desde, string? clavePaleta)
+    {
+        _arrDesde = desde; _arrPaleta = clavePaleta; _arrastrando = true; _insertarEn = Fichas.Count;
+        if (clavePaleta is not null) { _elSel = clavePaleta; if (_elObj?.COD_COMPONENTE_FORMULACION != "CONST") _valor = null; }
+    }
+
+    private void SobreZona(int pos) { if (_arrastrando) _insertarEn = Math.Clamp(pos, 0, Fichas.Count); }
+
+    private void FinArrastre() { _arrastrando = false; _arrDesde = null; _arrPaleta = null; _insertarEn = -1; }
+
+    private void Soltar(int pos)
+    {
+        if (!_arrastrando) return;
+        pos = Math.Clamp(pos, 0, Fichas.Count);
+        var desde = _arrDesde; var paleta = _arrPaleta;
+        FinArrastre();
+        if (desde is int a && a >= 0 && a < Fichas.Count)
+        {
+            if (pos == a || pos == a + 1) return;                         // cae donde ya esta
+            var ficha = Fichas[a]; Fichas.RemoveAt(a);
+            if (pos > a) pos--;
+            Fichas.Insert(pos, ficha); _sel = pos; Tocado();
+        }
+        else if (paleta is not null)
+        {
+            _elSel = paleta;
+            var f = NuevaFicha(); if (f is null) return;                  // una constante sin valor avisa y no agrega
+            Fichas.Insert(pos, f); _sel = pos; Tocado();
+        }
+    }
+
+    private void Tocado() { _ = OnCambio.InvokeAsync(); }
+
+    // Doble clic en un elemento de la paleta: lo agrega al final (los dos clics previos lo seleccionan y deseleccionan, por eso se vuelve a fijar).
+    private void AdicionarDirecto(string clave)
+    {
+        _elSel = clave;
+        var f = NuevaFicha(); if (f is null) return;                      // una constante sin valor avisa y no agrega
+        Fichas.Add(f); _sel = Fichas.Count - 1; Tocado();
+    }
+
+    // Valor de una constante editado en la propia ficha. Vacio no vale: se vuelve a dibujar con el valor anterior y se avisa.
+    private void CambiarValor(int i, string? v)
+    {
+        if (i < 0 || i >= Fichas.Count || Fichas[i].Comp != "CONST") return;
+        v = v?.Trim();
+        if (string.IsNullOrEmpty(v)) { Snackbar.Add("La constante necesita un valor.", Severity.Warning); StateHasChanged(); return; }
+        if (v == Fichas[i].Valor) return;
+        Fichas[i].Valor = v; Fichas[i].Tec = v; _sel = i; _valor = v; Tocado();
+    }
+
+    // Doble clic en una ficha de la formula armada: la elimina.
+    private void QuitarEn(int i)
+    {
+        if (i < 0 || i >= Fichas.Count) return;
+        Fichas.RemoveAt(i); _sel = -1; Tocado();
+    }
+
+    private void Adicionar() { var f = NuevaFicha(); if (f is null) return; Fichas.Add(f); _sel = Fichas.Count - 1; Tocado(); }
+
+    private void Insertar() { if (_sel < 0) return; var f = NuevaFicha(); if (f is null) return; Fichas.Insert(_sel, f); _sel++; Tocado(); }
+
+    private void QuitarFicha() { if (_sel < 0 || _sel >= Fichas.Count) return; Fichas.RemoveAt(_sel); _sel = Math.Min(_sel, Fichas.Count - 1); Tocado(); }
+
+    private void ModificarConstante()
+    {
+        if (!EsConstanteSeleccionada) return;
+        var v = _valor?.Trim();
+        if (string.IsNullOrEmpty(v)) { Snackbar.Add("Escribe el nuevo valor.", Severity.Warning); return; }
+        Fichas[_sel].Valor = v; Fichas[_sel].Tec = v; Tocado();
+    }
+
+    private void MoverIzquierda() { if (_sel > 0) { (Fichas[_sel - 1], Fichas[_sel]) = (Fichas[_sel], Fichas[_sel - 1]); _sel--; Tocado(); } }
+    private void MoverDerecha() { if (_sel >= 0 && _sel < Fichas.Count - 1) { (Fichas[_sel + 1], Fichas[_sel]) = (Fichas[_sel], Fichas[_sel + 1]); _sel++; Tocado(); } }
+
+}

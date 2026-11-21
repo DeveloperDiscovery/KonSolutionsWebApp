@@ -83,11 +83,11 @@
                         <MudText Typo="Typo.subtitle2" data-sel="1">@s.Nombre · @s.Talla · #@s.Copia@(s.Espejada ? " (espejo)" : "")</MudText>
                         <MudText Typo="Typo.caption" Class="mono" data-angulo="1">Giro: @s.Angulo.ToString("0.##", CultureInfo.CurrentCulture)°</MudText>
                         <div class="d-flex gap-2 flex-wrap mt-1">
-                            <MudNumericField T="double" Value="Math.Round(l.MinX, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, v, c.Contorno.Limites.MinY)))" Label="X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:120px;" data-campo="x" />
-                            <MudNumericField T="double" Value="Math.Round(l.MinY, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, c.Contorno.Limites.MinX, v)))" Label="Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:120px;" data-campo="y" />
+                            <MudNumericField T="double" Value="Math.Round(l.MinX, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, v, c.Contorno.Limites.MinY)))" Label="X (mm)" Variant="Variant.Outlined" Style="max-width:120px;" data-campo="x" />
+                            <MudNumericField T="double" Value="Math.Round(l.MinY, 2)" ValueChanged="@(v => Aplicar(c => Ajuste.Ubicar(c, c.Contorno.Limites.MinX, v)))" Label="Y (mm)" Variant="Variant.Outlined" Style="max-width:120px;" data-campo="y" />
                         </div>
                         <div class="d-flex align-center gap-1 mt-1">
-                            <MudNumericField T="double" @bind-Value="_paso" Label="Paso (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0.1" Style="max-width:110px;" data-campo="paso" />
+                            <MudNumericField T="double" @bind-Value="_paso" Label="Paso (mm)" Variant="Variant.Outlined" Min="0.1" Style="max-width:110px;" data-campo="paso" />
                             <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" OnClick="@(() => Mover(-_paso, 0))" data-accion="izq" />
                             <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" OnClick="@(() => Mover(_paso, 0))" data-accion="der" />
                             <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => Mover(0, -_paso))" data-accion="arriba" />
@@ -100,7 +100,7 @@
                             <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(Ajuste.Espejar))" data-accion="espejar">Espejar</MudButton>
                         </div>
                         <div class="d-flex align-center gap-1 mt-1">
-                            <MudNumericField T="double" @bind-Value="_giro" Label="Giro libre (°)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="giro" />
+                            <MudNumericField T="double" @bind-Value="_giro" Label="Giro libre (°)" Variant="Variant.Outlined" Style="max-width:130px;" data-campo="giro" />
                             <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => Aplicar(c => Ajuste.Girar(c, _giro)))" data-accion="girar-libre">Girar</MudButton>
                         </div>
                     }
@@ -129,7 +129,7 @@
                     }
 
                     <MudText Typo="Typo.subtitle2" Class="mt-3">Guardar</MudText>
-                    <MudTextField T="string" @bind-Value="_nombre" Label="Nombre del tizado nuevo" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" data-campo="nombre-ajuste" />
+                    <MudTextField T="string" @bind-Value="_nombre" Label="Nombre del tizado nuevo" Variant="Variant.Outlined" MaxLength="100" data-campo="nombre-ajuste" />
                     <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Class="mt-1" Disabled="@(_guardando || Errores > 0 || !HayCambios || string.IsNullOrWhiteSpace(_nombre))" OnClick="GuardarAsync" data-accion="guardar">Guardar como nuevo</MudButton>
                     @if (Errores > 0) { <MudText Typo="Typo.caption" Style="color:#d62728;" data-aviso="no-guardar">Corrige los errores para poder guardar.</MudText> }
                 </div>

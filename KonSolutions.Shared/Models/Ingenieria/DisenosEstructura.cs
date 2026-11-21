@@ -77,6 +77,10 @@ public class DisenosEstructuraInsumoDto
     public decimal PRE_UNITARIO { get; set; }
     public string? COD_DISENO_ENLACE { get; set; }
     public int? NUM_VERSION_ENLACE { get; set; }
+    /// <summary>bool (no nullable): sin marcar es false, nunca NULL.</summary>
+    public bool FLG_PRODUCTO_COMPONENTE_PIVOT { get; set; }
+    /// <summary>Clasificacion del material en esta linea (01 a 05, opcional). Sin valor, al crear la linea la base usa el del componente o el de la sub familia.</summary>
+    public string? COD_TIPO_MATERIAL { get; set; }
 }
 
 public class DisenosEstructuraComponenteCambiarDto

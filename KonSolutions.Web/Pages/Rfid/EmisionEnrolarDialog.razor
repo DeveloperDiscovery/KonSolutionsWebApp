@@ -34,7 +34,7 @@
 
         <MudGrid Class="align-end" Spacing="2">
             <MudItem xs="12" sm="4">
-                <MudSelect T="int?" Label="Línea (vacío = la siguiente pendiente)" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_linea" Clearable="true" data-campo="linea">
+                <MudSelect T="int?" Label="Línea (vacío = la siguiente pendiente)" Variant="Variant.Outlined" @bind-Value="_linea" Clearable="true" data-campo="linea">
                     @foreach (var l in _lineas.Where(x => x.CAN_PENDIENTES > 0))
                     {
                         <MudSelectItem T="int?" Value="@((int?)l.NUM_ITEM)">@l.NUM_ITEM · @l.DES_PRODUCTO (@l.CAN_PENDIENTES pendientes)</MudSelectItem>
@@ -42,7 +42,7 @@
                 </MudSelect>
             </MudItem>
             <MudItem xs="12" sm="5">
-                <MudTextField T="string" @ref="_campoTid" @bind-Value="_tid" Label="TID del chip (escanea o digita y Enter)" Variant="Variant.Outlined" Margin="Margin.Dense"
+                <MudTextField T="string" @ref="_campoTid" @bind-Value="_tid" Label="TID del chip (escanea o digita y Enter)" Variant="Variant.Outlined"
                               Immediate="true" Disabled="@(_e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0 || _trabajando)" OnKeyDown="OnTidKey"
                               Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Nfc" Class="mono" data-campo="tid" />
             </MudItem>
@@ -57,7 +57,7 @@
             <MudCheckBox T="bool" @bind-Value="_simulador" Color="Color.Warning" Label="Simulador de TID (solo para pruebas)" Disabled="_trabajando" data-campo="simulador" />
             @if (_simulador)
             {
-                <MudNumericField T="int" @bind-Value="_cantidadSim" Min="1" Max="@MaxSimulados" Label="Cantidad" Variant="Variant.Outlined" Margin="Margin.Dense" HideSpinButtons="true"
+                <MudNumericField T="int" @bind-Value="_cantidadSim" Min="1" Max="@MaxSimulados" Label="Cantidad" Variant="Variant.Outlined" HideSpinButtons="true"
                                  Style="max-width:110px;" Immediate="true" Disabled="_trabajando" data-campo="cantidad-sim" />
                 <MudButton Variant="Variant.Filled" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Science" OnClick="EnrolarSimuladosAsync"
                            Disabled="@(_trabajando || _e is null || _e.FLG_ANULADA || _e.CAN_PENDIENTES == 0)" data-accion="enrolar-simulado">Enrolar con TID simulado</MudButton>

@@ -25,6 +25,10 @@ public class FakeEstructura : HttpMessageHandler
     public bool SinRuta;              // la version no tiene ruta de produccion
     public bool RutaBloqueada;        // la ruta la usa una version bloqueada
     public bool ConRutas;             // agrega nodos de ruta de produccion (RUT/PRC/SPR/OPE) al arbol
+    public List<DisenosEstructuraFormulaDiagrama> Formulas = new();   // fichas de formula por linea (diagrama)
+    public List<DisenosEstructuraIndicador> Indicadores = new();   // pivote / formula por linea y tizado por version
+    public bool RenumerarIds;         // como la base real: en cada lectura los ID de los nodos cambian (son identidad del procedimiento), el ORDEN no
+    int _lecturas;
 
     public List<DisenosEstructuraNodo> Nodos()
     {
@@ -37,6 +41,7 @@ public class FakeEstructura : HttpMessageHandler
             l.Add(N(12, 11, 9, 2, "OPE", "D2", 1, "SOLDAR PLACA", 0, n => { n.COD_TIPO_OPERACION_PRODUCCION = "SOLPL"; n.CAN_LEAD_TIME = 30; n.COD_UNIDAD_MEDIDA_TIEMPO = "MIN"; n.FLG_MANUAL = true; n.FLG_CONTROL_CALIDAD = true; n.COSTO_TOTAL = null; }));
             l.Add(N(13, 1, 2, 1, "RUT", "D1", 1, "RUTA DEL PRODUCTO", 0, n => { n.COD_RUTA_PRODUCCION = "RT-D1"; n.COSTO_TOTAL = null; }));
         }
+        if (RenumerarIds) { var d = 100 * _lecturas++; foreach (var n in l) { n.ID += d; if (n.PARENT_ID is int pid) n.PARENT_ID = pid + d; } }
         return l;
     }
 
@@ -64,8 +69,9 @@ public class FakeEstructura : HttpMessageHandler
         {
             if (u.Contains("documentos-carpeta")) data = Enumerable.Range(1, Imagenes).Select(i => (object)new { NombreArchivo = $"img{i}.jpg", TamanoBytes = 10, FechaModificacion = DateTime.Now, Extension = "JPG", RutaCompleta = $"\\\\srv\\{i}.jpg" }).Append((object)new { NombreArchivo = "doc.pdf", TamanoBytes = 1, FechaModificacion = DateTime.Now, Extension = "PDF", RutaCompleta = "\\\\srv\\doc.pdf" }).ToArray();
             else if (u.Contains("grupos-producto/combobox")) data = new[] { new { Id = "G1", Texto = "PRENDA" }, new { Id = "G2", Texto = "TELA" } };
-            else if (u.Contains("sub-familias-producto/combobox/")) data = new[] { new { Id = "S1", Texto = "MANGA CORTA" }, new { Id = "S2", Texto = "MANGA LARGA" } };
-            else if (u.Contains("/familias-producto/combobox/")) data = new[] { new { Id = "F1", Texto = "POLOS" }, new { Id = "F2", Texto = "CAMISAS" } };
+            // como la API real: familias y sub familias salen de la lista con filtros; "combobox/{padre}" NO existe (devuelve vacio)
+            else if (u.Contains("/sub-familias-producto?")) data = new[] { new { COD_SUB_FAMILIA_PRODUCTO = "S1", DES_SUB_FAMILIA_PRODUCTO = "MANGA CORTA" }, new { COD_SUB_FAMILIA_PRODUCTO = "S2", DES_SUB_FAMILIA_PRODUCTO = "MANGA LARGA" } };
+            else if (u.Contains("/familias-producto?")) data = new[] { new { COD_FAMILIA_PRODUCTO = "F1", DES_FAMILIA_PRODUCTO = "POLOS" }, new { COD_FAMILIA_PRODUCTO = "F2", DES_FAMILIA_PRODUCTO = "CAMISAS" } };
             else if (u.EndsWith("/ingenieria/disenos")) data = new[]
             {
                 new { COD_DISENO = "D1", DES_DISENO = "DISENO UNO", COD_GRUPO_PRODUCTO = "G1", COD_FAMILIA_PRODUCTO = "F1", COD_SUB_FAMILIA_PRODUCTO = "S1" },
@@ -94,6 +100,8 @@ public class FakeEstructura : HttpMessageHandler
                 COD_RUTA_PRODUCCION = SinRuta ? null : "RT0000001", DES_RUTA_PRODUCCION = SinRuta ? null : "RUTA UNO", COD_TIPO_RUTA_PRODUCCION = SinRuta ? null : "PRD",
                 USADA_POR = SinRuta ? 0 : (RutaBloqueada ? 2 : 1), BLOQUEADAS = RutaBloqueada ? 1 : 0, ELEMENTOS = SinRuta ? 0 : 4
             };
+            else if (u.Contains("formula/diagrama/")) data = Formulas;
+            else if (u.Contains("disenos-estructura/indicadores/")) data = Indicadores;
             else if (u.Contains("disenos-estructura/")) data = Nodos();
             else if (u.Contains("componentes-producto")) data = new[] { new { Id = "PROCE", Texto = "Procesador" }, new { Id = "MARCO", Texto = "Marco" } };
             else if (u.Contains("tipos-merma")) data = new[] { new { Id = "PRO", Texto = "PRODUCCION" }, new { Id = "COM", Texto = "MERMA DE COMPRA" } };
@@ -143,6 +151,99 @@ public class DisenosEstructuraTests : TestContext
 
     static JsonElement Prop(JsonElement e, string n) => e.EnumerateObject().First(x => string.Equals(x.Name, n, StringComparison.OrdinalIgnoreCase)).Value;
 
+    // ---------- indicadores del arbol: pivote, formula, tizado
+    void ConIndicadores()
+    {
+        _f.Indicadores = new()
+        {
+            new() { FILA = "L", COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", FLG_PIVOT = true, FLG_FORMULA = true, DES_MASCARA_FORMULA = "Consumo x 2", CAN_TOTAL = 3.5m },
+            new() { FILA = "V", COD_DISENO = "D2", NUM_VERSION = 1, NUM_TIZADOS = 2, DES_TIZADO = "Tizado 2", VAL_ANCHO_TELA = 150, VAL_EFICIENCIA = 85.5m, VAL_CONSUMO_PRENDA = 1.2m, NUM_PRENDAS = 3, DES_TALLAS = "S,M", FEC_TIZADO = new DateTime(2026, 11, 20, 10, 30, 0) },
+        };
+    }
+
+    string[] Inds(IRenderedComponent<MudDialogProvider> p, int nodo) =>
+        p.Find($"tr[data-nodo='{nodo}']").QuerySelectorAll("[data-ind]").Select(x => x.GetAttribute("data-ind")!).ToArray();
+
+    [Fact]
+    public async Task Indicadores_CadaIconoApareceEnSuRenglon()
+    {
+        ConIndicadores();
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.Equal(new[] { "pivote", "formula" }, Inds(p, 4)));          // el insumo pivote con formula
+        Assert.Equal(new[] { "tizado" }, Inds(p, 5));                                               // el insumo enlazado a un subensamble que tiene tizado
+        Assert.Empty(Inds(p, 8));                                                                   // un insumo sin nada
+        Assert.Empty(Inds(p, 1));                                                                   // la version D1 no tiene tizados
+    }
+
+    [Fact]
+    public async Task Indicadores_LaFichaDeLaFormulaVaEnUnaLinea_ConLosColoresDeSusComponentes()
+    {
+        ConIndicadores();
+        _f.Formulas = new()
+        {
+            new() { COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", NUM_SECUENCIA_FORMULA = 2, DES_ELEMENTO_MASCARA_FORMULA = "x", DES_COMPONENTE_FORMULACION = "OPEMT", DES_BACKCOLOR = "#e07b1f", DES_FORECOLOR = "#ffffff" },
+            new() { COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", NUM_SECUENCIA_FORMULA = 1, DES_ELEMENTO_MASCARA_FORMULA = "Consumo", DES_COMPONENTE_FORMULACION = "CONSM", DES_BACKCOLOR = "#1f9d55", DES_FORECOLOR = "#ffff00" },
+        };
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.NotEmpty(Inds(p, 4)));
+        var tt = p.FindComponents<MudTooltip>().First(t => t.Markup.Contains("data-ind=\"formula\""));
+        var cut = Render(tt.Instance.TooltipContent!);
+        var chips = cut.FindAll(".ind-formula .ind-ficha");
+        Assert.Equal(new[] { "Consumo", "x" }, chips.Select(c => c.TextContent).ToArray());                // en orden, en una sola fila
+        Assert.Contains("#1f9d55", chips[0].GetAttribute("style")); Assert.Contains("#ffff00", chips[0].GetAttribute("style"));
+        Assert.Single(cut.FindAll(".ind-formula"));
+        Assert.Contains("Estructura de la fórmula", cut.Markup); Assert.DoesNotContain("Fórmula asignada", cut.Markup);   // se llama por su estructura
+    }
+
+    [Fact]
+    public async Task TipoMaterial_ApareceComoChapitaEnElArbol_ConSuFicha()
+    {
+        _f.Indicadores = new() { new() { FILA = "L", COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", COD_TIPO_MATERIAL = "02", DES_TIPO_MATERIAL = "Material complementario", DES_ABREVIATURA_MATERIAL = "COMP" } };
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.Equal(new[] { "tipo-material" }, Inds(p, 4)));
+        Assert.Equal("COMP", p.Find("tr[data-nodo='4'] [data-ind='tipo-material']").TextContent.Trim());
+        Assert.Empty(Inds(p, 8));                                                                         // sin tipo no hay chapita
+        var tt = p.FindComponents<MudTooltip>().First(t => t.Markup.Contains("data-ind=\"tipo-material\""));
+        var cut = Render(tt.Instance.TooltipContent!);
+        Assert.Contains("02 - Material complementario", cut.Markup);
+    }
+
+    [Fact]
+    public async Task Indicadores_SinDatos_NoHayIconos()
+    {
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.Equal(8, p.FindAll("tr[data-nodo]").Count));
+        Assert.Empty(p.FindAll("[data-ind]"));
+    }
+
+    [Fact]
+    public async Task Indicadores_ElTizadoTambienSeVeEnLaVersion()
+    {
+        _f.Indicadores = new() { new() { FILA = "V", COD_DISENO = "D1", NUM_VERSION = 1, NUM_TIZADOS = 1, DES_TIZADO = "Tizado 1", VAL_EFICIENCIA = 80 } };
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.Equal(new[] { "tizado" }, Inds(p, 1)));
+    }
+
+    string Ficha(IRenderedComponent<MudDialogProvider> p, string ind, int nodo)
+    {
+        var tt = p.FindComponents<MudTooltip>().First(t => t.Markup.Contains($"data-ind=\"{ind}\"") && t.Markup.Contains($"data-nodo-x") == false);
+        var cut = Render(tt.Instance.TooltipContent!);
+        return cut.Markup;
+    }
+
+    [Fact]
+    public async Task Indicadores_LaFichaDeLaFormulaMuestraTextoYTotal_LaDelTizadoSusDatos()
+    {
+        ConIndicadores();
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.NotEmpty(Inds(p, 4)));
+        var f = Ficha(p, "formula", 4);
+        Assert.Contains("Consumo x 2", f); Assert.Contains("3,5", f.Replace('.', ','));
+        var t = Ficha(p, "tizado", 5);
+        Assert.Contains("2 guardados", t); Assert.Contains("Tizado 2", t); Assert.Contains("150", t); Assert.Contains("85", t); Assert.Contains("S,M", t); Assert.Contains("20/11/2026", t);
+        Assert.Contains("no se calcula", Ficha(p, "pivote", 4));
+    }
+
     // ---------- estructura ----------
     [Fact]
     public async Task Estructura_MuestraElArbol_ConCostoYNiveles()
@@ -176,6 +277,21 @@ public class DisenosEstructuraTests : TestContext
         p.WaitForAssertion(() => Assert.Equal(3, p.FindAll("tr[data-nodo]").Count));   // quedan raiz, sector y componente
         p.FindAll("button").First(b => b.TextContent.Contains("Expandir")).Click();
         p.WaitForAssertion(() => Assert.Equal(8, p.FindAll("tr[data-nodo]").Count));
+    }
+
+    [Fact]
+    public async Task Estructura_LaRamaContraida_SigueContraidaAlRecargar_AunqueLosIdCambien()
+    {
+        _f.RenumerarIds = true;
+        var p = Prov(); await AbreEstructura(p);
+        p.WaitForAssertion(() => Assert.Equal(8, p.FindAll("tr[data-nodo]").Count));
+        var idAntes = p.FindAll("tr[data-nodo]").First(t => t.TextContent.Contains("Procesador")).GetAttribute("data-nodo");
+        p.FindAll("tr[data-nodo] [data-toggle]")[2].Click();                                // contrae el componente (el tercer nodo con hijos)
+        p.WaitForAssertion(() => Assert.Equal(3, p.FindAll("tr[data-nodo]").Count));
+        p.Find("button[title='Actualizar']").Click();                                        // recarga: la base devuelve otros ID
+        p.WaitForAssertion(() => Assert.Contains(_f.Calls, c => c.M == "GET" && c.U.Contains("disenos-estructura/D1/1") && _f.Calls.Count(x => x.M == "GET" && x.U.Contains("disenos-estructura/D1/1?")) >= 2));
+        Assert.Equal(3, p.FindAll("tr[data-nodo]").Count);                                  // sigue contraida
+        Assert.DoesNotContain(p.FindAll("tr[data-nodo]"), t => t.TextContent.Contains("Procesador") && t.GetAttribute("data-nodo") == idAntes);
     }
 
     [Fact]
@@ -313,6 +429,78 @@ public class DisenosEstructuraTests : TestContext
         Assert.Contains("dgm-ens", c.Markup);
     }
 
+    // ---------- diagrama: indicadores, texto dentro del marco y letra blanca en los azules
+    [Fact]
+    public void Diagrama_MarcaPivoteFormulaYTizado_YLaFichaLosLleva()
+    {
+        Services.AddMudServices(); JSInterop.Mode = JSRuntimeMode.Loose;
+        RenderComponent<MudPopoverProvider>();
+        var nodos = new FakeEstructura().Nodos();
+        var ind = new List<DisenosEstructuraIndicador>
+        {
+            new() { FILA = "L", COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", FLG_PIVOT = true },
+            new() { FILA = "L", COD_DISENO = "D2", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "S", COD_COMPONENTE_PRODUCTO = "PLACA", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P3", COD_TIPO_MATERIAL = "01", DES_TIPO_MATERIAL = "Materia prima", DES_ABREVIATURA_MATERIAL = "MP" },
+            new() { FILA = "V", COD_DISENO = "D2", NUM_VERSION = 1, NUM_TIZADOS = 2, DES_TIZADO = "Tizado 2", VAL_EFICIENCIA = 85.5m, DES_TALLAS = "S,M" },
+        };
+        var formulas = new List<DisenosEstructuraFormulaDiagrama> { new() { COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", NUM_SECUENCIA_FORMULA = 1, DES_ELEMENTO_MASCARA_FORMULA = "Consumo" } };
+        var c = RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, nodos).Add(x => x.Indicadores, ind).Add(x => x.Formulas, formulas));
+        Assert.Equal(new[] { "pivote", "formula" }, c.Find("g[data-nodo='4']").QuerySelectorAll("[data-marca]").Select(m => m.GetAttribute("data-marca")!).ToArray());
+        Assert.Equal(new[] { "tizado" }, c.Find("g[data-nodo='5']").QuerySelectorAll("[data-marca]").Select(m => m.GetAttribute("data-marca")!).ToArray());
+        Assert.Empty(c.Find("g[data-nodo='8']").QuerySelectorAll("[data-marca]"));
+        var f4 = System.Net.WebUtility.HtmlDecode(c.Find("g[data-nodo='4']").GetAttribute("data-ficha")!);
+        Assert.Contains("\"p\":true", f4);
+        Assert.DoesNotContain("Tipo de material", f4);
+        var f8 = System.Net.WebUtility.HtmlDecode(c.Find("g[data-nodo='8']").GetAttribute("data-ficha")!);
+        Assert.Contains("Tipo de material", f8); Assert.Contains("Materia prima", f8);                    // la ficha del diagrama lleva la clasificacion
+        var f5 = System.Net.WebUtility.HtmlDecode(c.Find("g[data-nodo='5']").GetAttribute("data-ficha")!);
+        Assert.Contains("Tizado (2 guardados)", f5); Assert.Contains("85", f5); Assert.Contains("S,M", f5);
+    }
+
+    [Fact]
+    public void Diagrama_ElNombreLargoSeParteEnVariasLineas_SinTruncar()
+    {
+        Services.AddMudServices(); JSInterop.Mode = JSRuntimeMode.Loose;
+        RenderComponent<MudPopoverProvider>();
+        var nodos = new FakeEstructura().Nodos();
+        const string largo = "HILO HILADO (SPUN YARN) PEINADO NEGRO 95% ALGODON 5% ELASTANO NE 40/1";
+        nodos.First(n => n.ID == 4).DESCRIPCION = largo;
+        var ind = new List<DisenosEstructuraIndicador> { new() { FILA = "L", COD_DISENO = "D1", NUM_VERSION = 1, COD_SECTOR_PRODUCTO = "FRENT", COD_COMPONENTE_PRODUCTO = "PROCE", NUM_SECUENCIA = 1, COD_PRODUCTO_COMPONENTE = "P1", FLG_PIVOT = true } };
+        var c = RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, nodos).Add(x => x.Indicadores, ind));
+        var lineas = c.Find("g[data-nodo='4']").QuerySelectorAll(".dgm-t1").Select(t => t.TextContent).ToList();
+        Assert.InRange(lineas.Count, 2, 4);
+        Assert.Equal(largo, string.Join(" ", lineas));                                              // el texto completo, sin "…"
+        Assert.All(lineas, l => Assert.True(l.Length <= 25));                                       // cada linea cabe (176 px a 7 px por letra)
+        Assert.DoesNotContain("…", string.Join("", lineas));
+        // todas las cajas toman el alto necesario y el segundo texto va al pie
+        var alto = int.Parse(c.Find("g[data-nodo='4'] rect").GetAttribute("height")!);
+        Assert.True(alto > 40);
+        Assert.Equal(alto, int.Parse(c.Find("g[data-nodo='8'] rect").GetAttribute("height")!));
+        Assert.Equal((alto - 8).ToString(), c.Find("g[data-nodo='4'] .dgm-t2").GetAttribute("y"));
+    }
+
+    [Fact]
+    public void Diagrama_UnNombreCortoSigueEnUnaLinea_ConElAltoDeSiempre()
+    {
+        Services.AddMudServices(); JSInterop.Mode = JSRuntimeMode.Loose;
+        RenderComponent<MudPopoverProvider>();
+        var c = RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, new FakeEstructura().Nodos()));
+        Assert.All(c.FindAll("g[data-nodo]"), g => Assert.Single(g.QuerySelectorAll(".dgm-t1")));
+        Assert.Equal("40", c.Find("g[data-nodo='4'] rect").GetAttribute("height"));
+    }
+
+    [Fact]
+    public void Diagrama_LosFondosAzulesLlevanLetraBlanca()
+    {
+        Services.AddMudServices(); JSInterop.Mode = JSRuntimeMode.Loose;
+        RenderComponent<MudPopoverProvider>();
+        var c = RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, new FakeEstructura().Nodos()));
+        var css = c.Markup;
+        foreach (var k in new[] { ".dgm-caja.dgm-ver text", ".dgm-caja.dgm-sec text", ".dgm-caja.dgm-com text" })
+            Assert.Contains(k, css);
+        Assert.Matches(@"\.dgm-caja\.dgm-ver text, \.dgm-caja\.dgm-sec text, \.dgm-caja\.dgm-com text \{ fill:#fff;", css);
+        Assert.Contains(".dgm-chip.dgm-sec { background:var(--mud-palette-info-lighten); color:#fff; }", css);
+    }
+
     // ---------- rutas de produccion (solo lectura) ----------
     [Fact]
     public async Task Rutas_AparecenEnElArbol_ConTiempo_YSinAcciones()
@@ -367,6 +555,19 @@ public class DisenosEstructuraTests : TestContext
         return RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, nodos));
     }
 
+    IRenderedComponent<DisenosDiagramaEstructura> DiagramaConFormulas(List<DisenosEstructuraNodo> nodos, List<DisenosEstructuraFormulaDiagrama> formulas)
+    {
+        Services.AddMudServices(); JSInterop.Mode = JSRuntimeMode.Loose;
+        RenderComponent<MudPopoverProvider>();
+        return RenderComponent<DisenosDiagramaEstructura>(ps => ps.Add(x => x.Nodos, nodos).Add(x => x.Formulas, formulas));
+    }
+
+    static DisenosEstructuraFormulaDiagrama FilaFormula(string d, string s, string c, int n, string p, int orden, string texto, string? bg, decimal? total) => new()
+    {
+        COD_DISENO = d, NUM_VERSION = 1, COD_SECTOR_PRODUCTO = s, COD_COMPONENTE_PRODUCTO = c, NUM_SECUENCIA = n, COD_PRODUCTO_COMPONENTE = p,
+        NUM_SECUENCIA_FORMULA = orden, DES_ELEMENTO_MASCARA_FORMULA = texto, DES_BACKCOLOR = bg, CAN_TOTAL = total, DES_MASCARA_FORMULA = "x"
+    };
+
     static JsonElement Ficha(IRenderedComponent<DisenosDiagramaEstructura> c, int id) =>
         JsonDocument.Parse(c.Find($"g[data-nodo='{id}']").GetAttribute("data-ficha")!).RootElement.Clone();
 
@@ -382,6 +583,60 @@ public class DisenosEstructuraTests : TestContext
         Assert.Empty(c.FindAll("g[data-nodo] title"));                                              // el tooltip oscuro del navegador ya no sale
         Assert.All(c.FindAll("g[data-nodo]"), g => Assert.False(string.IsNullOrWhiteSpace(g.GetAttribute("aria-label"))));   // lectores de pantalla
     }
+
+    [Fact]
+    public void Ficha_DeInsumo_MuestraSuFormulaComoFichasYLaCantidadTotal()
+    {
+        var c = DiagramaConFormulas(new FakeEstructura().Nodos(), new()
+        {
+            FilaFormula("D1", "FRENT", "PROCE", 1, "P1", 2, "x", "#ff0000", 12.5m),
+            FilaFormula("D1", "FRENT", "PROCE", 1, "P1", 1, "CAN_CONSUMO", "#00ff00", 12.5m),
+            FilaFormula("D1", "FRENT", "PROCE", 2, "P2", 1, "OTRA", null, 7m),               // otra linea: no se mezcla
+        });
+        var f = Ficha(c, 4);
+        var q = f.GetProperty("q").EnumerateArray().ToList();
+        Assert.Equal(["CAN_CONSUMO", "x"], q.Select(x => x[0].GetString()).ToArray());      // en el orden de las fichas
+        Assert.Equal("#00ff00", q[0][1].GetString());
+        Assert.Equal("12.5", Fila(f, "Cantidad total").Replace(',', '.'));
+        Assert.Contains("Fórmula CAN_CONSUMO x", c.Find("g[data-nodo='4']").GetAttribute("aria-label"));
+        Assert.False(Ficha(c, 5).TryGetProperty("q", out _) && Ficha(c, 5).GetProperty("q").EnumerateArray().Any(x => x[0].GetString() == "CAN_CONSUMO"));
+        Assert.False(Ficha(c, 3).TryGetProperty("q", out _));                                // un componente no lleva formula
+    }
+
+    [Fact]
+    public void Ficha_SinFormulas_NoTraeElBloque()
+    {
+        var f = Ficha(Diagrama(new FakeEstructura().Nodos()), 4);
+        Assert.False(f.TryGetProperty("q", out _)); Assert.False(f.TryGetProperty("o", out _));
+    }
+
+    [Fact]
+    public void Ficha_DeLaRuta_ListaSusOperaciones_ConTiempoYMarcas()
+    {
+        var f = Ficha(Diagrama(new FakeEstructura { ConRutas = true }.Nodos()), 9);        // la ruta de D2 (RUTA DE PLACAS)
+        var o = f.GetProperty("o").EnumerateArray().ToList();
+        Assert.Single(o);
+        Assert.Equal("SOLDAR PLACA", o[0][0].GetString());
+        Assert.Contains("30", o[0][1].GetString()); Assert.Contains("MIN", o[0][1].GetString());
+        Assert.Contains("Manual", o[0][1].GetString()); Assert.Contains("Calidad", o[0][1].GetString());
+        Assert.False(Ficha(Diagrama(new FakeEstructura { ConRutas = true }.Nodos()), 12).TryGetProperty("o", out _));   // la operacion ya es una ficha, no lista
+    }
+
+    [Fact]
+    public void Ficha_Operaciones_SeRecortanYDicenCuantasFaltan()
+    {
+        var nodos = new FakeEstructura { ConRutas = true }.Nodos();
+        var ruta = nodos.First(n => n.ID == 9);
+        for (var i = 0; i < 20; i++)
+            nodos.Add(new DisenosEstructuraNodo { ID = 100 + i, PARENT_ID = ruta.ID, ORDEN = ruta.ORDEN + "/Z9" + i.ToString("00"), PROFUNDIDAD = ruta.PROFUNDIDAD + 1, NIVEL_ENSAMBLE = 2, TIPO_NODO = "OPE", COD_DISENO = "D2", NUM_VERSION = 1, DESCRIPCION = "OP" + i });
+        var o = Ficha(Diagrama(nodos), 9).GetProperty("o").EnumerateArray().ToList();
+        Assert.Equal(15, o.Count);                                                           // 14 + la linea "y N mas"
+        Assert.StartsWith("y 7", o.Last()[0].GetString());                                  // 21 operaciones: 7 sin mostrar
+    }
+
+    [Fact]
+    public void Ficha_Json_NoDejaPasarComoEstiloLoQueNoEsUnColor() =>
+        Assert.Contains("[0-9a-fA-F]{3,8}", DiagramaFicha.Script);
 
     [Fact]
     public void Ficha_DeInsumo_TraeProductoConsumoMermaPrecioYCosto()
@@ -531,10 +786,10 @@ public class DisenosEstructuraTests : TestContext
         Assert.True(p.FindAll("[data-panel='clasificacion'] input")[1].HasAttribute("disabled"));          // la familia espera al grupo
         await p.InvokeAsync(() => Combo(p, "Grupo").Instance.ValueChanged.InvokeAsync("G1"));
         p.WaitForAssertion(() => Assert.Equal(new[] { "F1", "F2" }, Ids(Combo(p, "Familia"))));
-        Assert.Contains(_f.Calls, c => c.U.Contains("familias-producto/combobox/G1"));
+        Assert.Contains(_f.Calls, c => c.U.Contains("/familias-producto?codGrupoProducto=G1"));
         await p.InvokeAsync(() => Combo(p, "Familia").Instance.ValueChanged.InvokeAsync("F1"));
         p.WaitForAssertion(() => Assert.Equal(new[] { "S1", "S2" }, Ids(Combo(p, "Sub familia"))));
-        Assert.Contains(_f.Calls, c => c.U.Contains("sub-familias-producto/combobox/G1/F1"));
+        Assert.Contains(_f.Calls, c => c.U.Contains("/sub-familias-producto?codGrupoProducto=G1&codFamiliaProducto=F1"));
         await p.InvokeAsync(() => Combo(p, "Sub familia").Instance.ValueChanged.InvokeAsync("S1"));
         var prod = p.FindComponent<KONSolutions.Web.Pages.Shared.AriaCombo<KONSolutions.Shared.Models.Estandar.Productos>>();
         await p.InvokeAsync(() => prod.Instance.SearchFunc!("pro", CancellationToken.None));

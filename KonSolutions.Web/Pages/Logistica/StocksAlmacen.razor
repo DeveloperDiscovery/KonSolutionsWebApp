@@ -31,7 +31,7 @@
            en la cabecera y no entre los filtros para que esté siempre a la vista, aunque los filtros estén plegados. La caja NO se
            deshabilita mientras se consulta: un lector sigue escribiendo y perdería lo que llegue. *@
         <MudTextField T="string" @bind-Value="_etiqueta" Label="RFID / código de barras" Variant="Variant.Outlined"
-                      Margin="Margin.Dense" Immediate="true" Class="etiqueta-consulta"
+                      Immediate="true" Class="etiqueta-consulta"
                       Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.QrCode"
                       MaxLength="@MaxEtiqueta" Style="min-width:320px;max-width:520px;flex:1;" OnKeyDown="OnEtiquetaKey" />
         <MudSpacer />
@@ -154,7 +154,7 @@
                 @* Busca por texto dentro de la descripción, no por coincidencia exacta: sirve
                    para cuando se recuerda parte del nombre y no el código. *@
                 <MudTextField T="string" @bind-Value="_f.DES_PRODUCTO" Label="Descripción contiene"
-                              Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" />
+                              Variant="Variant.Outlined" Class="mb-2" />
             </MudItem>
 
             <MudItem xs="12" md="4">
@@ -175,7 +175,7 @@
             </MudItem>
             <MudItem xs="12" md="4">
                 <MudTextField T="string" @bind-Value="_f.NUM_LOTE_CONTROL_ENTIDAD" Label="Lote del proveedor"
-                              Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" />
+                              Variant="Variant.Outlined" Class="mb-2" />
             </MudItem>
 
             @* Proceso, orden, item y unidad de orden de producción: los cuatro en cascada, uno
@@ -232,10 +232,10 @@
                             <span class="rangos-cantidad-titulo">@r.Titulo</span>
                             <MudNumericField T="decimal?" Value="@r.Desde" ValueChanged="@(v => r.Desde = v)"
                                              Placeholder="Desde" Variant="Variant.Outlined"
-                                             HideSpinButtons="true" Format="@Decimales.FormatoCantidad" Margin="Margin.Dense" />
+                                             HideSpinButtons="true" Format="@Decimales.FormatoCantidad" />
                             <MudNumericField T="decimal?" Value="@r.Hasta" ValueChanged="@(v => r.Hasta = v)"
                                              Placeholder="Hasta" Variant="Variant.Outlined"
-                                             HideSpinButtons="true" Format="@Decimales.FormatoCantidad" Margin="Margin.Dense" />
+                                             HideSpinButtons="true" Format="@Decimales.FormatoCantidad" />
                         }
                     </div>
                 </MudPaper>

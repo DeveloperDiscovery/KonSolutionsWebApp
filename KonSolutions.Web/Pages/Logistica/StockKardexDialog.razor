@@ -40,10 +40,10 @@
         </div>
 
         <div class="d-flex align-end gap-3 mb-3" style="flex-wrap:wrap;">
-            <MudDatePicker @bind-Date="_desde" Label="Desde" Variant="Variant.Outlined" Margin="Margin.Dense"
+            <MudDatePicker @bind-Date="_desde" Label="Desde" Variant="Variant.Outlined"
                            DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
                            Clearable="true" Style="max-width:170px;" />
-            <MudDatePicker @bind-Date="_hasta" Label="Hasta" Variant="Variant.Outlined" Margin="Margin.Dense"
+            <MudDatePicker @bind-Date="_hasta" Label="Hasta" Variant="Variant.Outlined"
                            DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))"
                            Clearable="true" Style="max-width:170px;" />
             <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" Disabled="_cargando"

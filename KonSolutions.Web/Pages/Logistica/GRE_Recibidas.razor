@@ -26,21 +26,21 @@
         <MudText Class="mono" Style="opacity:.5;font-size:.82rem;color:var(--subtitulo-color,#6b6358);" data-resumen="cabecera">Schema LOGISTICA · @_items.Count guía@(_items.Count == 1 ? "" : "s")</MudText>
     </div>
     <BarraBusqueda @bind-Value="_texto" OnSearch="CargarAsync" MaxWidth="460px" Class="grid-header-search" />
-    <MudSelect T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Estado" Style="min-width:170px;max-width:200px;" Value="_estado"
+    <MudSelect T="string" Variant="Variant.Outlined" Label="Estado" Style="min-width:170px;max-width:200px;" Value="_estado"
                ValueChanged="@(v => { _estado = v ?? ""; return CargarAsync(); })" data-campo="estado">
         <MudSelectItem T="string" Value="@("")">Todos</MudSelectItem>
         <MudSelectItem T="string" Value="@("PEN")">Pendientes</MudSelectItem>
         <MudSelectItem T="string" Value="@("USA")">Ya usadas</MudSelectItem>
         <MudSelectItem T="string" Value="@("DES")">Descartadas</MudSelectItem>
     </MudSelect>
-    <MudSelect T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Tipo de guía" Style="min-width:170px;max-width:210px;" Value="_tipo"
+    <MudSelect T="string" Variant="Variant.Outlined" Label="Tipo de guía" Style="min-width:170px;max-width:210px;" Value="_tipo"
                ValueChanged="@(v => { _tipo = v ?? ""; return CargarAsync(); })" data-campo="tipo">
         <MudSelectItem T="string" Value="@("")">Todas</MudSelectItem>
         <MudSelectItem T="string" Value="@("09")">Remitente</MudSelectItem>
         <MudSelectItem T="string" Value="@("31")">Transportista</MudSelectItem>
     </MudSelect>
-    <MudDatePicker Label="Emitidas desde" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" Date="_desde" DateChanged="@(d => { _desde = d; return CargarAsync(); })" Clearable="true" data-campo="desde" />
-    <MudDatePicker Label="hasta" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" Date="_hasta" DateChanged="@(d => { _hasta = d; return CargarAsync(); })" Clearable="true" data-campo="hasta" />
+    <MudDatePicker Label="Emitidas desde" Variant="Variant.Outlined" Style="max-width:170px;" Date="_desde" DateChanged="@(d => { _desde = d; return CargarAsync(); })" Clearable="true" data-campo="desde" />
+    <MudDatePicker Label="hasta" Variant="Variant.Outlined" Style="max-width:170px;" Date="_hasta" DateChanged="@(d => { _hasta = d; return CargarAsync(); })" Clearable="true" data-campo="hasta" />
     <GridClearFiltersButton OnClear="LimpiarFiltros" HasFilters="@HayFiltros" />
     <GridRefreshButton OnRefresh="CargarAsync" />
     @* Los botones de la cabecera salen de la configuración de la opción en Seguridad (por rol): Imprimir, Exportar, Completar datos *@

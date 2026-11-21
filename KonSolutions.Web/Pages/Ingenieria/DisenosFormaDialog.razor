@@ -19,25 +19,25 @@
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
 
         <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="plantilla">
-            <MudSelect T="string" Value="_plantilla" ValueChanged="CambiaPlantilla" Label="Plantilla" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:230px;" data-campo="plantilla">
+            <MudSelect T="string" Value="_plantilla" ValueChanged="CambiaPlantilla" Label="Plantilla" Variant="Variant.Outlined" Style="max-width:230px;" data-campo="plantilla">
                 @foreach (var p in Plantillas) { <MudSelectItem T="string" Value="@p.Clave">@p.Nombre</MudSelectItem> }
             </MudSelect>
             @foreach (var c in Campos())
             {
                 var cc = c;
-                <MudNumericField T="double" Value="_p[cc.I]" ValueChanged="@(v => _p[cc.I] = v)" Label="@cc.Etiqueta" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px;" data-campo="@("p" + (cc.I + 1))" />
+                <MudNumericField T="double" Value="_p[cc.I]" ValueChanged="@(v => _p[cc.I] = v)" Label="@cc.Etiqueta" Variant="Variant.Outlined" Style="max-width:150px;" data-campo="@("p" + (cc.I + 1))" />
             }
             @if (_plantilla == "tri")
             {
-                <MudNumericField T="double?" @bind-Value="_verticeTri" Label="Vértice a (mm, vacío = centro)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:190px;" data-campo="vertice" />
+                <MudNumericField T="double?" @bind-Value="_verticeTri" Label="Vértice a (mm, vacío = centro)" Variant="Variant.Outlined" Style="max-width:190px;" data-campo="vertice" />
             }
             @if (Modo == "defecto")
             {
-                <MudNumericField T="double" @bind-Value="_ox" Label="Desde X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="desde-x" />
-                <MudNumericField T="double" @bind-Value="_oy" Label="Desde Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:130px;" data-campo="desde-y" />
+                <MudNumericField T="double" @bind-Value="_ox" Label="Desde X (mm)" Variant="Variant.Outlined" Style="max-width:130px;" data-campo="desde-x" />
+                <MudNumericField T="double" @bind-Value="_oy" Label="Desde Y (mm)" Variant="Variant.Outlined" Style="max-width:130px;" data-campo="desde-y" />
             }
             <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" OnClick="Generar" Disabled="@(_plantilla == "libre")" data-accion="generar">Generar</MudButton>
-            <MudNumericField T="double" @bind-Value="_rejilla" Label="Rejilla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:110px;" data-campo="rejilla" />
+            <MudNumericField T="double" @bind-Value="_rejilla" Label="Rejilla (mm)" Variant="Variant.Outlined" Min="0" Style="max-width:110px;" data-campo="rejilla" />
         </div>
 
         <div class="d-flex gap-3 flex-wrap" style="align-items:flex-start;">
@@ -77,8 +77,8 @@
                                 var idx = i;
                                 <tr data-fila="@(i + 1)" style="@(i == _sel ? "background:rgba(214,39,40,.12);" : "")">
                                     <td @onclick="@(() => _sel = idx)">@(i + 1)</td>
-                                    <td><MudNumericField T="double" Value="_pts[i].X" ValueChanged="@(v => _pts[idx] = new Punto(v, _pts[idx].Y))" Variant="Variant.Text" Margin="Margin.Dense" Style="width:95px;" data-campo="x" /></td>
-                                    <td><MudNumericField T="double" Value="_pts[i].Y" ValueChanged="@(v => _pts[idx] = new Punto(_pts[idx].X, v))" Variant="Variant.Text" Margin="Margin.Dense" Style="width:95px;" data-campo="y" /></td>
+                                    <td><MudNumericField T="double" Value="_pts[i].X" ValueChanged="@(v => _pts[idx] = new Punto(v, _pts[idx].Y))" Variant="Variant.Text" Style="width:95px;" data-campo="x" /></td>
+                                    <td><MudNumericField T="double" Value="_pts[i].Y" ValueChanged="@(v => _pts[idx] = new Punto(_pts[idx].X, v))" Variant="Variant.Text" Style="width:95px;" data-campo="y" /></td>
                                     <td>
                                         <MudTooltip Text="Insertar un punto entre este y el siguiente"><MudIconButton Icon="@Icons.Material.Filled.AddCircleOutline" Size="Size.Small" OnClick="@(() => Insertar(idx))" data-accion="insertar" /></MudTooltip>
                                         <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => Quitar(idx))" data-accion="quitar-punto" />
@@ -88,7 +88,7 @@
                         </tbody>
                     </table>
                 </div>
-                <MudTextField T="string" @bind-Value="_texto" Label="Pegar puntos: x,y x,y ..." Variant="Variant.Outlined" Margin="Margin.Dense" Lines="2" Class="mt-2" data-campo="texto" />
+                <MudTextField T="string" @bind-Value="_texto" Label="Pegar puntos: x,y x,y ..." Variant="Variant.Outlined" Lines="2" Class="mt-2" data-campo="texto" />
                 <MudButton Size="Size.Small" Variant="Variant.Outlined" Class="mt-1" OnClick="UsarTexto" data-accion="usar-texto">Usar texto</MudButton>
                 <MudButton Size="Size.Small" Variant="Variant.Text" Class="mt-1 ml-1" OnClick="VerTexto" data-accion="ver-texto">Ver como texto</MudButton>
             </div>

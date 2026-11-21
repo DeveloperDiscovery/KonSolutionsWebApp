@@ -34,13 +34,24 @@ else
             }
             @foreach (var c in _cajas)
             {
-                var ficha = DiagramaFicha.Json(c.Nodo);
+                var li = LineaDe(c.Nodo); var tz = TizadoDe(c.Nodo);
+                var ficha = DiagramaFicha.Json(c.Nodo, FormulaDe(c.Nodo), OperacionesDe(c.Nodo), li, tz);
+                var marcas = Marcas(c.Nodo, li, tz);
+                var w1 = AnchoCaja - 17 - marcas.Count * 17; var w2 = AnchoCaja - 17;
                 <g class="@($"dgm-caja {Clase(c.Nodo)}")" transform="translate(@c.X,@c.Y)" data-tipo="@(c.Nodo.TIPO_NODO)" data-nodo="@c.Nodo.ID"
                    data-ficha="@ficha" aria-label="@DiagramaFicha.Texto(ficha)">
                     <rect width="@AnchoCaja" height="@AltoCaja" rx="7" />
-                    <text x="9" y="16" class="dgm-t1">@Recorta(c.Nodo.DESCRIPCION, 30)</text>
-                    <text x="9" y="32" class="dgm-t2">@Linea2(c.Nodo)</text>
+                    @* los textos van en un svg anidado del ancho de la caja: lo que no cabe se corta y nunca sale del marco *@
+                    <svg x="9" y="0" width="@w1" height="@AltoCaja">
+                        @{ var lineas = Envuelve(c.Nodo.DESCRIPCION, w1); }
+                        @for (var li2 = 0; li2 < lineas.Count; li2++) { <g><text x="0" y="@(16 + AltoLinea * li2)" class="dgm-t1">@lineas[li2]</text></g> }
+                    </svg>
+                    <svg x="9" y="0" width="@w2" height="@AltoCaja"><text x="0" y="@(AltoCaja - 8)" class="dgm-t2">@Recorta(Linea2(c.Nodo), Math.Max(6, (int)(w2 / 5.8)))</text></svg>
                     <text x="@(AnchoCaja - 16)" y="16" class="dgm-alerta">@(c.Nodo.FLG_CICLO ? "↻" : c.Nodo.FLG_TRUNCADO ? "…" : "")</text>
+                    @for (var m = 0; m < marcas.Count; m++)
+                    {
+                        <g class="@($"dgm-marca dgm-marca-{marcas[m].Clase}")" transform="translate(@(AnchoCaja - 8 - 15 * (m + 1) - 2 * m),4)" data-marca="@marcas[m].Clase"><circle cx="7" cy="7" r="7" /><text x="7" y="10.6">@marcas[m].Letra</text></g>
+                    }
                 </g>
             }
         </svg>
@@ -53,7 +64,7 @@ else
     .dgm-enlace { stroke:var(--mud-palette-text-disabled); stroke-width:1.4; }
     .dgm-caja rect { fill:var(--mud-palette-surface); stroke:var(--mud-palette-lines-inputs); stroke-width:1.2; }
     .dgm-caja.dgm-ver rect { fill:var(--mud-palette-primary); stroke:var(--mud-palette-primary); }
-    .dgm-caja.dgm-ver text { fill:var(--mud-palette-primary-text); }
+    .dgm-caja.dgm-ver text, .dgm-caja.dgm-sec text, .dgm-caja.dgm-com text { fill:#fff; }      /* fondos en tonos de azul: letra blanca */
     .dgm-caja.dgm-sec rect { fill:var(--mud-palette-info-lighten); stroke:var(--mud-palette-info); }
     .dgm-caja.dgm-com rect { fill:var(--mud-palette-secondary-lighten); stroke:var(--mud-palette-secondary); }
     .dgm-caja.dgm-ens rect { fill:var(--mud-palette-warning-lighten); stroke:var(--mud-palette-warning); stroke-width:2.4; }
@@ -63,10 +74,15 @@ else
     .dgm-caja.dgm-bloq rect { stroke-dasharray:4 3; }
     .dgm-caja text { fill:var(--mud-palette-text-primary); font-family:inherit; }
     .dgm-t1 { font-size:12px; font-weight:600; } .dgm-t2 { font-size:10.5px; opacity:.8; }
+    .dgm-marca circle { stroke:none !important; }
+    .dgm-marca text { fill:#fff !important; font-size:9px; font-weight:700; text-anchor:middle; }
+    .dgm-marca-pivote circle { fill:var(--mud-palette-warning) !important; }
+    .dgm-marca-formula circle { fill:var(--mud-palette-success) !important; }
+    .dgm-marca-tizado circle { fill:var(--mud-palette-info) !important; }
     .dgm-alerta { font-size:14px; font-weight:700; fill:var(--mud-palette-error) !important; }
     .dgm-chip { font-size:.72rem; padding:2px 8px; border-radius:10px; border:1px solid var(--mud-palette-lines-inputs); background:var(--mud-palette-surface); }
     .dgm-chip.dgm-ver { background:var(--mud-palette-primary); color:var(--mud-palette-primary-text); }
-    .dgm-chip.dgm-sec { background:var(--mud-palette-info-lighten); } .dgm-chip.dgm-com { background:var(--mud-palette-secondary-lighten); }
+    .dgm-chip.dgm-sec { background:var(--mud-palette-info-lighten); color:#fff; } .dgm-chip.dgm-com { background:var(--mud-palette-secondary-lighten); color:#fff; }
     .dgm-chip.dgm-ens { background:var(--mud-palette-warning-lighten); border-color:var(--mud-palette-warning); }
 
     /* Ficha (tarjeta) del mouse sobre una caja. La dibuja DiagramaFicha.cs al final del documento, fuera de #app. */
@@ -89,13 +105,67 @@ else
     .dgm-ficha-val { font-weight:600; text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
     .dgm-ficha-total { display:flex; justify-content:space-between; gap:18px; margin-top:7px; padding:5px 8px; border-radius:6px; font-size:13px; font-weight:700;
         background:color-mix(in srgb, var(--fc) 13%, transparent); }
+    .dgm-ficha-form { margin-top:7px; border-top:1px solid var(--mud-palette-lines-default, #ddd); padding-top:4px; }
+    .dgm-ficha-sub { font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; opacity:.66; margin-bottom:3px; }
+    .dgm-ficha-chips { display:flex; flex-wrap:wrap; gap:3px; }
+    .dgm-ficha-chip { padding:1px 7px; border-radius:5px; font-size:11.5px; font-weight:600; background:color-mix(in srgb, var(--fc) 16%, transparent); }
+    .dgm-ficha-nota { opacity:.8; }
     .dgm-ficha-aviso { margin-top:6px; color:var(--mud-palette-error); font-weight:600; font-size:11px; }
 </style>
 
 @code {
     [Parameter] public List<DisenosEstructuraNodo> Nodos { get; set; } = new();
+    /// <summary>Las formulas de las lineas (una fila por ficha): se muestran como ficha en el insumo que la tiene.</summary>
+    [Parameter] public List<DisenosEstructuraFormulaDiagrama>? Formulas { get; set; }
+    /// <summary>Indicadores (insumo pivote, formula, tizado): FILA L por linea y FILA V por version.</summary>
+    [Parameter] public List<DisenosEstructuraIndicador>? Indicadores { get; set; }
 
-    private const int AnchoCaja = 210, AltoCaja = 40, SepX = 60, SepY = 12, Margen = 16;
+    private Dictionary<string, DisenosEstructuraIndicador> _indLineas = new(), _indVersiones = new();
+    private sealed record Marca(string Clase, string Letra);
+
+    private DisenosEstructuraIndicador? LineaDe(DisenosEstructuraNodo n) =>
+        n.TIPO_NODO == "INS" && _indLineas.TryGetValue(DiagramaFicha.ClaveLinea(n.COD_DISENO, n.NUM_VERSION, n.COD_SECTOR_PRODUCTO, n.COD_COMPONENTE_PRODUCTO, n.NUM_SECUENCIA, n.COD_PRODUCTO_COMPONENTE), out var x) ? x : null;
+
+    /// <summary>El tizado es de la version: se ve en la version y en los insumos enlazados a un subensamble que lo tiene.</summary>
+    private DisenosEstructuraIndicador? TizadoDe(DisenosEstructuraNodo n)
+    {
+        DisenosEstructuraIndicador? x = null;
+        if (n.TIPO_NODO == "VER") _indVersiones.TryGetValue($"{n.COD_DISENO}|{n.NUM_VERSION}", out x);
+        else if (n.TIPO_NODO == "INS" && n.FLG_ENSAMBLE && n.COD_DISENO_ENSAMBLE is not null) _indVersiones.TryGetValue($"{n.COD_DISENO_ENSAMBLE}|{n.NUM_VERSION_ENSAMBLE ?? 0}", out x);
+        return x is { NUM_TIZADOS: > 0 } ? x : null;
+    }
+
+    private List<Marca> Marcas(DisenosEstructuraNodo n, DisenosEstructuraIndicador? li, DisenosEstructuraIndicador? tz)
+    {
+        var m = new List<Marca>();
+        if (li?.FLG_PIVOT == true) m.Add(new("pivote", "P"));
+        if (FormulaDe(n) is not null) m.Add(new("formula", "ƒ"));
+        if (tz is not null) m.Add(new("tizado", "T"));
+        return m;
+    }
+
+    private ILookup<string, DisenosEstructuraFormulaDiagrama> _formulas = Array.Empty<DisenosEstructuraFormulaDiagrama>().ToLookup(_ => "");
+    private ILookup<int?, DisenosEstructuraNodo> _hijosTodos = Array.Empty<DisenosEstructuraNodo>().ToLookup(n => n.PARENT_ID);
+
+    private IReadOnlyList<DisenosEstructuraFormulaDiagrama>? FormulaDe(DisenosEstructuraNodo n)
+    {
+        if (n.TIPO_NODO != "INS") return null;
+        var l = _formulas[DiagramaFicha.ClaveLinea(n.COD_DISENO, n.NUM_VERSION, n.COD_SECTOR_PRODUCTO, n.COD_COMPONENTE_PRODUCTO, n.NUM_SECUENCIA, n.COD_PRODUCTO_COMPONENTE)].OrderBy(x => x.NUM_SECUENCIA_FORMULA ?? 0).ToList();
+        return l.Count == 0 ? null : l;
+    }
+
+    // las operaciones que cuelgan de una ruta, proceso o subproceso, en el orden del arbol
+    private IReadOnlyList<DisenosEstructuraNodo>? OperacionesDe(DisenosEstructuraNodo n)
+    {
+        if (n.TIPO_NODO is not ("RUT" or "PRC" or "SPR")) return null;
+        var r = new List<DisenosEstructuraNodo>();
+        void Baja(DisenosEstructuraNodo p) { foreach (var h in _hijosTodos[p.ID].OrderBy(x => x.ORDEN, StringComparer.Ordinal)) { if (h.TIPO_NODO == "OPE") r.Add(h); else if (h.TIPO_NODO is "PRC" or "SPR") Baja(h); } }
+        Baja(n);
+        return r;
+    }
+
+    private const int AnchoCaja = 210, SepX = 60, SepY = 12, Margen = 16, MaxLineas = 4, AltoLinea = 14;
+    private int AltoCaja = 40;          // el mismo para todas las cajas: crece segun las lineas que necesita el nombre mas largo
     private bool _verInsumos = true;
     private bool VerInsumos { get => _verInsumos; set { if (_verInsumos == value) return; _verInsumos = value; Armar(); } }
     private bool _verRutas = true;
@@ -118,8 +188,16 @@ else
     private void Armar()
     {
         _cajas = new();
+        _formulas = (Formulas ?? new()).ToLookup(x => DiagramaFicha.ClaveLinea(x.COD_DISENO, x.NUM_VERSION, x.COD_SECTOR_PRODUCTO, x.COD_COMPONENTE_PRODUCTO, x.NUM_SECUENCIA, x.COD_PRODUCTO_COMPONENTE));
+        _indLineas = (Indicadores ?? new()).Where(x => x.FILA == "L").GroupBy(x => DiagramaFicha.ClaveLinea(x.COD_DISENO, x.NUM_VERSION, x.COD_SECTOR_PRODUCTO, x.COD_COMPONENTE_PRODUCTO, x.NUM_SECUENCIA, x.COD_PRODUCTO_COMPONENTE)).ToDictionary(g => g.Key, g => g.First());
+        _indVersiones = (Indicadores ?? new()).Where(x => x.FILA == "V").GroupBy(x => $"{x.COD_DISENO}|{x.NUM_VERSION}").ToDictionary(g => g.Key, g => g.First());
+        _hijosTodos = Nodos.ToLookup(n => n.PARENT_ID);
         var visibles = Nodos.Where(n => (_verInsumos || n.TIPO_NODO != "INS" || n.FLG_ENSAMBLE) && (_verRutas || !EsRuta(n))).ToList();
         if (visibles.Count == 0) { _ancho = _alto = 0; return; }
+        // el nombre se parte en varias lineas (no se trunca): todas las cajas toman el alto del nombre mas largo
+        var maxL = 1;
+        foreach (var v in visibles) maxL = Math.Max(maxL, Envuelve(v.DESCRIPCION, AnchoCaja - 17 - Marcas(v, LineaDe(v), TizadoDe(v)).Count * 17).Count);
+        AltoCaja = 26 + AltoLinea * maxL;
         var hijos = visibles.ToLookup(n => n.PARENT_ID);
         var porId = new Dictionary<int, Caja>();
         var ordenados = visibles.OrderBy(n => n.ORDEN, StringComparer.Ordinal).ToList();
@@ -140,6 +218,26 @@ else
 
     private static string Clase(DisenosEstructuraNodo n) =>
         (n.TIPO_NODO switch { "VER" => "dgm-ver", "SEC" => "dgm-sec", "COM" => "dgm-com", "RUT" => "dgm-rut dgm-r", "PRC" => "dgm-rut dgm-r", "SPR" => "dgm-rut dgm-r", "OPE" => "dgm-rut dgm-ope", _ => n.FLG_ENSAMBLE ? "dgm-ens" : "dgm-ins" }) + (n.FLG_BLOQUEADO && n.TIPO_NODO == "VER" ? " dgm-bloq" : "");
+
+    /// <summary>Parte el texto en lineas que caben en <paramref name="ancho"/> px (estimado a 7 px por letra), cortando en espacios; solo si pasa de MaxLineas termina en "…".</summary>
+    private static List<string> Envuelve(string? texto, double ancho)
+    {
+        var max = Math.Max(6, (int)(ancho / 7.0));
+        var lineas = new List<string>();
+        var actual = "";
+        foreach (var palabra0 in (texto ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var palabra = palabra0;
+            while (palabra.Length > max) { if (actual.Length > 0) { lineas.Add(actual); actual = ""; } lineas.Add(palabra[..max]); palabra = palabra[max..]; }
+            if (actual.Length == 0) actual = palabra;
+            else if (actual.Length + 1 + palabra.Length <= max) actual += " " + palabra;
+            else { lineas.Add(actual); actual = palabra; }
+        }
+        if (actual.Length > 0) lineas.Add(actual);
+        if (lineas.Count == 0) lineas.Add("");
+        if (lineas.Count > MaxLineas) { lineas = lineas.Take(MaxLineas).ToList(); var u = lineas[^1]; lineas[^1] = (u.Length >= max ? u[..(max - 1)] : u) + "…"; }
+        return lineas;
+    }
 
     private static string Recorta(string? s, int max) => string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s[..(max - 1)] + "…";
 

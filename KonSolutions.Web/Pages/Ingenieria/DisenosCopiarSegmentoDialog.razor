@@ -20,7 +20,7 @@
             <MudGrid Spacing="2">
                 <MudItem xs="12" sm="7"><AriaCombo TItem="ComboboxItem" Items="_disenos" TextFunc="@(d => $"{d.Id} - {d.Texto}")" ValueFunc="@(d => d.Id)" Value="@_disenoDestino" ValueChanged="OnDisenoChanged" Label="Diseño destino" Class="mb-0" /></MudItem>
                 <MudItem xs="12" sm="5"><AriaCombo TItem="DisenoVersion" Items="_versiones" TextFunc="@(v => $"v{v.NUM_VERSION} - {v.DES_VERSION}")" ValueFunc="@(v => v.NUM_VERSION?.ToString() ?? "")" @bind-Value="_versionDestino" Label="Versión destino" Disabled="@(string.IsNullOrEmpty(_disenoDestino))" Class="mb-0" /></MudItem>
-                <MudItem xs="12" sm="5"><MudTextField T="string" @bind-Value="_sectorDestino" Label="Código del sector en el destino" MaxLength="5" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="Si no existe en el destino, se crea" data-campo="sector" /></MudItem>
+                <MudItem xs="12" sm="5"><MudTextField T="string" @bind-Value="_sectorDestino" Label="Código del sector en el destino" MaxLength="5" Variant="Variant.Outlined" HelperText="Si no existe en el destino, se crea" data-campo="sector" /></MudItem>
             </MudGrid>
         </MudPaper>
         <MudPaper Outlined="true" Class="pa-3 mb-3">

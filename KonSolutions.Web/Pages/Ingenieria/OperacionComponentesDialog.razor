@@ -26,7 +26,7 @@
                             <td>@f.DES_OPERACION_HIJA <span class="mono" style="opacity:.5;">@f.COD_OPERACION_HIJA</span> @if (f.FLG_COMPUESTA) { <MudChip T="string" Size="Size.Small" Color="Color.Info">compuesta</MudChip> }</td>
                             <td>@f.COD_CATEGORIA_OCUPACIONAL</td>
                             <td>@f.COD_TIPO_MAQUINA</td>
-                            <td class="n"><MudNumericField T="decimal" @bind-Value="f.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Margin="Margin.Dense" Style="width:90px;" data-campo="frecuencia" /></td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="f.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Style="width:90px;" data-campo="frecuencia" /></td>
                             <td><MudSwitch T="bool" @bind-Value="f.FLG_PARALELO" Color="Color.Primary" Disabled="@(i == 0)" data-campo="paralelo" /></td>
                             <td>
                                 <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" Disabled="@(i == 0)" OnClick="@(() => Mover(idx, -1))" data-accion="subir" />

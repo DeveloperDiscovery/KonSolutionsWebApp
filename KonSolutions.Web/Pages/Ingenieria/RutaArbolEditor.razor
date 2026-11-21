@@ -22,7 +22,7 @@
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.AddCircle" OnClick="AgregarOperacion" Disabled="@(SoloLectura || !PuedeColgarOperacion)" data-accion="agregar-operacion">Operación del catálogo</MudButton>
                 <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete" OnClick="Quitar" Disabled="@(SoloLectura || _sel is null)" data-accion="quitar">Quitar</MudButton>
                 <MudSpacer />
-                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:190px;" data-campo="fecha" />
+                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Style="max-width:190px;" data-campo="fecha" />
                 <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Sync" OnClick="Recalcular" Disabled="SoloLectura" data-accion="recalcular">Actualizar a esa fecha@(Desactualizadas > 0 ? $" ({Desactualizadas})" : "")</MudButton>
                 <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Share" OnClick="Precedencias" Disabled="SoloLectura" data-accion="precedencias">Precedencias (@_nPrecedencias)</MudButton>
             </div>

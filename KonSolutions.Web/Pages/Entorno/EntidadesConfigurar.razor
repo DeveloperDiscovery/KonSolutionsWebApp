@@ -67,7 +67,7 @@
                                         <span class="mono" style="min-width:180px;">@fila.DES_COLUMN</span>
                                         <span @onclick:stopPropagation="true" style="flex:1;min-width:280px;">
                                             <MudTextField T="string" @bind-Value="fila.DES_COMMANDSQL" Placeholder="Sentencia SQL (opcional)"
-                                                          Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Class="flex-1" Style="width:100%;" />
+                                                          Variant="Variant.Outlined" Immediate="true" Class="flex-1" Style="width:100%;" />
                                         </span>
                                         <span @onclick:stopPropagation="true">
                                             @* Arma el EXEC eligiendo un SP + completando sus parámetros, en vez de

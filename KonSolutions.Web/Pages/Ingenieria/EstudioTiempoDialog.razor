@@ -10,12 +10,12 @@
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         @if (_soloLectura) { <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2" data-zona="solo-lectura">Este estudio respalda una versión aprobada: no se puede modificar. Haz un estudio nuevo.</MudAlert> }
         <div class="d-flex flex-wrap gap-3">
-            <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:240px;" data-campo="metodo">
+            <MudSelect T="string" @bind-Value="_m.COD_METODO_TIEMPO" Label="Método" Variant="Variant.Outlined" Disabled="_soloLectura" Style="max-width:240px;" data-campo="metodo">
                 @foreach (var x in _metodos) { <MudSelectItem T="string" Value="@x.COD">@x.COD · @x.DES</MudSelectItem> }
             </MudSelect>
-            <MudDatePicker T="DateTime?" @bind-Date="_m.FEC_ESTUDIO" Label="Fecha del estudio" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:200px;" data-campo="fecha" />
-            <MudNumericField T="decimal" @bind-Value="_m.VAL_RITMO_PCT" Label="Ritmo %" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1m" Max="300m" Disabled="_soloLectura" Style="max-width:120px;" data-campo="ritmo" />
-            <MudNumericField T="int?" @bind-Value="_m.CAN_CICLOS" Label="Ciclos medidos" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Disabled="_soloLectura" Style="max-width:140px;" data-campo="ciclos" />
+            <MudDatePicker T="DateTime?" @bind-Date="_m.FEC_ESTUDIO" Label="Fecha del estudio" Variant="Variant.Outlined" Disabled="_soloLectura" Style="max-width:200px;" data-campo="fecha" />
+            <MudNumericField T="decimal" @bind-Value="_m.VAL_RITMO_PCT" Label="Ritmo %" Variant="Variant.Outlined" Min="1m" Max="300m" Disabled="_soloLectura" Style="max-width:120px;" data-campo="ritmo" />
+            <MudNumericField T="int?" @bind-Value="_m.CAN_CICLOS" Label="Ciclos medidos" Variant="Variant.Outlined" Min="0" Disabled="_soloLectura" Style="max-width:140px;" data-campo="ciclos" />
         </div>
         <div style="overflow-x:auto;" class="mt-2">
             <table class="et-tabla" data-tabla="elementos">
@@ -26,9 +26,9 @@
                         var e = _m.Elementos[i]; var idx = i;
                         <tr data-elemento="@(i + 1)">
                             <td class="mono">@(i + 1)</td>
-                            <td><MudTextField T="string" @bind-Value="e.DES_ELEMENTO" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="elemento" /></td>
-                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_TIEMPO_OBSERVADO" Min="0m" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" Style="width:120px;" data-campo="observado" /></td>
-                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Margin="Margin.Dense" Disabled="_soloLectura" Style="width:90px;" data-campo="frecuencia" /></td>
+                            <td><MudTextField T="string" @bind-Value="e.DES_ELEMENTO" Variant="Variant.Text" Disabled="_soloLectura" MaxLength="100" data-campo="elemento" /></td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_TIEMPO_OBSERVADO" Min="0m" Variant="Variant.Text" Disabled="_soloLectura" Style="width:120px;" data-campo="observado" /></td>
+                            <td class="n"><MudNumericField T="decimal" @bind-Value="e.VAL_FRECUENCIA" Min="0.001m" Variant="Variant.Text" Disabled="_soloLectura" Style="width:90px;" data-campo="frecuencia" /></td>
                             <td><MudSwitch T="bool" @bind-Value="e.FLG_ELEMENTO_MAQUINA" Color="Color.Primary" Disabled="_soloLectura" data-campo="maquina" /></td>
                             <td>@if (!_soloLectura) { <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" OnClick="@(() => Quitar(idx))" data-accion="quitar" /> }</td>
                         </tr>
@@ -42,7 +42,7 @@
             <span>Tiempo base: <b>@OperacionesApi.Min(Base)</b> min</span>
             <span>Parte de máquina: <b>@(Base > 0 ? (Maquina / Base * 100).ToString("0") : "0") %</b></span>
         </div>
-        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+        <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">@(_soloLectura ? "Cerrar" : "Cancelar")</MudButton>

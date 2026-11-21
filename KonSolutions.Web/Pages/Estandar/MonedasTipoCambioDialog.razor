@@ -17,7 +17,7 @@
             <MudText Class="mono mb-3" Style="font-weight:600;">@Moneda?.COD_MONEDA — @Moneda?.DES_MONEDA</MudText>
 
             <MudDatePicker @bind-Date="_fechaTC" Label="Fecha tipo de cambio"
-                           Variant="Variant.Outlined" Margin="Margin.Dense"
+                           Variant="Variant.Outlined"
                            ReadOnly="_readonly" Class="mb-3"
                            DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
 
@@ -26,13 +26,13 @@
             <MudGrid Spacing="2" Class="mt-1 mb-3">
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_COMERCIAL_COMPRA"
-                                     Label="Compra" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Compra" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_COMERCIAL_VENTA"
-                                     Label="Venta" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Venta" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>
@@ -42,13 +42,13 @@
             <MudGrid Spacing="2" Class="mt-1 mb-3">
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_SUNAT_COMPRA"
-                                     Label="Compra" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Compra" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_SUNAT_VENTA"
-                                     Label="Venta" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Venta" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>
@@ -58,13 +58,13 @@
             <MudGrid Spacing="2" Class="mt-1 mb-3">
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_PARALELO_COMPRA"
-                                     Label="Compra" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Compra" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>
                 <MudItem xs="6">
                     <MudNumericField T="decimal?" @bind-Value="_model.FAC_PARALELO_VENTA"
-                                     Label="Venta" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Label="Venta" Variant="Variant.Outlined"
                                      ReadOnly="_readonly" Format="@Decimales.FormatoFactor"
                                      Culture="@System.Globalization.CultureInfo.InvariantCulture" />
                 </MudItem>

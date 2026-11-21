@@ -39,12 +39,12 @@
             <MudGrid Spacing="2">
                 <MudItem xs="6">
                     <MudNumericField T="int" @bind-Value="_filas" Label="Filas (niveles)"
-                                     Min="1" Max="200" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Min="1" Max="200" Variant="Variant.Outlined"
                                      Disabled="_generando" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="6">
                     <MudNumericField T="int" @bind-Value="_columnas" Label="Columnas"
-                                     Min="1" Max="200" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                     Min="1" Max="200" Variant="Variant.Outlined"
                                      Disabled="_generando" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12">
@@ -57,7 +57,7 @@
                 </MudItem>
                 <MudItem xs="12">
                     <MudTextField T="string" Value="@_desAlmacen" Label="Almacén de las ubicaciones"
-                                  Variant="Variant.Outlined" Margin="Margin.Dense"
+                                  Variant="Variant.Outlined"
                                   ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
             </MudGrid>

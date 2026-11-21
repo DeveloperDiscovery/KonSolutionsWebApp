@@ -14,36 +14,36 @@
         else
         {
             <div class="d-flex gap-3">
-                <MudTextField T="string" @bind-Value="_m.COD_OPERACION" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
-                <MudTextField T="string" @bind-Value="_m.DES_OPERACION" Label="Operación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
+                <MudTextField T="string" @bind-Value="_m.COD_OPERACION" Label="Código" Variant="Variant.Outlined" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
+                <MudTextField T="string" @bind-Value="_m.DES_OPERACION" Label="Operación" Variant="Variant.Outlined" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
             </div>
             <div class="d-flex gap-3 mt-2">
-                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="proceso">
+                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="proceso">
                     @foreach (var p in Lista("procesos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
-                <MudSelect T="string" @bind-Value="_m.COD_SUB_PROCESO" Label="Subproceso" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="subproceso">
+                <MudSelect T="string" @bind-Value="_m.COD_SUB_PROCESO" Label="Subproceso" Variant="Variant.Outlined" Disabled="_soloLectura" Clearable="true" data-campo="subproceso">
                     @foreach (var p in Lista("subprocesos").Where(s => s.DES_DETALLE == _m.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
             </div>
-            <MudSelect T="string" @bind-Value="_m.COD_TIPO_OPERACION_PRODUCCION" Label="Tipo de operación (familia técnica: trae su clase y función)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" data-campo="tipo">
+            <MudSelect T="string" @bind-Value="_m.COD_TIPO_OPERACION_PRODUCCION" Label="Tipo de operación (familia técnica: trae su clase y función)" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mt-2" data-campo="tipo">
                 @foreach (var p in Lista("tipos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES · @ClaseNombre(p.COD_REGLA)</MudSelectItem> }
             </MudSelect>
             <div class="d-flex gap-3 mt-2">
-                <MudSelect T="string" @bind-Value="_m.COD_CATEGORIA_OCUPACIONAL" Label="Categoría (A-D)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="categoria">
+                <MudSelect T="string" @bind-Value="_m.COD_CATEGORIA_OCUPACIONAL" Label="Categoría (A-D)" Variant="Variant.Outlined" Disabled="_soloLectura" Clearable="true" data-campo="categoria">
                     @foreach (var p in Lista("categorias")) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
                 </MudSelect>
-                <MudSelect T="string" @bind-Value="_m.COD_TIPO_MAQUINA" Label="Tipo de máquina" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="maquina">
+                <MudSelect T="string" @bind-Value="_m.COD_TIPO_MAQUINA" Label="Tipo de máquina" Variant="Variant.Outlined" Disabled="_soloLectura" Clearable="true" data-campo="maquina">
                     @foreach (var p in Lista("maquinas")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
-                <MudSelect T="string" @bind-Value="_m.COD_UNIDAD_MEDIDA_TIEMPO" Label="Unidad del tiempo" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Style="max-width:170px;" data-campo="unidad">
+                <MudSelect T="string" @bind-Value="_m.COD_UNIDAD_MEDIDA_TIEMPO" Label="Unidad del tiempo" Variant="Variant.Outlined" Disabled="_soloLectura" Style="max-width:170px;" data-campo="unidad">
                     @foreach (var p in Lista("unidades")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
             </div>
             <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Una operación compuesta no lleva categoría ni máquina propias: las tienen sus hojas. Para aprobar un tiempo, la hoja necesita ambas.</MudText>
-            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
             @if (!_nuevo)
             {
-                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
                     <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
                     <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
                 </MudSelect>

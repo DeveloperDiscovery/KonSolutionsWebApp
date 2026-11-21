@@ -1,0 +1,108 @@
+@using KONSolutions.Shared.Models.Formulacion
+@using KONSolutions.Shared.Common
+@using FRoute = KONSolutions.Web.Services.ApiRoutes.Formulacion
+@using IngRoute = KONSolutions.Web.Services.ApiRoutes.Ingenieria
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <CrudDialogTitle Modo="Modo" Descripcion="@Item?.COD_ALIAS_FORMULACION" />
+    </TitleContent>
+    <DialogContent>
+        <EditForm Model="_m" OnValidSubmit="Submit">
+            <CampoTexto Tabla="FORMULACION.FORMULACION_ELEMENTOS" Columna="COD_ELEMENTO_FORMULACION" Label="Código" HelperText="Se asigna al guardar"
+                        Value="@_m.COD_ELEMENTO_FORMULACION" Disabled="true" NoObligatorio="true" />
+            <CampoTexto Tabla="FORMULACION.FORMULACION_ELEMENTOS" Columna="DES_ELEMENTO_FORMULACION" Label="Elemento (fragmento técnico)"
+                        @bind-Value="_m.DES_ELEMENTO_FORMULACION" Disabled="_readonly" Obligatorio="true" />
+            <CampoTexto Tabla="FORMULACION.FORMULACION_ELEMENTOS" Columna="COD_ALIAS_FORMULACION" Label="Alias (lo que ve el usuario)"
+                        @bind-Value="_m.COD_ALIAS_FORMULACION" Disabled="_readonly" Obligatorio="true" />
+            <AriaCombo TItem="ComboboxItem" Items="_tipos" TextFunc="@(t => t.Texto)" ValueFunc="@(t => t.Id)"
+                       @bind-Value="_m.COD_TIPO_ESPECIFICACION_TECNICA" Label="Tipo de especificación técnica"
+                       Disabled="_readonly" />
+            <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.65;display:block;" data-ayuda-tipo="1">Enlaza el elemento con un tipo de especificación técnica (opcional).</MudText>
+            <ImagePicker Image="_m.IMG_PICTURE" ImageChanged="@(v => _m.IMG_PICTURE = v)" Label="Ícono" ReadOnly="_readonly" />
+            <div class="d-flex align-center justify-space-between py-1 mb-2">
+                <MudText Typo="Typo.body2">No es rango (valor único, no un mínimo y un máximo)</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_NO_ES_RANGO" ValueChanged="@(v => _m.FLG_NO_ES_RANGO = v)" Color="Color.Primary" Disabled="_readonly" data-flag="no-es-rango" />
+            </div>
+            <div class="d-flex align-center justify-space-between py-1 mb-3">
+                <MudText Typo="Typo.body2">Habilitado (aparece en la paleta)</MudText>
+                <MudSwitch T="bool?" Value="_m.FLG_HABILITADO" ValueChanged="@(v => _m.FLG_HABILITADO = v)" Color="Color.Primary" Disabled="_readonly" data-flag="habilitado" />
+            </div>
+            @if (!_esNuevo && (_det?.CAN_USOS ?? 0) > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3" data-aviso="usos">Este elemento se usa en @_det!.CAN_USOS ficha(s) de fórmulas armadas. Cambiar su fragmento técnico afecta a esas fórmulas; eliminarlo no está permitido (deshabilítalo si ya no debe aparecer).</MudAlert>
+            }
+            <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())"
+                               CodAplicacion="@CodAplicacion" CodOpcionAplicacion="@CodOpcionAplicacion">
+                <LeftContent>
+                    <PanelAuditoria CodUsuarioRegistro="@_det?.COD_USUARIO_REGISTRO" CodEstacionRegistro="@_det?.COD_ESTACION_REGISTRO" FecRegistro="@_det?.FEC_REGISTRO"
+                                    CodUsuarioActualizacion="@_det?.COD_USUARIO_ACTUALIZACION" CodEstacionActualizacion="@_det?.COD_ESTACION_ACTUALIZACION" FecActualizacion="@_det?.FEC_ACTUALIZACION" />
+                </LeftContent>
+            </CrudDialogActions>
+        </EditForm>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public FormulacionElemento? Item { get; set; }
+    /// <summary>Componente al que pertenece el elemento (el de la fila desde la que se abrio la solapa).</summary>
+    [Parameter] public FormulacionComponente Componente { get; set; } = new();
+    [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
+    [Parameter] public string? CodAplicacion { get; set; }
+    [Parameter] public string? CodOpcionAplicacion { get; set; }
+
+    private FormulacionElementoGuardarDto _m = new();
+    private FormulacionElemento? _det;
+    private List<ComboboxItem> _tipos = new();
+    private bool _esNuevo, _saving;
+    private bool _readonly => Modo == CrudModo.Read || Modo == CrudModo.Delete;
+
+    protected override void OnInitialized()
+    {
+        _esNuevo = Modo == CrudModo.Create;
+        _m = new FormulacionElementoGuardarDto { COD_COMPONENTE_FORMULACION = Componente.COD_COMPONENTE_FORMULACION };
+        if (Item is null) return;
+        _det = Item;
+        MapearDesde(Item);
+    }
+
+    private void MapearDesde(FormulacionElemento e) => _m = new FormulacionElementoGuardarDto
+    {
+        COD_COMPONENTE_FORMULACION = e.COD_COMPONENTE_FORMULACION, COD_ELEMENTO_FORMULACION = e.COD_ELEMENTO_FORMULACION, DES_ELEMENTO_FORMULACION = e.DES_ELEMENTO_FORMULACION ?? "",
+        COD_ALIAS_FORMULACION = e.COD_ALIAS_FORMULACION ?? "", COD_TIPO_ESPECIFICACION_TECNICA = e.COD_TIPO_ESPECIFICACION_TECNICA?.Trim(),
+        FLG_NO_ES_RANGO = e.FLG_NO_ES_RANGO, FLG_HABILITADO = e.FLG_HABILITADO, IMG_PICTURE = e.IMG_PICTURE
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tipos = (await Http.SafeGetAsync<List<ComboboxItem>>(IngRoute.TiposEspecificacionTecnicaCombobox)) ?? new();
+        if (_esNuevo || Item is null) return;
+        // el detalle trae cuantas fichas de formulas lo usan
+        var r = await OperacionesApi.LeerAsync<FormulacionElemento>(Http, FRoute.Elemento(Item.COD_COMPONENTE_FORMULACION, Item.COD_ELEMENTO_FORMULACION));
+        if (r.Data is not null) { _det = r.Data; MapearDesde(r.Data); }
+    }
+
+    private async Task Submit()
+    {
+        if (Modo == CrudModo.Read) { MudDialog.Cancel(); return; }
+        if (Modo != CrudModo.Delete)
+        {
+            if (string.IsNullOrWhiteSpace(_m.DES_ELEMENTO_FORMULACION)) { await ErrorDialogHelper.MostrarAvisoAsync("Escribe el elemento (fragmento técnico).", DialogService, nameof(FormulacionElementosDialog)); return; }
+            if (string.IsNullOrWhiteSpace(_m.COD_ALIAS_FORMULACION)) { await ErrorDialogHelper.MostrarAvisoAsync("Escribe el alias del elemento.", DialogService, nameof(FormulacionElementosDialog)); return; }
+            // el tipo se graba como cualquier otro dato del elemento (vacio = sin tipo), sin depender de las banderas del componente
+            if (string.IsNullOrWhiteSpace(_m.COD_TIPO_ESPECIFICACION_TECNICA)) _m.COD_TIPO_ESPECIFICACION_TECNICA = null;
+        }
+        _saving = true;
+        var r = Modo == CrudModo.Delete
+            ? await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, HttpMethod.Delete, FRoute.Elemento(_m.COD_COMPONENTE_FORMULACION, _m.COD_ELEMENTO_FORMULACION ?? ""))
+            : await OperacionesApi.EnviarAsync<FormulacionEscritura>(Http, _esNuevo ? HttpMethod.Post : HttpMethod.Put, FRoute.Elementos, _m);
+        _saving = false;
+        if (!r.Ok) { await ErrorDialogHelper.MostrarMensajeAsync(r.Mensaje ?? "No se pudo completar la operación.", DialogService, nameof(FormulacionElementosDialog)); return; }
+        Snackbar.Add(Modo == CrudModo.Delete ? "Eliminado." : _esNuevo ? "Creado." : "Modificado.", Severity.Success);
+        MudDialog.Close(DialogResult.Ok(true));
+    }
+}

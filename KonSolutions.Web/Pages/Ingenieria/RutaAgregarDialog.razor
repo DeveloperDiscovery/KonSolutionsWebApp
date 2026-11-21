@@ -10,14 +10,14 @@
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         @if (Modo == "proceso")
         {
-            <MudSelect T="string" @bind-Value="_cod" Label="Proceso" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="proceso">
+            <MudSelect T="string" @bind-Value="_cod" Label="Proceso" Variant="Variant.Outlined" data-campo="proceso">
                 @foreach (var p in Lista("procesos")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
             </MudSelect>
         }
         else if (Modo == "subproceso")
         {
             <MudText Typo="Typo.caption" Class="mb-1">Dentro del proceso <b>@Padre?.DES_PROCESO</b></MudText>
-            <MudSelect T="string" @bind-Value="_cod" Label="Subproceso" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="subproceso">
+            <MudSelect T="string" @bind-Value="_cod" Label="Subproceso" Variant="Variant.Outlined" data-campo="subproceso">
                 @foreach (var p in Lista("subprocesos").Where(s => s.DES_DETALLE == Padre?.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
             </MudSelect>
         }
@@ -26,8 +26,8 @@
             <MudText Typo="Typo.caption" Class="mb-1">Dentro de <b>@(Padre?.DES_SUB_PROCESO ?? Padre?.DES_OPERACION ?? Padre?.DES_PROCESO)</b></MudText>
             <MudAutocomplete T="Operacion" @bind-Value="_op" SearchFunc="Buscar" ToStringFunc="@(o => o is null ? "" : o.COD_OPERACION + " · " + o.DES_OPERACION + (o.FLG_COMPUESTA ? " (compuesta)" : ""))" Label="Operación del catálogo" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" ResetValueOnEmptyText="true" MaxItems="300" data-campo="operacion" />
             <div class="d-flex gap-3 mt-2">
-                <MudNumericField T="decimal" @bind-Value="_frecuencia" Label="Veces por unidad" Min="0.001m" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="frecuencia" />
-                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="fecha" />
+                <MudNumericField T="decimal" @bind-Value="_frecuencia" Label="Veces por unidad" Min="0.001m" Variant="Variant.Outlined" data-campo="frecuencia" />
+                <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" data-campo="fecha" />
             </div>
             @if (_op is { FLG_COMPUESTA: true }) { <MudText Typo="Typo.caption" Style="opacity:.7;">Es una operación compuesta: se agregan ella y todos sus componentes.</MudText> }
         }

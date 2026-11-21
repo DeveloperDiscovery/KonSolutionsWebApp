@@ -41,6 +41,7 @@
     <MudTabPanel Text="Tipos de máquina" data-tab="maquinas" />
     <MudTabPanel Text="Métodos de tiempo" data-tab="metodos" />
     <MudTabPanel Text="Distribución de línea" data-tab="distribuciones" />
+    <MudTabPanel Text="Tipos de material" data-tab="materiales" />
 </MudTabs>
 
 @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
@@ -72,11 +73,23 @@
                     <CellTemplate><MudIcon Icon="@(context.Item.FLG_2 == true ? Icons.Material.Filled.Check : Icons.Material.Filled.Remove)" Size="Size.Small" Color="@(context.Item.FLG_2 == true ? Color.Success : Color.Default)" /></CellTemplate>
                 </TemplateColumn>
             }
+            @if (_tab == 4)
+            {
+                <TemplateColumn Title="Abreviatura" Sortable="false" Width="130px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="5" Texto="Abreviatura" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate><span class="mono" data-celda="abreviatura">@context.Item.COD_REGLA</span></CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Ejemplos" Sortable="false"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="2" Texto="Ejemplos" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.DES_DETALLE</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Orden" Sortable="false" Width="90px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="3" Texto="Orden" OnCambio="Refrescar" /></HeaderTemplate><CellTemplate>@context.Item.NUM_ORDEN</CellTemplate></TemplateColumn>
+                <TemplateColumn Title="Habilitado" Sortable="false" Width="120px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="4" Texto="Habilitado" OnCambio="Refrescar" /></HeaderTemplate>
+                    <CellTemplate><MudIcon Icon="@(context.Item.FLG_1 == true ? Icons.Material.Filled.Check : Icons.Material.Filled.Remove)" Size="Size.Small" Color="@(context.Item.FLG_1 == true ? Color.Success : Color.Default)" data-celda="habilitado" /></CellTemplate>
+                </TemplateColumn>
+            }
+            @if (_tab != 4)
+            {
             <TemplateColumn Title="Estado" Sortable="false" Width="120px"><HeaderTemplate><EncabezadoOF G="_g" Items="_fuente" Col="8" Texto="Estado" OnCambio="Refrescar" /></HeaderTemplate>
                 <CellTemplate>
                     @if (!string.IsNullOrEmpty(context.Item.DES_ESTADO)) { <EstadoChip Estado="@context.Item.DES_ESTADO" BackColor="@context.Item.DES_BACKCOLOR" ForeColor="@context.Item.DES_FORECOLOR" /> }
                 </CellTemplate>
             </TemplateColumn>
+            }
             <TemplateColumn Title="Acciones" Sortable="false">
                 <CellTemplate>
                     @{ var it = context.Item; }
@@ -125,8 +138,9 @@
         new("maquinas", "Tipos de máquina", "Ingenieria/TiposMaquina.razor", IngRoute.TiposMaquina, "tipo de máquina"),
         new("metodos", "Métodos de tiempo", "Ingenieria/MetodosTiempo.razor", IngRoute.MetodosTiempo, "método de tiempo"),
         new("distribuciones", "Tipos de distribución de línea", "Produccion/TiposDistribucionLinea.razor", IngRoute.TiposDistribucionLinea, "distribución"),
+        new("materiales", "Tipos de material de la estructura", "Ingenieria/TiposMaterialEstructura.razor", IngRoute.TiposMaterialEstructura, "tipo de material"),
     };
-    private readonly (string App, string Opcion)[] _cods = { ("", ""), ("", ""), ("", ""), ("", "") };
+    private readonly (string App, string Opcion)[] _cods = { ("", ""), ("", ""), ("", ""), ("", ""), ("", "") };
     private int _tab;
     private int Tab { get => _tab; set { if (_tab == value) return; _tab = value; _buscar = ""; _ = Cargar(); } }
     private List<CatalogoOperacionItem> _items = new();
@@ -141,7 +155,7 @@
     {
         // la opcion del menu por la que se entro define la pestana inicial (cada una tiene su DES_FORMULARIO)
         var uri = Nav.Uri.ToLowerInvariant();
-        _tab = uri.Contains("tipos-maquina") ? 1 : uri.Contains("metodos-tiempo") ? 2 : uri.Contains("distribucion") ? 3 : 0;
+        _tab = uri.Contains("tipos-maquina") ? 1 : uri.Contains("metodos-tiempo") ? 2 : uri.Contains("distribucion") ? 3 : uri.Contains("tipos-material") ? 4 : 0;
         for (var i = 0; i < _meta.Length; i++)
         {
             var r = MenuSvc.BuscarCodigosPorFormulario(_meta[i].Formulario);
