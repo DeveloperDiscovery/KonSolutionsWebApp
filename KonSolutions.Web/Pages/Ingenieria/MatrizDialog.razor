@@ -11,7 +11,7 @@
 <MudDialog>
     <DialogContent>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
-        <MudTextField T="string" @bind-Value="_m.DES_RUTA" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-2" data-campo="nombre" />
+        <MudTextField T="string" @bind-Value="_m.DES_RUTA" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" Class="mb-2" data-campo="nombre" />
         <MudText Typo="Typo.caption" Class="mb-1" Style="opacity:.7;">Sub familia de producto (opcional): la matriz se sugiere a los diseños de esa sub familia.</MudText>
         <AriaCombo TItem="ComboboxItem" Items="_grupos" TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
                    Value="@_m.COD_GRUPO_PRODUCTO" ValueChanged="@(v => OnGrupo(v))" Label="Grupo de producto" />

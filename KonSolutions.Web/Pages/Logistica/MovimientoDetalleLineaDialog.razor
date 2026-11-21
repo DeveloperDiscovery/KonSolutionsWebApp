@@ -155,7 +155,7 @@
                 </MudItem>
                 <MudItem xs="12" sm="4">
                     <MudTextField T="string" Value="@(_producto?.COD_UNIDAD_MEDIDA ?? "")" Label="Unidad de medida"
-                                  ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                  ReadOnly="true" Variant="Variant.Outlined" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     <AriaCombo TItem="ComboboxItem" Items="_combos.Ubicaciones"
@@ -169,14 +169,14 @@
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     <MudNumericField T="decimal?" @bind-Value="_cantidad" Label="Cantidad" Min="0"
-                                     HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                     HideSpinButtons="true" Variant="Variant.Outlined" />
                 </MudItem>
                 @if (!string.IsNullOrWhiteSpace(_producto?.COD_UNIDAD_MEDIDA_SECUNDARIO))
                 {
                     <MudItem xs="12" sm="6">
                         <MudNumericField T="decimal?" @bind-Value="_cantidadSecundaria" Min="0"
                                          Label="@($"Cantidad secundaria ({_producto!.COD_UNIDAD_MEDIDA_SECUNDARIO})")"
-                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                         HideSpinButtons="true" Variant="Variant.Outlined" />
                     </MudItem>
                 }
             </MudGrid>
@@ -199,14 +199,14 @@
                                      Label="@($"Cantidad ({Linea.COD_UNIDAD_MEDIDA})")"
                                      HelperText="@(EsSalida ? $"Máximo {Num(_maximo)}: lo de la línea más el disponible" : null)"
                                      Error="@(EsSalida && _cantidad > _maximo)" ErrorText="Más que lo disponible"
-                                     HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                     HideSpinButtons="true" Variant="Variant.Outlined" />
                 </MudItem>
                 @if (!string.IsNullOrWhiteSpace(Linea.COD_UNIDAD_MEDIDA_SECUNDARIO))
                 {
                     <MudItem xs="12" sm="6">
                         <MudNumericField T="decimal?" @bind-Value="_cantidadSecundaria" Min="0"
                                          Label="@($"Cantidad secundaria ({Linea.COD_UNIDAD_MEDIDA_SECUNDARIO})")"
-                                         HideSpinButtons="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                         HideSpinButtons="true" Variant="Variant.Outlined" />
                     </MudItem>
                 }
                 @if (ConDestino)

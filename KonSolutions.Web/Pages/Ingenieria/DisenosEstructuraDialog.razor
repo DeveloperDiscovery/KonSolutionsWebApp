@@ -66,7 +66,7 @@
                                         }
                                         @if (TieneHijos(n))
                                         {
-                                            <MudIconButton Icon="@(_cerrados.Contains(n.ID) ? Icons.Material.Filled.ChevronRight : Icons.Material.Filled.ExpandMore)" Size="Size.Small" OnClick="@(() => Alternar(n.ID))" data-toggle="1" Class="tr-toggle" />
+                                            <MudIconButton Icon="@(_cerrados.Contains(n.ORDEN) ? Icons.Material.Filled.ChevronRight : Icons.Material.Filled.ExpandMore)" Size="Size.Small" OnClick="@(() => Alternar(n.ORDEN))" data-toggle="1" Class="tr-toggle" />
                                         }
                                         else { <span class="tr-toggle"></span> }
                                         <MudIcon Icon="@Icono(n)" Size="Size.Small" Class="tr-icono" />
@@ -78,6 +78,7 @@
                                         @if (n.TIPO_NODO == "OPE" && n.FLG_MANUAL == true) { <MudChip T="string" Size="Size.Small" Class="ml-1">Manual</MudChip> }
                                         @if (n.TIPO_NODO == "OPE" && n.FLG_CONTROL_CALIDAD == true) { <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-1">Calidad</MudChip> }
                                         @if (n.FLG_ENSAMBLE && n.TIPO_NODO == "INS") { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Subensamble @n.COD_DISENO_ENSAMBLE v@(n.NUM_VERSION_ENSAMBLE)</MudChip> }
+                                        <EstructuraIndicadores Linea="@LineaDe(n)" Fichas="@FichasDe(n)" Tizado="@TizadoDe(n)" />
                                         @if (n.FLG_CICLO) { <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-1">Ciclo: no se expande</MudChip> }
                                         @if (n.FLG_TRUNCADO) { <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-1">Más de 10 niveles: no se expande</MudChip> }
                                         @if (n.NIVEL_ENSAMBLE > 1 && n.TIPO_NODO == "SEC") { <span class="tr-nivel">Nivel @n.NIVEL_ENSAMBLE</span> }
@@ -98,7 +99,7 @@
                 </div>
             </MudTabPanel>
             <MudTabPanel Text="Diagrama" Icon="@Icons.Material.Filled.Hub" data-panel="diagrama">
-                <DisenosDiagramaEstructura Nodos="_nodos" />
+                <DisenosDiagramaEstructura Nodos="_nodos" Formulas="_formulas" Indicadores="_indTodos" />
             </MudTabPanel>
             <MudTabPanel Text="Imágenes" Icon="@Icons.Material.Filled.PhotoLibrary" data-panel="imagenes">
                 <DisenosGaleriaImagenes Identificador="@CodDiseno" IdentificadorVersion="@CarpetaVersion" ReadOnly="Bloqueada" />
@@ -145,7 +146,12 @@
     [Parameter] public int NumVersion { get; set; }
 
     private List<DisenosEstructuraNodo> _nodos = new();
-    private readonly HashSet<int> _cerrados = new();
+    private List<DisenosEstructuraFormulaDiagrama> _formulas = new();
+    private List<DisenosEstructuraIndicador> _indTodos = new();
+    private Dictionary<string, DisenosEstructuraIndicador> _indLineas = new();
+    private Dictionary<string, DisenosEstructuraIndicador> _indVersiones = new();
+    // ramas cerradas, por ORDEN (la ruta del nodo en el arbol): el ID del nodo se vuelve a generar en cada lectura, asi que no sirve para recordar el estado al recargar
+    private readonly HashSet<string> _cerrados = new();
     private string _error = "";
     private bool _cargando, _hubo, _ampliado;
     private int _tab;
@@ -156,7 +162,14 @@
     private void AlternarAmpliado()
     {
         _ampliado = !_ampliado;
+        AplicarAmpliado();
+    }
+    private void AplicarAmpliado() =>
         MudDialog.SetOptions(new DialogOptions { FullScreen = _ampliado, MaxWidth = MaxWidth.False, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+    // Al abrir o cerrar otro dialogo, MudBlazor vuelve a las opciones con que se abrio este: se reaplica la pantalla completa.
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (_ampliado && MudDialog.Options.FullScreen != true) AplicarAmpliado();
     }
     // El alto del arbol y del diagrama lo resuelve CSS (ver AltoLlenaEstilos.razor): sin JavaScript.
 
@@ -205,7 +218,50 @@
             foreach (var g in _nodos.GroupBy(x => x.PARENT_ID)) { var ord = g.OrderBy(x => x.ORDEN, StringComparer.Ordinal).ToList(); foreach (var x in ord) _ultimo[x.ID] = x == ord.Last(); }
         }
         catch (Exception ex) { _error = ex.Message; _nodos = new(); }
+        // las formulas son un adorno de la ficha del diagrama: si no se pueden leer, el diagrama sale igual
+        try
+        {
+            var rf = await Http.GetAsync(IngenieriaRoute.DisenosEstructuraFormulaDiagrama(CodDiseno, NumVersion));
+            var bf = await rf.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DisenosEstructuraFormulaDiagrama>>>();
+            _formulas = rf.IsSuccessStatusCode && bf is { Success: true } ? bf.Data ?? new() : new();
+        }
+        catch { _formulas = new(); }
+        // los indicadores (pivote, formula, tizado) son un adorno del arbol: si no se pueden leer, el arbol sale igual
+        try
+        {
+            var ri = await Http.GetAsync(IngenieriaRoute.DisenosEstructuraIndicadores(CodDiseno, NumVersion));
+            var bi = await ri.Content.ReadFromJsonAsync<KONSolutions.Shared.Common.ApiResponse<List<DisenosEstructuraIndicador>>>();
+            var lista = ri.IsSuccessStatusCode && bi is { Success: true } ? bi.Data ?? new() : new();
+            _indTodos = lista;
+            _indLineas = lista.Where(x => x.FILA == "L").GroupBy(ClaveLinea).ToDictionary(g => g.Key, g => g.First());
+            _indVersiones = lista.Where(x => x.FILA == "V").GroupBy(x => ClaveVersion(x.COD_DISENO, x.NUM_VERSION)).ToDictionary(g => g.Key, g => g.First());
+        }
+        catch { _indTodos = new(); _indLineas = new(); _indVersiones = new(); }
         _cargando = false;
+    }
+
+    private static string ClaveLinea(DisenosEstructuraIndicador x) => $"{x.COD_DISENO}|{x.NUM_VERSION}|{x.COD_SECTOR_PRODUCTO}|{x.COD_COMPONENTE_PRODUCTO}|{x.NUM_SECUENCIA}|{x.COD_PRODUCTO_COMPONENTE}";
+    private static string ClaveLinea(DisenosEstructuraNodo n) => $"{n.COD_DISENO}|{n.NUM_VERSION}|{n.COD_SECTOR_PRODUCTO}|{n.COD_COMPONENTE_PRODUCTO}|{n.NUM_SECUENCIA}|{n.COD_PRODUCTO_COMPONENTE}";
+    private static string ClaveVersion(string d, int v) => $"{d}|{v}";
+
+    private IReadOnlyList<DisenosEstructuraFormulaDiagrama>? FichasDe(DisenosEstructuraNodo n)
+    {
+        if (n.TIPO_NODO != "INS" || _formulas.Count == 0) return null;
+        var k = ClaveLinea(n);
+        var l = _formulas.Where(f => $"{f.COD_DISENO}|{f.NUM_VERSION}|{f.COD_SECTOR_PRODUCTO}|{f.COD_COMPONENTE_PRODUCTO}|{f.NUM_SECUENCIA}|{f.COD_PRODUCTO_COMPONENTE}" == k && f.NUM_SECUENCIA_FORMULA is not null)
+                         .OrderBy(f => f.NUM_SECUENCIA_FORMULA).ToList();
+        return l.Count == 0 ? null : l;
+    }
+
+    private DisenosEstructuraIndicador? LineaDe(DisenosEstructuraNodo n) => n.TIPO_NODO == "INS" && _indLineas.TryGetValue(ClaveLinea(n), out var x) ? x : null;
+
+    /// <summary>El tizado es de la version: se ve en la version y en los insumos enlazados a un subensamble que lo tiene.</summary>
+    private DisenosEstructuraIndicador? TizadoDe(DisenosEstructuraNodo n)
+    {
+        DisenosEstructuraIndicador? x = null;
+        if (n.TIPO_NODO == "VER") _indVersiones.TryGetValue(ClaveVersion(n.COD_DISENO, n.NUM_VERSION), out x);
+        else if (n.TIPO_NODO == "INS" && n.FLG_ENSAMBLE && n.COD_DISENO_ENSAMBLE is not null) _indVersiones.TryGetValue(ClaveVersion(n.COD_DISENO_ENSAMBLE, n.NUM_VERSION_ENSAMBLE ?? 0), out x);
+        return x;
     }
 
     private IEnumerable<DisenosEstructuraNodo> Visibles()
@@ -214,14 +270,14 @@
         bool Oculto(DisenosEstructuraNodo n)
         {
             var p = n.PARENT_ID;
-            while (p is int id) { if (_cerrados.Contains(id)) return true; p = porId.TryGetValue(id, out var pn) ? pn.PARENT_ID : null; }
+            while (p is int id && porId.TryGetValue(id, out var pn)) { if (_cerrados.Contains(pn.ORDEN)) return true; p = pn.PARENT_ID; }
             return false;
         }
         return _nodos.Where(n => !Oculto(n));
     }
 
-    private void Alternar(int id) { if (!_cerrados.Remove(id)) _cerrados.Add(id); }
-    private void ContraerTodo() { foreach (var n in _nodos.Where(TieneHijos)) _cerrados.Add(n.ID); }
+    private void Alternar(string orden) { if (!_cerrados.Remove(orden)) _cerrados.Add(orden); }
+    private void ContraerTodo() { foreach (var n in _nodos.Where(TieneHijos)) _cerrados.Add(n.ORDEN); }
     private void ExpandirTodo() => _cerrados.Clear();
 
     private static string Icono(DisenosEstructuraNodo n) => n.TIPO_NODO switch
@@ -277,7 +333,9 @@
     {
         var opc = Opciones(MaxWidth.False); if (anchoCompleto) opc.FullWidth = true;
         var dlg = await DialogService.ShowAsync<T>(titulo, p, opc);
+        if (_ampliado) AplicarAmpliado();
         var r = await dlg.Result;
+        if (_ampliado) AplicarAmpliado();
         if (r is { Canceled: false }) { _hubo = true; await CargarAsync(); return true; }
         return false;
     }

@@ -37,14 +37,14 @@
         @* De qué documento partir. Cuando el flujo empiece en el pedido de venta / exportación,
            se agrega aquí como otra opción. *@
         <MudSelect T="string" @bind-Value="_tipoInicio" Label="Partir de" Variant="Variant.Outlined"
-                   Margin="Margin.Dense" Dense="true" Style="max-width:220px;">
+                   Dense="true" Style="max-width:220px;">
             @foreach (var t in TiposInicio)
             {
                 <MudSelectItem Value="@t.Codigo">@t.Nombre</MudSelectItem>
             }
         </MudSelect>
         <MudNumericField T="int?" @bind-Value="_numeroInicio" Label="N.°" Variant="Variant.Outlined"
-                         Margin="Margin.Dense" HideSpinButtons="true" Style="max-width:130px;"
+                         HideSpinButtons="true" Style="max-width:130px;"
                          OnKeyUp="@(e => e.Key == "Enter" ? Buscar() : Task.CompletedTask)" />
         <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" StartIcon="@Icons.Material.Filled.Search"
                    Disabled="_cargando" OnClick="Buscar">Buscar</MudButton>
@@ -79,7 +79,7 @@
                          Label="Separar por franjas" Dense="true" Color="Color.Primary" />
         </MudTooltip>
         <MudSelect T="string" Value="_orientacion" ValueChanged="CambiarOrientacion" Label="Franjas"
-                   Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" Disabled="!_separarFranjas"
+                   Variant="Variant.Outlined" Dense="true" Disabled="!_separarFranjas"
                    Style="max-width:150px;">
             <MudSelectItem Value="@("H")">Horizontales</MudSelectItem>
             <MudSelectItem Value="@("V")">Verticales</MudSelectItem>

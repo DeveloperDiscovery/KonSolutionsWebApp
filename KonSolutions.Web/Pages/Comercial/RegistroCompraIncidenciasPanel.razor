@@ -45,7 +45,7 @@
     @if (!SoloLectura)
     {
         <div class="d-flex align-center gap-2 flex-wrap">
-            <MudSelect T="decimal?" @bind-Value="_guiaSel" Label="@(EsDevolucion ? "Guía de devolución" : "Guía del proveedor")" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:380px;" Clearable="true" data-campo="guia-disponible">
+            <MudSelect T="decimal?" @bind-Value="_guiaSel" Label="@(EsDevolucion ? "Guía de devolución" : "Guía del proveedor")" Variant="Variant.Outlined" Style="min-width:380px;" Clearable="true" data-campo="guia-disponible">
                 @foreach (var g in _guiasDisponibles.Where(x => !x.FLG_ASOCIADA))
                 {
                     <MudSelectItem T="decimal?" Value="@((decimal?)g.NUM_MOVIMIENTO_ALMACEN)">@($"{g.NUM_GUIA ?? ("Mov. " + g.NUM_MOVIMIENTO_ALMACEN.ToString("0"))} · {g.FEC_MOVIMENTO_ALMACEN:dd/MM/yyyy} · {g.NUM_LINEAS} línea(s)")</MudSelectItem>
@@ -94,7 +94,7 @@ else
     <div class="d-flex align-center gap-2 mb-2 flex-wrap">
         <MudTextField T="string" @bind-Value="_buscar" Label="Buscar factura (número)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:260px;"
                       Immediate="false" OnKeyDown="@(e => e.Key == "Enter" ? CargarOrigenesAsync() : Task.CompletedTask)" />
-        <MudSelect T="decimal?" Value="_origenSel" ValueChanged="OnOrigenChanged" Label="Factura" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:340px;" Clearable="true">
+        <MudSelect T="decimal?" Value="_origenSel" ValueChanged="OnOrigenChanged" Label="Factura" Variant="Variant.Outlined" Style="min-width:340px;" Clearable="true">
             @foreach (var o in _origenes)
             {
                 <MudSelectItem T="decimal?" Value="@((decimal?)o.NUM_REGISTRO)">@($"{o.NUM_COMPROBANTE_PAGO} · {o.FEC_COMPROBANTE_PAGO:dd/MM/yyyy} · {o.COD_MONEDA} {o.VAL_TOTAL:N2}")</MudSelectItem>
@@ -139,7 +139,7 @@ else
                     </TemplateColumn>
                 }
                 <TemplateColumn Title="Importe de diferencia" Sortable="false">
-                    <CellTemplate><MudNumericField T="decimal?" @bind-Value="context.Item.Val" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" ReadOnly="@(EsDevolucion && context.Item.L.FLG_FILTRADO_POR_GUIA)" HideSpinButtons="true" Format="N2" Style="max-width:130px;" data-campo="importe-diferencia" /></CellTemplate>
+                    <CellTemplate><MudNumericField T="decimal?" @bind-Value="context.Item.Val" Variant="Variant.Outlined" Min="0" ReadOnly="@(EsDevolucion && context.Item.L.FLG_FILTRADO_POR_GUIA)" HideSpinButtons="true" Format="N2" Style="max-width:130px;" data-campo="importe-diferencia" /></CellTemplate>
                 </TemplateColumn>
                 <TemplateColumn Title="" Sortable="false">
                     <CellTemplate>

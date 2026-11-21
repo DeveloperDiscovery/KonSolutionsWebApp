@@ -23,7 +23,7 @@
                    Label="Clase de operación destino" Class="mb-3" />
         @* Varios destinos: marca los tipos de la clase elegida; lo marcado se conserva al cambiar de clase. *@
         <MudSelect T="string" Label="Tipos de operación destino" MultiSelection="true" SelectAll="true"
-                   SelectAllText="Todos los tipos de la clase" Variant="Variant.Outlined" Margin="Margin.Dense"
+                   SelectAllText="Todos los tipos de la clase" Variant="Variant.Outlined"
                    Disabled="@(string.IsNullOrEmpty(_codClaseDestino))"
                    SelectedValues="@SeleccionActual" SelectedValuesChanged="OnSeleccionChanged"
                    MultiSelectionTextFunc="@(v => v is null || !v.Any() ? "" : $"{v.Count()} seleccionado(s)")">

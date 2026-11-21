@@ -40,7 +40,7 @@
             }
             <MudGrid Class="align-end" Spacing="2">
                 <MudItem xs="12" sm="7">
-                    <MudSelect T="string" Label="Impresora" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_equipo" data-campo="impresora" Disabled="_trabajando">
+                    <MudSelect T="string" Label="Impresora" Variant="Variant.Outlined" @bind-Value="_equipo" data-campo="impresora" Disabled="_trabajando">
                         @foreach (var i in _impresoras)
                         {
                             <MudSelectItem T="string" Value="@i.COD_PRODUCTO">@i.DES_PRODUCTO@(string.IsNullOrWhiteSpace(i.DES_TIPO_EQUIPO) ? "" : $" · {i.DES_TIPO_EQUIPO}")</MudSelectItem>
@@ -48,7 +48,7 @@
                     </MudSelect>
                 </MudItem>
                 <MudItem xs="12" sm="5">
-                    <MudNumericField T="int?" Label="Cuántas (vacío = todas)" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="_cantidad" Min="1" Max="@PorImprimir"
+                    <MudNumericField T="int?" Label="Cuántas (vacío = todas)" Variant="Variant.Outlined" @bind-Value="_cantidad" Min="1" Max="@PorImprimir"
                                      HideSpinButtons="true" Disabled="_trabajando" data-campo="cantidad" />
                 </MudItem>
             </MudGrid>

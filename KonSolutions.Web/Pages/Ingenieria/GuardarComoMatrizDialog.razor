@@ -8,7 +8,7 @@
     <DialogContent>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         <MudText Typo="Typo.caption" Class="mb-2" Style="opacity:.75;">Se guarda una copia de la ruta de <b>@CodDiseno v@(NumVersion)</b> como matriz; la ruta de la versión no cambia.</MudText>
-        <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="nombre" />
+        <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la matriz" MaxLength="50" Variant="Variant.Outlined" data-campo="nombre" />
         <MudSwitch T="bool" @bind-Value="_sinSubFamilia" Label="Sin sub familia (sirve para cualquier producto)" Color="Color.Primary" Class="mt-1" data-campo="sin-sub-familia" />
         <MudText Typo="Typo.caption" Style="opacity:.65;">@(_sinSubFamilia ? "La matriz no quedará ligada a ninguna sub familia." : "La matriz quedará ligada a la sub familia del diseño.")</MudText>
     </DialogContent>

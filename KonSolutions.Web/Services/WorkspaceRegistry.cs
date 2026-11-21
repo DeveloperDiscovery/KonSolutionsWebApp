@@ -182,9 +182,13 @@ public static class WorkspaceRegistry
         new("/ingenieria/tipos-maquina",                 "Tipos de máquina", Icons.Material.Filled.PrecisionManufacturing, typeof(OperacionesCatalogos)),
         new("/ingenieria/metodos-tiempo",                "Métodos de tiempo", Icons.Material.Filled.Timer, typeof(OperacionesCatalogos)),
         new("/produccion/tipos-distribucion-linea",      "Distribución de línea", Icons.Material.Filled.ViewModule, typeof(OperacionesCatalogos)),
+        new("/ingenieria/tipos-material-estructura",    "Tipos de material de la estructura", Icons.Material.Filled.Category, typeof(OperacionesCatalogos)),   // DES_FORMULARIO "Ingenieria/TiposMaterialEstructura.razor" (script 156)
         new("/ingenieria/operaciones",                   "Operaciones", Icons.Material.Filled.AccountTree, typeof(Operaciones)),
         new("/ingenieria/rutas-tiempos",                 "Rutas con tiempos", Icons.Material.Filled.AltRoute, typeof(RutasTiempos)),
         new("/ingenieria/matrices",                      "Matrices de operaciones", Icons.Material.Filled.AccountTree, typeof(Matrices)),
+        new("/ingenieria/formulas",                      "Fórmulas de consumo",     Icons.Material.Filled.Functions,   typeof(Formulas)),
+        new("/ingenieria/formulacion-componentes",       "Componentes de formulación", Icons.Material.Filled.Category, typeof(FormulacionComponentes)),
+        new("/ingenieria/formulacion-elementos",         "Elementos de formulación",   Icons.Material.Filled.Extension, typeof(FormulacionComponentes)),
         // Personal por categoria y armado de lineas (scripts SQL 124 a 126). DES_FORMULARIO: "Ingenieria/PersonalOperacion.razor" y "Ingenieria/ArmadoLineas.razor".
         new("/ingenieria/personal-operacion",            "Personal por categoría", Icons.Material.Filled.Badge, typeof(PersonalOperacion)),
         new("/ingenieria/armado-lineas",                 "Armado de líneas", Icons.Material.Filled.ViewWeek, typeof(ArmadoLineas)),

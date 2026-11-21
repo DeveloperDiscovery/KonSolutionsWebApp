@@ -309,7 +309,7 @@ else
                             <td style="text-align:center;opacity:.6;">@(abierto ? "▾" : "▸")</td>
                             <td @onclick:stopPropagation="true">
                                 <MudDatePicker Date="bb.Fecha" DateChanged="@(d => bb.Fecha = d)"
-                                               Variant="Variant.Outlined" Margin="Margin.Dense" Class="mb-0"
+                                               Variant="Variant.Outlined" Class="mb-0"
                                                DateFormat="dd/MM/yyyy" Editable="true" Mask="@(new DateMask("dd/MM/yyyy"))" />
                             </td>
                             <td class="mono" style="text-align:right;">@bb.Seleccionadas.Count</td>
@@ -387,7 +387,7 @@ else
                                                             {
                                                                 <MudNumericField T="decimal" Value="@cant" Immediate="true"
                                                                                  ValueChanged="@((decimal v) => bb.Seleccionadas[sec] = v)"
-                                                                                 Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                                                 Variant="Variant.Outlined"
                                                                                  Min="0" Format="@Decimales.FormatoCantidad" Class="campo-numerico-derecha mb-0"
                                                                                  Error="@(exceso > 0)" />
                                                             }

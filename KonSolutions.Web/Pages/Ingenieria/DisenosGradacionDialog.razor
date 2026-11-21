@@ -36,9 +36,9 @@
 
         <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="serie">
             <MudText Typo="Typo.caption">Serie rápida:</MudText>
-            <MudTextField T="string" @bind-Value="_serieTallas" Label="Tallas, de menor a mayor (incluye la base)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:300px;" data-campo="serie-tallas" />
-            <MudNumericField T="double" @bind-Value="_pasoX" Label="Largo por talla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="paso-x" />
-            <MudNumericField T="double" @bind-Value="_pasoY" Label="Ancho por talla (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="paso-y" />
+            <MudTextField T="string" @bind-Value="_serieTallas" Label="Tallas, de menor a mayor (incluye la base)" Variant="Variant.Outlined" Style="max-width:300px;" data-campo="serie-tallas" />
+            <MudNumericField T="double" @bind-Value="_pasoX" Label="Largo por talla (mm)" Variant="Variant.Outlined" Style="max-width:170px;" data-campo="paso-x" />
+            <MudNumericField T="double" @bind-Value="_pasoY" Label="Ancho por talla (mm)" Variant="Variant.Outlined" Style="max-width:170px;" data-campo="paso-y" />
             <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.AutoFixHigh" OnClick="ArmarSerie" data-accion="serie">Armar filas</MudButton>
         </div>
 
@@ -49,9 +49,9 @@
                     @foreach (var f in _filas)
                     {
                         <tr data-talla="@f.Talla">
-                            <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v ?? ""; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:80px;" data-campo="talla" /></td>
-                            <td><MudNumericField T="double" Value="f.IncX" ValueChanged="@(v => CambiaInc(f, v, f.IncY))" Variant="Variant.Text" Margin="Margin.Dense" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-x" /></td>
-                            <td><MudNumericField T="double" Value="f.IncY" ValueChanged="@(v => CambiaInc(f, f.IncX, v))" Variant="Variant.Text" Margin="Margin.Dense" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-y" /></td>
+                            <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v ?? ""; Invalidar(); })" Variant="Variant.Text" Style="width:80px;" data-campo="talla" /></td>
+                            <td><MudNumericField T="double" Value="f.IncX" ValueChanged="@(v => CambiaInc(f, v, f.IncY))" Variant="Variant.Text" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-x" /></td>
+                            <td><MudNumericField T="double" Value="f.IncY" ValueChanged="@(v => CambiaInc(f, f.IncX, v))" Variant="Variant.Text" Disabled="f.PorPunto" Style="width:110px;" data-campo="inc-y" /></td>
                             <td><MudSwitch T="bool" Value="f.PorPunto" ValueChanged="@(v => PorPunto(f, v))" Color="Color.Primary" data-campo="por-punto" /></td>
                             <td class="mono">@ResultadoDe(f)</td>
                             <td><MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => Quitar(f))" data-accion="quitar-talla" /></td>
@@ -70,8 +70,8 @@
                                                     <td>@(idx + 1)</td>
                                                     <td class="mono">@Num(_puntos[idx].X)</td>
                                                     <td class="mono">@Num(_puntos[idx].Y)</td>
-                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][0]" ValueChanged="@(v => { f.Deltas[idx][0] = v; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:100px;" data-campo="dx" /></td>
-                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][1]" ValueChanged="@(v => { f.Deltas[idx][1] = v; Invalidar(); })" Variant="Variant.Text" Margin="Margin.Dense" Style="width:100px;" data-campo="dy" /></td>
+                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][0]" ValueChanged="@(v => { f.Deltas[idx][0] = v; Invalidar(); })" Variant="Variant.Text" Style="width:100px;" data-campo="dx" /></td>
+                                                    <td><MudNumericField T="double" Value="f.Deltas[idx][1]" ValueChanged="@(v => { f.Deltas[idx][1] = v; Invalidar(); })" Variant="Variant.Text" Style="width:100px;" data-campo="dy" /></td>
                                                 </tr>
                                             }
                                         </tbody>

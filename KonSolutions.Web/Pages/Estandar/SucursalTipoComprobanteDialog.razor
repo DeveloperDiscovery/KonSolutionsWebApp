@@ -15,7 +15,7 @@
             <MudGrid Spacing="2">
                 <MudItem xs="12">
                     <MudTextField T="string" Value="@_desSucursal" Label="Sucursal" Variant="Variant.Outlined"
-                                  Margin="Margin.Dense" ReadOnly="true" Disabled="true" Class="mb-3" />
+                                  ReadOnly="true" Disabled="true" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12">
                     @* El tipo de comprobante forma parte de la PK: solo se elige al crear. *@
@@ -27,12 +27,12 @@
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     <MudNumericField T="short?" @bind-Value="_model.NUM_SERIE_COMPROBANTE" Label="Serie"
-                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
                     @* Último correlativo emitido: lo avanza la facturación, aquí solo se ajusta. *@
                     <MudNumericField T="int?" @bind-Value="_model.NUM_CORRELATIVO_ULTIMO" Label="Último correlativo"
-                                     Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_readonly" Class="mb-3" />
+                                     Variant="Variant.Outlined" Disabled="_readonly" Class="mb-3" />
                 </MudItem>
             </MudGrid>
             <CrudDialogActions Modo="Modo" Saving="_saving" OnCancel="@(() => MudDialog.Cancel())">

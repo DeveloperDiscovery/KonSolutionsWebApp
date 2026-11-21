@@ -59,14 +59,14 @@
                                 <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.UploadFile" Disabled="_trabajando" data-accion="importar">Importar DXF</MudButton>
                             </ActivatorContent>
                         </MudFileUpload>
-                        <MudNumericField T="double?" @bind-Value="_mmPorUnidad" Label="mm por unidad (vacío = el del archivo)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:260px;" data-campo="mm" />
+                        <MudNumericField T="double?" @bind-Value="_mmPorUnidad" Label="mm por unidad (vacío = el del archivo)" Variant="Variant.Outlined" Min="0" Style="max-width:260px;" data-campo="mm" />
                         <MudText Typo="Typo.caption" Style="opacity:.7;">Solo contornos cerrados (LWPOLYLINE, POLYLINE, CIRCLE). DXF de texto (ASCII).</MudText>
                     </div>
                     <div class="d-flex align-center gap-2 flex-wrap mb-3" data-zona="rectangulo">
                         <MudText Typo="Typo.caption">Agregar un rectángulo:</MudText>
-                        <MudTextField @bind-Value="_rectNombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:170px;" data-campo="rect-nombre" />
-                        <MudNumericField T="double" @bind-Value="_rectAncho" Label="Largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="rect-ancho" />
-                        <MudNumericField T="double" @bind-Value="_rectAlto" Label="Ancho (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="rect-alto" />
+                        <MudTextField @bind-Value="_rectNombre" Label="Nombre" Variant="Variant.Outlined" Style="max-width:170px;" data-campo="rect-nombre" />
+                        <MudNumericField T="double" @bind-Value="_rectAncho" Label="Largo (mm)" Variant="Variant.Outlined" Min="1" Style="max-width:120px;" data-campo="rect-ancho" />
+                        <MudNumericField T="double" @bind-Value="_rectAlto" Label="Ancho (mm)" Variant="Variant.Outlined" Min="1" Style="max-width:120px;" data-campo="rect-alto" />
                         <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarRectangulo" data-accion="rectangulo">Agregar</MudButton>
                         <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Polyline" OnClick="DibujarFormaAsync" data-accion="forma">Dibujar otra forma…</MudButton>
                     </div>
@@ -85,11 +85,11 @@
                                 <tr data-nuevo="@n.Nombre">
                                     <td><MudCheckBox T="bool" @bind-Value="n.Sel" Dense="true" data-campo="sel" /></td>
                                     <td>@((MarkupString)Mini(n.Contorno))</td>
-                                    <td><MudTextField @bind-Value="n.Nombre" Variant="Variant.Text" Margin="Margin.Dense" data-campo="nombre" /></td>
-                                    <td><MudTextField @bind-Value="n.Talla" Variant="Variant.Text" Margin="Margin.Dense" Style="width:70px;" data-campo="talla" /></td>
-                                    <td><MudNumericField T="int" @bind-Value="n.Cant" Variant="Variant.Text" Margin="Margin.Dense" Min="0" Style="width:70px;" data-campo="cant" /></td>
-                                    <td><MudNumericField T="int" @bind-Value="n.Esp" Variant="Variant.Text" Margin="Margin.Dense" Min="0" Style="width:70px;" data-campo="esp" /></td>
-                                    <td><MudTextField @bind-Value="n.Giros" Variant="Variant.Text" Margin="Margin.Dense" Style="width:110px;" data-campo="giros" /></td>
+                                    <td><MudTextField @bind-Value="n.Nombre" Variant="Variant.Text" data-campo="nombre" /></td>
+                                    <td><MudTextField @bind-Value="n.Talla" Variant="Variant.Text" Style="width:70px;" data-campo="talla" /></td>
+                                    <td><MudNumericField T="int" @bind-Value="n.Cant" Variant="Variant.Text" Min="0" Style="width:70px;" data-campo="cant" /></td>
+                                    <td><MudNumericField T="int" @bind-Value="n.Esp" Variant="Variant.Text" Min="0" Style="width:70px;" data-campo="esp" /></td>
+                                    <td><MudTextField @bind-Value="n.Giros" Variant="Variant.Text" Style="width:110px;" data-campo="giros" /></td>
                                     <td class="mono">@Medidas(n.Largo, n.Alto)</td>
                                     <td><MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => _nuevos.Remove(n))" data-accion="quitar-nuevo" /></td>
                                 </tr>
@@ -117,11 +117,11 @@
                                 <tr data-molde="@f.Sec">
                                     <td>@f.Sec</td>
                                     <td>@((MarkupString)Mini(f.Contorno))</td>
-                                    <td><MudTextField T="string" Value="f.Nombre" ValueChanged="@(v => { f.Nombre = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" data-campo="nombre" /></td>
-                                    <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" Style="width:70px;" data-campo="talla" /></td>
-                                    <td><MudNumericField T="int" Value="f.Cant" Variant="Variant.Text" Margin="Margin.Dense" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Cant = v; f.Sucio = true; })" Style="width:70px;" data-campo="cant" /></td>
-                                    <td><MudNumericField T="int" Value="f.Esp" Variant="Variant.Text" Margin="Margin.Dense" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Esp = v; f.Sucio = true; })" Style="width:70px;" data-campo="esp" /></td>
-                                    <td><MudTextField T="string" Value="f.Giros" ValueChanged="@(v => { f.Giros = v; f.Sucio = true; })" Variant="Variant.Text" Margin="Margin.Dense" ReadOnly="_bloqueada" Style="width:110px;" data-campo="giros" /></td>
+                                    <td><MudTextField T="string" Value="f.Nombre" ValueChanged="@(v => { f.Nombre = v; f.Sucio = true; })" Variant="Variant.Text" ReadOnly="_bloqueada" data-campo="nombre" /></td>
+                                    <td><MudTextField T="string" Value="f.Talla" ValueChanged="@(v => { f.Talla = v; f.Sucio = true; })" Variant="Variant.Text" ReadOnly="_bloqueada" Style="width:70px;" data-campo="talla" /></td>
+                                    <td><MudNumericField T="int" Value="f.Cant" Variant="Variant.Text" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Cant = v; f.Sucio = true; })" Style="width:70px;" data-campo="cant" /></td>
+                                    <td><MudNumericField T="int" Value="f.Esp" Variant="Variant.Text" Min="0" ReadOnly="_bloqueada" ValueChanged="@(v => { f.Esp = v; f.Sucio = true; })" Style="width:70px;" data-campo="esp" /></td>
+                                    <td><MudTextField T="string" Value="f.Giros" ValueChanged="@(v => { f.Giros = v; f.Sucio = true; })" Variant="Variant.Text" ReadOnly="_bloqueada" Style="width:110px;" data-campo="giros" /></td>
                                     <td class="mono">@Medidas(f.Largo, f.Alto)</td>
                                     <td class="mono">@((f.Area / 100m).ToString("0.#", CultureInfo.CurrentCulture))</td>
                                     <td>
@@ -155,18 +155,18 @@
             @* ===================== TIZADO ===================== *@
             <MudTabPanel Text="Tizado" Icon="@Icons.Material.Filled.GridView" data-pestana="tizado">
                 <div class="d-flex align-center gap-2 flex-wrap mb-2" data-zona="parametros">
-                    <MudNumericField T="double" @bind-Value="_ancho" Label="Ancho de tela (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="100" Max="5000" Style="max-width:160px;" data-campo="ancho" />
-                    <MudNumericField T="double" @bind-Value="_separacion" Label="Separación (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="50" Style="max-width:140px;" data-campo="separacion" />
-                    <MudNumericField T="double" @bind-Value="_margen" Label="Margen (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="100" Style="max-width:130px;" data-campo="margen" />
-                    <MudNumericField T="double" @bind-Value="_celda" Label="Celda (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Max="20" Style="max-width:120px;" data-campo="celda" />
-                    <MudNumericField T="int" @bind-Value="_intentos" Label="Intentos" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Max="30" Style="max-width:110px;" data-campo="intentos" />
+                    <MudNumericField T="double" @bind-Value="_ancho" Label="Ancho de tela (mm)" Variant="Variant.Outlined" Min="100" Max="5000" Style="max-width:160px;" data-campo="ancho" />
+                    <MudNumericField T="double" @bind-Value="_separacion" Label="Separación (mm)" Variant="Variant.Outlined" Min="0" Max="50" Style="max-width:140px;" data-campo="separacion" />
+                    <MudNumericField T="double" @bind-Value="_margen" Label="Margen (mm)" Variant="Variant.Outlined" Min="0" Max="100" Style="max-width:130px;" data-campo="margen" />
+                    <MudNumericField T="double" @bind-Value="_celda" Label="Celda (mm)" Variant="Variant.Outlined" Min="1" Max="20" Style="max-width:120px;" data-campo="celda" />
+                    <MudNumericField T="int" @bind-Value="_intentos" Label="Intentos" Variant="Variant.Outlined" Min="1" Max="30" Style="max-width:110px;" data-campo="intentos" />
                 </div>
                 <MudText Typo="Typo.caption" Style="opacity:.7;">Celda más chica = más precisión y más tiempo. Más intentos = prueba más órdenes de colocación y se queda con el de menor largo.</MudText>
 
                 <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Telas a rayas o cuadros</MudText>
                 <div class="d-flex align-center gap-2 flex-wrap" data-zona="rayas">
-                    <MudNumericField T="double" @bind-Value="_periodoX" Label="Periodo de la raya en el largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-x" />
-                    <MudNumericField T="double" @bind-Value="_periodoY" Label="Periodo en el ancho, cuadros (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-y" />
+                    <MudNumericField T="double" @bind-Value="_periodoX" Label="Periodo de la raya en el largo (mm)" Variant="Variant.Outlined" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-x" />
+                    <MudNumericField T="double" @bind-Value="_periodoY" Label="Periodo en el ancho, cuadros (mm)" Variant="Variant.Outlined" Min="0" Max="5000" Style="max-width:230px;" data-campo="periodo-y" />
                 </div>
                 <MudText Typo="Typo.caption" Style="opacity:.7;">0 = tela lisa. Los moldes con coincidencia de rayas (botón de rayas en la pestaña Moldes) quedan con su punto sobre una raya; el tizado sale más largo.</MudText>
 
@@ -175,18 +175,18 @@
                 {
                     var def = d;
                     <div class="d-flex align-center gap-2 flex-wrap mb-1" data-defecto="@def.Nombre">
-                        <MudTextField T="string" @bind-Value="def.Nombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:200px;" data-campo="def-nombre" />
-                        <MudTextField T="string" @bind-Value="def.Contorno" Label="Contorno x,y x,y ... (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:320px;flex:1;" data-campo="def-contorno" />
+                        <MudTextField T="string" @bind-Value="def.Nombre" Label="Nombre" Variant="Variant.Outlined" MaxLength="100" Style="max-width:200px;" data-campo="def-nombre" />
+                        <MudTextField T="string" @bind-Value="def.Contorno" Label="Contorno x,y x,y ... (mm)" Variant="Variant.Outlined" Style="min-width:320px;flex:1;" data-campo="def-contorno" />
                         <MudIconButton Icon="@Icons.Material.Filled.Polyline" Size="Size.Small" OnClick="@(() => EditarDefectoAsync(def))" data-accion="editar-defecto" />
                         <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="@(() => _defectos.Remove(def))" data-accion="quitar-defecto" />
                     </div>
                 }
                 <div class="d-flex align-center gap-2 flex-wrap" data-zona="nuevo-defecto">
-                    <MudTextField T="string" @bind-Value="_defNombre" Label="Nombre" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:180px;" data-campo="nd-nombre" />
-                    <MudNumericField T="double" @bind-Value="_defX" Label="Desde X (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:120px;" data-campo="nd-x" />
-                    <MudNumericField T="double" @bind-Value="_defY" Label="Desde Y (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:120px;" data-campo="nd-y" />
-                    <MudNumericField T="double" @bind-Value="_defLargo" Label="Largo (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="nd-largo" />
-                    <MudNumericField T="double" @bind-Value="_defAncho" Label="Ancho (mm)" Variant="Variant.Outlined" Margin="Margin.Dense" Min="1" Style="max-width:120px;" data-campo="nd-ancho" />
+                    <MudTextField T="string" @bind-Value="_defNombre" Label="Nombre" Variant="Variant.Outlined" MaxLength="100" Style="max-width:180px;" data-campo="nd-nombre" />
+                    <MudNumericField T="double" @bind-Value="_defX" Label="Desde X (mm)" Variant="Variant.Outlined" Min="0" Style="max-width:120px;" data-campo="nd-x" />
+                    <MudNumericField T="double" @bind-Value="_defY" Label="Desde Y (mm)" Variant="Variant.Outlined" Min="0" Style="max-width:120px;" data-campo="nd-y" />
+                    <MudNumericField T="double" @bind-Value="_defLargo" Label="Largo (mm)" Variant="Variant.Outlined" Min="1" Style="max-width:120px;" data-campo="nd-largo" />
+                    <MudNumericField T="double" @bind-Value="_defAncho" Label="Ancho (mm)" Variant="Variant.Outlined" Min="1" Style="max-width:120px;" data-campo="nd-ancho" />
                     <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AgregarDefecto" data-accion="agregar-defecto">Agregar defecto</MudButton>
                     <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Polyline" OnClick="DibujarDefectoAsync" data-accion="forma-defecto">Dibujar otra forma…</MudButton>
                 </div>
@@ -203,7 +203,7 @@
                         @foreach (var t in _prendas.Keys.ToList())
                         {
                             var talla = t;
-                            <MudNumericField T="int" Value="_prendas[talla]" ValueChanged="@(v => _prendas[talla] = v)" Label="@(talla == "U" ? "Prendas (talla única)" : $"Talla {talla}")" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" Style="max-width:150px;" data-talla="@talla" />
+                            <MudNumericField T="int" Value="_prendas[talla]" ValueChanged="@(v => _prendas[talla] = v)" Label="@(talla == "U" ? "Prendas (talla única)" : $"Talla {talla}")" Variant="Variant.Outlined" Min="0" Style="max-width:150px;" data-talla="@talla" />
                         }
                     </div>
                     <MudText Typo="Typo.caption" Style="opacity:.7;">Los moldes de talla U (única) se cortan para todas las prendas.</MudText>
@@ -211,7 +211,7 @@
 
                 <div class="d-flex align-center gap-2 flex-wrap mt-3 mb-2">
                     <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.PlayArrow" Disabled="@(_trabajando || _prendas.Count == 0)" OnClick="CalcularAsync" data-accion="calcular">Calcular</MudButton>
-                    <MudTextField @bind-Value="_nombreTizado" Label="Nombre del tizado" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" Style="max-width:260px;" data-campo="nombre-tizado" />
+                    <MudTextField @bind-Value="_nombreTizado" Label="Nombre del tizado" Variant="Variant.Outlined" MaxLength="100" Style="max-width:260px;" data-campo="nombre-tizado" />
                     <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" Disabled="@(_trabajando || _prendas.Count == 0 || string.IsNullOrWhiteSpace(_nombreTizado))" OnClick="GuardarTizadoAsync" data-accion="guardar-tizado">Calcular y guardar</MudButton>
                 </div>
                 @if (_calculando) { <MudProgressLinear Indeterminate="true" data-calculando="1" /> <MudText Typo="Typo.caption">Calculando en el servidor… puede tardar unos segundos.</MudText> }

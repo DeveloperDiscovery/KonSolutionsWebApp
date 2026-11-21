@@ -24,7 +24,7 @@
                 <MudText Typo="Typo.caption" Color="Color.Error" Class="mb-2">@_errorSunat</MudText>
             }
             <MudNumericField T="int?" @bind-Value="_model.VAL_LONGITUD" Label="Longitud"
-                             Variant="Variant.Outlined" Margin="Margin.Dense" Min="1"
+                             Variant="Variant.Outlined" Min="1"
                              ReadOnly="_readonly" Class="mb-3" />
             <div class="my-3">
                 <ImagePicker Image="_model.IMG_ICONO" ImageChanged="@(v => _model.IMG_ICONO = v)"

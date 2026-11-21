@@ -68,7 +68,7 @@
                         <MudText Typo="Typo.overline" Style="opacity:.7;">Asignar una matriz</MudText>
                         <AriaCombo TItem="ComboboxItem" Items="_opcionesMatriz" TextFunc="@(c => c.Texto)" ValueFunc="@(c => c.Id)" @bind-Value="_matriz" Label="Matriz de operaciones" />
                         @if (_matrices.Count == 0) { <MudText Typo="Typo.caption" Style="opacity:.65;" data-vacio="matrices">Todavía no hay matrices. Créalas en «Matrices de operaciones» o guarda la ruta de otra versión como matriz.</MudText> }
-                        <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" data-campo="fecha" />
+                        <MudDatePicker T="DateTime?" @bind-Date="_fecha" Label="Tiempos vigentes al" Variant="Variant.Outlined" Class="mt-2" data-campo="fecha" />
                         <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Se hace una copia independiente; los tiempos de cada operación se toman de la versión vigente a esa fecha.</MudText>
                         <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrEmpty(_matriz) || _trabajando)" OnClick="AsignarMatrizAsync" data-accion="asignar-matriz">Asignar matriz</MudButton>
                         @if (_reemplazando) { <MudButton Class="mt-2 ml-2" Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => _reemplazando = false)" data-accion="cancelar-reemplazo">Cancelar</MudButton> }
@@ -80,14 +80,14 @@
                         <MudPaper Outlined="true" Class="pa-3" data-tarjeta="copiar">
                             <MudText Typo="Typo.overline" Style="opacity:.7;">Copiar de otra ruta</MudText>
                             <AriaCombo TItem="ComboboxItem" Items="_rutas" TextFunc="@(c => $"{c.Id} - {c.Texto}")" ValueFunc="@(c => c.Id)" @bind-Value="_origen" Label="Ruta a copiar" />
-                            <MudTextField T="string" @bind-Value="_nombreCopia" Label="Nombre (opcional)" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" Disabled="SoloLectura" />
+                            <MudTextField T="string" @bind-Value="_nombreCopia" Label="Nombre (opcional)" MaxLength="50" Variant="Variant.Outlined" Class="mt-2" Disabled="SoloLectura" />
                             <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrEmpty(_origen) || _trabajando)" OnClick="CopiarAsync" data-accion="copiar">Copiar ruta</MudButton>
                         </MudPaper>
                     </MudItem>
                     <MudItem xs="12" md="3">
                         <MudPaper Outlined="true" Class="pa-3" data-tarjeta="vacia">
                             <MudText Typo="Typo.overline" Style="opacity:.7;">Empezar en blanco</MudText>
-                            <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la ruta" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="SoloLectura" data-campo="nombre" />
+                            <MudTextField T="string" @bind-Value="_nombre" Label="Nombre de la ruta" MaxLength="50" Variant="Variant.Outlined" Disabled="SoloLectura" data-campo="nombre" />
                             <MudButton Class="mt-2" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(SoloLectura || string.IsNullOrWhiteSpace(_nombre) || _trabajando)" OnClick="CrearAsync" data-accion="crear">Crear ruta</MudButton>
                         </MudPaper>
                     </MudItem>

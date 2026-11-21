@@ -14,22 +14,22 @@
         else
         {
             <div class="d-flex gap-3">
-                <MudTextField T="string" @bind-Value="_m.COD_ARMADO" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
-                <MudTextField T="string" @bind-Value="_m.DES_ARMADO" Label="Nombre del armado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
+                <MudTextField T="string" @bind-Value="_m.COD_ARMADO" Label="Código" Variant="Variant.Outlined" Disabled="@(!_nuevo || _soloLectura)" MaxLength="10" Style="max-width:150px;" data-campo="cod" />
+                <MudTextField T="string" @bind-Value="_m.DES_ARMADO" Label="Nombre del armado" Variant="Variant.Outlined" Disabled="_soloLectura" MaxLength="100" data-campo="des" />
             </div>
             <div class="d-flex gap-3 mt-2">
-                <MudSelect T="string" Value="_m.COD_RUTA_PRODUCCION" ValueChanged="CambiaRuta" Label="Ruta de producción" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="ruta">
+                <MudSelect T="string" Value="_m.COD_RUTA_PRODUCCION" ValueChanged="CambiaRuta" Label="Ruta de producción" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="ruta">
                     @foreach (var p in Lista("rutas")) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
                 </MudSelect>
-                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso de la ruta" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="proceso">
+                <MudSelect T="string" Value="_m.COD_PROCESO" ValueChanged="CambiaProceso" Label="Proceso de la ruta" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="proceso">
                     @foreach (var p in ProcesosDeLaRuta()) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
             </div>
             <div class="d-flex gap-3 mt-2">
-                <MudSelect T="string" Value="_m.COD_LINEA_PRODUCCION" ValueChanged="CambiaLinea" Label="Línea de producción (opcional)" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="linea">
+                <MudSelect T="string" Value="_m.COD_LINEA_PRODUCCION" ValueChanged="CambiaLinea" Label="Línea de producción (opcional)" Variant="Variant.Outlined" Disabled="_soloLectura" Clearable="true" data-campo="linea">
                     @foreach (var p in Lista("lineas").Where(l => l.DES_DETALLE == _m.COD_PROCESO)) { <MudSelectItem T="string" Value="@p.COD">@p.COD · @p.DES</MudSelectItem> }
                 </MudSelect>
-                <MudSelect T="string" @bind-Value="_m.COD_TIPO_DISTRIBUCION" Label="Disposición" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="distribucion">
+                <MudSelect T="string" @bind-Value="_m.COD_TIPO_DISTRIBUCION" Label="Disposición" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="distribucion">
                     @foreach (var p in Lista("distribuciones")) { <MudSelectItem T="string" Value="@p.COD">@p.DES</MudSelectItem> }
                 </MudSelect>
             </div>
@@ -41,15 +41,15 @@
                     : "Los operarios se reparten el trabajo: ciclo = minutos totales ÷ operarios totales.")@(dis.FLG_2 == true ? " Las precedencias de la ruta se respetan." : " No exige precedencias.")</MudText>
             }
             <div class="d-flex gap-3 mt-2">
-                <MudNumericField T="decimal?" @bind-Value="_turno" Label="Minutos del turno" Min="1m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="turno" />
-                <MudNumericField T="decimal?" @bind-Value="_eficiencia" Label="Eficiencia (%)" Min="1m" Max="100m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" data-campo="eficiencia" />
-                <MudNumericField T="decimal?" @bind-Value="_m.VAL_META_UNIDADES" Label="Meta de unidades por turno" Min="1m" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Clearable="true" data-campo="meta" />
+                <MudNumericField T="decimal?" @bind-Value="_turno" Label="Minutos del turno" Min="1m" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="turno" />
+                <MudNumericField T="decimal?" @bind-Value="_eficiencia" Label="Eficiencia (%)" Min="1m" Max="100m" Variant="Variant.Outlined" Disabled="_soloLectura" data-campo="eficiencia" />
+                <MudNumericField T="decimal?" @bind-Value="_m.VAL_META_UNIDADES" Label="Meta de unidades por turno" Min="1m" Variant="Variant.Outlined" Disabled="_soloLectura" Clearable="true" data-campo="meta" />
             </div>
             <MudText Typo="Typo.caption" Class="mt-1" Style="opacity:.65;">Takt = minutos del turno × eficiencia ÷ meta. Sin meta no hay takt y no se puede sugerir el balance.</MudText>
-            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
+            <MudTextField T="string" @bind-Value="_m.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mt-2" data-campo="obs" />
             @if (!_nuevo)
             {
-                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mt-2" Style="max-width:200px;" data-campo="estado">
                     <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
                     <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
                 </MudSelect>

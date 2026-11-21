@@ -12,12 +12,19 @@
         }
         else
         {
-            <MudTextField T="string" @bind-Value="_m.COD" Label="Código" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(!_nuevo || _soloLectura)" MaxLength="@(Clave == "categorias" || Clave == "distribuciones" ? 3 : 5)" Class="mb-2" data-campo="cod" />
-            <MudTextField T="string" @bind-Value="_m.DES" Label="Descripción" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" MaxLength="50" Class="mb-2" data-campo="des" />
+            <MudTextField T="string" @bind-Value="_m.COD" Label="Código" Variant="Variant.Outlined" Disabled="@(!_nuevo || _soloLectura)" MaxLength="@(Clave == "materiales" ? 2 : Clave == "categorias" || Clave == "distribuciones" ? 3 : 5)" Class="mb-2" data-campo="cod" />
+            <MudTextField T="string" @bind-Value="_m.DES" Label="Descripción" Variant="Variant.Outlined" Disabled="_soloLectura" MaxLength="50" Class="mb-2" data-campo="des" />
             @if (Clave == "categorias")
             {
-                <MudTextField T="string" @bind-Value="_m.DES_DETALLE" Label="Criterio" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mb-2" data-campo="criterio" />
-                <MudNumericField T="int?" @bind-Value="_m.NUM_ORDEN" Label="Orden de presentación" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mb-2" data-campo="orden" />
+                <MudTextField T="string" @bind-Value="_m.DES_DETALLE" Label="Criterio" Variant="Variant.Outlined" Disabled="_soloLectura" Lines="2" MaxLength="500" Class="mb-2" data-campo="criterio" />
+                <MudNumericField T="int?" @bind-Value="_m.NUM_ORDEN" Label="Orden de presentación" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mb-2" data-campo="orden" />
+            }
+            @if (Clave == "materiales")
+            {
+                <MudTextField T="string" @bind-Value="_m.COD_REGLA" Label="Abreviatura (se ve junto al insumo en el árbol)" Variant="Variant.Outlined" Disabled="_soloLectura" MaxLength="10" Class="mb-2" data-campo="abreviatura" />
+                <MudTextField T="string" @bind-Value="_m.DES_DETALLE" Label="Ejemplos" Variant="Variant.Outlined" Disabled="_soloLectura" Lines="2" MaxLength="100" Class="mb-2" data-campo="ejemplos" />
+                <MudNumericField T="int?" @bind-Value="_m.NUM_ORDEN" Label="Orden de presentación" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mb-2" data-campo="orden" />
+                <MudSwitch T="bool" Value="_m.FLG_1 == true" ValueChanged="@(v => _m.FLG_1 = v)" Label="Habilitado (los deshabilitados no se ofrecen en el insumo)" Color="Color.Primary" Disabled="_soloLectura" data-campo="habilitado" />
             }
             @if (Clave == "maquinas")
             {
@@ -25,16 +32,16 @@
             }
             @if (Clave == "distribuciones")
             {
-                <MudSelect T="string" @bind-Value="_m.COD_REGLA" Label="Regla de ciclo" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mb-2" data-campo="regla">
+                <MudSelect T="string" @bind-Value="_m.COD_REGLA" Label="Regla de ciclo" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mb-2" data-campo="regla">
                     <MudSelectItem T="string" Value="@("MAX_PUESTO")">MAX_PUESTO · el ciclo lo marca el puesto más lento</MudSelectItem>
                     <MudSelectItem T="string" Value="@("SUMA_OPERARIOS")">SUMA_OPERARIOS · ΣSAM entre los operarios del equipo</MudSelectItem>
                 </MudSelect>
                 <MudSwitch T="bool" Value="_m.FLG_1 == true" ValueChanged="@(v => _m.FLG_1 = v)" Label="Flujo de pieza en pieza (unitario)" Color="Color.Primary" Disabled="_soloLectura" data-campo="flujo" />
                 <MudSwitch T="bool" Value="_m.FLG_2 == true" ValueChanged="@(v => _m.FLG_2 = v)" Label="Exige precedencias entre operaciones" Color="Color.Primary" Disabled="_soloLectura" data-campo="precedencias" />
             }
-            @if (!_nuevo)
+            @if (!_nuevo && Clave != "materiales")
             {
-                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_soloLectura" Class="mt-2" data-campo="estado">
+                <MudSelect T="short" Value="_estado" ValueChanged="@(v => { _estado = v; _m.COD_ESTADO = v; _m.COD_TIPO_ESTADO = 54; })" Label="Estado" Variant="Variant.Outlined" Disabled="_soloLectura" Class="mt-2" data-campo="estado">
                     <MudSelectItem T="short" Value="(short)0">ACTIVO</MudSelectItem>
                     <MudSelectItem T="short" Value="(short)1">INACTIVO</MudSelectItem>
                 </MudSelect>
@@ -58,7 +65,7 @@
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public CatalogoOperacionItem? Item { get; set; }
     [Parameter] public CrudModo Modo { get; set; } = CrudModo.Create;
-    /// <summary>categorias, maquinas, metodos o distribuciones.</summary>
+    /// <summary>categorias, maquinas, metodos, distribuciones o materiales.</summary>
     [Parameter] public string Clave { get; set; } = "categorias";
     [Parameter] public string Ruta { get; set; } = "";
 
@@ -71,7 +78,7 @@
     protected override void OnInitialized()
     {
         _nuevo = Modo == CrudModo.Create;
-        _m = Item is null ? new CatalogoOperacionItem { COD_REGLA = Clave == "distribuciones" ? "MAX_PUESTO" : null, FLG_1 = Clave == "maquinas" }
+        _m = Item is null ? new CatalogoOperacionItem { COD_REGLA = Clave == "distribuciones" ? "MAX_PUESTO" : null, FLG_1 = Clave == "maquinas" || Clave == "materiales" }
             : new CatalogoOperacionItem
             {
                 COD = Item.COD, DES = Item.DES, DES_DETALLE = Item.DES_DETALLE, NUM_ORDEN = Item.NUM_ORDEN, FLG_1 = Item.FLG_1, FLG_2 = Item.FLG_2, COD_REGLA = Item.COD_REGLA,

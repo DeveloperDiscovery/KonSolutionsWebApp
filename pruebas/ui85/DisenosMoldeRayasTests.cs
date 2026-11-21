@@ -24,6 +24,7 @@ public class DisenosMoldeRayasTests : TestContext
         return p;
     }
 
+    static string Texto(IRenderedComponent<MudDialogProvider> p, string sel) => p.Find(sel).TextContent;
     static async Task<DisenosMoldeRayasDialog.Resultado?> Res(IDialogReference r) => (await r.Result)?.Data as DisenosMoldeRayasDialog.Resultado;
 
     [Fact]
@@ -126,5 +127,51 @@ public class DisenosMoldeRayasTests : TestContext
         var p = await Abre(x: true, px: 1, py: 1);
         p.Find("[data-accion='centro']").Click();
         Assert.Equal("50", p.Find("[data-campo='punto-x']").GetAttribute("value")); Assert.Equal("25", p.Find("[data-campo='punto-y']").GetAttribute("value"));
+    }
+
+    [Fact]
+    public async Task ActivarYBorrarElPunto_AlAceptar_PideElPunto()
+    {
+        var p = await Abre();
+        p.Find("[data-campo='coincide-x']").Change(true);
+        p.WaitForAssertion(() => Assert.Equal("50", p.Find("[data-campo='punto-x']").GetAttribute("value")));
+        p.Find("[data-campo='punto-x']").Change("");
+        p.Find("[data-accion='aceptar']").Click();
+        Assert.Contains("indica el punto", Texto(p, "[data-error]")); Assert.False(_ref!.Result.IsCompleted);
+    }
+
+    [Theory]
+    [InlineData(10, 60, "dentro de la caja")]          // Y pasa del ancho de la caja (50)
+    [InlineData(-1, 10, "dentro de la caja")]          // X negativa
+    [InlineData(101, 10, "dentro de la caja")]         // X pasa del largo (100)
+    public async Task PuntoFueraDeLaCaja_Rechaza(double px, double py, string mensaje)
+    {
+        var p = await Abre(x: true, px: px, py: py);
+        p.Find("[data-accion='aceptar']").Click();
+        Assert.Contains(mensaje, Texto(p, "[data-error]")); Assert.False(_ref!.Result.IsCompleted);
+    }
+
+    [Fact]
+    public async Task FaseEnYFueraDeRango_Rechaza()
+    {
+        var p = await Abre(y: true, px: 10, py: 10);
+        p.Find("[data-campo='fase-y']").Change("100001");
+        p.Find("[data-accion='aceptar']").Click();
+        Assert.Contains("fase", Texto(p, "[data-error]"));
+    }
+
+    [Fact]
+    public async Task LasLineasGuiaSoloSeDibujanEnLosSentidosActivados()
+    {
+        var p = await Abre(y: true, px: 10, py: 10);
+        Assert.Empty(p.FindAll("line[data-eje='x']")); Assert.Single(p.FindAll("line[data-eje='y']"));
+    }
+
+    [Fact]
+    public async Task ElPuntoSeDibujaRelativoALaCajaDelMolde_NoALaOrigenDelPlano()
+    {
+        var p = await Abre(contorno: "100,200 150,200 150,230 100,230", x: true, px: 10, py: 10);
+        var c = p.Find("circle[data-punto]");
+        Assert.Equal("110", c.GetAttribute("cx")); Assert.Equal("210", c.GetAttribute("cy"));
     }
 }

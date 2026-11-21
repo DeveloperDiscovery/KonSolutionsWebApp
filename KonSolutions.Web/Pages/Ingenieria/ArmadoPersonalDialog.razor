@@ -46,7 +46,7 @@
                         </tbody></table>
                         @if (libres > 0)
                         {
-                            <MudSelect T="int" Value="0" ValueChanged="@(v => Agregar(p, v))" Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense" Label="Agregar persona" Class="mt-1" data-campo="agregar">
+                            <MudSelect T="int" Value="0" ValueChanged="@(v => Agregar(p, v))" Dense="true" Variant="Variant.Outlined" Label="Agregar persona" Class="mt-1" data-campo="agregar">
                                 @foreach (var c in Candidatos(p)) { <MudSelectItem T="int" Value="@c.COD_ENTIDAD_PERSONAL">@c.COD_PERSONAL · @c.DES_PERSONAL · @c.COD_CATEGORIA_OCUPACIONAL@(string.IsNullOrEmpty(c.DES_OPERACION) ? "" : " · hace " + c.DES_OPERACION)</MudSelectItem> }
                             </MudSelect>
                         }

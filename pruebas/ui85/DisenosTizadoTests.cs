@@ -1127,4 +1127,17 @@ public class DisenosTizadoTests : TestContext
         Btn(p, "guardar").Click();
         p.WaitForAssertion(() => Assert.True(_f.Calls.Count(c => c.M == "GET" && c.U.EndsWith("/tizados/D1/3")) > lecturas));
     }
+
+    [Theory]
+    [InlineData(0.3, "success")]
+    [InlineData(2.0, "warning")]
+    public async Task Resultado_ElAvisoDeCoincidencia_EsVerdeSiElDesvioEsChico_YAmarilloSiNo(double error, string clase)
+    {
+        _f.Moldes = new() { FakeTizado.M(1, "Cuerpo") };
+        _f.Calculo.Geometria.Colocadas = new() { new DisenosTizadoPieza { PiezaId = "1", Puntos = "0,0 10,0 10,10", Coincidencia = "5,5", ErrorX = error } };
+        var p = await AbreTizado();
+        Btn(p, "calcular").Click();
+        p.WaitForAssertion(() => Assert.NotEmpty(p.FindAll("[data-aviso='coincidencia']")));
+        Assert.Contains(clase, p.Find("[data-aviso='coincidencia']").ClassName ?? "");
+    }
 }

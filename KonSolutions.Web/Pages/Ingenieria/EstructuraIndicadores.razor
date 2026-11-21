@@ -1,0 +1,110 @@
+@* Iconos de un renglon del arbol de la estructura: insumo pivote, formula asignada y tizado. Cada icono muestra una ficha (la misma tarjeta del diagrama:
+   franja de color, etiqueta del tipo, titulo, filas y total) con el detalle al pasar el mouse. *@
+@using KONSolutions.Shared.Models.Ingenieria
+
+<style>
+    .ind { display:inline-flex; align-items:center; margin-left:4px; cursor:help; }
+    /* el tooltip de MudBlazor solo hace de soporte: la tarjeta trae su propio marco */
+    .mud-tooltip.ind-tip { background:transparent !important; padding:0 !important; box-shadow:none !important; }
+    .ind-tarjeta { --fc:var(--mud-palette-text-disabled); box-sizing:border-box; width:max-content; min-width:230px; max-width:420px; text-align:left; white-space:normal;
+        background:var(--mud-palette-surface, #fff); color:var(--mud-palette-text-primary, #1b2a3a); font-size:12px; line-height:1.35;
+        border:1px solid var(--mud-palette-lines-default, #d8d8d8); border-left:6px solid var(--fc); border-radius:8px; padding:9px 12px 10px;
+        box-shadow:0 10px 28px rgba(0,0,0,.24), 0 2px 6px rgba(0,0,0,.14); }
+    .ind-mat { font-size:.66rem; font-weight:700; letter-spacing:.04em; padding:0 6px; border-radius:8px; border:1px solid var(--mud-palette-lines-inputs); background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); }
+    .ind-tarjeta.ind-k-material { --fc:var(--mud-palette-primary); }
+    .ind-tarjeta.ind-k-pivote { --fc:var(--mud-palette-warning); } .ind-tarjeta.ind-k-formula { --fc:var(--mud-palette-success); } .ind-tarjeta.ind-k-tizado { --fc:var(--mud-palette-info); }
+    .ind-tarjeta.ind-ancha { max-width:none; }
+    .ind-cab { display:flex; align-items:center; margin-bottom:5px; }
+    .ind-tipo { font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; padding:1px 8px; border-radius:9px;
+        background:color-mix(in srgb, var(--fc) 16%, transparent); border:1px solid color-mix(in srgb, var(--fc) 55%, transparent); }
+    .ind-titulo { font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+    .ind-nota { opacity:.8; margin-top:4px; }
+    .ind-filas { margin-top:7px; border-top:1px solid var(--mud-palette-lines-default, #ddd); padding-top:4px; }
+    .ind-fila { display:flex; justify-content:space-between; gap:18px; padding:2px 0; }
+    .ind-fila + .ind-fila { border-top:1px dotted color-mix(in srgb, currentColor 18%, transparent); }
+    .ind-et { opacity:.66; white-space:nowrap; }
+    .ind-val { font-weight:600; text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .ind-total { display:flex; justify-content:space-between; gap:18px; margin-top:7px; padding:5px 8px; border-radius:6px; font-size:13px; font-weight:700; background:color-mix(in srgb, var(--fc) 13%, transparent); }
+    .ind-formula { display:flex; flex-wrap:nowrap; gap:3px; align-items:center; margin-top:7px; border-top:1px solid var(--mud-palette-lines-default, #ddd); padding-top:6px; }
+    .ind-ficha { padding:1px 8px; border-radius:5px; font-size:12px; font-weight:600; white-space:nowrap; }
+    .ind-mono { font-family:var(--mono-font,monospace); white-space:nowrap; }
+</style>
+
+@if (!string.IsNullOrWhiteSpace(Linea?.COD_TIPO_MATERIAL))
+{
+    <MudTooltip Placement="Placement.Top" Arrow="false" Class="ind-tip">
+        <TooltipContent>
+            <div class="ind-tarjeta ind-k-material" data-ficha-ind="tipo-material">
+                <div class="ind-cab"><span class="ind-tipo">Tipo de material</span></div>
+                <div class="ind-titulo">@Linea.COD_TIPO_MATERIAL - @Linea.DES_TIPO_MATERIAL</div>
+            </div>
+        </TooltipContent>
+        <ChildContent><span class="ind ind-mat" data-ind="tipo-material" tabindex="0" aria-label="@("Tipo de material: " + Linea.DES_TIPO_MATERIAL)">@(string.IsNullOrWhiteSpace(Linea.DES_ABREVIATURA_MATERIAL) ? Linea.COD_TIPO_MATERIAL : Linea.DES_ABREVIATURA_MATERIAL)</span></ChildContent>
+    </MudTooltip>
+}
+@if (Linea?.FLG_PIVOT == true)
+{
+    <MudTooltip Placement="Placement.Top" Arrow="false" Class="ind-tip">
+        <TooltipContent>
+            <div class="ind-tarjeta ind-k-pivote" data-ficha-ind="pivote">
+                <div class="ind-cab"><span class="ind-tipo">Pivote</span></div>
+                <div class="ind-titulo">Insumo pivote</div>
+                <div class="ind-nota">Sus datos se registran; no se calcula. El componente superior se calcula en base a este.</div>
+            </div>
+        </TooltipContent>
+        <ChildContent><span class="ind" data-ind="pivote" tabindex="0" aria-label="Insumo pivote"><MudIcon Icon="@Icons.Material.Filled.PushPin" Size="Size.Small" Color="Color.Warning" /></span></ChildContent>
+    </MudTooltip>
+}
+@if (Linea?.FLG_FORMULA == true)
+{
+    <MudTooltip Placement="Placement.Top" Arrow="false" Class="ind-tip">
+        <TooltipContent>
+            <div class="ind-tarjeta ind-k-formula ind-ancha" data-ficha-ind="formula">
+                <div class="ind-cab"><span class="ind-tipo">Fórmula</span></div>
+                <div class="ind-titulo">Estructura de la fórmula</div>
+                @if (Fichas is { Count: > 0 })
+                {
+                    <div class="ind-formula" data-formula-fichas-ind="1">
+                        @foreach (var f in Fichas)
+                        {
+                            <span class="ind-ficha" style="@($"background:{(string.IsNullOrWhiteSpace(f.DES_BACKCOLOR) ? "#555" : f.DES_BACKCOLOR)};color:{(string.IsNullOrWhiteSpace(f.DES_FORECOLOR) ? "#fff" : f.DES_FORECOLOR)};")" title="@f.DES_COMPONENTE_FORMULACION">@f.DES_ELEMENTO_MASCARA_FORMULA</span>
+                        }
+                    </div>
+                }
+                else { <div class="ind-filas"><span class="ind-mono">@(string.IsNullOrWhiteSpace(Linea.DES_MASCARA_FORMULA) ? "(sin texto)" : Linea.DES_MASCARA_FORMULA)</span></div> }
+                <div class="ind-total"><span>Cantidad total</span><span>@(Linea.CAN_TOTAL?.ToString("0.######") ?? "sin calcular")</span></div>
+            </div>
+        </TooltipContent>
+        <ChildContent><span class="ind" data-ind="formula" tabindex="0" aria-label="Tiene fórmula asignada"><MudIcon Icon="@Icons.Material.Filled.Functions" Size="Size.Small" Color="Color.Success" /></span></ChildContent>
+    </MudTooltip>
+}
+@if (Tizado is { NUM_TIZADOS: > 0 })
+{
+    <MudTooltip Placement="Placement.Top" Arrow="false" Class="ind-tip">
+        <TooltipContent>
+            <div class="ind-tarjeta ind-k-tizado" data-ficha-ind="tizado">
+                <div class="ind-cab"><span class="ind-tipo">Tizado</span></div>
+                <div class="ind-titulo">@Tizado.NUM_TIZADOS guardado@(Tizado.NUM_TIZADOS == 1 ? "" : "s")</div>
+                <div class="ind-filas">
+                    <div class="ind-fila"><span class="ind-et">Último</span><span class="ind-val">@Tizado.DES_TIZADO</span></div>
+                    <div class="ind-fila"><span class="ind-et">Ancho de tela</span><span class="ind-val">@Tizado.VAL_ANCHO_TELA?.ToString("0.##")</span></div>
+                    <div class="ind-fila"><span class="ind-et">Eficiencia</span><span class="ind-val">@Tizado.VAL_EFICIENCIA?.ToString("0.##") %</span></div>
+                    <div class="ind-fila"><span class="ind-et">Consumo por prenda</span><span class="ind-val">@Tizado.VAL_CONSUMO_PRENDA?.ToString("0.####")</span></div>
+                    <div class="ind-fila"><span class="ind-et">Prendas</span><span class="ind-val">@Tizado.NUM_PRENDAS</span></div>
+                    <div class="ind-fila"><span class="ind-et">Tallas</span><span class="ind-val">@Tizado.DES_TALLAS</span></div>
+                    @if (Tizado.FEC_TIZADO is DateTime f) { <div class="ind-fila"><span class="ind-et">Guardado</span><span class="ind-val">@f.ToString("dd/MM/yyyy HH:mm")</span></div> }
+                </div>
+            </div>
+        </TooltipContent>
+        <ChildContent><span class="ind" data-ind="tizado" tabindex="0" aria-label="Tiene tizado"><MudIcon Icon="@Icons.Material.Filled.ContentCut" Size="Size.Small" Color="Color.Info" /></span></ChildContent>
+    </MudTooltip>
+}
+
+@code {
+    /// <summary>Indicadores de la linea (insumo): pivote y formula.</summary>
+    [Parameter] public DisenosEstructuraIndicador? Linea { get; set; }
+    /// <summary>Las fichas de la formula de la linea, en orden, con los colores de sus componentes.</summary>
+    [Parameter] public IReadOnlyList<DisenosEstructuraFormulaDiagrama>? Fichas { get; set; }
+    /// <summary>Indicadores de la version cuyo tizado se muestra (la del renglon, o la del subensamble al que esta enlazado).</summary>
+    [Parameter] public DisenosEstructuraIndicador? Tizado { get; set; }
+}

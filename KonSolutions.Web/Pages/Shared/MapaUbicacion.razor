@@ -11,7 +11,7 @@
     {
         <div class="d-flex gap-2 mb-2">
             <CampoTextoEstable @bind-Value="_busqueda" Label="Buscar dirección en el mapa"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" Class="flex-grow-1"
+                          Variant="Variant.Outlined" Class="flex-grow-1"
                           Style="font-family:var(--control-font, inherit);font-size:var(--control-size, 14px);"
                           OnKeyDown="@(async e => { if (e.Key == "Enter") await BuscarAsync(); })" />
             <MudButton Variant="Variant.Filled" Style="@EstilosBoton.Confirmar" Disabled="@(_buscando || _errorCarga)" OnClick="BuscarAsync">
@@ -28,9 +28,9 @@
     <div @ref="_mapEl" style="height:@Height;border-radius:8px;border:1px solid var(--line, #3a342c);display:@(_errorCarga ? "none" : "block");"></div>
     <div class="d-flex gap-3 mt-2">
         <MudNumericField T="decimal?" Value="Latitud" ValueChanged="OnLatitudChanged" Label="Latitud"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" Format="F6" Class="flex-grow-1" />
+                          Variant="Variant.Outlined" Disabled="Disabled" Format="F6" Class="flex-grow-1" />
         <MudNumericField T="decimal?" Value="Longitud" ValueChanged="OnLongitudChanged" Label="Longitud"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" Format="F6" Class="flex-grow-1" />
+                          Variant="Variant.Outlined" Disabled="Disabled" Format="F6" Class="flex-grow-1" />
     </div>
 </div>
 

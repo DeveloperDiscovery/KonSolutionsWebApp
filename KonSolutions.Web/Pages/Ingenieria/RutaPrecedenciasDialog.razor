@@ -9,11 +9,11 @@
     <DialogContent>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         <div class="d-flex flex-wrap align-center gap-2 mb-2">
-            <MudSelect T="int" @bind-Value="_a" Label="Antecesora" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:230px;max-width:320px;" data-campo="antecesora">
+            <MudSelect T="int" @bind-Value="_a" Label="Antecesora" Variant="Variant.Outlined" Style="min-width:230px;max-width:320px;" data-campo="antecesora">
                 @foreach (var n in _hojas) { <MudSelectItem T="int" Value="@n.NUM_ESTRUCTURA_RUTA_PROCESO">@n.DES_OPERACION</MudSelectItem> }
             </MudSelect>
             <MudIcon Icon="@Icons.Material.Filled.ArrowForward" />
-            <MudSelect T="int" @bind-Value="_s" Label="Sucesora" Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:230px;max-width:320px;" data-campo="sucesora">
+            <MudSelect T="int" @bind-Value="_s" Label="Sucesora" Variant="Variant.Outlined" Style="min-width:230px;max-width:320px;" data-campo="sucesora">
                 @foreach (var n in _hojas) { <MudSelectItem T="int" Value="@n.NUM_ESTRUCTURA_RUTA_PROCESO">@n.DES_OPERACION</MudSelectItem> }
             </MudSelect>
             <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="Agregar" data-accion="agregar">Agregar</MudButton>

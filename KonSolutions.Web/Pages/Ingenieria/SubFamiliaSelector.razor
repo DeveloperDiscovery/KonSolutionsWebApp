@@ -1,0 +1,61 @@
+@* Grupo, familia y sub familia de producto en cascada (las tres juntas o ninguna). Avisa con OnCambio cada vez que cambia alguna. Lo usa el constructor de formulas
+   (sub familia del consumo y del producto). *@
+@using KONSolutions.Shared.Common
+@using FamiliasProductoModel = KONSolutions.Shared.Models.Estandar.FamiliasProducto
+@using SubFamiliasProductoModel = KONSolutions.Shared.Models.Estandar.SubFamiliasProducto
+@using EstandarRoute = KONSolutions.Web.Services.ApiRoutes.Estandar
+@inject HttpClient Http
+
+<div class="sfs campos-config" style="grid-template-columns:minmax(0,1fr);" data-sfs="@Id">
+    <MudText Typo="Typo.caption" Style="opacity:.7;">@Titulo</MudText>
+    <AriaCombo TItem="ComboboxItem" Items="_grupos" TextFunc="@(g => $"{g.Id} - {g.Texto}")" ValueFunc="@(g => g.Id)"
+               Value="@Grupo" ValueChanged="@(v => OnGrupo(v))" Label="Grupo de producto" Disabled="@Disabled" />
+    <AriaCombo TItem="ComboboxItem" Items="_familias" TextFunc="@(f => $"{f.Id} - {f.Texto}")" ValueFunc="@(f => f.Id)"
+               Value="@Familia" ValueChanged="@(v => OnFamilia(v))" Label="Familia de producto" Disabled="@(Disabled || string.IsNullOrEmpty(Grupo))" />
+    <AriaCombo TItem="ComboboxItem" Items="_subs" TextFunc="@(s => $"{s.Id} - {s.Texto}")" ValueFunc="@(s => s.Id)"
+               Value="@Sub" ValueChanged="@(v => OnSub(v))" Label="Sub familia de producto" Disabled="@(Disabled || string.IsNullOrEmpty(Familia))" />
+</div>
+
+@code {
+    /// <summary>Texto de arriba (por ejemplo "Sub familia del consumo").</summary>
+    [Parameter] public string Titulo { get; set; } = "";
+    /// <summary>Identifica este selector en la pagina (atributos de prueba).</summary>
+    [Parameter] public string Id { get; set; } = "sf";
+    [Parameter] public string? Grupo { get; set; }
+    [Parameter] public string? Familia { get; set; }
+    [Parameter] public string? Sub { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>Cambio de cualquiera de los tres: (grupo, familia, sub familia).</summary>
+    [Parameter] public EventCallback<(string? Grupo, string? Familia, string? Sub)> OnCambio { get; set; }
+
+    private List<ComboboxItem> _grupos = new(), _familias = new(), _subs = new();
+    private string? _cargadoGrupo, _cargadoFamilia;
+
+    private static string? Vacio(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    protected override async Task OnInitializedAsync()
+        => _grupos = (await Http.SafeGetAsync<List<ComboboxItem>>(EstandarRoute.GruposProductoCombobox)) ?? new();
+
+    // el padre puede cambiar los valores desde fuera (al elegir otra formula): se vuelven a cargar las listas que dependen de ellos
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Grupo != _cargadoGrupo) { _cargadoGrupo = Grupo; _familias = Grupo is null ? new() : await FamiliasDe(Grupo); _cargadoFamilia = null; }
+        if (Familia != _cargadoFamilia) { _cargadoFamilia = Familia; _subs = (Grupo is null || Familia is null) ? new() : await SubsDe(Grupo, Familia); }
+    }
+
+    private async Task<List<ComboboxItem>> FamiliasDe(string g)
+    {
+        var l = (await Http.SafeGetAsync<List<FamiliasProductoModel>>($"{EstandarRoute.FamiliasProducto}?codGrupoProducto={Uri.EscapeDataString(g)}")) ?? new();
+        return l.Select(f => new ComboboxItem { Id = f.COD_FAMILIA_PRODUCTO.Trim(), Texto = f.DES_FAMILIA_PRODUCTO }).ToList();
+    }
+
+    private async Task<List<ComboboxItem>> SubsDe(string g, string f)
+    {
+        var l = (await Http.SafeGetAsync<List<SubFamiliasProductoModel>>(EstandarRoute.SubFamiliasProductoLista(g, f))) ?? new();
+        return l.Select(s => new ComboboxItem { Id = s.COD_SUB_FAMILIA_PRODUCTO.Trim(), Texto = s.DES_SUB_FAMILIA_PRODUCTO }).ToList();
+    }
+
+    private Task OnGrupo(string? v) => OnCambio.InvokeAsync((Vacio(v), null, null));
+    private Task OnFamilia(string? v) => OnCambio.InvokeAsync((Grupo, Vacio(v), null));
+    private Task OnSub(string? v) => OnCambio.InvokeAsync((Grupo, Familia, Vacio(v)));
+}

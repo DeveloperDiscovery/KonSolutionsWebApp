@@ -8,7 +8,7 @@
     <DialogContent>
         @if (!string.IsNullOrEmpty(_error)) { <MudAlert Severity="Severity.Error" Dense="true" Class="mb-2" data-error="1">@_error</MudAlert> }
         <MudText Typo="Typo.caption" Class="mb-2">@(Nodo?.FLG_TIEMPO_PROPIO == true ? "Esta fila usa un SAM propio." : "Esta fila usa el tiempo del catálogo.") SAM actual: <b>@OperacionesApi.Min(Nodo?.VAL_SAM_PROPIO)</b> min</MudText>
-        <MudNumericField T="decimal?" @bind-Value="_sam" Label="SAM propio (min por unidad)" Min="0m" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="sam" />
+        <MudNumericField T="decimal?" @bind-Value="_sam" Label="SAM propio (min por unidad)" Min="0m" Variant="Variant.Outlined" data-campo="sam" />
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="@(() => MudDialog.Cancel())" data-accion="cancelar">Cancelar</MudButton>

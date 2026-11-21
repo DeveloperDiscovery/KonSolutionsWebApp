@@ -90,7 +90,7 @@
                 </div>
                 <div class="pa-3">
                     <div class="rep-grid4">
-                        <MudTextField T="string" @bind-Value="d.Fuente.DES_FUENTE" Label="Descripción *" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="100" />
+                        <MudTextField T="string" @bind-Value="d.Fuente.DES_FUENTE" Label="Descripción *" Variant="Variant.Outlined" MaxLength="100" />
                         <div>
                             <AriaCombo TItem="ReporteProcedimiento" Items="_procedimientos" SearchFunc="BuscarProcedimientos" MinCharacters="2"
                                        TextFunc="@(p => p.DES_NOMBRE + (p.FLG_REGISTRADO ? "  (ya registrado)" : ""))" ValueFunc="@(p => p.DES_NOMBRE)"
@@ -100,10 +100,10 @@
                         <AriaCombo TItem="ComboboxItem" Items="_aplicaciones" TextFunc="@(a => $"{a.Id} - {a.Texto}")" ValueFunc="@(a => a.Id)"
                                    Value="@d.Fuente.COD_APLICACION" ValueChanged="@(v => d.Fuente.COD_APLICACION = v)" Label="Módulo (opcional)" Class="" />
                         <MudNumericField T="int?" @bind-Value="d.Fuente.NUM_TIEMPO_MAXIMO" Label="Tiempo máximo (seg.)" Min="5" Max="1800"
-                                         Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="120" />
+                                         Variant="Variant.Outlined" Placeholder="120" />
                     </div>
                     <div class="rep-grid2 mt-2">
-                        <MudTextField T="string" @bind-Value="d.Fuente.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="500" />
+                        <MudTextField T="string" @bind-Value="d.Fuente.DES_OBSERVACION" Label="Observación" Variant="Variant.Outlined" MaxLength="500" />
                         <MudSwitch T="bool" @bind-Value="d.Fuente.FLG_HABILITADO" Label="Habilitada" Color="Color.Success" />
                     </div>
 
@@ -201,7 +201,7 @@
                             var x = p;
                             var campo = x.DES_PARAMETRO.TrimStart('@');
                             <MudTextField T="string" Label="@($"{x.DES_ETIQUETA ?? campo} ({Tipo(x)})")" Value="@(_muestra.GetValueOrDefault(campo))"
-                                          ValueChanged="@(v => _muestra[campo] = v)" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" />
+                                          ValueChanged="@(v => _muestra[campo] = v)" Variant="Variant.Outlined" Clearable="true" />
                         }
                     </div>
                     @if (_prueba is not null)

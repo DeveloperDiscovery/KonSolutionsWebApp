@@ -262,7 +262,7 @@ else
                                 <td style="text-align:right;">
                                     <MudNumericField T="decimal?" Value="@dd.CAN_EMBALAJE"
                                                      ValueChanged="@(async v => { dd.CAN_EMBALAJE = v; await GuardarSiNoEsNuevo(dd); })"
-                                                     Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                     Variant="Variant.Outlined"
                                                      Class="campo-numerico-derecha mb-0"
                                                      Format="@_formatoCantidad" Culture="@CultureInfo.CurrentCulture"
                                                      Min="0" HideSpinButtons="true" Clearable="true" />

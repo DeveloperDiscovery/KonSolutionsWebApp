@@ -33,33 +33,33 @@
                 <div class="d-flex align-center gap-2 mb-3">
                     <div style="width:130px;flex-shrink:0;">
                         <MudTextField Value="@CodAplicacion" Label="Aplicación"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                     <div style="flex:1;min-width:0;">
                         <MudTextField Value="@DesAplicacion" Label="Descripción aplicación"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                 </div>
 
                 <div class="d-flex align-center gap-2 mb-3">
                     <div style="width:130px;flex-shrink:0;">
                         <MudTextField Value="@CodOpcionPadre" Label="Código padre"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                     <div style="flex:1;min-width:0;">
                         <MudTextField Value="@DesOpcionPadre" Label="Descripción padre"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                 </div>
 
                 <div class="d-flex align-center gap-2 mb-3">
                     <div style="width:130px;flex-shrink:0;">
                         <MudTextField Value="@CodOpcionAplicacion" Label="Código de opción"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                     <div style="flex:1;min-width:0;">
                         <MudTextField Value="@DesOpcion" Label="Descripción"
-                                      Variant="Variant.Outlined" Disabled="true" Margin="Margin.Dense" />
+                                      Variant="Variant.Outlined" Disabled="true" />
                     </div>
                 </div>
 
@@ -68,12 +68,12 @@
                 <div class="d-flex align-center gap-2 mb-3">
                     <div style="width:140px;flex-shrink:0;">
                         <MudTextField Label="Código (auto)" Value="@_model.COD_BOTON_OPCION"
-                                      Disabled="true" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                      Disabled="true" Variant="Variant.Outlined" />
                     </div>
                     <div style="flex:1;min-width:0;">
                         <CampoTexto Tabla="SEGURIDAD.APLICACIONES_OPCIONES_BOTONES" Columna="DES_BOTON_OPCION"
                                     @bind-Value="_model.DES_BOTON_OPCION"
-                                    Disabled="_readonly" Obligatorio="true" Class="" Margin="Margin.Dense" />
+                                    Disabled="_readonly" Obligatorio="true" Class="" />
                     </div>
                 </div>
 

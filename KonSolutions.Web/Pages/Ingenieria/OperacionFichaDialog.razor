@@ -60,7 +60,7 @@
                     <div class="d-flex align-center gap-2 mb-2 flex-wrap">
                         <MudText Typo="Typo.subtitle1">Versiones de tiempo</MudText>
                         <MudSpacer />
-                        <MudDatePicker T="DateTime?" @bind-Date="_desde" Label="Vigente desde (al aprobar)" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:210px;" data-campo="desde" />
+                        <MudDatePicker T="DateTime?" @bind-Date="_desde" Label="Vigente desde (al aprobar)" Variant="Variant.Outlined" Style="max-width:210px;" data-campo="desde" />
                         <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => AbrirTiempo(null))" data-accion="nueva-version">Nueva versión</MudButton>
                     </div>
                     <div style="overflow-x:auto;">

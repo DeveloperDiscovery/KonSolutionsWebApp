@@ -11,11 +11,11 @@
             <MudText Typo="Typo.overline" Class="mb-2" Style="opacity:.7;">Datos del sector</MudText>
             <MudGrid Spacing="2">
                 <MudItem xs="12" sm="4">
-                    <MudTextField T="string" @bind-Value="_cod" Label="Código" MaxLength="5" Disabled="Existente" Variant="Variant.Outlined" Margin="Margin.Dense"
+                    <MudTextField T="string" @bind-Value="_cod" Label="Código" MaxLength="5" Disabled="Existente" Variant="Variant.Outlined"
                                   HelperText="Hasta 5 caracteres" data-campo="cod" />
                 </MudItem>
                 <MudItem xs="12" sm="8">
-                    <MudTextField T="string" @bind-Value="_des" Label="Descripción" MaxLength="50" Variant="Variant.Outlined" Margin="Margin.Dense" data-campo="des" />
+                    <MudTextField T="string" @bind-Value="_des" Label="Descripción" MaxLength="50" Variant="Variant.Outlined" data-campo="des" />
                 </MudItem>
                 <MudItem xs="12">
                     <MudSwitch T="bool" @bind-Value="_total" Color="Color.Primary" Label="Aplica al producto completo (avíos, empaque, acabados generales)" />

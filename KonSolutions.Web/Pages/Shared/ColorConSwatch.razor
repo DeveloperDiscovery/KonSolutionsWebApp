@@ -37,7 +37,7 @@
                     <div class="cs-banco-agregar" @onclick:stopPropagation="true">
                         <div class="cs-banco-preview" style="@($"background:{Text};")"></div>
                         <CampoTextoEstable @bind-Value="_nuevaDescripcion" Placeholder="Descripción" Immediate="true"
-                                      Margin="Margin.Dense" Variant="Variant.Outlined" Style="flex:1;" />
+                                      Variant="Variant.Outlined" Style="flex:1;" />
                         <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" OnClick="GuardarEnBanco"
                                        Disabled="@(string.IsNullOrWhiteSpace(_nuevaDescripcion) || _guardando)" Style="color:var(--rust);" />
                     </div>

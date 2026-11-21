@@ -63,7 +63,7 @@
         else
         {
             <div class="d-flex align-center gap-3 mb-2" style="flex-wrap:wrap;">
-                <MudSelect T="string" Label="Almacén" Variant="Variant.Outlined" Margin="Margin.Dense" Value="_almacen" ValueChanged="OnAlmacen" Style="flex:0 1 320px;" data-campo="almacen">
+                <MudSelect T="string" Label="Almacén" Variant="Variant.Outlined" Value="_almacen" ValueChanged="OnAlmacen" Style="flex:0 1 320px;" data-campo="almacen">
                     @foreach (var a in _almacenes)
                     {
                         <MudSelectItem T="string" Value="@a.Id">@a.Id - @a.Texto</MudSelectItem>
@@ -120,14 +120,14 @@
                                 }
                                 else if (l.Medicion)
                                 {
-                                    <MudTextField T="string" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Pesos de los rollos: 30.5 40.25 29.25" @bind-Value="l.Rollos" Immediate="true"
+                                    <MudTextField T="string" Variant="Variant.Outlined" Placeholder="Pesos de los rollos: 30.5 40.25 29.25" @bind-Value="l.Rollos" Immediate="true"
                                                   Error="@(l.RollosInvalidos || l.SumaRollos > l.Pendiente)" data-rollos="@l.Clave" />
                                     <span style="font-size:.74rem;opacity:.75;" data-resumen-linea="@l.Clave">@l.ListaRollos().Count rollo(s) · @l.SumaRollos.ToString("0.######") @l.Umed@(l.RollosInvalidos ? " · hay un valor que no es número" : l.SumaRollos > l.Pendiente ? " · se pasa de lo que falta" : "")</span>
                                 }
                                 else
                                 {
                                     <div class="d-flex align-center gap-1">
-                                        <MudNumericField T="int?" Variant="Variant.Outlined" Margin="Margin.Dense" @bind-Value="l.N" Min="0" Max="@((int)Math.Floor(l.Pendiente))" Immediate="true"
+                                        <MudNumericField T="int?" Variant="Variant.Outlined" @bind-Value="l.N" Min="0" Max="@((int)Math.Floor(l.Pendiente))" Immediate="true"
                                                          HideSpinButtons="true" Style="max-width:110px;" Error="@(l.N > (int)Math.Floor(l.Pendiente))" data-n="@l.Clave" />
                                         <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => l.N = (int)Math.Floor(l.Pendiente))" data-accion="@($"todo-{l.Clave}")">Todo</MudButton>
                                         <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => l.N = null)" data-accion="@($"nada-{l.Clave}")">Ninguna</MudButton>
